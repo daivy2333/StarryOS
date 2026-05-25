@@ -28,6 +28,10 @@
 
 <!-- R14 --> [Embassy Book](https://embassy.dev/book/) - 异步运行时文档
 <!-- R15 --> [embassy-sync AtomicWaker API](https://docs.embassy.dev/embassy-sync/git/default/struct.AtomicWaker.html) - 中断安全唤醒
+<!-- R28 --> [Embassy GitHub](https://github.com/embassy-rs/embassy) - 源码与 release 说明
+<!-- R29 --> [embassy-executor v0.10.0](https://github.com/embassy-rs/embassy/releases) - 执行器最新版，含定时队列独立 crate
+<!-- R30 --> [probe-rs 调试工具](https://probe.rs/) - Embassy 推荐的调试/烧录工具链
+<!-- R31 --> [defmt 日志框架](https://defmt.ferrous-systems.com/) - Embassy 生态推荐的格式化日志
 
 ### Rust 异步
 

@@ -65,6 +65,40 @@
 `Device` → `NodeOps` → `FileNodeOps` → `File` → `FileLike`。
 `as_pollable()` 返回 `Some(self)` 以支持 poll/select/epoll。
 
+<!-- L45 --> ### Embassy 执行器轮询机制
+1. 任务被 poll → 执行到阻塞点 → 返回 Poll::Pending
+2. 执行器将任务重新加入运行队列末尾，继续执行下一任务
+3. 被唤醒的任务重新入队（仅轮询被唤醒的任务，而非全部）
+4. 无任务可执行时 CPU 进入休眠（WFE/WFI）——无空转轮询
+5. 即使某任务被频繁唤醒，也不会独占 CPU——公平调度保证
+与 StarryOS 的关系: 我们用 axtask::future 而非 embassy-executor，但异步调度原理相同。
+block_on + poll_io 的模式本质就是执行器轮询 + waker 唤醒。
+
+<!-- L46 --> ### Embassy 中断与异步的配合流程
+1. 任务被轮询，尝试取得进展
+2. 任务指示外设执行操作，并等待
+3. 外设完成操作，发出中断
+4. HAL 将中断信号路由到外设，更新外设状态
+5. 执行器收到通知，任务可继续被轮询
+映射到 StarryOS: ISR → AtomicWaker::wake() → axtask 协程被唤醒 → poll 继续执行。
+这就是 ADR-008 ISR → AtomicWaker → copier 任务模型的底层原理。
+
+<!-- L47 --> ### Embassy 异步 vs 中断驱动对比
+- 中断驱动: 需要全局 Mutex 保护共享状态，代码复杂度高（70+ 行）
+- Embassy 异步: 同样简洁（25 行），但多了 Waker 自动休眠/唤醒
+- 关键差异: 异步版本 wait_for_edge().await 使任务挂起，无任务时 CPU 进入睡眠
+- 这验证了我们的选择: axtask::future 异步模式比传统中断驱动代码更简洁，且同样零 CPU 空转
+
+<!-- L48 --> ### embassy-sync 与 nightly 兼容性
+Embassy 使用 `type_alias_impl_trait` 等 nightly 特性。
+embassy-sync 本身可能不需要所有 nightly 特性，但需要验证与 nightly-2026-02-25 的兼容性。
+参见存疑 Q8 (L31)。验证方法: 在 Cargo.toml 添加依赖后 `cargo check`。
+
+<!-- L49 --> ### InterruptExecutor 多优先级模式
+Embassy 支持创建多个 InterruptExecutor 实例，以不同优先级运行任务。
+这对应 optimization.md O5 "优先级调度"——远期若 axtask 不支持优先级，
+可考虑在 axtask 之上实现类似的多优先级调度域。
+
 ## 依赖关系图
 
 <!-- 添加时格式: <!-- L{编号} --> 关键依赖间的调用/依赖关系 -->
