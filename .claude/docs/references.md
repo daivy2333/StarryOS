@@ -14,6 +14,26 @@
 <!-- R3 --> | axtask | 0.3.0-preview.2 | 项目内部 | 异步任务调度器 |
 <!-- R4 --> | axpoll | 0.1.2 | 项目内部 | 轮询/事件通知 |
 
+## uart_16550 文档体系
+
+<!-- R5 --> uart_16550 是 StarryOS 串口子系统的底层驱动模块，其文档体系路径:
+
+| 文档 | 路径 | 内容概要 |
+|------|------|----------|
+| 项目入口 | `../uart_16550/CLAUDE.md` | 项目概览、no_std 驱动库规范 |
+| 状态快照 | `../uart_16550/.claude/docs/SNAPSHOT.md` | v0.6.0 状态、核心 API 速查、在 StarryOS 中的角色 |
+| 学习记忆 | `../uart_16550/.claude/docs/learned.md` | API 路径、寄存器速查、中断速查、Config 字段、踩坑档案 |
+| 架构决策 | `../uart_16550/.claude/docs/architecture.md` | Backend trait 设计、寄存器分层、TTY 封装、DMA 限制 |
+| 编码规范 | `../uart_16550/.claude/docs/rules.md` | 三大规则 + Rust embedded 规范 |
+| 外部参考 | `../uart_16550/.claude/docs/references.md` | 16550 规范、依赖文档、RISC-V QEMU UART 参数 |
+| 优化记录 | `../uart_16550/.claude/docs/optimization.md` | 自旋阻塞、批量 API、DMA API 等待优化项 |
+
+关键定位:
+- **寄存器定义**: `../uart_16550/src/spec.rs` — 所有 bitflags + 常量 + InterruptType
+- **后端抽象**: `../uart_16550/src/backend/mod.rs` — Backend trait (sealed)
+- **RISC-V 使用**: `Uart16550<MmioBackend>` + `new_mmio(NonNull<u8>, stride)`
+- **中断处理**: `isr().interrupt_type()` → `InterruptType` 枚举分发
+
 ## 领域知识笔记
 
 <!-- 添加时格式: <!-- R{编号} --> 笔记内容 -->
@@ -54,3 +74,10 @@
 <!-- R25 --> | docs/analysis/syscall-interface.md | 系统调用接口：FileLike、FD_TABLE、poll/select/epoll |
 <!-- R26 --> | docs/analysis/task-process-model.md | 任务与进程模型：Thread、ProcessData、AsThread |
 <!-- R27 --> | docs/analysis/async-uart-design-context.md | 异步 UART 设计上下文：现有模式、目标架构、关键文件索引 |
+
+### 上游 crate 源码（crates.io，不可修改）
+
+<!-- R32 --> | axtask-0.3.0-preview.2 | ~/.cargo/registry/.../axtask-0.3.0-preview.2/src/ | block_on + poll_io + register_irq_waker 实现 |
+<!-- R33 --> | axhal-0.3.0-preview.2 | ~/.cargo/registry/.../axhal-0.3.0-preview.2/src/ | register_irq_hook + irq_handler 分发 |
+<!-- R34 --> | axplat-riscv64-qemu-virt-0.3.1-pre.6 | ~/.cargo/registry/.../axplat-riscv64-qemu-virt-0.3.1-pre.6/src/ | PLIC + MmioSerialPort + axconfig.toml |
+<!-- R35 --> | axpoll | axpoll crate | PollSet + IoEvents + Pollable trait |

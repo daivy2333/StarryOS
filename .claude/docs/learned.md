@@ -140,3 +140,43 @@ Embassy 支持创建多个 InterruptExecutor 实例，以不同优先级运行�
 <!-- L21 --> - embassy-sync::Channel 是否有优于 ringbuf 的场景
 <!-- L22 --> - axtask 协程优先级调度对延迟抖动的影响
 <!-- L23 --> - Termios 行规则在 read_at/write_at 中的具体集成方式
+
+---
+
+## 关键代码路径（2026-05-25 补充）
+
+<!-- L50 --> ### axplat-riscv64-qemu-virt（上游 crates.io，不可直接修改）
+- `console.rs` — MmioSerialPort 初始化 + write_bytes/read_bytes/irq_num
+- `irq.rs` — PLIC claim/complete + HandlerTable + set_enable/register/unregister
+- `axconfig.toml` — UART_PADDR=0x10000000, UART_IRQ=0x0a, PLIC_PADDR=0x0c000000
+
+<!-- L51 --> ### axhal（上游 crates.io，不可直接修改）
+- `irq.rs` — register_irq_hook(全局唯一) + irq_handler(分发到 axplat + hook)
+
+<!-- L52 --> ### axtask（上游 crates.io，不可直接修改）
+- `future/mod.rs` — block_on 实现（AxWaker → unblock_task）
+- `future/poll.rs` — poll_io 实现 + register_irq_waker 实现（POLL_IRQ BTreeMap → irq_hook → PollSet.wake）
+
+<!-- L53 --> ### kernel（可修改）
+- `file/pipe.rs` — 异步管道参考：Shared { buffer: Mutex<HeapRb>, poll_rx/poll_tx: PollSet }
+- `file/event.rs` — EventFd 参考：AtomicU64 + PollSet
+- `pseudofs/device.rs` — DeviceOps trait + Device 包装
+- `pseudofs/dev/mod.rs` — builder() 注册 /dev 设备（添加新设备入口）
+- `pseudofs/dev/tty/mod.rs` — Tty<R,W> 实现 DeviceOps + Pollable
+- `pseudofs/dev/tty/ntty.rs` — Console + register_irq_waker 使用
+- `pseudofs/dev/tty/terminal/ldisc.rs` — tty-reader copier: spawn_with_name + poll_fn 循环
+- `entry.rs` — 内核入口：mount_all → spawn init → N_TTY.bind_to
+
+<!-- L54 --> ### uart_16550 本地项目（可修改）
+- `src/spec.rs` — bitflags: InterruptEnable, InterruptIdentification, LineStatus, FifoControl
+- `src/backend/mmio.rs` — MmioBackend
+- `src/lib.rs` — SerialPort<M>: set_interrupt_enable, interrupt_identification, try_send/try_receive, set_fifo_trigger_level, Config
+
+<!-- L55 --> ### 中断完整路径
+```
+UART 硬件信号 → PLIC → S_EXT trap → axhal::irq_handler
+  → axplat::handle (PLIC claim → HandlerTable.handle → PLIC complete)
+  → IRQ_HOOK (register_irq_waker 注册的 irq_hook)
+  → POLL_IRQ[irq].wake() → PollSet.wake()
+  → axtask scheduler 唤醒等待任务
+```
