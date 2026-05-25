@@ -78,10 +78,10 @@
 <!-- 添加时格式: <!-- L{编号} --> - {存疑问题} — {影响} — {需要确认对象} -->
 
 <!-- L24 --> - Q1: QEMU virt 平台是否支持第二个 16550 UART？ — 决定是否需要独立硬件还是复用同一 UART — QEMU 文档/实验
-<!-- L25 --> - Q2: 修改 axplat/axhal crate 的方式？~~fork 还是提 PR？~~ **已决策：不修改，内核直接用本地最新 uart_16550 crate** — ADR-009
+<!-- tombstone: L25 --> Archived to archive.md §learned #L25 2026-05-25 — 已决策 (ADR-009)
 <!-- L26 --> - Q3: 上板子时的 UART 型号？是否仍是 16550 兼容？ — AsyncUart trait 设计范围 — 老师
 <!-- L27 --> - Q4: register_irq 和 register_irq_waker 同时注册同一 IRQ 时的语义？ — 是否需要统一中断分发机制 — 代码审查/实验
-<!-- L28 --> - Q5: trap 上下文中读 MMIO 是否安全？~~是否有内存序问题？~~ **已解决：uart_16550 crate 封装了 volatile read，ISR 中安全**
+<!-- tombstone: L28 --> Archived to archive.md §learned #L28 2026-05-25 — 已解决
 <!-- L29 --> - Q6: （已分析）N_TTY tty-reader 与 register_irq_waker 的配合方式 — 参见 reference-implementations.md — 代码追踪
 <!-- L30 --> - Q7: 多核场景下 PLIC claim/complete 的竞态？ — 当前单核可忽略 — RISC-V PLIC 规范
 <!-- L31 --> - Q8: embassy-sync 哪个版本与 nightly-2026-02-25 兼容？ — 依赖选型 — 实验验证
@@ -95,9 +95,9 @@
 <!-- L39 --> - Q16: 能否获得真实硬件（如 VisionFive2）进行验证？ — 报告的平台适配章节 — 老师
 <!-- L40 --> - Q17: 报告中是否需要用户态测试程序的源码？ — 测试框架交付范围 — 老师
 <!-- L41 --> - Q18: 性能基准的最低要求？QEMU 数据是否可接受？ — 性能量化可信度 — 老师
-<!-- L42 --> - Q19: 本地 uart_16550 crate 是否可发布到 crates.io？ — **已决策：使用本地 path 依赖，暂不发布** — ADR-009
-<!-- L43 --> - Q20: StarryOS 的 uart_16550 v0.4.0 和本地版本是否有 API 兼容性？ — **已确认：本地 v0.6.0 完整覆盖 v0.4.0 API，额外增加中断控制** — ADR-009
-<!-- L44 --> - Q21: Console 和 AsyncUart 同时操作同一 UART 的协调方案？ — **已决策：先独立后统一（方案 C），QEMU 配第二个 -serial** — ADR-007
+<!-- tombstone: L42 --> Archived to archive.md §learned #L42 2026-05-25 — 已决策 (ADR-009)
+<!-- tombstone: L43 --> Archived to archive.md §learned #L43 2026-05-25 — 已确认 (ADR-009)
+<!-- tombstone: L44 --> Archived to archive.md §learned #L44 2026-05-25 — 已决策 (ADR-007)
 
 ## 待探索
 
