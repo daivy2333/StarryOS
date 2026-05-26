@@ -180,3 +180,32 @@ UART 硬件信号 → PLIC → S_EXT trap → axhal::irq_handler
   → POLL_IRQ[irq].wake() → PollSet.wake()
   → axtask scheduler 唤醒等待任务
 ```
+
+<!-- L56 --> ### Console 中断驱动模式（ntty.rs 参考）
+Console (N_TTY) 已实现中断驱动：
+- `ProcessMode::External` 使用 `register_irq_waker(irq, &waker)`
+- tty-reader copier 任务：`spawn_with_name + poll_fn` 循环
+- 这与 AsyncUart 设计的 ISR → AtomicWaker → copier 模型完全一致
+- 参考：`kernel/src/pseudofs/dev/tty/ntty.rs:37-42` + `ldisc.rs:256-278`
+
+<!-- L57 --> ### PTY 纯软件终端（pty.rs 参考）
+PTY 不涉及硬件，使用 ringbuf 作为数据通道：
+- master_to_slave + slave_to_master 两个 HeapRb<u8>
+- PtyWriter 使用 `SpinNoPreempt<Prod<Buffer>>` + PollSet
+- 与 AsyncUart 的 rx_buf/tx_buf + PollSet 设计一致
+- 参考：`kernel/src/pseudofs/dev/tty/pty.rs`
+
+<!-- L58 --> ### vsock ≠串口（virtio socket）
+vsock 是 virtio socket 设备，用于虚拟机与主机通信：
+- 不是传统串口，是 socket API (AF_VSOCK)
+- 基于 virtqueue DMA 传输，性能远高于模拟 UART
+- 可参考用于 M6 DMA 探索，但不属于 AsyncUart 设计范围
+- 实现：`axnet-ng/src/vsock/` + `axdriver_virtio/src/socket.rs`
+
+<!-- L59 --> ### 串口接口总结
+StarryOS 中串口相关接口：
+| 类型 | 硬件 |位置 | 用途 |
+|------|------|------|------|
+| Console | UART | ntty.rs | 系统控制台 |
+| PTY | 无 | pty.rs | 终端模拟器 |
+| vsock | virtio | axnet-ng/vsock | VM通信（非串口）|

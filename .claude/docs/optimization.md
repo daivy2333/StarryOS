@@ -42,11 +42,34 @@
   - FIFO 深度可配置化 — 适配非标准 16550 兼容芯片 | M5
   - DMA 模式寄存器完整控制 — M6 阶段 DMA 传输所需 | M6
 
+<!-- O15 --> - ldisc 行编辑性能优化
+  - 当前影响: canonical mode 下逐字符处理（CR/NL 转换、信号检查、echo 输出），每个字符都触发 output_char
+  - 建议方案: raw 模式零开销跳过所有行编辑；canonical mode 批量处理而非逐字符
+  - 优先级: 中 | 阶段: M2 (termios raw 模式)
+  - 参考: kernel/src/pseudofs/dev/tty/terminal/ldisc.rs InputReader::poll()
+
+<!-- O16 --> - PTY ringbuf 性能优化
+  - 当前影响: PTY buffer 仅 4096 字节，高频读写时唤醒频繁；SpinNoPreempt 锁有开销
+  - 建议方案: 增大 PTY buffer 至 64 KiB（与 AsyncUart 对齐）；考虑无锁 ringbuf 原子操作
+  - 优先级: 低 | 阶段: M4 (性能优化，与 AsyncUart buffer 对齐)
+  - 参考: kernel/src/pseudofs/dev/tty/pty.rs PTY_BUF_SIZE
+
+<!-- O17 --> - 中断分发效率优化
+  - 当前影响: register_irq_waker 通过全局 BTreeMap 查找 IRQ 号，每次中断有查找开销
+  - 建议方案: IRQ 号直接映射（数组索引）而非 BTreeMap；批量中断处理减少 PLIC claim/complete MMIO 延迟
+  - 优先级: 中 | 阶段: M4 (与 NAPI 批量处理协同)
+  - 参考: axtask::future::poll.rs POLL_IRQ BTreeMap
+
+<!-- O18 --> - 系统调用层批量读取
+  - 当前影响: 每次 read() 都有 block_on(poll_io) 包装，waker 注册/唤醒有开销
+  - 建议方案: VFS 层批量读取接口；raw 模式零拷贝路径（直接从 rx_buf 到用户空间）
+  - 优先级: 低 | 阶段: M2+ (与 termios raw 模式协同)
+
 ---
 
 ## 性能洞察
 
-<!-- O7 --> ### 中断频率
+<!-- O19 --> ### 中断频率
 - FCR 阈值 14 字节时，115200 bps 下 ~823 IRQ/秒
 - ISR 开销 < 100 ns（清 IIR + AtomicWaker::wake + mret）
 - 1 Mbps 下 ~7,143 IRQ/秒，CPU 占用 ~3.57%

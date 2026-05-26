@@ -81,3 +81,8 @@
 <!-- R33 --> | axhal-0.3.0-preview.2 | ~/.cargo/registry/.../axhal-0.3.0-preview.2/src/ | register_irq_hook + irq_handler 分发 |
 <!-- R34 --> | axplat-riscv64-qemu-virt-0.3.1-pre.6 | ~/.cargo/registry/.../axplat-riscv64-qemu-virt-0.3.1-pre.6/src/ | PLIC + MmioSerialPort + axconfig.toml |
 <!-- R35 --> | axpoll | axpoll crate | PollSet + IoEvents + Pollable trait |
+
+### 项目分析文档
+
+<!-- R36 --> | 串口相关接口概览 | docs/analysis/serial-interfaces-overview.md | Console/PTY/vsock 三种串口接口分析 |
+<!-- R20 --> | 项目概览 | docs/analysis/project-overview.md | 仓库结构、构建系统、依赖图 |
