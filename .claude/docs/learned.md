@@ -99,6 +99,33 @@ Embassy 支持创建多个 InterruptExecutor 实例，以不同优先级运行�
 这对应 optimization.md O5 "优先级调度"——远期若 axtask 不支持优先级，
 可考虑在 axtask 之上实现类似的多优先级调度域。
 
+<!-- L60 --> ### TX 同步阻塞实测时间（理论估算）
+波特率 115200 bps 下：
+- 发送 1 字节: ~86.8 µs CPU 空转
+- 发送 1 KB: ~87 ms CPU 空转
+- 发送 64 KB: ~5.5 s CPU 空转
+波特率 1 Mbps 下：
+- 发送 1 KB: ~10 ms CPU 空转
+- 发送 64 KB: ~640 ms CPU 穽转
+这是当前 Console write_bytes 忙等待循环的阻塞时长，验证了异步化必要性。
+
+<!-- L61 --> ### RX 接收路径多层开销分析
+Console (N_TTY) 接收路径虽中断驱动，但经过多层处理：
+- UART → Console.read_bytes → N_TTY → ldisc → termios → 用户态
+- 即使 raw 模式，数据仍经过 ldisc 处理路径（条件判断、信号检测）
+- 多层 buffer 复制：Console buffer → N_TTY buffer → 用户态 buffer
+AsyncUart 优化：默认 raw 模式直接读写 rx_buf，跳过 ldisc，零行规则开销。
+
+<!-- L62 --> ### 异步改造预期性能目标
+| 指标 | 目标 | 当前状态 | 改进幅度 |
+|------|------|---------|---------|
+| 最大波特率 | 1 Mbps (可扩展至 2 Mbps) | 受阻于同步阻塞 | 10x ↑ |
+| 吞吐量 | > 90% 线速 (115200 bps 下 > 10 KB/s) | 受阻于 CPU 空转 | 估算 5x ↑ |
+| RX 延迟 | P50 < 500 µs, P99 < 2 ms | 已中断驱动但多层开销 | 估算 2x ↓ |
+| CPU 利用率（空闲） | 0% | TX 阻塞时 100% 穽转 | 100% ↓ |
+| 多端口并发 | 4 端口 | 1 端口 | 4x ↑ |
+参见 docs/analysis/serial-optimization-preview.md 第 6 节。
+
 ## 依赖关系图
 
 <!-- 添加时格式: <!-- L{编号} --> 关键依赖间的调用/依赖关系 -->

@@ -85,4 +85,5 @@
 ### 项目分析文档
 
 <!-- R36 --> | 串口相关接口概览 | docs/analysis/serial-interfaces-overview.md | Console/PTY/vsock 三种串口接口分析 |
+<!-- R37 --> | 串口优化预览 | docs/analysis/serial-optimization-preview.md | 从同步阻塞到异步高性能的优化分析：阻塞瓶颈、优化方案、预期收益 |
 <!-- R20 --> | 项目概览 | docs/analysis/project-overview.md | 仓库结构、构建系统、依赖图 |
