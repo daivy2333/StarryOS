@@ -21,6 +21,12 @@ pub fn init(args: &[String], envs: &[String]) {
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 
+    // M2 VFS Verification Test
+    #[cfg(feature = "uart-async")]
+    {
+        crate::drivers::serial::run_m2_verification_test();
+    }
+
     let loc = FS_CONTEXT
         .lock()
         .resolve(&args[0])
