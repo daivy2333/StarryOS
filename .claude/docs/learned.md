@@ -138,7 +138,7 @@ AsyncUart 优化：默认 raw 模式直接读写 rx_buf，跳过 ldisc，零行�
 
 <!-- 添加时格式: <!-- L{编号} --> - {存疑问题} — {影响} — {需要确认对象} -->
 
-<!-- L24 --> - Q1: QEMU virt 平台是否支持第二个 16550 UART？ — 决定是否需要独立硬件还是复用同一 UART — QEMU 文档/实验
+<!-- L24 --> - Q1: QEMU virt 平台是否支持第二个 16550 UART？ — **已解决**：标准 QEMU 不支持（需补丁未合并），决策共用 UART0。参见 ADR-013、ADR-014、ADR-015。
 <!-- tombstone: L25 --> Archived to archive.md §learned #L25 2026-05-25 — 已决策 (ADR-009)
 <!-- L26 --> - Q3: 上板子时的 UART 型号？是否仍是 16550 兼容？ — AsyncUart trait 设计范围 — 老师
 <!-- L27 --> - Q4: register_irq 和 register_irq_waker 同时注册同一 IRQ 时的语义？ — 是否需要统一中断分发机制 — 代码审查/实验
