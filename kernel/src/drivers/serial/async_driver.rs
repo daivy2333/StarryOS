@@ -10,10 +10,11 @@ use core::future::poll_fn;
 use core::task::Poll;
 
 use axtask::future::{block_on, register_irq_waker};
-use embassy_sync::waitqueue::AtomicWaker;
 
-use uart_16550::{Config, BaudRate, FifoTriggerLevel};
+use uart_16550::{Config, BaudRate};
+use uart_16550::spec::registers::{FifoTriggerLevel, IER};  // Correct imports from registers
 
+use super::async_uart::AsyncUart;  // Trait methods require this import
 use super::uart16550_impl::Uart16550Async;
 use super::isr::IsrContext;
 use super::ring_buffer::AsyncBuffer;
@@ -27,9 +28,8 @@ const UART_IRQ: usize = 10;                // QEMU virt UART IRQ number
 /// - RX copier task: Hardware FIFO → rx_buf (interrupt-driven)
 /// - TX copier task: tx_buf → Hardware FIFO (interrupt-driven)
 /// - AsyncBuffer: rx_buf + tx_buf + wakers
-/// - ISR context: Shared with ISR handler
+/// - ISR context: Shared with ISR handler (contains UART hardware access)
 pub struct AsyncUartDriver {
-    uart: Uart16550Async,
     buffer: Arc<AsyncBuffer>,
     isr_ctx: Arc<IsrContext>,
     irq: usize,
@@ -51,18 +51,17 @@ impl AsyncUartDriver {
         // 2. Initialize UART with interrupt configuration
         uart.init(Config {
             baud_rate: BaudRate::Baud115200,
-            fifo_trigger_level: Some(FifoTriggerLevel::TriggerLevel14),
+            fifo_trigger_level: Some(FifoTriggerLevel::Fourteen),
             // Enable RX interrupt at init, TX interrupt disabled (idle)
-            interrupts: uart_16550::InterruptEnable::RECEIVED_DATA_AVAILABLE,
+            interrupts: IER::DATA_READY,
             ..Default::default()
         });
 
-        // 3. Create ISR context
+        // 3. Create ISR context (UART ownership transferred to IsrContext)
         let isr_ctx = IsrContext::new(uart);
 
         // 4. Create driver
         let driver = Arc::new(Self {
-            uart,
             buffer: Arc::new(AsyncBuffer::new_default()),
             isr_ctx,
             irq: UART_IRQ,
@@ -101,24 +100,34 @@ impl AsyncUartDriver {
                     block_on(poll_fn(|cx| {
                         let mut tmp_buf = [0u8; 256];
 
-                        // 1. Read from hardware FIFO
-                        let n = driver.uart.try_read(&mut tmp_buf);
+                        // SAFETY: spin::Mutex disables interrupts (ISR-safe, never sleeps)
+                        // Access UART through IsrContext's Mutex-protected uart field
+                        {
+                            let mut uart = driver.isr_ctx.uart.lock();
 
-                        // 2. Write to rx_buf
-                        if n > 0 {
-                            driver.buffer.push_rx(&tmp_buf[..n]);
+                            // 1. Read from hardware FIFO
+                            let n = uart.try_read(&mut tmp_buf);
+
+                            // 2. Write to rx_buf
+                            if n > 0 {
+                                driver.buffer.push_rx(&tmp_buf[..n]);
+                            }
+
+                            // 3. Re-enable RX interrupt
+                            uart.enable_rx_intr();
                         }
-
-                        // 3. Re-enable RX interrupt
-                        driver.uart.enable_rx_intr();
 
                         // 4. Register IRQ waker for next interrupt
                         register_irq_waker(driver.irq, cx.waker());
 
                         // 5. Check again before pending (avoid race)
-                        let n2 = driver.uart.try_read(&mut tmp_buf);
-                        if n2 > 0 {
-                            driver.buffer.push_rx(&tmp_buf[..n2]);
+                        // SAFETY: spin::Mutex is ISR-safe
+                        {
+                            let mut uart = driver.isr_ctx.uart.lock();
+                            let n2 = uart.try_read(&mut tmp_buf);
+                            if n2 > 0 {
+                                driver.buffer.push_rx(&tmp_buf[..n2]);
+                            }
                         }
 
                         // 6. Return Pending
@@ -150,25 +159,32 @@ impl AsyncUartDriver {
                         let n = driver.buffer.pop_tx(&mut tmp_buf);
 
                         if n > 0 {
-                            // 2. Write to hardware FIFO
-                            let sent = driver.uart.try_write(&tmp_buf[..n]);
+                            // SAFETY: spin::Mutex is ISR-safe
+                            {
+                                let mut uart = driver.isr_ctx.uart.lock();
 
-                            // 3. If sent < n, FIFO full → push remaining back to tx_buf
-                            if sent < n {
-                                driver.buffer.push_tx(&tmp_buf[sent..n]);
-                            }
+                                // 2. Write to hardware FIFO
+                                let sent = uart.try_write(&tmp_buf[..n]);
 
-                            // 4. Check if more data pending → enable TX interrupt
-                            let remaining = driver.buffer.tx_len();
-                            if remaining > 0 {
-                                driver.uart.enable_tx_intr();
-                            } else {
-                                // All data sent → disable TX interrupt (avoid spurious)
-                                driver.uart.disable_tx_intr();
+                                // 3. If sent < n, FIFO full → push remaining back to tx_buf
+                                if sent < n {
+                                    driver.buffer.push_tx(&tmp_buf[sent..n]);
+                                }
+
+                                // 4. Check if more data pending → enable TX interrupt
+                                let remaining = driver.buffer.tx_len();
+                                if remaining > 0 {
+                                    uart.enable_tx_intr();
+                                } else {
+                                    // All data sent → disable TX interrupt (avoid spurious)
+                                    uart.disable_tx_intr();
+                                }
                             }
                         } else {
                             // No data to send → ensure TX interrupt disabled
-                            driver.uart.disable_tx_intr();
+                            // SAFETY: spin::Mutex is ISR-safe
+                            let mut uart = driver.isr_ctx.uart.lock();
+                            uart.disable_tx_intr();
                         }
 
                         // 5. Register IRQ waker (supports multiple wakers via PollSet)

@@ -136,4 +136,11 @@ impl AsyncUart for Uart16550Async {
 }
 
 // SAFETY: Uart16550<MmioBackend> is Send (see uart_16550 lib.rs:950)
+// mmio_addr (NonNull<u8>) is Send but not Sync by default. However, Uart16550Async
+// is safe to share between threads because:
+// 1. MMIO address is a fixed hardware address (0x10000000), not a Rust allocation
+// 2. All MMIO access is serialized through Mutex in IsrContext (ISR-safe)
+// 3. No interior mutability - all modifications require &mut self or Mutex lock
+// 4. Platform guarantees: single UART device, no concurrent hardware access
 unsafe impl Send for Uart16550Async {}
+unsafe impl Sync for Uart16550Async {}

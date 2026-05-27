@@ -31,6 +31,10 @@ impl AsyncBuffer {
         self.rx_buf.lock().occupied_len()
     }
 
+    pub fn tx_len(&self) -> usize {
+        self.tx_buf.lock().occupied_len()
+    }
+
     pub fn tx_vacant(&self) -> usize {
         self.tx_buf.lock().vacant_len()
     }

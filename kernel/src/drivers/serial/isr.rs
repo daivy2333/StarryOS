@@ -19,7 +19,7 @@ use super::async_uart::AsyncUart;
 /// Contains UART hardware access and ISR-safe wakers for
 /// RX and TX copier tasks.
 pub struct IsrContext {
-    uart: Mutex<Uart16550Async>,
+    pub uart: Mutex<Uart16550Async>,
     rx_waker: AtomicWaker,
     tx_waker: AtomicWaker,
 }
