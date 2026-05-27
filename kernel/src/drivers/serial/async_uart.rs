@@ -1,4 +1,9 @@
-// kernel/src/drivers/serial/async_uart.rs
+//! Async UART abstraction trait for high-performance serial communication
+//!
+//! This module defines the `AsyncUart` trait, which provides a hardware-agnostic
+//! interface for non-blocking UART operations with interrupt control. It encapsulates
+//! hardware-specific details, making it suitable for various UART implementations
+//! (16550, DwApbUart, etc.).
 
 use uart_16550::spec::registers::InterruptType;
 
