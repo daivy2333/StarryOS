@@ -373,3 +373,14 @@ Cargo.lock 中存在两个 uart_16550 版本：
   - 将 uart_16550 v0.6.0 发布到 crates.io
   - 提 PR 给 axplat 项目升级依赖
 验证: 2026-05-27 (M0 Gate)
+
+<!-- L74 --> ### M1 Console 共用数据竞争（预期行为）
+- 症状: `cat /dev/async_uart_test` 输入数据后，shell 也收到部分数据并尝试执行命令
+- 根因: M1 测试设备 `async_uart_test` 和 `/dev/console` 共用 `axhal::console::read_bytes()`，两者竞争读取
+- 表现:
+  - `echo "hello" > /dev/async_uart_test` → Console 输出 "hello" ✅
+  - `cat /dev/async_uart_test` 输入 "world" → cat 显示 "world" ✅
+  - shell 同时收到部分数据 → 执行 `world` 命令报错 ⚠️
+- 设计决策: ADR-013/014 已记录，M1 用 Console 验证架构，接受共用竞争
+- 解决: M3 替换底层为 AsyncUart，路径分离
+- 验证: 2026-05-27 (M1 Gate)
