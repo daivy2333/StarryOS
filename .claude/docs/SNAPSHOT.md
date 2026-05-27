@@ -7,8 +7,8 @@
 
 ## 当前状态
 
-**Milestone**: M0 (基础设施就绪) - ✅ 完成
-**Status**: 基础依赖已就绪，中断机制已确认，可进入 M1 架构验证
+**Milestone**: M1 (架构验证) - ✅ 完成
+**Status**: 基础架构验证通过，Console 共用数据竞争已知（L74），可进入 M2 VFS 验证
 **Branch**: feat/uart-async (from main)
 
 ---
@@ -19,6 +19,12 @@
 StarryOS/
 ├── kernel/src/
 │   ├── config/           # 内核配置
+│   ├── drivers/          # 设备驱动（新增）
+│   │   └── serial/       # 异步串口驱动（M1）
+│   │       ├── mod.rs         # 模块导出
+│   │       ├── ring_buffer.rs # AsyncBuffer (Ring Buffer + PollSet)
+│   │       ├── console_driver.rs # ConsoleDriver + RX copier
+│   │       └── device_ops.rs  # AsyncUartTestDevice (DeviceOps + Pollable)
 │   ├── entry.rs          # 内核入口
 │   ├── file/             # 文件系统核心
 │   │   ├── pipe.rs       # 异步管道（参考）
@@ -35,9 +41,12 @@ StarryOS/
 │   ├── tasks.md          # 任务跟踪（M0~M6 milestone 规划）
 │   ├── learned.md        # 学习记录
 │   ├── references.md     # 参考资料
-│   ├── architecture.md    # 架构决策（ADR-001~009）
+│   ├── architecture.md    # 架构决策（ADR-001~015）
 │   ├── rules.md          # 编码规范
 │   └── optimization.md   # 优化记录
+│   └── superpowers/      # 设计文档和实现计划
+│       ├── specs/        # Spec 文档
+│       └── plans/        # Plan 文档
 └── CLAUDE.md             # 项目约束规则
 ```
 
@@ -163,35 +172,31 @@ StarryOS/
 
 | 时间 | 文件 | 改动类型 |
 |------|------|----------|
+| 2026-05-27 | kernel/src/drivers/serial/* | M1 实现（AsyncBuffer + ConsoleDriver + DeviceOps） |
+| 2026-05-27 | kernel/src/pseudofs/dev/mod.rs | 注册 async_uart_test 设备到 devfs |
+| 2026-05-27 | kernel/Cargo.toml | 新增 uart-async feature |
+| 2026-05-27 | .claude/docs/learned.md | 新增 L74（Console 共用数据竞争现象） |
+| 2026-05-27 | .claude/docs/SNAPSHOT.md | 更新 Milestone 为 M1 完成 |
+| 2026-05-27 | .claude/docs/tasks.md | 更新 T1.1-T1.6 状态（M1 完成） |
 | 2026-05-27 | .claude/docs/learned.md | 新增 L73（uart_16550 版本共存说明） |
 | 2026-05-27 | .claude/docs/learned.md | 新增 L65-L72（构建环境、rootfs、踩坑经验、命令速查） |
 | 2026-05-27 | .claude/docs/references.md | 新增 R38-R40（uart_16550、musl 工具链、rootfs） |
-| 2026-05-27 | .claude/docs/SNAPSHOT.md | 更新技术栈、Git 状态、最近修改 |
-| 2026-05-27 | .claude/docs/tasks.md | 更新 T0.1-T0.4 状态（全部完成） |
 | 2026-05-27 | kernel/Cargo.toml | 新增 embassy-sync v0.6.2 依赖（T0.2） |
-| 2026-05-27 | .claude/docs/learned.md | 新增 L63-L64（register_irq_waker 共存机制） |
 | 2026-05-27 | kernel/Cargo.toml | 新增 uart_16550 path 依赖（T0.1） |
 | 2026-05-27 | disk.img + make/disk.img | rootfs 部署（1GB） |
 | 2026-05-27 | .claude/docs/architecture.md | 新增 A15（渐进式开发策略） |
-| 2026-05-27 | .claude/docs/tasks.md | 重构 M1-M3（渐进式验证 + 异步引擎替换） |
-| 2026-05-27 | .claude/docs/architecture.md | 新增 A13-A14（axhal::console 外部 crate 约束） |
-| 2026-05-27 | .claude/docs/learned.md | 新增 L60-L62（外部 crate 层次、路径分离、earlycon） |
 | 2026-05-25 | .claude/docs/tasks.md | 重写（M0~M6 milestone 规划） |
-| 2026-05-25 | .claude/docs/SNAPSHOT.md | 更新（状态快照） |
-| 2026-05-25 | .claude/docs/architecture.md | 新增 A07-A12 |
-| 2026-05-24 | CLAUDE.md | 新增（项目约束规则） |
-| 2026-05-24 | .claude/docs/learned.md | 新增（学习记录） |
-| 2026-05-24 | .claude/docs/references.md | 新增（参考资料） |
 
 ---
 
 ## 下一步
 
-**M0 已完成**，进入 M1 架构验证：
+**M1 已完成**，进入 M2 VFS 验证：
 
-1. **T1.1**: Ring Buffer 实现（rx_buf + tx_buf）
-2. **T1.2**: 中断机制验证（IRQ 10 共存）
-3. **T1.3**: RX copier 任务模型验证
-4. **T1.4**: TX 路径模拟验证
+1. **T2.1**: ConsoleDriver 实现 DeviceOps（read_at/write_at/as_pollable）
+2. **T2.2**: 注册测试设备到 devfs
+3. **T2.3**: 用户态验证（open/read/write）
+4. **T2.4**: termios 支持框架（可选）
 
 > 渐进式策略：M1/M2 用 Console 同步引擎验证架构，M3 替换为 AsyncUart 异步引擎（参见 ADR-015）
+> 已知约束：Console 共用数据竞争（L74），M3 解决
