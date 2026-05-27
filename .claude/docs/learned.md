@@ -13,6 +13,10 @@
 <!-- L2 --> | axtask::future::poll_io | WouldBlock → register → await 标准模式 | 2026-05-24 |
 <!-- L3 --> | axtask::future::register_irq_waker | 连接中断到异步任务唤醒 | 2026-05-24 |
 <!-- L4 --> | embassy_sync::AtomicWaker::wake | ISR 中安全唤醒 Waker，无锁中断安全 | 2026-05-24 |
+<!-- L63 --> | register_irq_waker 共存机制 | BTreeMap<usize, PollSet> 支持同一 IRQ 注册多个 waker | 2026-05-27 |
+<!-- L65 --> | RISC-V musl 工具链路径 | /opt/musl/riscv64-linux-musl-cross/bin | 编译 lwext4_rust C 代码 | 2026-05-27 |
+<!-- L66 --> | rootfs 下载地址 | https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz | 1GB 磁盘镜像 | 2026-05-27 |
+<!-- L67 --> | disk.img 位置 | 项目根目录 + make/disk.img | make run 需要后者 | 2026-05-27 |
 
 ## 文件速查
 
@@ -37,6 +41,46 @@
 - 症状: 在 ISR 中直接操作 ringbuf 导致数据竞争
 - 根因: HeapRb 的 Producer/Consumer 不是中断安全的
 - 解: 硬件 FIFO 和内核 ringbuf 之间的搬运由单一后台协程完成
+
+<!-- L64 --> ### register_irq_waker 共存机制详解
+- 场景: Console tty-reader 已使用 IRQ 10，AsyncUart 是否能共用？
+- 分析路径: axtask::future::poll.rs → axhal::irq.rs → kernel/pseudofs/dev/tty/ntty.rs
+- 结论:
+  1. register_irq_waker 内部使用 BTreeMap<usize, PollSet> 存储每个 IRQ 的唤醒器集合
+  2. PollSet 支持注册多个 Waker，同一 IRQ 号可共存
+  3. register_irq_hook 全局唯一，但 hook 函数根据 IRQ 号查找对应 PollSet
+  4. Console 和 AsyncUart 共用 IRQ 10，共存支持
+- 源码关键点:
+  - Entry::Vacant → register_irq_hook + set_enable + PollSet::new()
+  - Entry::Occupied → 获取已有 PollSet
+  - PollSet.register(waker) 总是执行（支持多个 waker）
+- 验证: 2026-05-27 (T0.3)
+
+<!-- L68 --> ### 构建环境配置踩坑
+- 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
+- 根因: lwext4_rust crate 需要编译 C 代码，依赖 musl 交叉编译工具链
+- 解:
+  1. 工具链位于 `/opt/musl/riscv64-linux-musl-cross/bin`
+  2. 构建前设置 `export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH`
+  3. 系统已有其他 RISC-V 工具链（riscv64-linux-gnu-gcc, riscv64-unknown-elf-gcc），但 musl 版本是必需的
+- 验证: 2026-05-27 (T0.4)
+
+<!-- L69 --> ### rootfs 下载与部署踩坑
+- 症状: make rootfs 下载失败（SSL 连接中断），disk.img not found
+- 根因: GitHub releases 下载不稳定 + Makefile 需要 disk.img 在 make/ 目录
+- 解:
+  1. 手动下载 `https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz`
+  2. 解压 `xz -d rootfs-riscv64.img.xz`
+  3. 复制到两处：`cp rootfs-riscv64.img disk.img && cp disk.img make/disk.img`
+  4. Makefile 会自动复制 rootfs-riscv64.img → make/disk.img（如果 rootfs 下载成功）
+- 验证: 2026-05-27 (T0.4)
+
+<!-- L70 --> ### 构建警告清理经验
+- 症状: 编译有10个 unused warnings（dead_code）
+- 分析: 这些是项目原有代码的未使用函数，不是我们添加依赖导致
+- 影响: 不影响功能，编译成功
+- 建议: 不清理（遵循"只改必须改的代码"原则，避免引入不必要变更）
+- 验证: 2026-05-27 (T0.4)
 
 ## 技巧模式
 
@@ -141,12 +185,12 @@ AsyncUart 优化：默认 raw 模式直接读写 rx_buf，跳过 ldisc，零行�
 <!-- L24 --> - Q1: QEMU virt 平台是否支持第二个 16550 UART？ — **已解决**：标准 QEMU 不支持（需补丁未合并），决策共用 UART0。参见 ADR-013、ADR-014、ADR-015。
 <!-- tombstone: L25 --> Archived to archive.md §learned #L25 2026-05-25 — 已决策 (ADR-009)
 <!-- L26 --> - Q3: 上板子时的 UART 型号？是否仍是 16550 兼容？ — AsyncUart trait 设计范围 — 老师
-<!-- L27 --> - Q4: register_irq 和 register_irq_waker 同时注册同一 IRQ 时的语义？ — 是否需要统一中断分发机制 — 代码审查/实验
+<!-- L27 --> - Q4: register_irq 和 register_irq_waker 同时注册同一 IRQ 时的语义？ — **已解决**: register_irq_waker 支持同一 IRQ 注册多个 waker（BTreeMap<usize, PollSet>），与 Console tty-reader 共存 ✅ 2026-05-27
 <!-- tombstone: L28 --> Archived to archive.md §learned #L28 2026-05-25 — 已解决
 <!-- L29 --> - Q6: （已分析）N_TTY tty-reader 与 register_irq_waker 的配合方式 — 参见 reference-implementations.md — 代码追踪
 <!-- L30 --> - Q7: 多核场景下 PLIC claim/complete 的竞态？ — 当前单核可忽略 — RISC-V PLIC 规范
-<!-- L31 --> - Q8: embassy-sync 哪个版本与 nightly-2026-02-25 兼容？ — 依赖选型 — 实验验证
-<!-- L32 --> - Q9: register_irq_waker 是 per-cpu 还是全局的？ — 多核影响 — 代码审查
+<!-- L31 --> - Q8: embassy-sync 哪个版本与 nightly-2026-02-25 兼容？ — 依赖选型 — **已解决**: embassy-sync v0.6.2 与 nightly-2026-02-25 兼容，cargo check 通过 ✅ 2026-05-27
+<!-- L32 --> - Q9: register_irq_waker 是 per-cpu 还是全局的？ — **已解决**: 全局（static POLL_IRQ: SpinNoIrq<BTreeMap<usize, PollSet>>），多核场景需考虑锁竞争 ✅ 2026-05-27
 <!-- L33 --> - Q10: axtask 的 spawn 是否支持 Future？还是只支持闭包？ — 异步任务创建方式 — 代码确认
 <!-- L34 --> - Q11: PollSet 是否支持链式 Waker？一个事件唤醒多个等待者？ — poll/epoll 集成 — 代码审查
 <!-- L35 --> - Q12: ringbuf::HeapRb 的 advance_read_index 是否需要 &mut？ — ISR 与 copier 分工 — ringbuf 文档
@@ -288,3 +332,44 @@ axhal::console 作为"earlycon"提供调试安全保障：
 - **启动早期可用**: axruntime::init 阶段（异步框架未初始化）就可输出
 - **不需要额外实现**: axhal::console 本身就是 earlycon，始终存在
 参考: Linux kernel earlycon + 正常 console 的分离模式
+
+<!-- L71 --> ### 构建命令速查
+```bash
+# 设置环境（每次构建前执行）
+export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH
+
+# 编译内核
+make build
+
+# 运行内核（需要 disk.img）
+make run
+
+# 生成 rootfs（或手动下载）
+make rootfs
+
+# QEMU 退出: Ctrl+A 然后 X
+```
+
+<!-- L72 --> ### M0 Gate 验证要点
+M0 验证内容：
+1. `cargo check` 编译通过 → 依赖正确
+2. `make build` 编译通过 → 工具链正确
+3. `make run` 内核启动 → rootfs 正确
+4. 看到 shell 可交互 → Console 正常工作
+关键：每一步都可能遇到环境问题，需要逐层排查
+
+<!-- L73 --> ### uart_16550 版本共存说明
+Cargo.lock 中存在两个 uart_16550 版本：
+- **uart_16550 v0.4.0**：来自 crates.io，被 axplat-riscv64-qemu-virt 等上游 crate 使用
+- **uart_16550 v0.6.0**：来自本地 path，被 starry-kernel 使用
+原因：
+  - axplat-riscv64-qemu-virt（上游 crate）依赖 crates.io 的 v0.4.0，用于其 console 实现
+  - kernel（我们的项目）依赖本地最新 v0.6.0，用于 AsyncUart（新增中断控制 API）
+  - Cargo 允许不同 crate 使用不同版本的同一依赖
+影响：
+  - 两者互不影响，各自使用各自版本的 API
+  - axplat::console 用 v0.4.0，AsyncUart 用 v0.6.0
+统一方案（远期）：
+  - 将 uart_16550 v0.6.0 发布到 crates.io
+  - 提 PR 给 axplat 项目升级依赖
+验证: 2026-05-27 (M0 Gate)

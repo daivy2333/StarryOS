@@ -7,8 +7,8 @@
 
 ## 当前状态
 
-**Milestone**: M0 (基础设施就绪) - 准备中
-**Status**: 分支已创建，文档体系已建立，milestone 规划已完成，尚未开始编码
+**Milestone**: M0 (基础设施就绪) - ✅ 完成
+**Status**: 基础依赖已就绪，中断机制已确认，可进入 M1 架构验证
 **Branch**: feat/uart-async (from main)
 
 ---
@@ -50,11 +50,14 @@ StarryOS/
 | 语言 | Rust | nightly-2026-02-25 |
 | 目标 | RISC-V 64-bit | qemu-riscv64 |
 | 异步 | axtask::future | 0.3.0-preview.2 |
+| 异步同步 | embassy-sync | v0.6.2 ✅ 2026-05-27 |
 | 轮询 | axpoll | 0.1.2 |
 | 硬件 | NS16550 UART | QEMU virt |
-| UART 驱动 | uart_16550 (本地 v0.6.0) | path 依赖 |
+| UART 驱动 | uart_16550 (本地 v0.6.0) | path 依赖 ✅ 2026-05-27 |
 | 缓冲 | ringbuf | 0.4.8 |
 | 构建 | Make + Cargo | - |
+| 交叉编译 | riscv64-linux-musl | /opt/musl/riscv64-linux-musl-cross ✅ 2026-05-27 |
+| rootfs | rootfs-riscv64.img | 1GB (disk.img) ✅ 2026-05-27 |
 
 ---
 
@@ -79,7 +82,11 @@ StarryOS/
 
 **当前分支**: feat/uart-async
 **基线分支**: main (2e075ac)
-**未提交更改**: CLAUDE.md + .claude/docs/ (新增) + docs/analysis/ (新增)
+**未提交更改**: 
+- kernel/Cargo.toml (新增 uart_16550 + embassy-sync 依赖)
+- disk.img (1GB rootfs)
+- make/disk.img (副本)
+- CLAUDE.md + .claude/docs/ (新增) + docs/analysis/ (新增)
 
 ---
 
@@ -108,10 +115,12 @@ StarryOS/
 
 ### 待办
 
-- [ ] T0.1: 添加 uart_16550 本地 path 依赖
-- [ ] T0.2: 添加 embassy-sync 依赖
-- [ ] T0.3: UART 中断注册验证（共用 UART0，IRQ 10）
-- [ ] T0.4: Gate M0 验证：make run + 中断回调触发
+- [x] T0.1: 添加 uart_16550 本地 path 依赖 ✅ 2026-05-27
+- [x] T0.2: 添加 embassy-sync 依赖 ✅ 2026-05-27
+- [x] T0.3: UART 中断注册验证（IRQ 10 共存语义） ✅ 2026-05-27
+- [x] T0.4: Gate M0 验证 ✅ 2026-05-27
+
+**M0 完成，准备进入 M1 架构验证**
 
 ### 阻塞
 
@@ -154,11 +163,18 @@ StarryOS/
 
 | 时间 | 文件 | 改动类型 |
 |------|------|----------|
+| 2026-05-27 | .claude/docs/learned.md | 新增 L73（uart_16550 版本共存说明） |
+| 2026-05-27 | .claude/docs/learned.md | 新增 L65-L72（构建环境、rootfs、踩坑经验、命令速查） |
+| 2026-05-27 | .claude/docs/references.md | 新增 R38-R40（uart_16550、musl 工具链、rootfs） |
+| 2026-05-27 | .claude/docs/SNAPSHOT.md | 更新技术栈、Git 状态、最近修改 |
+| 2026-05-27 | .claude/docs/tasks.md | 更新 T0.1-T0.4 状态（全部完成） |
+| 2026-05-27 | kernel/Cargo.toml | 新增 embassy-sync v0.6.2 依赖（T0.2） |
+| 2026-05-27 | .claude/docs/learned.md | 新增 L63-L64（register_irq_waker 共存机制） |
+| 2026-05-27 | kernel/Cargo.toml | 新增 uart_16550 path 依赖（T0.1） |
+| 2026-05-27 | disk.img + make/disk.img | rootfs 部署（1GB） |
 | 2026-05-27 | .claude/docs/architecture.md | 新增 A15（渐进式开发策略） |
 | 2026-05-27 | .claude/docs/tasks.md | 重构 M1-M3（渐进式验证 + 异步引擎替换） |
-| 2026-05-27 | .claude/docs/SNAPSHOT.md | 更新决策表 |
 | 2026-05-27 | .claude/docs/architecture.md | 新增 A13-A14（axhal::console 外部 crate 约束） |
-| 2026-05-27 | .claude/docs/tasks.md | 更新 M3 描述（Console 统一策略修正） |
 | 2026-05-27 | .claude/docs/learned.md | 新增 L60-L62（外部 crate 层次、路径分离、earlycon） |
 | 2026-05-25 | .claude/docs/tasks.md | 重写（M0~M6 milestone 规划） |
 | 2026-05-25 | .claude/docs/SNAPSHOT.md | 更新（状态快照） |
@@ -171,9 +187,11 @@ StarryOS/
 
 ## 下一步
 
-1. **T0.1**: 在 kernel/Cargo.toml 添加 uart_16550 path 依赖
-2. **T0.2**: 在 kernel/Cargo.toml 添加 embassy-sync 依赖
-3. **T0.3**: 验证 UART 中断回调触发（共用 UART0，IRQ 10）
-4. **Gate M0**: `make run` 编译通过 + 中断回调触发
+**M0 已完成**，进入 M1 架构验证：
+
+1. **T1.1**: Ring Buffer 实现（rx_buf + tx_buf）
+2. **T1.2**: 中断机制验证（IRQ 10 共存）
+3. **T1.3**: RX copier 任务模型验证
+4. **T1.4**: TX 路径模拟验证
 
 > 渐进式策略：M1/M2 用 Console 同步引擎验证架构，M3 替换为 AsyncUart 异步引擎（参见 ADR-015）

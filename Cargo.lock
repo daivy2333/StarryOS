@@ -837,7 +837,7 @@ dependencies = [
  "log",
  "loongArch64",
  "page_table_entry",
- "uart_16550",
+ "uart_16550 0.4.0",
 ]
 
 [[package]]
@@ -867,7 +867,7 @@ dependencies = [
  "riscv_goldfish",
  "riscv_plic",
  "sbi-rt",
- "uart_16550",
+ "uart_16550 0.4.0",
 ]
 
 [[package]]
@@ -886,7 +886,7 @@ dependencies = [
  "riscv_goldfish",
  "riscv_plic",
  "sbi-rt",
- "uart_16550",
+ "uart_16550 0.4.0",
 ]
 
 [[package]]
@@ -907,7 +907,7 @@ dependencies = [
  "multiboot",
  "percpu",
  "raw-cpuid 11.6.0",
- "uart_16550",
+ "uart_16550 0.4.0",
  "x2apic",
  "x86",
  "x86_64",
@@ -1547,10 +1547,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "embassy-sync"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2c8cdff05a7a51ba0087489ea44b0b1d97a296ca6b1d6d1a33ea7423d34049"
+dependencies = [
+ "cfg-if",
+ "critical-section",
+ "embedded-io-async",
+ "futures-sink",
+ "futures-util",
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-io-async"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
+dependencies = [
+ "embedded-io",
+]
 
 [[package]]
 name = "enum_dispatch"
@@ -3021,6 +3050,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "downcast-rs",
+ "embassy-sync",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
@@ -3053,6 +3083,7 @@ dependencies = [
  "starry-vm",
  "strum 0.28.0",
  "syscalls",
+ "uart_16550 0.6.0",
  "uluru",
  "weak-map",
  "x86",
@@ -3321,6 +3352,13 @@ dependencies = [
  "bitflags 2.11.0",
  "rustversion",
  "x86",
+]
+
+[[package]]
+name = "uart_16550"
+version = "0.6.0"
+dependencies = [
+ "bitflags 2.11.0",
 ]
 
 [[package]]

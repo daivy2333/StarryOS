@@ -88,6 +88,8 @@ ouroboros = { version = "0.18", default-features = false }
 percpu = "0.2.3-preview.1"
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+uart_16550 = { path = "../../uart_16550" }
+embassy-sync = { version = "0.6", default-features = false }
 scope-local = "0.1"
 slab = { version = "0.4.9", default-features = false }
 spin = "0.10"

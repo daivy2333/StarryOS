@@ -9,10 +9,13 @@
 
 <!-- 添加时格式: <!-- R{编号} --> | 依赖 | 版本 | 链接 | 用途 | -->
 
-<!-- R1 --> | embassy-sync | git | [docs.embassy.dev](https://docs.embassy.dev/embassy-sync/git/default/struct.AtomicWaker.html) | AtomicWaker 中断安全唤醒 |
+<!-- R1 --> | embassy-sync | v0.6.2 | [crates.io](https://crates.io/crates/embassy-sync) | 已验证与 nightly-2026-02-25 兼容 ✅ 2026-05-27 |
 <!-- R2 --> | ringbuf | 0.4.8 | [crates.io](https://crates.io/crates/ringbuf) | 无锁环形缓冲区 |
 <!-- R3 --> | axtask | 0.3.0-preview.2 | 项目内部 | 异步任务调度器 |
 <!-- R4 --> | axpoll | 0.1.2 | 项目内部 | 轮询/事件通知 |
+<!-- R38 --> | uart_16550 | 本地 path | ../../uart_16550 | 16550 UART 驱动库，已添加到 kernel/Cargo.toml ✅ 2026-05-27 |
+<!-- R39 --> | RISC-V musl 工具链 | /opt/musl/riscv64-linux-musl-cross | [setup-musl releases](https://github.com/arceos-org/setup-musl/releases/tag/prebuilt) | 编译 lwext4_rust C 代码 ✅ 2026-05-27 |
+<!-- R40 --> | rootfs-riscv64.img.xz | 1GB | [GitHub releases](https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz) | QEMU 磁盘镜像 ✅ 2026-05-27 |
 
 ## uart_16550 文档体系
 

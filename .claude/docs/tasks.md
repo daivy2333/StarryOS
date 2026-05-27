@@ -23,25 +23,25 @@
 
 > 目标: 让内核具备异步串口所需的所有底层能力——依赖、编译验证、中断机制确认
 
-<!-- T0.1 --> - [ ] 添加 uart_16550 本地 path 依赖到 kernel/Cargo.toml
+<!-- T0.1 --> - [x] 添加 uart_16550 本地 path 依赖到 kernel/Cargo.toml
   - 覆盖所有中断控制 API（set_interrupt_enable、interrupt_identification、InterruptType）
   - 路径: `../../uart_16550`（本地 v0.6.0）
-  - 验证: cargo check 编译通过
+  - 验证: cargo check 编译通过 ✅
 
-<!-- T0.2 --> - [ ] 添加 embassy-sync 依赖到 kernel/Cargo.toml
+<!-- T0.2 --> - [x] 添加 embassy-sync 依赖到 kernel/Cargo.toml
   - 仅引入 embassy-sync::AtomicWaker，不引入 executor/time
   - 验证与 nightly-2026-02-25 兼容性
-  - 验证: cargo check 编译通过
+  - 验证: cargo check 编译通过 ✅
 
-<!-- T0.3 --> - [ ] 中断机制确认（IRQ 10 共存语义）
+<!-- T0.3 --> - [x] 中断机制确认（IRQ 10 共存语义）
   - 确认 register_irq_waker 与现有 Console tty-reader 的共存语义
   - 查看源码或实验验证：同一 IRQ 是否支持多次注册
-  - 验证: 明确共存/冲突处理方案
+  - 验证: 明确共存/冲突处理方案 ✅
 
-<!-- T0.4 --> - [ ] Gate M0 验证
+<!-- T0.4 --> - [x] Gate M0 验证
   - `make run` 编译通过
   - 内核启动正常（Console 调试输出可用）
-  - 验证: 基础依赖就绪，可进入 M1
+  - 验证: 基础依赖就绪，可进入 M1 ✅
 
 **Gate M0**: 编译通过 + 内核启动 + 中断共存方案明确
 
