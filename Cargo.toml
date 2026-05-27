@@ -58,6 +58,7 @@ qemu = [
 
     "starry-kernel/input",
     "starry-kernel/vsock",
+    "starry-kernel/uart-async",
 
     # auxilary features
     "axfeat/fs-ng-times",
