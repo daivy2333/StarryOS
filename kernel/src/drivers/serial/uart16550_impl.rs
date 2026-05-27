@@ -89,6 +89,9 @@ impl AsyncUart for Uart16550Async {
     }
 
     fn disable_rx_intr(&mut self) {
+        // SAFETY: MMIO address is valid (verified in new()), exclusive access
+        // guaranteed by &mut self. Read-modify-write is safe for IER register
+        // as atomicity is not required for interrupt control.
         unsafe {
             let ier = self.read_ier();
             let new_ier = ier & !IER::DATA_READY.bits();
@@ -97,6 +100,8 @@ impl AsyncUart for Uart16550Async {
     }
 
     fn enable_tx_intr(&mut self) {
+        // SAFETY: MMIO address is valid (verified in new()), exclusive access
+        // guaranteed by &mut self. Read-modify-write is safe for IER register.
         unsafe {
             let ier = self.read_ier();
             let new_ier = ier | IER::THR_EMPTY.bits();
@@ -105,6 +110,8 @@ impl AsyncUart for Uart16550Async {
     }
 
     fn disable_tx_intr(&mut self) {
+        // SAFETY: MMIO address is valid (verified in new()), exclusive access
+        // guaranteed by &mut self. Read-modify-write is safe for IER register.
         unsafe {
             let ier = self.read_ier();
             let new_ier = ier & !IER::THR_EMPTY.bits();
