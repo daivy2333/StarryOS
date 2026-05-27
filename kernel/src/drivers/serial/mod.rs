@@ -5,3 +5,5 @@ mod console_driver;
 mod device_ops;
 
 pub use device_ops::AsyncUartTestDevice;
+pub use ring_buffer::AsyncBuffer;
+pub use console_driver::ConsoleDriver;
