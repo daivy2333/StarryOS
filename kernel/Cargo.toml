@@ -13,6 +13,7 @@ dev-log = []
 input = ["dep:axinput", "axfeat/input"]
 memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
 vsock = ["axfeat/vsock"]
+uart-async = []  # Async UART architecture validation (M1)
 
 [dependencies]
 axfeat = { workspace = true, features = [
