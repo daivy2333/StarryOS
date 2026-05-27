@@ -236,3 +236,55 @@ StarryOS 中串口相关接口：
 | Console | UART | ntty.rs | 系统控制台 |
 | PTY | 无 | pty.rs | 终端模拟器 |
 | vsock | virtio | axnet-ng/vsock | VM通信（非串口）|
+
+<!-- L60 --> ### 外部 crate 层次结构（不可修改）
+StarryOS 依赖的外部 crate（来自 crates.io）：
+```
+axruntime (启动框架)
+  ↓
+axplat-riscv64-qemu-virt (平台实现)
+  ├─ console.rs: MmioSerialPort + write_bytes (同步阻塞!)
+  ├─ irq.rs: PLIC + HandlerTable
+  └─ axconfig.toml: UART_PADDR, UART_IRQ
+  ↓
+axhal (硬件抽象层)
+  └─ 导出 axplat::console::* (不可修改!)
+  ↓
+axtask (任务调度)
+  ├─ future/mod.rs: block_on
+  ├─ future/poll.rs: poll_io + register_irq_waker
+  └─ scheduler
+  ↓
+kernel (本地项目，可修改)
+  └─ pseudofs/dev/tty/ntty.rs: Console, N_TTY
+```
+**关键约束**: axhal::console 是外部 crate，无法修改其同步阻塞实现。
+
+<!-- L61 --> ### 内核日志与用户态 Console 的软件路径分离
+M3 Console 统一后的两条输出路径：
+```
+路径 A: 内核日志（同步阻塞，不可避免）
+  axlog::info!
+    → axhal::console::write_bytes (外部 crate)
+    → MmioSerialPort::write_bytes (忙等待)
+    → UART THR
+
+路径 B: 用户态 Console（异步，性能优化）
+  用户态 write("/dev/console")
+    → N_TTY.write_at (DeviceOps)
+    → Console.write (TtyWrite 替换实现)
+    → AsyncUart tx_buf
+    → TX copier 任务
+    → UART THR
+```
+**共用同一硬件**: 两条路径写入同一 UART THR，但软件路径独立。
+**内核日志始终可用**: 不依赖异步框架是否正常工作。
+
+<!-- L62 --> ### earlycon 调试安全机制
+axhal::console 作为"earlycon"提供调试安全保障：
+- **独立于异步框架**: axhal::console 直接 MMIO 操作，不依赖 axtask/AsyncUart
+- **始终可用**: AsyncUart copier 任务卡死、缓冲区溢出时，内核日志仍能输出
+- **panic 信息可靠**: 系统崩溃时仍有输出渠道
+- **启动早期可用**: axruntime::init 阶段（异步框架未初始化）就可输出
+- **不需要额外实现**: axhal::console 本身就是 earlycon，始终存在
+参考: Linux kernel earlycon + 正常 console 的分离模式

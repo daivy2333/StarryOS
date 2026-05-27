@@ -154,3 +154,56 @@
 - **替代方案**:
   - ❌ 早期引入 virtio-console DMA — 增加复杂度，偏离 16550 主线
   - ✅ 中断驱动 + NAPI — 在 QEMU 上可验证，且覆盖 >90% 线速目标
+
+---
+
+<!-- A13 --> ### 2026-05-27 - axhal::console 外部 crate 约束——内核日志同步阻塞不可避免
+
+- **决策**: 确认 `axhal::console` 是外部 crate（axplat-riscv64-qemu-virt），不可修改；内核启动日志的同步阻塞开销不可避免，但用户态 Console 输出可异步化
+- **原因**: 
+  - 外部 crate 层次：axruntime → axplat-riscv64-qemu-virt → axhal → axtask → axpoll（均来自 crates.io，不可修改）
+  - axhal::console::write_bytes 实现为同步阻塞忙等待（`while !OUTPUT_EMPTY {}`），CPU 空转
+  - 启动流程中 axruntime::init 阶段就开始输出日志，此时异步框架（axtask）可能未完全初始化
+  - kernel crate 可修改，Console（ntty.rs）可替换 TtyWrite/TtyRead 实现
+- **影响**:
+  - 内核启动日志：保持同步阻塞（启动日志量小，阻塞时间可控）
+  - 用户态 Console TX：可替换为 AsyncUart tx_buf 异步发送（M3 目标）
+  - 用户态 Console RX：已中断驱动，可优化为 AsyncUart rx_buf（M3 目标）
+  - axhal::console 作为"earlycon"始终可用，提供调试安全保障
+- **替代方案**:
+  - ❌ 异步化 axhal::console — 外部 crate 不可修改
+  - ❌ 修改 axlog 后端 — axlog 也是外部 crate
+  - ✅ 接受启动日志同步阻塞，用户态输出异步化 — 当前架构下最优解
+- **验证依据**:
+  - learned.md L50-L53: 明确标记外部 crate 层次
+  - references.md R32-R35: 上游 crate 源码路径
+  - ntty.rs:15-24: Console TtyWrite 调用 axhal::console
+  - boot-init.md: 启动流程中 axruntime::init 顺序
+
+---
+
+<!-- A14 --> ### 2026-05-27 - Console 统一策略——内核日志与用户态输出分离
+
+- **决策**: M3 Console 统一后，内核日志与用户态 Console 使用不同软件路径，共用同一硬件
+- **原因**: 
+  - 内核日志必须使用 axhal::console（同步阻塞，外部 crate）
+  - 用户态 Console 可替换为 AsyncUart（异步，性能优化）
+  - axhal::console 作为独立于异步框架的"earlycon"，始终可用
+- **影响**:
+  - **内核日志路径**：axlog → axhal::console → 直接 MMIO → 硬件 TX FIFO（同步阻塞）
+  - **用户态输出路径**：write → Console.write_at → AsyncUart tx_buf → TX copier → 硬件 TX FIFO（异步）
+  - **共用硬件**：两条路径最终写入同一 UART THR 寄存器，需协调
+  - **调试安全**：AsyncUart 故障时，内核日志仍能通过 axhal::console 输出
+- **实现要点**:
+  - Console TtyWrite 实现替换为写入 AsyncUart tx_buf（不再调用 axhal::console）
+  - TX copier 任务独占硬件 FIFO 操作权，避免与 axhal::console 竞态
+  - axhal::console::write_bytes 为原子循环（逐字节等待 THRE），与 TX copier 自然交错
+  - 若竞态风险显著，可在 TX copier 写 FIFO 时临时禁用中断，或添加 spinlock
+- **替代方案**:
+  - ❌ 两条路径都同步阻塞 — 放弃性能优化
+  - ❌ 两条路径都异步 — 内核日志路径不可能
+  - ✅ 内核同步 + 用户态异步 — 平衡性能与可行性
+- **风险评估**:
+  - 低风险：axhal::console 逐字节发送，TX copier 批量发送，交错概率低
+  - 若出现竞态（数据乱序），可在 AsyncUart 中添加 FIFO 独占锁
+- **参考**: Linux kernel earlycon + 正常 console 的分离模式

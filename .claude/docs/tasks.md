@@ -110,23 +110,29 @@
 
 ## M3: Console 统一
 
-> 目标: Console 底层替换为 AsyncUart 实现，消除轮询路径，所有串口输出走异步
+> 目标: Console 底层替换为 AsyncUart 实现，用户态输出异步化，内核日志保持同步（axhal::console 外部 crate 不可修改）
 
 <!-- T3.1 --> - [ ] Console 输出重定向到 AsyncUart TX 路径
-  - axhal::console::write_bytes → 写入 AsyncUart tx_buf（不再直接 MMIO）
-  - 内核启动早期保留 earlycon（直接 MMIO），后续切换到异步路径
-  - 验证: 内核启动串口输出正常，无遗漏
+  - 替换 Console TtyWrite 实现 → 写入 AsyncUart tx_buf（不再调用 axhal::console）
+  - 内核日志仍通过 axhal::console 输出（同步阻塞，外部 crate，不可修改）
+  - 验证: 用户态 write("/dev/console") 异步化，无 CPU 空转
 
 <!-- T3.2 --> - [ ] Console 输入统一
-  - N_TTY 的 Console reader 替换为 AsyncUart rx_buf 读取
+  - N_TTY 的 Console TtyRead 实现替换为 AsyncUart rx_buf 读取
   - tty-reader copier 与 AsyncUart RX copier 合理对接
   - 验证: 键盘输入正确传递到用户态
 
 <!-- T3.3 --> - [ ] 移除第二串口（回归单硬件）
   - QEMU 配置恢复单串口，Console 和 AsyncUart 共用同一硬件
+  - 内核日志（同步）与用户态输出（异步）共用同一 UART THR
   - 验证: 单硬件模式下 Console + 用户态串口均正常
 
-**Gate M3**: Console 与 AsyncUart 统一，内核完整启动 + 用户态串口交互正常
+<!-- T3.4 --> - [ ] 确认调试安全通道
+  - axhal::console 作为"earlycon"始终可用（独立于异步框架）
+  - AsyncUart 故障时内核日志仍能输出 panic/调试信息
+  - 验证: 故障场景下仍有输出渠道
+
+**Gate M3**: Console 与 AsyncUart 统一，内核完整启动 + 用户态串口交互正常 + 调试通道可用
 
 ---
 
