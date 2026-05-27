@@ -237,3 +237,22 @@
   - ❌ 一步到位直接实现 AsyncUart — 失败时失去调试能力，风险高
   - ✅ 渐进式验证后替换 — 分摊风险，每步可控
 - **参考**: TDD 验证模式、软件工程增量开发原则
+
+---
+
+<!-- A16 --> ### 2026-05-27 - termios 支持延后到 M3（待 Console 共用问题解决）
+
+- **决策**: M2 不实现 termios 框架（TCGETS/TCSETS ioctl），延后到 M3
+- **原因**:
+  - `/dev/async_uart_test` 不是 tty 设备（是测试设备）
+  - Console 共用问题（learned.md L74）未解决，termios 配置可能有冲突
+  - M3 替换 AsyncUart 后统一实现 termios 更合理
+- **影响**:
+  - M2 ioctl() 保持默认实现（返回 NotATty）
+  - 用户态测试程序不调用 termios 相关 ioctl
+  - termios 支持留待 M3 统一实现
+- **替代方案**:
+  - ❌ M2 实现 termios raw 模式框架 — Console 共用问题影响，复杂度高
+  - ✅ 延后到 M3 — 在真正异步引擎上实现更合理
+- **风险**: termios 功能缺失，但不影响 M2 Gate 验证（T2.4 标注可选）
+- **验证**: M2 内核测试通过 ✅（无 termios 功能测试）

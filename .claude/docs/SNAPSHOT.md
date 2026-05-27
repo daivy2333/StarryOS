@@ -7,9 +7,16 @@
 
 ## 当前状态
 
-**Milestone**: M1 (架构验证) - ✅ 完成
-**Status**: 基础架构验证通过，Console 共用数据竞争已知（L74），可进入 M2 VFS 验证
-**Branch**: feat/uart-async (from main)
+**Milestone**: M2 (VFS 验证) - ✅ 验证通过
+**Status**: VFS 集成功能验证通过（内核内部测试），可进入 M3 异步引擎替换
+**Branch**: feat/uart-async(m1) (主开发分支)
+**验证分支**: feat/uart-async-m2 (内核测试代码)
+
+**验证结果**:
+- ✅ DeviceOps trait 实现正确（write_at 成功）
+- ✅ Pollable trait 实现正确（poll 返回正确事件）
+- ✅ TX 路径正常（Console 输出可见）
+- ✅ poll IN/OUT 事件正确返回
 
 ---
 

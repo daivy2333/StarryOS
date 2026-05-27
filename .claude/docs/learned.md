@@ -384,3 +384,30 @@ Cargo.lock 中存在两个 uart_16550 版本：
 - 设计决策: ADR-013/014 已记录，M1 用 Console 验证架构，接受共用竞争
 - 解决: M3 替换底层为 AsyncUart，路径分离
 - 验证: 2026-05-27 (M1 Gate)
+
+<!-- L75 --> ### 非阻塞模式测试延后到 M3/M4（2026-05-27）
+- **现象**: M2 只测阻塞模式，不测非阻塞 WouldBlock 场景
+- **原因**: 简化 M2 范围，快速验证核心 VFS 集成功能；非阻塞涉及 ioctl 实现，增加复杂度
+- **影响**: M2 Gate 验证不覆盖非阻塞场景，但阻塞模式已验证核心流程
+- **决策位置**: architecture.md ADR-016, optimization.md O03-O04
+- **何时解决**: M3/M4 补充非阻塞测试
+- **验证**: M2 内核测试通过 ✅
+
+<!-- L76 --> ### epoll 测试延后到 M3/M4（2026-05-27）
+- **现象**: M2 只测 poll，不测 epoll
+- **原因**: poll 是 Pollable trait 的直接体现，验证核心实现；epoll 需多 fd 才体现优势，M2 只有单设备
+- **影响**: M2 Gate 验证不覆盖 epoll，但 poll 成功 → as_pollable() 正确 → epoll 自然工作
+- **决策位置**: architecture.md ADR-016, optimization.md O03-O04
+- **何时解决**: M3/M4 补充 epoll 测试（多设备场景）
+- **验证**: M2 内核测试通过 ✅
+
+<!-- L77 --> ### M2 测试程序技术选择：内核内部测试（2026-05-27）
+- **技术**: 内核内部测试代码（`kernel/src/drivers/serial/test.rs`），启动时自动执行
+- **原因**:
+  - 用户态测试部署麻烦（ABI 兼容性、rootfs 挂载、手动操作）
+  - 内核测试更简单、自动化、无部署复杂度
+  - 直接使用内核 API（DeviceOps trait），无需用户态 syscall
+- **测试内容**: DeviceOps trait (write_at) + Pollable trait (poll) + TX 路径验证
+- **验证**: M2 所有自动化测试通过 ✅
+- **分支策略**: feat/uart-async-m2（验证分支）→ feat/uart-async(m1)（主开发分支，记录结果）
+- **适用场景**: 内核功能验证，无需用户态交互
