@@ -207,3 +207,27 @@
   - 低风险：axhal::console 逐字节发送，TX copier 批量发送，交错概率低
   - 若出现竞态（数据乱序），可在 AsyncUart 中添加 FIFO 独占锁
 - **参考**: Linux kernel earlycon + 正常 console 的分离模式
+
+---
+
+<!-- A15 --> ### 2026-05-27 - 渐进式开发策略 — 先用 Console 验证架构，最后替换异步引擎
+
+- **决策**: 采用两阶段开发策略：阶段 1 用 Console 作为"模拟引擎"验证基础架构（中断、Ring Buffer、copier、VFS），阶段 2 替换底层为 AsyncUart 异步引擎
+- **原因**:
+  - 调试能力始终保留：Console 同步输出可用，不会因异步引擎 bug 失去调试
+  - 风险分摊：基础架构先验证正确，异步引擎单独验证
+  - 增量提交：每步可验证，失败可回滚
+  - 共用 UART0：只有一个串口，无法同时运行 Console 和 AsyncUart 两个独立实例
+- **影响**:
+  - **M1**: 架构验证（中断机制 + Ring Buffer + copier 任务模型），底层用 Console 同步引擎
+  - **M2**: VFS 验证（DeviceOps + 设备注册），设备是 Console 的包装
+  - **M3**: 异步引擎替换，Console 底层 → AsyncUart（一步到位）
+  - **M4**: 性能优化，基于 AsyncUart
+- **实现要点**:
+  - M1 不需要真正的异步 TX copier，用 Console.write_bytes 同步发送验证 ringbuf 流程
+  - M2 注册 `/dev/console`（Console 包装），验证 VFS 集成
+  - M3 是关键替换点：TtyWrite/TtyRead 实现改为 AsyncUart
+- **替代方案**:
+  - ❌ 一步到位直接实现 AsyncUart — 失败时失去调试能力，风险高
+  - ✅ 渐进式验证后替换 — 分摊风险，每步可控
+- **参考**: TDD 验证模式、软件工程增量开发原则

@@ -124,7 +124,6 @@ StarryOS/
 | 决策 | 选择 | 原因 | 时间 |
 |------|------|------|------|
 | 异步运行时 | axtask::future + embassy-sync::AtomicWaker | 最小侵入，复用现有 | 2026-05-24 |
-| 与控制台关系 | 先独立后统一（M2→M3） | 隔离风险，渐进演化 | 2026-05-25 |
 | VFS 接口 | DeviceOps trait | 与现有设备一致 | 2026-05-24 |
 | 缓冲策略 | ringbuf::HeapRb + PollSet | 已验证，零额外依赖 | 2026-05-24 |
 | termios | 可切换，默认 raw | 高性能与功能兼得 | 2026-05-24 |
@@ -134,6 +133,7 @@ StarryOS/
 | DMA 策略 | 远期 M6，M0-M4 全中断驱动 | QEMU 无真正 DMA | 2026-05-25 |
 | axhal::console | 外部 crate，不可修改 | 内核日志同步阻塞不可避免 | 2026-05-27 |
 | Console 统一 | 内核同步 + 用户态异步 | 软件路径分离，共用硬件 | 2026-05-27 |
+| 渐进式开发 | M1/M2 用 Console 验证，M3 替换 AsyncUart | 调试能力保留，风险分摊 | 2026-05-27 |
 
 ---
 
@@ -154,6 +154,9 @@ StarryOS/
 
 | 时间 | 文件 | 改动类型 |
 |------|------|----------|
+| 2026-05-27 | .claude/docs/architecture.md | 新增 A15（渐进式开发策略） |
+| 2026-05-27 | .claude/docs/tasks.md | 重构 M1-M3（渐进式验证 + 异步引擎替换） |
+| 2026-05-27 | .claude/docs/SNAPSHOT.md | 更新决策表 |
 | 2026-05-27 | .claude/docs/architecture.md | 新增 A13-A14（axhal::console 外部 crate 约束） |
 | 2026-05-27 | .claude/docs/tasks.md | 更新 M3 描述（Console 统一策略修正） |
 | 2026-05-27 | .claude/docs/learned.md | 新增 L60-L62（外部 crate 层次、路径分离、earlycon） |
@@ -173,4 +176,4 @@ StarryOS/
 3. **T0.3**: 验证 UART 中断回调触发（共用 UART0，IRQ 10）
 4. **Gate M0**: `make run` 编译通过 + 中断回调触发
 
-> 注意：共用单串口 UART0，不再需要 QEMU 第二串口补丁（参见 ADR-013、ADR-014）
+> 渐进式策略：M1/M2 用 Console 同步引擎验证架构，M3 替换为 AsyncUart 异步引擎（参见 ADR-015）

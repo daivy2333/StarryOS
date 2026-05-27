@@ -7,15 +7,15 @@
 
 ## Milestone 概览
 
-| Milestone | 目标 | Gate | 依赖 | 建议 |
-|-----------|------|------|------|------|
-| **M0** | 基础设施就绪 | `make run` + 中断回调触发 | — | 必做 |
-| **M1** | 中断驱动串口可用 | echo 回环 10s 稳定无丢失 | M0 | 必做 |
-| **M2** | 异步 API + VFS 集成 | 用户态读写 /dev/ttyS0 | M1 | 必做 |
-| **M4** | 性能优化 | 性能基准达标 + 稳定性测试 | M2 | **优先推进** |
-| **M5** | 真板验证 | VisionFive2 实际验证 | M2 (+M4 数据) | 可并行 |
-| **M3** | Console 统一 | Console 底层替换为 AsyncUart | M2 + M4 稳定 | **风险较高，建议最后** |
-| **M6** | DMA 探索 | DMA 通道可用（远期） | M4 | 远期 |
+| Milestone | 目标 | 底层引擎 | Gate | 依赖 | 建议 |
+|-----------|------|----------|------|------|------|
+| **M0** | 基础设施就绪 | — | `make run` + 中断回调触发 | — | 必做 |
+| **M1** | 架构验证 | Console（同步） | Ring Buffer + 中断 + copier 流程正确 | M0 | 必做 |
+| **M2** | VFS 验证 | Console（同步） | DeviceOps + 设备注册 + poll/epoll | M1 | 必做 |
+| **M3** | 异步引擎替换 | AsyncUart | 用户态高性能 + 内核日志共存 | M2 | **关键替换点** |
+| **M4** | 性能优化 | AsyncUart | 性能基准达标 | M3 | 优先 |
+| **M5** | 真板验证 | AsyncUart | VisionFive2 实际验证 | M4 | 可并行 |
+| **M6** | DMA 探索 | AsyncUart+DMA | DMA 通道可用（远期） | M4 | 远期 |
 
 ---
 
@@ -47,92 +47,94 @@
 
 ---
 
-## M1: 中断驱动串口可用
+## M1: 架构验证（底层用 Console 同步引擎）
 
-> 目标: 中断驱动的串口收发工作，双 Ring Buffer + copier 任务模型验证通过
+> 目标: 验证基础架构（中断机制、Ring Buffer、copier 任务模型），底层暂时用 Console 同步引擎，调试能力保留
 
 <!-- T1.1 --> - [ ] Ring Buffer 实现
   - rx_buf + tx_buf 各一个 HeapRb<u8>（默认 64 KiB）
   - rx_wakers + tx_wakers 各一个 PollSet
   - 验证: 单线程单元测试通过（push/pop/wake 流程）
 
-<!-- T1.2 --> - [ ] AsyncUart trait + Uart16550 实现
+<!-- T1.2 --> - [ ] 中断机制验证（IRQ 10 共存）
+  - 确认 register_irq_waker 与现有 Console tty-reader 的共存语义
+  - 若不支持多次注册，需设计统一中断分发机制
+  - 验证: 中断回调触发，copier 任务唤醒
+
+<!-- T1.3 --> - [ ] RX copier 任务模型验证
+  - RX copier: poll_fn 循环，被唤醒后从 Console.read_bytes 读取，写入 rx_buf
+  - 底层用 Console（同步），验证 copier 任务流程正确
+  - 验证: 中断到来 → copier 任务唤醒 → rx_buf 有数据
+
+<!-- T1.4 --> - [ ] TX 路径模拟验证
+  - TX 暂用 Console.write_bytes（同步阻塞），验证 tx_buf → Console 流程
+  - 不实现真正的 TX copier（M3 再做）
+  - 验证: write → tx_buf → Console 输出正常
+
+**Gate M1**: 架构验证通过（Ring Buffer + 中断 + copier 任务流程正确），调试输出保留
+
+---
+
+## M2: VFS 验证（Console 包装）
+
+> 目标: 验证 VFS 集成（DeviceOps + 设备注册），设备底层用 Console 同步引擎
+
+<!-- T2.1 --> - [ ] ConsoleDriver 实现 DeviceOps
+  - read_at: block_on(poll_io(...)) → 从 rx_buf 读取（M1 已建立）
+  - write_at: block_on(poll_io(...)) → 写入 tx_buf → Console.write_bytes
+  - as_pollable: 返回 Some(self)，支持 poll/select/epoll
+  - 验证: DeviceOps 接口编译通过
+
+<!-- T2.2 --> - [ ] 注册测试设备到 devfs
+  - 在 pseudofs/dev/mod.rs 注册测试设备（如 /dev/async_test）
+  - 不替换 /dev/console（保留 Console 调试能力）
+  - 验证: 内核启动后测试设备可 open
+
+<!-- T2.3 --> - [ ] 用户态验证
+  - 用户态程序 open 测试设备 → read → write
+  - poll/epoll 监听事件
+  - 验证: 用户态读写正常，poll/epoll 可用
+
+<!-- T2.4 --> - [ ] termios 支持框架（可选）
+  - 默认 raw 模式零开销
+  - ioctl TCGETS/TCSETS 框架预留
+  - 验证: raw 模式数据正确
+
+**Gate M2**: VFS 集成验证通过（DeviceOps + 设备注册 + poll/epoll），调试输出保留
+
+---
+
+## M3: 异步引擎替换（关键替换点）
+
+> 目标: 替换 Console 底层为 AsyncUart 异步引擎，实现真正的中断驱动高性能串口
+
+<!-- T3.1 --> - [ ] AsyncUart trait + Uart16550 实现
   - 定义 AsyncUart trait（try_read/try_write/enable_rx_intr/disable_rx_intr/...）
   - Uart16550<MmioBackend> 实现 AsyncUart
   - 验证: cargo check 通过，MMIO 操作封装正确
 
-<!-- T1.3 --> - [ ] ISR → AtomicWaker → copier 任务模型实现
+<!-- T3.2 --> - [ ] ISR → AtomicWaker → copier 任务模型实现
   - ISR: 读 IIR → 禁用已触发中断 → AtomicWaker.wake()
-  - RX copier: poll_fn 循环，被唤醒后从硬件 FIFO 读到 rx_buf，唤醒 rx_wakers
-  - TX copier: poll_fn 循环，从 tx_buf 读到硬件 FIFO，使能 TX 中断
+  - RX copier: 真正的硬件 FIFO → rx_buf
+  - TX copier: tx_buf → 真正的硬件 FIFO，使能 TX 中断
   - 验证: 中断到来 → copier 任务唤醒 → 数据搬运完成
 
-<!-- T1.4 --> - [ ] Echo 回环测试
-  - RX copier 收数据 → 写到 tx_buf → TX copier 发出
-  - 验证: echo 回环 10s 稳定运行无丢失
-
-**Gate M1**: echo 回环测试通过（10s 稳定运行无数据丢失）
-
----
-
-## M2: 异步 API + VFS 集成
-
-> 目标: 用户态程序可通过 /dev/ttyS0 正常读写串口，poll/select/epoll 可用
-
-<!-- T2.1 --> - [ ] UartAsyncDriver 实现 DeviceOps
-  - read_at: block_on(poll_io(...)) → 从 rx_buf 读取
-  - write_at: block_on(poll_io(...)) → 写入 tx_buf
-  - as_pollable: 返回 Some(self)，支持 poll/select/epoll
-  - 验证: DeviceOps 接口编译通过
-
-<!-- T2.2 --> - [ ] 注册 /dev/ttyS0 到 devfs
-  - 在 pseudofs/dev/mod.rs 的 builder 中添加 ttyS0 设备
-  - 验证: 内核启动后 /dev/ttyS0 可 open
-
-<!-- T2.3 --> - [ ] 用户态串口交互验证
-  - 用户态程序 open("/dev/ttyS0") → read → write
-  - poll/epoll 监听串口事件
-  - 验证: 用户态读写正常，异步通知工作
-
-<!-- T2.4 --> - [ ] termios 支持（可切换，默认 raw）
-  - 默认 raw 模式零开销
-  - ioctl TCGETS/TCSETS 可动态启用 termios 行规则
-  - 验证: raw 模式数据正确，termios 模式 Ctrl+C 等特殊字符处理
-
-<!-- T2.5 --> - [ ] ldisc 行编辑性能优化（可选）
-  - raw 模式零开销跳过所有行编辑（canonical 检测在 poll 最外层）
-  - canonical mode 批量处理而非逐字符
-  - 验证: raw 模式吞吐量明显高于 canonical
-
-**Gate M2**: 用户态程序读写 /dev/ttyS0 正常 + poll/epoll 可用
-
----
-
-## M3: Console 统一
-
-> 目标: Console 底层替换为 AsyncUart 实现，用户态输出异步化，内核日志保持同步（axhal::console 外部 crate 不可修改）
-
-<!-- T3.1 --> - [ ] Console 输出重定向到 AsyncUart TX 路径
-  - 替换 Console TtyWrite 实现 → 写入 AsyncUart tx_buf（不再调用 axhal::console）
-  - 内核日志仍通过 axhal::console 输出（同步阻塞，外部 crate，不可修改）
-  - 验证: 用户态 write("/dev/console") 异步化，无 CPU 空转
-
-<!-- T3.2 --> - [ ] Console 输入统一
-  - N_TTY 的 Console TtyRead 实现替换为 AsyncUart rx_buf 读取
-  - tty-reader copier 与 AsyncUart RX copier 合理对接
-  - 验证: 键盘输入正确传递到用户态
-
-<!-- T3.3 --> - [ ] 移除第二串口（回归单硬件）
-  - QEMU 配置恢复单串口，Console 和 AsyncUart 共用同一硬件
-  - 内核日志（同步）与用户态输出（异步）共用同一 UART THR
-  - 验证: 单硬件模式下 Console + 用户态串口均正常
+<!-- T3.3 --> - [ ] 替换 Console 底层
+  - ConsoleDriver 底层从 Console 同步引擎 → AsyncUart 异步引擎
+  - 内核日志仍通过 axhal::console 输出（earlycon 独立路径）
+  - 验证: 用户态 write 异步化，无 CPU 空转
 
 <!-- T3.4 --> - [ ] 确认调试安全通道
   - axhal::console 作为"earlycon"始终可用（独立于异步框架）
   - AsyncUart 故障时内核日志仍能输出 panic/调试信息
   - 验证: 故障场景下仍有输出渠道
 
-**Gate M3**: Console 与 AsyncUart 统一，内核完整启动 + 用户态串口交互正常 + 调试通道可用
+<!-- T3.5 --> - [ ] 性能验证
+  - Echo 回环测试 10s 稳定无丢失
+  - 吞吐量初步测量
+  - 验证: 异步引擎工作正常
+
+**Gate M3**: 异步引擎替换完成，用户态高性能输出 + 内核日志共存 + 调试通道可用
 
 ---
 
@@ -230,30 +232,28 @@
 ## 依赖关系
 
 ```
-M0 → M1 → M2（独立串口验证通过）
+M0 → M1 → M2（架构 + VFS 验证，底层用 Console 同步引擎）
                │
-               ├→ M4（性能优化）← 优先推进
-               │      ├→ M5（真板验证）
-               │      └→ M6（DMA 探索）
-               │
-               └→ M3（Console 统一）← 建议在 M4 稳定后推进
+               └→ M3（异步引擎替换，关键替换点）
+                     │
+                     ├→ M4（性能优化）
+                     │      ├→ M5（真板验证）
+                     │      └→ M6（DMA 远期）
 ```
 
-**推进策略**：
+**渐进式策略（ADR-015）**：
 
-1. **M0 → M1 → M2**：串行推进，必须完成
-2. **M2 完成后**：
-   - **M4 优先**：在稳定独立串口上优化性能，有清晰基准
-   - **M5 可并行**：真板验证依赖 M2 基础功能，M4 性能数据可在真板上复测
-   - **M3 建议延后**：Console 统一风险最高（修改核心路径），应在 M4 稳定后再做
-3. **M4 稳定后**：
-   - M5 真板验证（已有性能基准）
-   - M3 Console 统一（有稳定参考）
-   - M6 DMA 探索（远期）
+1. **M0 → M1 → M2**：验证基础架构（底层用 Console 同步引擎，调试能力保留）
+2. **M3**：异步引擎替换（一步到位，风险集中但可控）
+3. **M3 完成后**：
+   - **M4 优先**：性能优化，基于 AsyncUart
+   - **M5 可并行**：真板验证
+   - **M6 远期**：DMA 探索
 
-**风险说明**：
-- M3 涉及修改内核启动核心路径（entry.rs 的 N_TTY.bind_to），调试难度高
-- 建议 M4 先完成，提供性能基准和稳定参考，再做 M3
+**风险控制**：
+- M1/M2 验证时调试能力保留（Console 同步输出）
+- M3 是关键替换点，但前置验证已完成，失败可回滚
+- 异步引擎 bug 不影响内核日志输出（earlycon 独立路径）
 
 ---
 
