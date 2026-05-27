@@ -21,11 +21,11 @@
 
 ## M0: 基础设施就绪
 
-> 目标: 让内核具备异步串口所需的所有底层能力——中断路由、AtomicWaker、uart_16550 本地依赖
+> 目标: 让内核具备异步串口所需的所有底层能力——依赖、编译验证、中断机制确认
 
 <!-- T0.1 --> - [ ] 添加 uart_16550 本地 path 依赖到 kernel/Cargo.toml
   - 覆盖所有中断控制 API（set_interrupt_enable、interrupt_identification、InterruptType）
-  - 与 axhal 中 uart_16550 v0.4.0 共存（两者操作不同硬件实例）
+  - 路径: `../../uart_16550`（本地 v0.6.0）
   - 验证: cargo check 编译通过
 
 <!-- T0.2 --> - [ ] 添加 embassy-sync 依赖到 kernel/Cargo.toml
@@ -33,17 +33,17 @@
   - 验证与 nightly-2026-02-25 兼容性
   - 验证: cargo check 编译通过
 
-<!-- T0.3 --> - [ ] QEMU 添加第二个串口
-  - Makefile/qemu.mk 添加 `-serial mon:stdio` + 第二 `-serial` 配置
-  - axconfig 添加第二 UART 的 MMIO 地址和 IRQ 号
-  - 验证: QEMU 启动后两个串口均可见
+<!-- T0.3 --> - [ ] 中断机制确认（IRQ 10 共存语义）
+  - 确认 register_irq_waker 与现有 Console tty-reader 的共存语义
+  - 查看源码或实验验证：同一 IRQ 是否支持多次注册
+  - 验证: 明确共存/冲突处理方案
 
-<!-- T0.4 --> - [ ] UART 中断注册与回调触发验证
-  - 通过 register_irq_waker 或 register_irq_hook 注册第二 UART 的 IRQ
-  - ISR 读取 IIR 判断中断源（RX/TX），触发 AtomicWaker::wake()
-  - 验证: 在 QEMU 中向第二串口发送字符，内核中断回调触发
+<!-- T0.4 --> - [ ] Gate M0 验证
+  - `make run` 编译通过
+  - 内核启动正常（Console 调试输出可用）
+  - 验证: 基础依赖就绪，可进入 M1
 
-**Gate M0**: `make run` 编译通过 + 第二串口中断回调可触发
+**Gate M0**: 编译通过 + 内核启动 + 中断共存方案明确
 
 ---
 
