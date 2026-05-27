@@ -48,6 +48,8 @@ impl IsrContext {
 ///
 /// Data搬运推迟到 copier 任务上下文（安全）。
 pub fn uart_isr_handler(ctx: &Arc<IsrContext>) {
+    // SAFETY: spin::Mutex disables interrupts (ISR-safe, never sleeps).
+    // Critical section is minimal: read IIR, disable interrupt, wake waker.
     let mut uart = ctx.uart.lock();
 
     // 1. Read IIR to identify interrupt type
@@ -66,7 +68,7 @@ pub fn uart_isr_handler(ctx: &Arc<IsrContext>) {
             // 3. Wake TX waker (ISR-safe AtomicWaker)
             ctx.tx_waker.wake();
         }
-        // Other interrupt types (ModemStatus, LineStatus) ignored
+        // ModemStatus and LineStatus not used in M3 scope (no hardware flow control)
         _ => {}
     }
     // 4. Exit immediately (data搬运在 copier 任务)
