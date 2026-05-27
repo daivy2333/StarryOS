@@ -1,3 +1,6 @@
+> ⚠️ 此文档为早期分析，部分内容已过时。
+> 最新决策参见 architecture.md ADR-013~ADR-015。
+
 # 异步运行时深度分析
 
 > 基于 StarryOS axtask/axsync 运行时的分析

@@ -1,3 +1,6 @@
+> ⚠️ 此文档为早期分析，部分内容已过时。
+> 最新决策参见 architecture.md ADR-013~ADR-015。
+
 # UART 16550 硬件与驱动深度分析
 
 > 基于 StarryOS 代码库及 axplat-riscv64-qemu-virt 平台实现的分析

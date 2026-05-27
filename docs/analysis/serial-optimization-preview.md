@@ -1,3 +1,6 @@
+> ⚠️ 此文档为早期分析，部分内容已过时。
+> 最新决策参见 architecture.md ADR-013~ADR-015。
+
 # 串口优化预览：从同步阻塞到异步高性能
 
 > Part of StarryOS codebase analysis (branch: feat/uart-async)
