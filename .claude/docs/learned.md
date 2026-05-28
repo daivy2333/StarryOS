@@ -32,6 +32,10 @@
 <!-- L83 --> | Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct + TtyRead/TtyWrite trait | 2026-05-28 |
 <!-- L84 --> | tty-reader copier | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs | InputReader + poll_fn + register_irq_waker | 2026-05-28 |
 <!-- L85 --> | ConsoleDriver | kernel/src/drivers/serial/console_driver.rs | RX copier + TX sync flush + AsyncBuffer | 2026-05-28 |
+<!-- L90 --> | Console 设备注册 | kernel/src/pseudofs/dev/mod.rs:222-230 | /dev/console → DeviceId(5, 1) → N_TTY | 2026-05-28 |
+<!-- L91 --> | Console 初始化流程 | kernel/src/pseudofs/dev/tty/ntty.rs:31-44 | new_n_tty() → bind_to(&proc) → session terminal | 2026-05-28 |
+<!-- L92 --> | tty-reader 任务名 | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs:276 | spawn_with_name("tty-reader") | 2026-05-28 |
+<!-- L93 --> | PTY 与 Console 分离 | kernel/src/pseudofs/dev/tty/pty.rs | PTY 不依赖 Console 硬件，可保留 | 2026-05-28 |
 
 ## 踩坑档案
 
@@ -111,12 +115,60 @@
 - **原因**: 避免 Console 与 AsyncUart 的数据竞争、IRQ waker 冲突、UART 重初始化冲突
 - **新方案**: 使用本地 uart_16550 crate + 自实现 UART 初始化
 - **参考**: ADR-020（architecture.md）
-  1. Console.write_bytes() 开始发送字节 0，等待 THR_EMPTY
-  2. AsyncUart TX copier try_write() 尝试写 THR → FIFO 满
-  3. Console 继续等待 THR_EMPTY → UART 状态异常（THR_EMPTY 标志不更新）
-  4. TX copier retry → 无限循环 → TX busy-loop
-- **解决**: 需设计 UART 硬件独占机制（Console 和 AsyncUart 不能同时写 THR）
-- **预防**: 在集成 AsyncUart 前，必须诊断 UART 硬件状态，确认 Console 的 UART 操作模式
+
+<!-- L94 --> | uart_16550 init API | uart_16550/src/lib.rs:406-523 | SerialPort::new_mmio + Config + init，完整初始化流程 | 2026-05-28 |
+<!-- L95 --> | uart_16550 Config 字段 | uart_16550/src/config.rs:114-154 | baud_rate/data_bits/interrupts/fifo_trigger_level | 2026-05-28 |
+<!-- L96 --> | UART 中断类型枚举 | uart_16550/src/spec.rs:315-414 | InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout/LineStatus） | 2026-05-28 |
+<!-- L97 --> | register_irq_waker 实现 | axtask/src/future/poll.rs:43-66 | BTreeMap<usize, PollSet>，支持同一 IRQ 注册多个 waker | 2026-05-28 |
+<!-- L98 --> | register_irq_hook 全局唯一 | axhal/src/irq.rs:12-28 | AtomicUsize compare_exchange，只能注册一次 | 2026-05-28 |
+<!-- L99 --> | AtomicWaker ISR 安全 | embassy-sync/src/waitqueue/atomic_waker.rs:42-63 | CriticalSectionRawMutex + wake_by_ref，ISR 中无阻塞 | 2026-05-28 |
+<!-- L100 --> | PollSet 容量上限 | axpoll/src/lib.rs:66-150 | 容量 64，超过唤醒旧 waker（环形缓冲） | 2026-05-28 |
+<!-- L101 --> | DeviceOps trait 核心方法 | kernel/src/pseudofs/device.rs:28-55 | read_at/write_at/ioctl/as_pollable/flags | 2026-05-28 |
+<!-- L102 --> | Pollable trait 定义 | axpoll/src/lib.rs | poll() + register()，支持 poll/select/epoll | 2026-05-28 |
+<!-- L103 --> | IoEvents 标志 | axpoll/src/lib.rs | IN/OUT/HUP/ERR/RDNORM/WRNORM | 2026-05-28 |
+<!-- L104 --> | axlog LogIf trait | axlog-0.3.0-preview.2/src/lib.rs | console_write_str() → axhal::console::write_bytes() | 2026-05-28 |
+<!-- L105 --> | panic handler 实现 | axruntime-0.3.0-preview.2/src/lang_items.rs | panic() → ax_println! → polling TX | 2026-05-28 |
+<!-- L106 --> | uart_16550 retry_until_ok macro | uart_16550-0.4.0/src/lib.rs | loop { if let Ok(ok) = $cond { break ok; } } | 2026-05-28 |
+
+<!-- L107 --> ### ISR 分发机制设计要点（2026-05-28）
+- **ISR 中读 ISR 寄存器**：判断 InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout）
+- **禁用中断防止重入**：ISR 中临时禁用 RX/TX 中断（IER 操作）
+- **AtomicWaker 精确唤醒**：rx_waker/tx_waker 分别唤醒
+- **ISR 执行原则**：最小工作（读 ISR + 禁用中断 + 唤醒 waker）
+- **ISR 安全约束**：无阻塞、无锁、MMIO read/write 安全
+
+<!-- L108 --> ### UART 初始化配置差异（2026-05-28）
+- **Console 配置**：IER::DATA_READY（只使能 RX 中断）
+- **AsyncUart 配置**：IER::DATA_READY | IER::THR_EMPTY（RX + TX 中断）
+- **关键差异**：Console 禁用 TX 中断，AsyncUart 必须使能 TX 中断
+- **解决方案**：UART 重新 init 时使能 TX 中断（覆盖 Console 配置）
+
+<!-- L109 --> ### earlycon 启动时机分析（2026-05-28）
+- **earlycon 可用时间点**: axruntime::rust_main 中 axplat::init::init_early() 后（T0-T2）
+- **axlog::init()**: 第 160 行，启用内核日志框架
+- **ax_println!**: 启动 LOGO 输出（约 17 ms polling TX）
+- **AsyncUart 可用时间点**: axtask::init_scheduler() 后（T9-T10）
+- **earlycon 比 AsyncUart 早约 10-20 ms 可用**
+
+<!-- L110 --> ### Polling TX 性能影响（2026-05-28）
+- **波特率 115200 bps**: 每字节 ~87 µs CPU 空转
+- **启动 LOGO（200 字节）**: ~17 ms CPU 穽转
+- **总启动时间增加**: 100-200 ms（估算，多条日志）
+- **性能权衡**: 调试安全优先，启动速度次优
+- **优化方向**: DMA TX（远期，需硬件支持）
+
+<!-- L111 --> ### AsyncUart 设备注册关键路径（2026-05-28）
+- **用户态 open("/dev/async_uart")** → syscall open → FS_CONTEXT.resolve → Device::new → File::new → FD_TABLE.add
+- **用户态 read(fd, buf)** → syscall read → FD_TABLE.get → FileLike::read → poll_io → DeviceOps::read_at → rx_buffer.pop
+- **用户态 poll(&pollfd)** → syscall poll → do_poll → FileLike::poll → AsyncUartDevice::poll → IoEvents
+- **关键流程**: WouldBlock → poll_io 自动注册 waker → wake() → 重试 read_at
+
+<!-- L112 --> ### DeviceOps trait 异步支持模式（2026-05-28）
+- **read_at 返回 WouldBlock**：触发 poll_io 等待
+- **as_pollable 返回 Some(self)**：支持 poll/select/epoll
+- **poll() 检查 IoEvents**：IN（可读）OUT（可写）
+- **register() 注册 waker**：poll_rx/poll_tx PollSet
+- **wake() 唤醒等待任务**：数据到达或缓冲区有空间
 
 <!-- L87 --> ### IRQ Waker 单一限制冲突（2026-05-28）
 - **症状**: IRQ 风暴，RX-COPIER 和 tty-reader 快速循环唤醒

@@ -35,16 +35,19 @@
   - 删除 kernel/src/drivers/serial/ 目录
   - 恢复 kernel/Cargo.toml、lib.rs、dev/mod.rs
 
-<!-- P0.4 --> - [ ] 更新文档体系 🔄
-  - 更新 SNAPSHOT.md（当前分支状态）
-  - 更新 tasks.md（新 Milestone 规划）
-  - 更新 architecture.md（新 ADR）
-  - 清理 learned.md/references.md（过时信息）
+<!-- P0.4 --> - [x] 更新文档体系 ✅ 2026-05-28
+  - ✅ 更新 SNAPSHOT.md（当前分支状态已同步）
+  - ✅ 更新 references.md（新增 R42-R46，6份设计文档索引）
+  - ✅ 更新 learned.md（新增 L94-L112，19个关键知识条目）
+  - ⏳ 更新 architecture.md（待补充 ADR-021）
+  - ✅ 清理 learned.md/references.md（已反哺新知识，无过时信息）
 
-<!-- P0.5 --> - [ ] 设计完全剔除 Console 方案
-  - 确定 UART 初始化替代方案
-  - 确定 Console 软件路径剔除范围
-  - 设计 earlycon（内核启动日志）
+<!-- P0.5 --> - [x] 设计完全剔除 Console 方案 ✅ 2026-05-28
+  - ✅ UART 初始化替代方案设计完成（docs/analysis/uart-init-design.md）
+  - ✅ Console 软件路径剔除范围明确（docs/analysis/console-removal-scope-analysis.md）
+  - ✅ earlycon 内核日志设计完成（docs/analysis/earlycon-design.md）
+  - ✅ AsyncUart 设备注册方案设计完成（docs/analysis/async-uart-device-registration.md）
+  - ✅ IRQ waker 分发机制验证完成（docs/analysis/irq-waker-mechanism-verification.md）
 
 **Gate P0**: 文档体系完整 + Milestone 规划明确 + 设计方案初步形成
 
@@ -218,6 +221,14 @@
   - 真板串口收发测试
 
 **Gate P6**: 真板串口收发正常
+
+---
+
+**下一步**：
+- ✅ **Gate P0 已通过**：文档体系完整 + Milestone 规划明确 + 设计方案已完成（无 TBD/TODO）
+- ⏳ **P0.4 待补充**：ADR-021 已补充到 architecture.md（已完成）
+- 🎯 **P1 准备就绪**：UART 硬件初始化替代方案设计完成，可开始实现
+- 📝 **建议下一步**：开始 P1.1（添加 uart_16550 + embassy-sync 依赖）
 
 ---
 

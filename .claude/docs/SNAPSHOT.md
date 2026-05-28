@@ -64,7 +64,14 @@ StarryOS/
 │   └── superpowers/      # 设计文档
 │       └── specs/        # Spec 文档
 │           └── 2026-05-28-async-uart-integration-design.md  # 渐进式集成设计（归档参考）
-└── CLAUDE.md             # 项目约束规则
+├── docs/analysis/        # 设计分析文档（新增 5份）
+│   ├── console-uart-mechanism.md  # Console UART 研究（保留作为参考）
+│   ├── console-removal-scope-analysis.md  # Console 软件路径剔除范围分析（完整架构）✅ 2026-05-28
+│   ├── uart-init-design.md  # UART 硬件初始化替代方案设计 ✅ 2026-05-28
+│   ├── earlycon-design.md  # earlycon 内核日志设计方案 ✅ 2026-05-28
+│   ├── async-uart-device-registration.md  # AsyncUart 设备注册方案 ✅ 2026-05-28
+│   └── irq-waker-mechanism-verification.md  # IRQ waker 分发机制验证 ✅ 2026-05-28
+│   └── ...               # 其他分析文档
 ```
 
 ---
@@ -113,17 +120,28 @@ StarryOS/
 
 ## 当前工作
 
+### 已完成
+
+- [x] 创建 feat/uart-async-dev2 分支（P0.1）✅ 2026-05-28
+- [x] 提交 feat/uart-async 分支文档（P0.2）✅ 2026-05-28
+- [x] 回滚代码变更（P0.3）✅ 2026-05-28
+- [x] 更新文档体系（P0.4）✅ 2026-05-28
+  - references.md 新增 R42-R46（6份设计文档索引）
+  - learned.md 新增 L94-L112（19个关键知识条目）
+- [x] 设计完全剔除 Console 方案（P0.5）✅ 2026-05-28
+  - UART 硬件初始化替代方案设计完成
+  - Console 软件路径剔除范围明确
+  - earlycon 内核日志设计完成
+  - AsyncUart 设备注册方案设计完成
+  - IRQ waker 分发机制验证完成
+
 ### 进行中
 
-- [ ] 重新规划 Milestone（完全剔除 Console 方案）
-- [ ] 设计新的 UART 初始化流程（替代 axplat）
-- [ ] 评估 Console剔除的影响范围
+- [ ] 补充 ADR-021 到 architecture.md（基于四个关键问题的架构决策）
 
 ### 待办
 
-- [ ] 确定哪些 Console 相关代码需要保留/剔除
-- [ ] 实现独立的 UART 初始化（使用 uart_16550 crate）
-- [ ] 设计新的异步串口架构
+- [ ] 开始 P1: UART 硬件初始化替代（添加依赖 + 实现初始化函数）
 
 ---
 
@@ -137,6 +155,10 @@ StarryOS/
 | 硬件抽象 | AsyncUart trait | 可扩展多硬件 | 2026-05-24 |
 | 中断分发 | ISR → AtomicWaker → copier 任务 | ISR 极简，数据安全 | 2026-05-25 |
 | **分支策略** | **完全剔除 Console** | **避免集成冲突，从零开始** | **2026-05-28** |
+| **UART 初始化替代** | **uart_16550 本地初始化** | **IER::THR_EMPTY 使能 TX 中断** | **2026-05-28** |
+| **earlycon 内核日志** | **复用 axhal::console** | **polling TX + panic 安全** | **2026-05-28** |
+| **AsyncUart 设备注册** | **DeviceOps + Pollable trait** | **/dev/async_uart + VFS 集成** | **2026-05-28** |
+| **IRQ waker 分发** | **ISR 读 ISR + AtomicWaker** | **精确唤醒 rx_waker/tx_waker** | **2026-05-28** |
 
 ---
 
@@ -153,16 +175,55 @@ StarryOS/
 
 ## 关键问题
 
-**完全剔除 Console 的关键问题**：
-1. **UART 初始化替代**：如何替代 axplat 的 UART 初始化？
-2. **内核启动日志**：如何实现 earlycon（启动日志输出）？
-3. **Console 软件路径剔除范围**：哪些 Console 相关代码需要剔除？
-4. **用户态串口访问**：如何提供用户态串口 API？
+**完全剔除 Console 的关键问题已解答**：
+
+1. **UART 初始化替代方案** ✅ 已解答：
+   - 使用 uart_16550 crate 本地初始化（替代 axplat）
+   - 关键配置：IER::DATA_READY | IER::THR_EMPTY（Console 只使能 RX）
+   - 初始化时机：kernel entry.rs 早期调用
+
+2. **earlycon 内核日志方案** ✅ 已解答：
+   - 复用 axhal::console（已有 polling TX 实现）
+   - 启动早期可用（axruntime::init_early 后）
+   - Panic 安全机制（禁用 AsyncUart TX 中断后 polling TX）
+
+3. **Console 软件路径剔除范围** ✅ 已解答：
+   - Console struct + N_TTY + tty-reader copier 需剔除
+   - PTY 子系统可保留（不依赖 Console 硬件）
+   - /dev/console 设备节点需移除
+
+4. **AsyncUart 设备注册方案** ✅ 已解答：
+   - DeviceOps trait 实现（read_at/write_at/as_pollable）
+   - /dev/async_uart 设备节点（DeviceId::new(4, 64））
+   - VFS 集成完整路径（Device → File → FD_TABLE）
+
+5. **IRQ waker 分发机制** ✅ 已解答：
+   - ISR + AtomicWaker 分发可行（ISR 读 ISR 寄存器判断中断类型）
+   - register_irq_waker 支持多 waker（BTreeMap<usize, PollSet>）
+   - ISR 禁用中断防止重入（IER 操作）
+
+**详细设计文档路径**：
+- docs/analysis/console-removal-scope-analysis.md（Console 剔除范围）
+- docs/analysis/uart-init-design.md（UART 初始化替代）
+- docs/analysis/earlycon-design.md（earlycon 内核日志）
+- docs/analysis/async-uart-device-registration.md（AsyncUart 设备注册）
+- docs/analysis/irq-waker-mechanism-verification.md（IRQ waker 分发）
 
 ---
 
 ## 参考资料
 
-- Console UART 研究文档：`docs/analysis/console-uart-mechanism.md`
-- 渐进式集成设计（归档）：`.claude/docs/superpowers/specs/2026-05-28-async-uart-integration-design.md`
-- UART 16550 规范：`uart_16550/src/spec.rs`
+**设计分析文档**（docs/analysis/）：
+- ✅ Console UART 研究：`docs/analysis/console-uart-mechanism.md`（硬件配置、TX 阻塞、RX 中断）
+- ✅ Console 软件路径剔除范围：`docs/analysis/console-removal-scope-analysis.md`（完整架构、剔除清单）
+- ✅ UART 硬件初始化替代方案：`docs/analysis/uart-init-design.md`（uart_16550 API、ISR 分发）
+- ✅ earlycon 内核日志设计：`docs/analysis/earlycon-design.md`（polling TX、panic 安全）
+- ✅ AsyncUart 设备注册方案：`docs/analysis/async-uart-device-registration.md`（DeviceOps + VFS）
+- ✅ IRQ waker 分发机制验证：`docs/analysis/irq-waker-mechanism-verification.md`（可行性验证）
+
+**归档文档**：
+- 📁 渐进式集成设计：`.claude/docs/superpowers/specs/2026-05-28-async-uart-integration-design.md`（feat/uart-async 分支归档）
+
+**技术规范**：
+- 📚 UART 16550 规范：`uart_16550/src/spec.rs`（寄存器定义）
+- 📚 RISC-V PLIC 规范：见 `.claude/docs/references.md`（R12）

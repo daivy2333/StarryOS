@@ -91,3 +91,8 @@
 <!-- R37 --> | 串口优化预览 | docs/analysis/serial-optimization-preview.md | 从同步阻塞到异步高性能的优化分析：阻塞瓶颈、优化方案、预期收益 |
 <!-- R20 --> | 项目概览 | docs/analysis/project-overview.md | 仓库结构、构建系统、依赖图 |
 <!-- R41 --> | Console UART 工作机制 | docs/analysis/console-uart-mechanism.md | Console UART 硬件配置、TX 阻塞机制、RX 中断驱动、数据竞争风险分析 ✅ 2026-05-28 |
+<!-- R42 --> | Console 软件路径剔除范围 | docs/analysis/console-removal-scope-analysis.md | Console 软件路径完整架构、初始化流程、设备注册、IRQ 注册、用户态访问路径、剔除范围分析、替代方案设计建议 ✅ 2026-05-28 |
+<!-- R43 --> | UART 硬件初始化替代方案设计 | docs/analysis/uart-init-design.md | uart_16550 API 分析、UART 硬件配置设计、初始化时机设计、ISR 分发机制、RX/TX copier 实现示例 ✅ 2026-05-28 |
+<!-- R44 --> | earlycon 内核日志设计方案 | docs/analysis/earlycon-design.md | earlycon 模式分析、polling TX 实现、UART 硬件独占机制、panic 安全机制、与 AsyncUart 共存策略 ✅ 2026-05-28 |
+<!-- R45 --> | AsyncUart 设备注册设计方案 | docs/analysis/async-uart-device-registration.md | DeviceOps trait 分析、Pollable trait 实现、Device 包装流程、/dev/async_uart 注册设计、用户态 API 流程 ✅ 2026-05-28 |
+<!-- R46 --> | IRQ waker 机制验证方案 | docs/analysis/irq-waker-mechanism-verification.md | register_irq_waker 机制、register_irq_hook 分发、ISR + AtomicWaker 分发设计、RX/TX copier 唤醒机制、可行性验证 ✅ 2026-05-28 |

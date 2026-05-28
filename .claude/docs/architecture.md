@@ -5,6 +5,62 @@
 
 ---
 
+<!-- A21 --> ### 2026-05-28 - 完全剔除 Console 方案的四个关键架构决策
+
+**背景**：
+- 基于 project-explorer 深入探究的四个关键问题，形成完整的技术决策体系
+- 探究成果：docs/analysis/ 下 5份完整设计文档 + learned.md L94-L112
+
+**决策 1：UART 硬件初始化替代方案**：
+- **技术选型**：使用 uart_16550 crate 本地初始化（替代 axplat UART init）
+- **关键配置**：IER::DATA_READY | IER::THR_EMPTY（Console 只使能 RX，AsyncUart 必须使能 TX）
+- **初始化时机**：kernel entry.rs 早期调用，覆盖 axplat 配置
+- **状态验证**：log_uart_state() 输出 IER/ISR/LSR/MCR 寄存器状态
+
+**决策 2：earlycon 内核日志方案**：
+- **实现方式**：复用 axhal::console（已有 polling TX 实现，无需额外开发）
+- **可用时机**：axruntime::init_early 后立即可用（比 AsyncUart 早 10-20 ms）
+- **UART 共存策略**：AtomicBool 标记 + 自旋锁保护（AsyncUart 运行时禁用 earlycon）
+- **Panic 安全机制**：禁用 AsyncUart TX 中断后 polling TX 强制输出
+
+**决策 3：AsyncUart 设备注册架构**：
+- **VFS 集成路径**：DeviceOps trait → Device wrapper → File → FD_TABLE → 用户态 API
+- **设备节点**：/dev/async_uart（DeviceId::new(4, 64））
+- **异步支持**：Pollable trait 实现（poll() + register()）支持 poll/select/epoll
+- **缓冲策略**：HeapRb<u8>（4KB RX + 4KB TX）+ PollSet（poll_rx + poll_tx）
+
+**决策 4：IRQ waker 分发机制**：
+- **ISR 分发架构**：uart_isr_handler 读 ISR 寄存器判断 InterruptType，唤醒 rx_waker/tx_waker
+- **多 waker 支持**：register_irq_waker 使用 BTreeMap<usize, PollSet>，同一 IRQ 可共存多个 waker
+- **ISR 安全约束**：禁用中断防止重入（IER 操作）+ AtomicWaker ISR 安全唤醒
+- **Console 共存**：PollSet 支持同一 IRQ 多个 waker（但建议完全剔除 Console）
+
+**原因**：
+- ✅ UART 初始化替代避免 axplat 配置冲突（Console 禁用 TX 中断，AsyncUart 必须使能）
+- ✅ earlycon 提供调试安全机制（panic 时仍可用，不依赖异步框架）
+- ✅ AsyncUart 设备注册符合 VFS 集成标准（用户态 API 完整路径）
+- ✅ ISR 分发机制验证可行（ISR 读 ISR 寄存器 + AtomicWaker 精确唤醒）
+
+**影响**：
+- P1.2 实现需遵循 uart_init.rs 设计（波特率 115200 + FIFO 14 字节 + RX/TX 中断）
+- P2.1-P2.6 异步架构需遵循 ISR 分发机制（ISR + AtomicWaker）
+- P3 Console 剔除需遵循剔除范围分析（剔除 Console struct/N_TTY/tty-reader）
+- P4.1-P4.4 VFS 集成需遵循 DeviceOps + Pollable trait 实现
+
+**技术细节参考**：
+- UART 初始化：docs/analysis/uart-init-design.md（完整 API 分析）
+- earlycon 设计：docs/analysis/earlycon-design.md（polling TX + panic 安全）
+- AsyncUart 设备注册：docs/analysis/async-uart-device-registration.md（VFS 集成完整路径）
+- IRQ waker 分发：docs/analysis/irq-waker-mechanism-verification.md（可行性验证）
+
+**风险评估**：
+- ⚠️ UART 重初始化可能影响 axplat 状态（需在 kernel entry 早期覆盖）
+- ⚠️ earlycon 与 AsyncUart 共享 UART 硬件（需 AtomicBool 标记避免竞争）
+- ⚠️ ISR 分发机制首次使用（需验证 InterruptType 判断正确性）
+- ✅ 所有技术方案已通过深度探究验证可行（无 TBD/TODO）
+
+---
+
 <!-- A20 --> ### 2026-05-28 - 分支策略变更：完全剔除 Console（feat/uart-async-dev2）
 
 **背景**：
