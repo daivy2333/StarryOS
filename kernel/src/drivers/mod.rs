@@ -10,9 +10,9 @@
 //! - async_driver: RX/TX copier 任务
 //! - device_ops: AsyncUartDevice（DeviceOps + Pollable）
 
-pub mod uart_init;    // UART 硬件初始化
-pub mod isr;          // ISR 分发机制
-pub mod ring_buffer;  // AsyncBuffer
-pub mod async_uart;   // AsyncUart trait
 pub mod async_driver; // RX/TX copier
-pub mod device_ops;   // DeviceOps trait
+pub mod async_uart; // AsyncUart trait
+pub mod device_ops;
+pub mod isr; // ISR 分发机制
+pub mod ring_buffer; // AsyncBuffer
+pub mod uart_init; // UART 硬件初始化 // DeviceOps trait
