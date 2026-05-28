@@ -179,3 +179,42 @@
 ## references.md 归档
 
 <!-- references.md entries below -->
+
+---
+
+## docs/analysis/ 归档（探索者临时文档）
+
+<!-- docs/analysis/ entries below -->
+
+---
+
+<!-- archive: docs-analysis-batch-2026-05-28 -->
+**日期**: 2026-05-28
+**操作**: 批量归档过时分析文档
+**文档数量**: 11
+**置信度**: HIGH
+**理由**: 已标记"⚠️ 此文档为早期分析，部分内容已过时"，M3 替换失败后分析失效
+**恢复条件**: 需要回顾早期探索分析时（从 git history 恢复）
+
+归档文档列表（已删除原文件）:
+
+1. **async-io-framework.md** — 异步 IO 框架分析，M3 替换失败后失效
+2. **async-runtime.md** — 异步运行时分析，axtask::future 选型已定
+3. **async-uart-design-context.md** — AsyncUart 设计上下文，ADR-018 失败后需重新设计
+4. **comparison-with-sdmmc.md** — SDMMC 对比分析，部分过时
+5. **device-registration.md** — 设备注册分析，已标记过时
+6. **feasibility-assessment.md** — 可行性评估，M3 失败后部分失效
+7. **serial-interfaces-overview.md** — 串口接口概览，已标记过时
+8. **serial-optimization-preview.md** — 性能优化预览，M4 待重启
+9. **syscall-interface.md** — syscall 接口分析，已标记过时
+10. **tty-console-stack.md** — Console 栈分析，ADR-018 失败后部分失效
+11. **uart-hardware-driver.md** — UART 硬件驱动分析，状态异常未解决
+
+**保留文档**（未标记过时，仍有参考价值）:
+
+- boot-init.md — 启动流程通用知识
+- interrupt-framework.md — 中断机制已实现
+- project-overview.md — 项目概览
+- reference-implementations.md — 参考实现
+- task-process-model.md — 任务模型
+- uart-16550-crate-reuse.md — uart_16550 已集成
