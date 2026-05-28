@@ -5,6 +5,68 @@
 
 ---
 
+<!-- A23 --> ### 2026-05-29 - ISR UART MMIO 权限测试失败：证明不彻底更改底层支持无法使用异步串口
+
+**背景**：
+- P1 UART 初始化遇到 MMIO 权限阻塞（内核上下文无法访问 UART）
+- ADR-022 提出测试 ISR 上下文访问权限的策略
+- ISR 分发机制（P2.1）已实现：ISR handler + register_irq_hook
+
+**测试结果**：
+- ✅ ISR handler 成功注册并执行（`[kernel] UART ISR handler registered`）
+- ❌ ISR 尝试读 UART ISR 寄存器时触发 LoadFault（`stval=0xffffffc010000008`）
+- **关键结论**：ISR 上下文也无法访问 UART 寄存器（MMIO 权限限制仍然存在）
+
+**根因分析**：
+- axplat 在 boot 阶段映射 UART MMIO，权限被限制（只读或禁止）
+- MMIO 权限限制对**所有上下文**都生效（内核 + ISR）
+- UART 虚拟地址 `0xffffffc010000008`（ISR 寄存器）无法访问
+- 外部 crate（axplat）的架构约束无法在 kernel 层绕过
+
+**影响**：
+- ❌ 原设计（ISR 使能 TX 中断）完全不可行
+- ❌ AsyncUart 异步 TX 路径无法实现（依赖 IER::THR_EMPTY 中断）
+- ❌ 无法在 ISR 中配置 UART 硬件
+- ✅ 证明了不彻底更改底层支持就无法使用异步串口
+
+**后续策略**：
+1. **方案 A：Polling TX（同步阻塞）**
+   - 优点：简单可行，无需修改外部 crate
+   - 缺点：牺牲异步性能，TX 路径 CPU 空转
+   - 适用：RX 中断驱动 + TX polling 模式（半异步）
+
+2. **方案 B：Boot 阶段修改 UART 配置**
+   - 优点：可实现完整异步 TX
+   - 缺点：需要修改 axplat（外部 crate），复杂度高
+   - 适用：彻底重构底层架构
+
+3. **方案 C：完全依赖 Console（回退 feat/uart-async）**
+   - 优点：Console RX 已中断驱动，功能可用
+   - 缺点：放弃 AsyncUart 独占 UART 的目标
+   - 适用：渐进式集成方案（已失败）
+
+**决策**：暂缓 AsyncUart 实现，记录关键发现，等待架构层面决策
+
+**替代方案评估**：
+- ❌ ISR 访问 UART → LoadFault（已验证）
+- ❌ 内核访问 UART → LoadFault/StoreFault（已验证）
+- ❌ phys_to_virt 转换 → 权限限制（已验证）
+- ✅ Polling TX → 可行（牺牲性能）
+
+**验证依据**：
+- learned.md L116（ISR 测试失败踩坑档案）
+- kernel/src/drivers/isr.rs（ISR handler 实现）
+- kernel/src/entry.rs（ISR 注册）
+
+**风险评估**：
+- 高风险：方案 B 需修改外部 crate，维护成本高
+- 中风险：方案 A 性能受限，但可行
+- 低风险：方案 C 放弃原目标，但已有功能可用
+
+**参考**：ADR-022（UART MMIO 权限问题），learned.md L113-L116
+
+---
+
 <!-- A21 --> ### 2026-05-28 - 完全剔除 Console 方案的四个关键架构决策
 
 **背景**：

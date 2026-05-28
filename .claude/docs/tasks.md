@@ -103,38 +103,58 @@
 ## P2: 异步串口架构实现
 
 > 目标: 实现独立的异步串口架构（不依赖 Console）
+> 
+> **⚠️ 关键阻塞（2026-05-29）**：ISR UART MMIO 权限测试失败，原设计不可行
 
-<!-- P2.1 --> - [ ] 实现 AsyncUart trait
+<!-- P2.0 --> - [x] ISR UART MMIO 权限测试 ✅ 2026-05-29
+  - ✅ 创建 kernel/src/drivers/isr.rs（ISR handler 实现）
+  - ✅ 注册 ISR handler 到 IRQ hook（axhal::register_irq_hook）
+  - ✅ 内核启动成功，ISR handler 执行
+  - ❌ ISR 尝试访问 UART ISR 寄存器触发 LoadFault（`stval=0xffffffc010000008`）
+  - **关键结论**：ISR 无法访问 UART，原设计不可行
+
+<!-- P2.1 --> - [x] 实现 ISR 分发机制（测试版） ✅ 2026-05-29
+  - ✅ 创建 kernel/src/drivers/isr.rs
+  - ✅ 实现 uart_isr_handler（测试 UART 访问权限）
+  - ✅ 注册 ISR handler（axhal::register_irq_hook）
+  - ❌ ISR 无法访问 UART（LoadFault），无法实现 ISR 分发
+
+<!-- P2.2 --> - [ ] 实现 AsyncUart trait
   - 创建 kernel/src/drivers/async_uart.rs
   - 定义 AsyncUart trait（try_read/try_write + 中断控制）
   - 实现 Uart16550Async（包装 uart_16550 crate）
+  - ⚠️ 阻塞：ISR 无法访问 UART，异步 TX 路径无法实现
 
-<!-- P2.2 --> - [ ] 实现 Ring Buffer + PollSet
+<!-- P2.3 --> - [ ] 实现 Ring Buffer + PollSet
   - 创建 kernel/src/drivers/ring_buffer.rs
   - 实现 AsyncBuffer（rx_buf + tx_buf + rx_wakers + tx_wakers）
   - 使用 ringbuf::HeapRb<u8> + axpoll::PollSet
-
-<!-- P2.3 --> - [ ] 实现 ISR + AtomicWaker
-  - 创建 kernel/src/drivers/isr.rs
-  - 实现 IsrContext（Mutex<Uart> + rx_waker + tx_waker）
-  - 实现 uart_isr_handler（读 ISR → 禁用中断 → wake waker）
+  - ⏸️ 暂缓：等待架构决策（Polling TX 或其他方案）
 
 <!-- P2.4 --> - [ ] 实现 RX/TX copier 任务
   - 创建 kernel/src/drivers/async_driver.rs
   - 实现 AsyncUartDriver（RX copier + TX copier）
   - RX copier: IRQ → read UART → push rx_buf
   - TX copier: pop tx_buf → write UART → IRQ
+  - ⏸️ 暂缓：ISR 无法访问 UART，TX copier 无法实现
 
-<!-- P2.5 --> - [ ] 注册 ISR hook
-  - 调用 axhal::register_irq_hook(10, uart_isr_handler)
-  - 验证：ISR 触发正常
+<!-- P2.5 --> - [x] 注册 ISR hook ✅ 2026-05-29（测试完成）
+  - ✅ 调用 axhal::register_irq_hook(uart_isr_handler)
+  - ✅ ISR handler 执行正常
+  - ❌ ISR 无法访问 UART，无法继续后续任务
 
 <!-- P2.6 --> - [ ] Gate P2 验证
   - RX/TX copier 任务启动正常
   - IRQ 触发 → ISR → copier 唤醒流程正确
   - 数据收发正常（环形缓冲区）
+  - ⏸️ 暂缓：ISR 测试失败，Gate P2 无法通过
 
-**Gate P2**: 异步串口架构完整 + RX/TX copier 任务正常
+**Gate P2**: ❌ ISR 无法访问 UART，异步串口架构无法实现
+
+**关键发现**（2026-05-29）：
+- ISR UART MMIO 权限测试失败（LoadFault @ stval=0xffffffc010000008）
+- 原设计（ISR 使能 TX 中断）完全不可行
+- 需调整整体架构策略（见 ADR-023）
 
 ---
 

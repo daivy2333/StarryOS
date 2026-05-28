@@ -1,47 +1,49 @@
 # SNAPSHOT.md - 项目快照
 
 > Generated at 2026-05-24
-> Last updated: 2026-05-29 06:40
+> Last updated: 2026-05-29 08:20
 
 ---
 
 ## 当前状态
 
 **Branch**: feat/uart-async-dev2
-**Status**: ⚠️ P1 阻塞：UART MMIO 权限问题，策略调整
+**Status**: ⚠️ P1 关键发现：ISR UART MMIO 权限测试失败，证明不彻底更改底层支持无法使用异步串口
 **Base branch**: feat/uart-async（保留文档体系，回滚所有代码）
 
 **分支策略变更**：
 - **原 feat/uart-async 分支**：渐进式集成方案（复用 Console UART 初始化）
 - **新 feat/uart-async-dev2 分支**：完全剔除 Console 方案（从零开始实现）
-- **当前策略调整**：放弃 UART 寄存器访问，依赖 axplat 配置（测试 ISR 上下文访问）
+- **ISR 测试结果**：ISR 上下文也无法访问 UART 寄存器（LoadFault @ stval=0xffffffc010000008）
 
-**⚠️ 关键阻塞（2026-05-28）**：
-- **UART MMIO 权限问题**：
-  - Page Fault @ 0x1000001c（物理地址未映射）
-  - StoreFault @ 0xffffffc01000001c（虚拟地址无写入权限）
-  - LoadFault @ 0xffffffc010000008（虚拟地址无读取权限）
-- **根因**：axplat 在 boot 阶段映射 UART MMIO，内核启动后权限被限制
-- **影响**：无法使能 TX 中断（IER::THR_EMPTY），AsyncUart 异步发送失败
+**🔴 关键发现（2026-05-29）**：
+- **ISR UART MMIO 权限测试失败**：
+  - ✅ ISR handler 成功注册并执行（`[kernel] UART ISR handler registered`）
+  - ❌ ISR 尝试读 UART ISR 寄存器时触发 LoadFault（`Exception(LoadFault) @ stval=0xffffffc010000008`）
+- **根因**：UART MMIO 权限限制对所有上下文都生效（内核 + ISR）
+- **关键结论**：不彻底更改底层支持就无法使用异步串口
 
 **当前目标**：
-- 测试 ISR 上下文是否可以访问 UART（关键验证）
-- 或在 boot 阶段修改 UART 配置（替代方案）
-- 或调整整体架构策略（放弃 TX 异步，使用 polling）
+- ✅ 已完成 ISR 测试验证（2026-05-29）
+- ❌ ISR 无法访问 UART，原设计不可行
+- ⏸️ 暂缓 AsyncUart 实现，等待架构层面决策
 
 **代码状态**：
 - ✅ uart_16550 + embassy-sync 依赖已添加（kernel/Cargo.toml）
 - ✅ drivers 模块结构已创建（mod.rs + 6 个 placeholder 文件）
 - ✅ UART 初始化函数已实现（uart_init.rs，跳过寄存器访问）
+- ✅ ISR handler 已实现（isr.rs，测试 UART 访问）
+- ✅ ISR handler 已注册（entry.rs，register_irq_hook）
 - ✅ 内核启动成功（make run 通过）
-- ⚠️ 无法访问 UART 寄存器，无法验证 IER 配置，TX 中断缺失
+- ❌ ISR 访问 UART 失败（LoadFault），无法使能 TX 中断
 
 **下一步**：
-- 🔴 **关键决策点**：测试 ISR 上下文 UART 访问权限
-  - 如果 ISR 可以访问 UART → 继续原设计（ISR 使能 TX 中断）
-  - 如果 ISR 也无法访问 → 调整整体架构策略
-- 实现 ISR 分发机制（P2.1）进行验证
-- 根据验证结果调整后续 Milestone
+- 📝 记录关键发现到文档（已完成 learned.md L116 + architecture.md ADR-023）
+- 🎯 决策后续策略：
+  - 方案 A：Polling TX（同步阻塞，简单可行）
+  - 方案 B：Boot 阶段修改 UART 配置（修改 axplat，复杂）
+  - 方案 C：完全依赖 Console（回退 feat/uart-async）
+- 🔄 根据决策调整 Milestone 规划
 
 ---
 

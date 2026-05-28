@@ -10,6 +10,7 @@ use axtask::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
+    drivers::{uart_init, isr},
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty::N_TTY},
@@ -18,6 +19,15 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
+    // UART 硬件初始化（替代 axplat UART init）
+    uart_init::init_uart_hardware();
+    ax_println!("[kernel] UART hardware initialized for AsyncUart");
+
+    // 🔴 ISR 测试：注册 UART ISR handler
+    // 验证 ISR 上下文是否可以访问 UART 寄存器
+    axhal::irq::register_irq_hook(isr::uart_isr_handler);
+    ax_println!("[kernel] UART ISR handler registered");
+
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 

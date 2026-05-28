@@ -610,7 +610,7 @@ Cargo.lock 中存在两个 uart_16550 版本：
 - **示例**: UART MMIO 物理地址 0x10000000 → 虚拟地址 0xffffffc010000000
 - **验证**: 编译成功 ✅，但虚拟地址访问权限受限 ⚠️
 
-<!-- L115 --> ### UART MMIO 权限策略调整：放弃寄存器访问，测试 ISR 上下文（2026-05-28）
+<!-- L115 --> ### UART MMIO 权限策略调整：放弃寄存器访问，测试 ISR 上下文（2026-05-28）⚠️ ARCHIVED
 - **决策**: 完全放弃在内核启动后访问 UART 寄存器
 - **原因**: MMIO 权限限制无法绕过（StoreFault/LoadFault）
 - **影响**: 
@@ -618,8 +618,36 @@ Cargo.lock 中存在两个 uart_16550 版本：
   - AsyncUart 异步发送功能缺失
   - 依赖 axplat 的 UART 配置（Console 只使能 RX 中断）
 - **后续策略**: 
-  - 测试 ISR 上下文是否可以访问 UART（关键验证）
-  - 如果 ISR 可访问 → 在 ISR 中使能 TX 中断
-  - 如果 ISR 也无法访问 → 调整整体架构（polling TX 或其他方案）
+  - ✅ 已完成 ISR 测试（2026-05-29）
+  - ❌ ISR 也无法访问 UART（LoadFault @ stval=0xffffffc010000008）
+  - 需调整整体架构策略（polling TX 或其他方案）
 - **验证位置**: P2.1 ISR 分发机制测试
 - **适用场景**: MMIO 设备权限受限时的替代方案探索
+- **归档原因**: ISR 测试已完成，决策已更新到 L116
+
+<!-- L116 --> ### ISR UART MMIO 权限测试失败：ISR 上下文也无法访问 UART（2026-05-29）
+- **现象**:
+  - ISR handler 成功注册并执行（`[UART ISR] ISR handler called`）
+  - ISR 尝试读 UART ISR 寄存器时触发 LoadFault
+  - `Exception(LoadFault) @ 0xffffffc08026c9ea, stval=0xffffffc010000008`
+- **根因**:
+  - UART MMIO 虚拟地址 `0xffffffc010000008`（ISR 寄存器）
+  - ISR 在中断上下文执行，但 MMIO 权限限制仍然存在
+  - axplat 在 boot 阶段设置的 MMIO 权限对 ISR 上下文也生效
+- **关键结论**:
+  - ❌ ISR 无法访问 UART 寄存器（与内核上下文一样）
+  - ❌ 原设计（ISR 使能 TX 中断）不可行
+  - ✅ 证明了不彻底更改底层支持就无法使用异步串口
+- **验证证据**:
+  - ISR 注册成功：`[kernel] UART ISR handler registered`
+  - ISR 执行成功：`[UART ISR] ISR handler called (IRQ ...)`
+  - UART 访问失败：`Exception(LoadFault) @ stval=0xffffffc010000008`
+- **后续策略**（见 ADR-023）:
+  - 方案 A：Polling TX（同步阻塞，简单可行）
+  - 方案 B：Boot 阶段修改 UART 配置（修改 axplat，复杂）
+  - 方案 C：完全依赖 Console（回退 feat/uart-async）
+- **教训**:
+  - MMIO 权限问题不仅存在于内核上下文，ISR 上下文也受限
+  - 外部 crate（axplat）的架构约束对整个系统都有影响
+  - 需在设计初期验证关键假设（ISR 是否可以访问 MMIO）
+- **验证**: 2026-05-29（ISR 测试完成）
