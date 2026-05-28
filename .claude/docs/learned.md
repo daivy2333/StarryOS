@@ -17,6 +17,7 @@
 <!-- L65 --> | RISC-V musl 工具链路径 | /opt/musl/riscv64-linux-musl-cross/bin | 编译 lwext4_rust C 代码 | 2026-05-27 |
 <!-- L66 --> | rootfs 下载地址 | https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz | 1GB 磁盘镜像 | 2026-05-27 |
 <!-- L67 --> | disk.img 位置 | 项目根目录 + make/disk.img | make run 需要后者 | 2026-05-27 |
+<!-- L116 --> | axhal::mem::phys_to_virt | 物理地址到虚拟地址转换（返回 VirtAddr） | 2026-05-28 |
 
 ## 文件速查
 
@@ -176,6 +177,50 @@
 - **冲突**: Console tty-reader 已注册 IRQ 10 waker，AsyncUart RX/TX copier 也需注册 → 无法分别唤醒
 - **解决**: 使用 ISR + AtomicWaker 分发机制（ISR 读 ISR 寄存器，根据中断类型唤醒不同的 waker）
 - **预防**: 在集成 AsyncUart 前，必须设计 ISR 分发机制，避免 IRQ waker 冲突
+
+<!-- L88 --> ### uart_16550 API 类型引用踩坑（2026-05-28）
+- **症状**: Plan 文档指定 `InterruptStatus::FIFOS_ENABLED` 和 `LineStatus::TRANSMITTER_EMPTY`，但编译失败
+- **根因**: uart_16550 crate 的类型定义在 `spec::registers` 模块，不是顶层模块
+- **解决**: 正确引用方式：
+  - ISR: `ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1`（不是 InterruptStatus）
+  - LSR: `LSR::TRANSMITTER_EMPTY`（不是 LineStatus）
+  - Import: `use uart_16550::spec::registers::{ISR, LSR};`
+- **预防**: 查阅 uart_16550/src/spec.rs 确认类型定义位置
+
+<!-- L89 --> ### 静态初始化 non-const 函数踩坑（2026-05-28）
+- **症状**: `pub static UART = SpinNoIrq::new(unsafe { Uart16550::new_mmio(...) })` 编译失败
+- **根因**: Rust 静态初始化要求 const fn，但 `Uart16550::new_mmio` 是 non-const
+- **解决**: 使用 `lazy_static!` macro：
+  ```rust
+  lazy_static! {
+      static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
+          // SAFETY: ...
+          Uart16550::new_mmio(...)
+      });
+  }
+  ```
+- **预防**: 检查 API 是否为 const fn，非 const 使用 lazy_static 或 once_cell
+
+<!-- L90 --> ### SAFETY comment 要求（Iron Law #10）（2026-05-28）
+- **症状**: Code review 发现 unsafe block 缺少 SAFETY comment，违反 Iron Law #10
+- **要求**: 所有 unsafe block 必须有 `// SAFETY:` 注释解释安全性
+- **示例**:
+  ```rust
+  unsafe {
+      // SAFETY: UART_MMIO_BASE (0x10000000) is the documented MMIO address for
+      // UART0 on RISC-V QEMU virt platform. This address is guaranteed to be
+      // valid by the platform specification, and we have exclusive access
+      // protected by SpinNoIrq.
+      Uart16550::new_mmio(...)
+  }
+  ```
+- **预防**: Code review 阶段强制检查 SAFETY comment
+
+<!-- L91 --> ### embassy-sync v0.6.2 没有 nightly feature（2026-05-28）
+- **症状**: Plan 文档指定 `embassy-sync = { version = "0.6.2", features = ["nightly"] }`，但编译失败
+- **根因**: embassy-sync v0.6.2 没有 nightly feature（available: defmt, log, std, turbowakers）
+- **解决**: 删除 features specification，AtomicWaker 可正常工作：`embassy-sync = "0.6.2"`
+- **预防**: 使用 `cargo info embassy-sync` 检查可用 features
 
 <!-- L68 --> ### 构建环境配置踩坑
 - 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
@@ -532,3 +577,49 @@ Cargo.lock 中存在两个 uart_16550 版本：
 - **验证**: M2 所有自动化测试通过 ✅
 - **分支策略**: feat/uart-async-m2（验证分支）→ feat/uart-async(m1)（主开发分支，记录结果）
 - **适用场景**: 内核功能验证，无需用户态交互
+
+<!-- L113 --> ### UART MMIO 权限问题：内核启动后无法访问 UART 寄存器（2026-05-28）
+- **现象**: 
+  - Page Fault @ 0x1000001c（物理地址未映射到虚拟地址空间）
+  - StoreFault @ 0xffffffc01000001c（虚拟地址无写入权限）
+  - LoadFault @ 0xffffffc010000008（虚拟地址无读取权限）
+- **根因**:
+  - axplat 在 boot 阶段初始化 UART 并映射 MMIO（完整权限）
+  - 内核启动后（entry.rs init），MMIO 权限被限制（只读或完全禁止）
+  - UART MMIO 地址 0x10000000 在内核启动后无法访问
+- **影响**:
+  - 无法重新初始化 UART 硬件（uart.init()）
+  - 无法修改 UART 配置（IER 寄存器使能 TX 中断）
+  - 无法读取 UART 状态（ISR/IER/LSR 寄存器）
+  - AsyncUart 无法使能 TX 中断，异步发送失败
+- **尝试方案**:
+  1. 使用物理地址 → Page Fault（未映射）
+  2. 使用 phys_to_virt 转换 → StoreFault/LoadFault（权限限制）
+  3. MMIO write_volatile 直接写入 → StoreFault（权限限制）
+- **当前策略**: 跳过 UART 寄存器访问，依赖 axplat 配置，测试 ISR 上下文访问权限
+- **后续决策**: ISR 测试结果决定整体架构策略
+- **验证**: 内核启动成功 ✅，但 UART 配置无法验证 ⚠️
+
+<!-- L114 --> ### phys_to_virt 使用：物理地址到虚拟地址转换（2026-05-28）
+- **API**: `axhal::mem::phys_to_virt(PhysAddr::from(phys_addr))`
+- **返回**: `VirtAddr`（虚拟地址）
+- **用法**: `virt_addr.as_mut_ptr()` 获取指针
+- **约束**: 
+  - `PhysAddr::from()` 不是 const trait，不能用于 const 定义
+  - 需要在函数或 lazy_static 中动态计算
+- **示例**: UART MMIO 物理地址 0x10000000 → 虚拟地址 0xffffffc010000000
+- **验证**: 编译成功 ✅，但虚拟地址访问权限受限 ⚠️
+
+<!-- L115 --> ### UART MMIO 权限策略调整：放弃寄存器访问，测试 ISR 上下文（2026-05-28）
+- **决策**: 完全放弃在内核启动后访问 UART 寄存器
+- **原因**: MMIO 权限限制无法绕过（StoreFault/LoadFault）
+- **影响**: 
+  - 无法使能 TX 中断（IER::THR_EMPTY）
+  - AsyncUart 异步发送功能缺失
+  - 依赖 axplat 的 UART 配置（Console 只使能 RX 中断）
+- **后续策略**: 
+  - 测试 ISR 上下文是否可以访问 UART（关键验证）
+  - 如果 ISR 可访问 → 在 ISR 中使能 TX 中断
+  - 如果 ISR 也无法访问 → 调整整体架构（polling TX 或其他方案）
+- **验证位置**: P2.1 ISR 分发机制测试
+- **适用场景**: MMIO 设备权限受限时的替代方案探索

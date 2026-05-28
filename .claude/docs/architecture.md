@@ -361,3 +361,46 @@
   - ✅ 延后到 M3 — 在真正异步引擎上实现更合理
 - **风险**: termios 功能缺失，但不影响 M2 Gate 验证（T2.4 标注可选）
 - **验证**: M2 内核测试通过 ✅（无 termios 功能测试）
+
+---
+
+<!-- A22 --> ### 2026-05-28 - UART MMIO 权限问题策略调整：放弃寄存器访问，测试 ISR 上下文
+
+- **决策**: 完全放弃在内核启动后访问 UART 寄存器，依赖 axplat UART 配置，测试 ISR 上下文访问权限
+- **问题根因**:
+  - axplat 在 boot 阶段映射 UART MMIO（完整权限：读写）
+  - 内核启动后（entry.rs init），MMIO 权限被限制（只读或完全禁止）
+  - UART MMIO 地址 0x10000000 无法在内核上下文访问
+- **错误类型**:
+  - Page Fault @ 0x1000001c（物理地址未映射）
+  - StoreFault @ 0xffffffc01000001c（虚拟地址无写入权限）
+  - LoadFault @ 0xffffffc010000008（虚拟地址无读取权限）
+- **影响**:
+  - ❌ 无法重新初始化 UART 硬件（uart.init()）
+  - ❌ 无法修改 UART 配置（IER 寄存器使能 TX 中断）
+  - ❌ 无法读取 UART 状态（ISR/IER/LSR 寄存器）
+  - ⚠️ AsyncUart 无法使能 TX 中断（IER::THR_EMPTY），异步发送失败
+  - ✅ Console 已使能 RX 中断（IER::DATA_READY），RX 路径可用
+- **尝试方案**:
+  1. ❌ 使用物理地址 → Page Fault
+  2. ❌ 使用 phys_to_virt 转换 → StoreFault/LoadFault
+  3. ❌ MMIO write_volatile 直接写入 → StoreFault
+- **当前策略**:
+  - 放弃 UART 寄存器访问，跳过 init_uart_hardware() 的硬件初始化
+  - 依赖 axplat 的 UART 配置（Console 已使能 RX 中断）
+  - 🔴 **关键测试**：P2.1 ISR 分发机制验证 ISR 上下文 UART 访问权限
+- **后续决策路径**:
+  - **分支 A**：ISR 可以访问 UART → 在 ISR 中使能 TX 中断，继续原设计
+  - **分支 B**：ISR 也无法访问 UART → 调整整体架构策略：
+    - 方案 B1：polling TX（同步阻塞，牺牲异步性能）
+    - 方案 B2：boot 阶段修改 UART 配置（修改 axplat，复杂）
+    - 方案 B3：完全依赖 Console（放弃 AsyncUart，回退到 feat/uart-async）
+- **替代方案评估**:
+  - ❌ 修改 axplat UART 初始化 → 外部 crate 无法修改
+  - ❌ 在内核启动更早阶段初始化 → 无合适入口点
+  - ✅ 测试 ISR 上下文访问 → ISR 可能有不同的权限映射
+- **风险评估**:
+  - 高风险：ISR 也无法访问 UART → 整体架构需要重新设计
+  - 低风险：ISR 可以访问 UART → 可以继续原设计（ISR 使能 TX 中断）
+- **验证位置**: P2.1 ISR 分发机制测试（下一个关键决策点）
+- **参考**: learned.md L113-L115（UART MMIO 权限问题详细记录）

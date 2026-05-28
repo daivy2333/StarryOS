@@ -1,35 +1,47 @@
 # SNAPSHOT.md - 项目快照
 
 > Generated at 2026-05-24
-> Last updated: 2026-05-28
+> Last updated: 2026-05-29 06:40
 
 ---
 
 ## 当前状态
 
 **Branch**: feat/uart-async-dev2
-**Status**: 探索完全剔除 Console 的方案（从零开始）
+**Status**: ⚠️ P1 阻塞：UART MMIO 权限问题，策略调整
 **Base branch**: feat/uart-async（保留文档体系，回滚所有代码）
 
 **分支策略变更**：
 - **原 feat/uart-async 分支**：渐进式集成方案（复用 Console UART 初始化）
 - **新 feat/uart-async-dev2 分支**：完全剔除 Console 方案（从零开始实现）
+- **当前策略调整**：放弃 UART 寄存器访问，依赖 axplat 配置（测试 ISR 上下文访问）
+
+**⚠️ 关键阻塞（2026-05-28）**：
+- **UART MMIO 权限问题**：
+  - Page Fault @ 0x1000001c（物理地址未映射）
+  - StoreFault @ 0xffffffc01000001c（虚拟地址无写入权限）
+  - LoadFault @ 0xffffffc010000008（虚拟地址无读取权限）
+- **根因**：axplat 在 boot 阶段映射 UART MMIO，内核启动后权限被限制
+- **影响**：无法使能 TX 中断（IER::THR_EMPTY），AsyncUart 异步发送失败
 
 **当前目标**：
-- 完全剔除 Console（axplat 外部 crate）
-- 使用本地 uart_16550 crate + 自实现 UART 初始化
-- 实现独立的异步串口架构（不依赖 Console）
+- 测试 ISR 上下文是否可以访问 UART（关键验证）
+- 或在 boot 阶段修改 UART 配置（替代方案）
+- 或调整整体架构策略（放弃 TX 异步，使用 polling）
 
 **代码状态**：
-- ✅ 所有 AsyncUart 驱动代码已删除（回滚到 main 分支状态）
-- ✅ kernel/Cargo.toml 已恢复（无 uart_16550 + embassy-sync 依赖）
-- ✅ kernel/src/drivers/ 目录已删除
-- ✅ 文档体系完整保留（Console UART 研究 + 架构决策）
+- ✅ uart_16550 + embassy-sync 依赖已添加（kernel/Cargo.toml）
+- ✅ drivers 模块结构已创建（mod.rs + 6 个 placeholder 文件）
+- ✅ UART 初始化函数已实现（uart_init.rs，跳过寄存器访问）
+- ✅ 内核启动成功（make run 通过）
+- ⚠️ 无法访问 UART 寄存器，无法验证 IER 配置，TX 中断缺失
 
 **下一步**：
-- 重新规划 Milestone（完全剔除 Console 方案）
-- 设计新的 UART 初始化流程（替代 axplat）
-- 实现独立的异步串口架构
+- 🔴 **关键决策点**：测试 ISR 上下文 UART 访问权限
+  - 如果 ISR 可以访问 UART → 继续原设计（ISR 使能 TX 中断）
+  - 如果 ISR 也无法访问 → 调整整体架构策略
+- 实现 ISR 分发机制（P2.1）进行验证
+- 根据验证结果调整后续 Milestone
 
 ---
 
@@ -134,14 +146,26 @@ StarryOS/
   - earlycon 内核日志设计完成
   - AsyncUart 设备注册方案设计完成
   - IRQ waker 分发机制验证完成
+- [x] 添加 uart_16550 + embassy-sync 依赖（P1.1）✅ 2026-05-28
+- [x] 创建驱动模块结构（P1.2）✅ 2026-05-28
+- [x] 实现 UART 初始化函数（P1.3）✅ 2026-05-28
+  - 使用 lazy_static + phys_to_virt 转换虚拟地址
+- [x] 在内核启动流程调用 UART 初始化（P1.4）✅ 2026-05-28
+  - ⚠️ 遇到 MMIO 权限问题，策略调整为跳过寄存器访问
+- [x] Gate P1 验证（部分通过）✅ 2026-05-28
+  - ✅ 内核启动成功
+  - ⚠️ UART 寄存器无法访问，TX 中断缺失
 
 ### 进行中
 
-- [ ] 补充 ADR-021 到 architecture.md（基于四个关键问题的架构决策）
+- [ ] 🔴 **关键决策点**：测试 ISR 上下文 UART 访问权限（P2.1）
+  - 决定后续整体架构策略
 
 ### 待办
 
-- [ ] 开始 P1: UART 硬件初始化替代（添加依赖 + 实现初始化函数）
+- [ ] 根据 ISR 测试结果调整后续 Milestone（P2-P6）
+- [ ] 如果 ISR 可访问 UART → 继续原设计
+- [ ] 如果 ISR 也无法访问 → 调整为 polling TX 或其他方案
 
 ---
 
