@@ -31,6 +31,10 @@ pub const UART_STRIDE: u8 = 4;
 /// 全局 UART 实例（AsyncUart 独占访问）
 lazy_static! {
     static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
+        // SAFETY: UART_MMIO_BASE (0x10000000) is the documented MMIO address for
+        // UART0 on RISC-V QEMU virt platform. This address is guaranteed to be
+        // valid by the platform specification, and we have exclusive access
+        // protected by SpinNoIrq.
         Uart16550::new_mmio(
             NonNull::new(UART_MMIO_BASE as *mut u8).unwrap(),
             UART_STRIDE,
@@ -46,7 +50,7 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
 
 /// 初始化 UART 硬件（AsyncUart 专用配置）
 ///
-/// # Safety
+/// # When to Call
 ///
 /// 必须在内核启动早期调用，覆盖 axplat UART 初始化配置。
 /// 此函数会重新配置所有 UART 寄存器。
