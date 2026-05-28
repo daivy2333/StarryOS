@@ -101,6 +101,10 @@ weak-map = "0.1.1"
 xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
 
+# AsyncUart dependencies
+uart_16550 = { path = "../../uart_16550" }  # Local 16550 UART driver (v0.6.0)
+embassy-sync = "0.6.2"  # AtomicWaker (ISR-safe)
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
 
