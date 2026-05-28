@@ -5,302 +5,239 @@
 
 ---
 
-## Milestone 概览
+## Milestone 概览（完全剔除 Console 方案）
 
 | Milestone | 目标 | 底层引擎 | Gate | 依赖 | 建议 |
 |-----------|------|----------|------|------|------|
-| **M0** | 基础设施就绪 | — | `make run` + 中断回调触发 | — | 必做 ✅ |
-| **M1** | 架构验证 | Console（同步） | Ring Buffer + 中断 + copier 流程正确 | M0 | 必做 ✅ |
-| **M2** | VFS 验证 | Console（同步） | DeviceOps + 设备注册 + poll/epoll | M1 | 必做 ✅ |
-| **M3** | 异步引擎实现（未集成） | AsyncUart | **⚠️ 替换失败回滚**（IRQ 风暴 + TX busy-loop） | M2 | **待重新设计** |
-| **M4** | 性能优化 | AsyncUart | 性能基准达标 | M3 | 优先（暂停） |
-| **M5** | 真板验证 | AsyncUart | VisionFive2 实际验证 | M4 | 可并行（暂停） |
-| **M6** | DMA 探索 | AsyncUart+DMA | DMA 通道可用（远期） | M4 | 远期 |
+| **P0** | 项目规划与设计 | — | 分支创建 + 文档更新 + Milestone 规划 | — | 必做 ✅ |
+| **P1** | UART 硬件初始化替代 | uart_16550（本地） | UART 初始化成功 + 内核启动日志输出 | P0 | 必做 ✅ |
+| **P2** | 异步串口架构实现 | uart_16550 + axtask | RX/TX copier + Ring Buffer + ISR | P1 | 必做 ✅ |
+| **P3** | Console 软件路径剔除 | AsyncUart | Console 软件路径完全剔除 + AsyncUart 独占 UART | P2 | 必做 ✅ |
+| **P4** | VFS 集成验证 | AsyncUart | DeviceOps + 设备注册 + 用户态 API | P3 | 必做 ✅ |
+| **P5** | 性能优化 | AsyncUart | 性能基准达标 + IRQ 频率优化 | P4 | 优先 |
+| **P6** | 真板验证 | AsyncUart | VisionFive2 实际验证 | P5 | 可并行 |
 
 ---
 
-## M0: 基础设施就绪
+## P0: 项目规划与设计
 
-> 目标: 让内核具备异步串口所需的所有底层能力——依赖、编译验证、中断机制确认
+> 目标: 建立新分支的文档体系，明确完全剔除 Console 的设计方案
 
-<!-- T0.1 --> - [x] 添加 uart_16550 本地 path 依赖到 kernel/Cargo.toml
-  - 覆盖所有中断控制 API（set_interrupt_enable、interrupt_identification、InterruptType）
-  - 路径: `../../uart_16550`（本地 v0.6.0）
-  - 验证: cargo check 编译通过 ✅
+<!-- P0.1 --> - [x] 创建 feat/uart-async-dev2 分支 ✅ 2026-05-28
+  - 基于 feat/uart-async 创建新分支
+  - 回滚所有代码变更（保留文档体系）
 
-<!-- T0.2 --> - [x] 添加 embassy-sync 依赖到 kernel/Cargo.toml
-  - 仅引入 embassy-sync::AtomicWaker，不引入 executor/time
-  - 验证与 nightly-2026-02-25 兼容性
-  - 验证: cargo check 编译通过 ✅
+<!-- P0.2 --> - [x] 提交 feat/uart-async 分支文档 ✅ 2026-05-28
+  - Console UART 研究文档
+  - AsyncUart 集成设计方案（归档）
 
-<!-- T0.3 --> - [x] 中断机制确认（IRQ 10 共存语义）
-  - 确认 register_irq_waker 与现有 Console tty-reader 的共存语义
-  - 查看源码或实验验证：同一 IRQ 是否支持多次注册
-  - 验证: 明确共存/冲突处理方案 ✅
+<!-- P0.3 --> - [x] 回滚代码变更 ✅ 2026-05-28
+  - 删除 kernel/src/drivers/serial/ 目录
+  - 恢复 kernel/Cargo.toml、lib.rs、dev/mod.rs
 
-<!-- T0.4 --> - [x] Gate M0 验证
-  - `make run` 编译通过
-  - 内核启动正常（Console 调试输出可用）
-  - 验证: 基础依赖就绪，可进入 M1 ✅
+<!-- P0.4 --> - [ ] 更新文档体系 🔄
+  - 更新 SNAPSHOT.md（当前分支状态）
+  - 更新 tasks.md（新 Milestone 规划）
+  - 更新 architecture.md（新 ADR）
+  - 清理 learned.md/references.md（过时信息）
 
-**Gate M0**: 编译通过 + 内核启动 + 中断共存方案明确
+<!-- P0.5 --> - [ ] 设计完全剔除 Console 方案
+  - 确定 UART 初始化替代方案
+  - 确定 Console 软件路径剔除范围
+  - 设计 earlycon（内核启动日志）
+
+**Gate P0**: 文档体系完整 + Milestone 规划明确 + 设计方案初步形成
 
 ---
 
-## M1: 架构验证（底层用 Console 同步引擎） ✅ 完成
+## P1: UART 硬件初始化替代
 
-> 目标: 验证基础架构（中断机制、Ring Buffer、copier 任务模型），底层暂时用 Console 同步引擎，调试能力保留
-> 完成时间: 2026-05-27
+> 目标: 替代 axplat 的 UART 初始化，实现独立的 UART 硬件配置
 
-<!-- T1.1 --> - [x] Ring Buffer 实现 ✅
-  - rx_buf + tx_buf 各一个 HeapRb<u8>（默认 64 KiB）
-  - rx_wakers + tx_wakers 各一个 PollSet
-  - 验证: AsyncBuffer 结构正确，编译通过 ✅
+<!-- P1.1 --> - [ ] 添加 uart_16550 本地依赖
+  - 在 kernel/Cargo.toml 添加 path 依赖：`../../uart_16550`
+  - 添加 embassy-sync 依赖（用于 AtomicWaker）
+  - 验证：cargo check 编译通过
 
-<!-- T1.2 --> - [x] 中断机制验证（IRQ 10 共存） ✅
-  - 确认 register_irq_waker 与现有 Console tty-reader 的共存语义
-  - 验证: RX copier 任务唤醒，数据到达 rx_buf ✅
+<!-- P1.2 --> - [ ] 实现 UART 初始化函数
+  - 创建 kernel/src/drivers/uart_init.rs
+  - 实现 `init_uart_hardware()`：配置波特率、FIFO、中断
+  - 配置：BaudRate::Baud115200, FifoTriggerLevel::Fourteen, IER::DATA_READY
+  - 验证：UART 寄存器配置正确（IER/LSR/ISR）
 
-<!-- T1.3 --> - [x] RX copier 任务模型验证 ✅
-  - RX copier: poll_fn 循环，被唤醒后从 Console.read_bytes 读取，写入 rx_buf
-  - 底层用 Console（同步），验证 copier 任务流程正确
-  - 验证: 中断到来 → copier 任务唤醒 → rx_buf 有数据 ✅
+<!-- P1.3 --> - [ ] 替代 axplat UART 初始化
+  - 在内核启动流程中调用 `init_uart_hardware()`
+  - 位置：entry.rs 或 axruntime::init 后
+  - 验证：UART 硬件初始化成功
 
-<!-- T1.4 --> - [x] TX 路径模拟验证 ✅
-  - TX 暂用 Console.write_bytes（同步阻塞），验证 tx_buf → Console 流程
-  - 验证: write → tx_buf → Console 输出正常 ✅
+<!-- P1.4 --> - [ ] 实现 earlycon（内核启动日志）
+  - 实现简单的 polling TX 输出（用于启动日志）
+  - 不依赖 AsyncUart，纯同步阻塞
+  - 验证：内核启动日志可见
 
-<!-- T1.5 --> - [x] 设备注册到 devfs ✅
-  - 在 pseudofs/dev/mod.rs builder() 中注册 async_uart_test 设备
-  - 验证: `/dev/async_uart_test` 可打开 ✅
-
-<!-- T1.6 --> - [x] Gate M1 验证 ✅
+<!-- P1.5 --> - [ ] Gate P1 验证
   - `make run` 编译通过 + 内核启动
-  - 设备可打开、读写正常
-  - 验证: TX/RX 数据流正常 ✅
+  - UART 初始化成功（IER 配置正确）
+  - 内核启动日志输出正常
 
-**Gate M1**: ✅ 架构验证通过（Ring Buffer + 中断 + copier 任务流程正确）
-**已知约束**: Console 共用数据竞争（L74 已记录），M3 解决
-  - 若不支持多次注册，需设计统一中断分发机制
-  - 验证: 中断回调触发，copier 任务唤醒
-
-<!-- T1.3 --> - [ ] RX copier 任务模型验证
-  - RX copier: poll_fn 循环，被唤醒后从 Console.read_bytes 读取，写入 rx_buf
-  - 底层用 Console（同步），验证 copier 任务流程正确
-  - 验证: 中断到来 → copier 任务唤醒 → rx_buf 有数据
-
-<!-- T1.4 --> - [ ] TX 路径模拟验证
-  - TX 暂用 Console.write_bytes（同步阻塞），验证 tx_buf → Console 流程
-  - 不实现真正的 TX copier（M3 再做）
-  - 验证: write → tx_buf → Console 输出正常
-
-**Gate M1**: 架构验证通过（Ring Buffer + 中断 + copier 任务流程正确），调试输出保留
+**Gate P1**: UART 硬件初始化成功 + 内核启动日志输出正常
 
 ---
 
-## M2: VFS 验证（Console 包装） ✅ 验证通过
+## P2: 异步串口架构实现
 
-> 目标: 验证 VFS 集成（DeviceOps + 设备注册 + poll），设备底层用 Console 同步引擎
-> 验证方式: 内核内部测试（feat/uart-async-m2 分支）
-> 验证时间: 2026-05-27
+> 目标: 实现独立的异步串口架构（不依赖 Console）
 
-**验证策略**：
-- 在 feat/uart-async-m2 分支添加内核内部测试代码
-- 测试文件: `kernel/src/drivers/serial/test.rs` (M2 验证测试模块)
-- 测试方式: 内核启动时自动执行，无需用户态程序
-- 测试结果: 所有自动化测试通过 ✅
+<!-- P2.1 --> - [ ] 实现 AsyncUart trait
+  - 创建 kernel/src/drivers/async_uart.rs
+  - 定义 AsyncUart trait（try_read/try_write + 中断控制）
+  - 实现 Uart16550Async（包装 uart_16550 crate）
 
-**验证结果**：
-- ✅ Device creation (AsyncUartTestDevice 创建成功)
-- ✅ write_at (TX path) (write_at 返回 Ok(36)，Console 输出可见)
-- ✅ Pollable trait (as_pollable() 返回 Some，poll 返回 IoEvents(OUT))
-- ℹ️ read_at (RX) 跳过（需手动输入触发）
-- ℹ️ devfs registration 提示手动检查
+<!-- P2.2 --> - [ ] 实现 Ring Buffer + PollSet
+  - 创建 kernel/src/drivers/ring_buffer.rs
+  - 实现 AsyncBuffer（rx_buf + tx_buf + rx_wakers + tx_wakers）
+  - 使用 ringbuf::HeapRb<u8> + axpoll::PollSet
 
-<!-- T2.1 --> - [x] ConsoleDriver 实现 DeviceOps ✅ (已在 M1 实现)
-  - read_at/write_at 实现（已在 M1 实现）
-  - as_pollable 支持 poll/select/epoll（已在 M1 实现）
-  - 验证: DeviceOps 接口编译通过 ✅
-  - M2 验证: write_at 成功，Console 输出正常 ✅
+<!-- P2.3 --> - [ ] 实现 ISR + AtomicWaker
+  - 创建 kernel/src/drivers/isr.rs
+  - 实现 IsrContext（Mutex<Uart> + rx_waker + tx_waker）
+  - 实现 uart_isr_handler（读 ISR → 禁用中断 → wake waker）
 
-<!-- T2.2 --> - [x] 注册测试设备到 devfs ✅ (已在 M1 实现)
-  - 在 pseudofs/dev/mod.rs builder() 中注册 async_uart_test 设备（已在 M1 实现）
-  - 不替换 /dev/console（保留 Console 调试能力）✅
-  - 验证: `/dev/async_uart_test` 设备注册成功 ✅
+<!-- P2.4 --> - [ ] 实现 RX/TX copier 任务
+  - 创建 kernel/src/drivers/async_driver.rs
+  - 实现 AsyncUartDriver（RX copier + TX copier）
+  - RX copier: IRQ → read UART → push rx_buf
+  - TX copier: pop tx_buf → write UART → IRQ
 
-<!-- T2.3 --> - [x] 功能验证 ✅ (内核内部测试完成)
-  - 验证 DeviceOps trait 实现正确 ✅
-  - 验证 Pollable trait 实现正确 ✅
-  - 验证 TX 路径正常（Console 输出可见）✅
-  - 验证 poll IN/OUT 事件正确返回 ✅
+<!-- P2.5 --> - [ ] 注册 ISR hook
+  - 调用 axhal::register_irq_hook(10, uart_isr_handler)
+  - 验证：ISR 触发正常
 
-<!-- T2.4 --> - [ ] termios 支持框架（可选，延后到 M3）
-  - 默认 raw 模式零开销
-  - ioctl TCGETS/TCSETS 框架预留
-  - 延后原因: Console 共用问题（L74）待解决；M3 替换 AsyncUart 后统一实现（ADR-016）
+<!-- P2.6 --> - [ ] Gate P2 验证
+  - RX/TX copier 任务启动正常
+  - IRQ 触发 → ISR → copier 唤醒流程正确
+  - 数据收发正常（环形缓冲区）
 
-**Gate M2**: ✅ VFS 集成验证通过（DeviceOps + 设备注册 + poll），调试输出保留
-**验证分支**: feat/uart-async-m2 (内核内部测试代码)
-**下一步**: 进入 M3 异步引擎替换
+**Gate P2**: 异步串口架构完整 + RX/TX copier 任务正常
 
 ---
 
-## M3: 异步引擎实现（⚠️ 替换失败回滚）
+## P3: Console 软件路径剔除
 
-> **状态**：M3 Task 1-5 完成（AsyncUart 驱动代码实现），**Task 6+ 替换失败**
-> **回滚原因**：IRQ 风暴 + TX busy-loop，UART 硬件状态异常（详见 ADR-019）
-> **回滚点**：d29a28f（M3 Task 5 - module exports 完成）
+> 目标: 完全剔除 Console 软件路径，AsyncUart 独占 UART
 
-### 已完成（Task 1-5） ✅
+<!-- P3.1 --> - [ ] 分析 Console 软件路径
+  - 查找所有使用 axhal::console 的代码
+  - 确定剔除范围：ntty.rs、ldisc.rs、entry.rs
 
-<!-- T3.1 --> - [x] AsyncUart trait + Uart16550 实现 ✅
-<!-- T3.2 --> - [x] ISR（IsrContext + AtomicWaker）实现 ✅
-<!-- T3.3 --> - [x] AsyncBuffer（Ring Buffer + PollSet）实现 ✅
-<!-- T3.4 --> - [x] AsyncUartDriver（RX/TX copier）实现 ✅
-<!-- T3.5 --> - [x] Module exports + 编译验证 ✅
+<!-- P3.2 --> - [ ] 剔除 tty-reader 任务
+  - 移除 tty-reader copier 任务（ldisc.rs）
+  - 移除 register_irq_waker(10, tty_reader_waker)
 
-### 替换失败（Task 6+） ❌ 2026-05-28
+<!-- P3.3 --> - [ ] 替代 Console TX/RX API
+  - 重定向 axhal::console::write_bytes → AsyncUart tx_buf
+  - 重定向 axhal::console::read_bytes → AsyncUart rx_buf
+  - 或完全删除 Console API
 
-**失败症状**：
-- **IRQ 风暴**：RX-COPIER 和 tty-reader 快速循环唤醒，IRQ 10 异常触发
-- **TX busy-loop**：TX FIFO 满，UART 状态异常（LSR=0x00，THR_EMPTY=false TEMT=false）
-- **UART 硕件未正常发送数据**：FIFO 满后 retry 无效
+<!-- P3.4 --> - [ ] 修改 Console 相关代码
+  - ntty.rs: Console TtyWrite/TtyRead trait 实现
+  - ldisc.rs: InputReader 移除或修改
+  - entry.rs: Console 初始化代码
 
-**根本问题（未完全明确）**：
-- UART 硕件配置异常（Console 初始化后的状态不兼容 AsyncUart）
-- 未验证 UART 状态（IIR、MCR、LSR）就开始集成
-- 缺少全面的硬件状态调试信息
+<!-- P3.5 --> - [ ] Gate P3 验证
+  - Console 软件路径完全剔除
+  - AsyncUart 独占 UART 硬件
+  - IRQ 10 独占给 AsyncUart copier
 
-**教训**：见 ADR-019（architecture.md）
-
-### 待重新设计
-
-**替代方案（待评估）**：
-1. 方案 A：添加全面的 UART 状态调试（IIR/MCR/LSR），诊断硬件问题
-2. 方案 B：AsyncUart 启动时重新初始化 UART（uart.init()）
-3. 方案 C：放弃 THRE interrupt，使用纯 polling TX
-4. 方案 D：回到"软件路径分离"方案（Console 和 AsyncUart 共存）
-
-**Gate M3**：⚠️ **阻塞** — 需重新设计整体方案
+**Gate P3**: Console 软件路径剔除完成 + AsyncUart 独占 UART
 
 ---
 
-## M4: 性能优化
+## P4: VFS 集成验证
 
-> 目标: 性能基准达标，CPU 空闲时零占用，吞吐量接近线速
+> 目标: AsyncUart 设备注册到 VFS，提供用户态 API
 
-<!-- T4.1 --> - [ ] 批量传输优化
-  - uart_16550 try_receive_batch/try_send_batch API（减少逐字节 MMIO）
-  - write coalescing: 多个短 write 合并为一次 tx_buf 写入
-  - 验证: 吞吐量提升可测量
+<!-- P4.1 --> - [ ] 实现 DeviceOps trait
+  - 创建 kernel/src/drivers/device_ops.rs
+  - 实现 AsyncUartDevice（read_at/write_at/as_pollable）
+  - 实现 Pollable trait（poll/select/epoll 支持）
 
-<!-- T4.2 --> - [ ] NAPI 风格批量轮询
-  - 中断触发后切换到轮询模式处理 FIFO 残留数据
-  - 处理完毕后切回中断等待
-  - 验证: 高波特率下 IRQ 频率降低，吞吐量不降
+<!-- P4.2 --> - [ ] 注册设备到 devfs
+  - 在 pseudofs/dev/mod.rs builder() 中注册 async_uart 设备
+  - 设备类型：CharacterDevice
+  - 设备 ID：实验性 ID（如 4, 64）
 
-<!-- T4.5 --> - [ ] 中断分发效率优化
-  - 评估 register_irq_waker BTreeMap 查找开销
-  - 若开销显著，考虑 IRQ 号直接映射（数组索引）
-  - 与 NAPI 批量处理协同减少 PLIC claim/complete MMIO 延迟
-  - 验证: 中断处理延迟降低可测量
+<!-- P4.3 --> - [ ] 用户态 API 验证
+  - 用户态程序打开 /dev/async_uart
+  - read/write 数据收发正常
+  - poll/select/epoll 事件通知正常
 
-<!-- T4.3 --> - [ ] 空闲 CPU 零占用
-  - 无数据时 copier 任务挂起（poll_fn 返回 Pending）
-  - CPU 进入 WFI 休眠
-  - 验证: 无数据 10s，CPU 统计显示 0% 串口占用
+<!-- P4.4 --> - [ ] Gate P4 验证
+  - DeviceOps trait 实现正确
+  - 设备注册成功
+  - 用户态 API 可用
 
-<!-- T4.4 --> - [ ] 性能基准建立
-  - 吞吐量 @115200: > 10 KB/s (90% 线速)
-  - 延迟 P50 < 500 µs, P99 < 2 ms
-  - 数据完整性: 1 MB 随机数据 MD5 校验
-  - 验证: 基准指标达标
-
-<!-- T4.6 --> - [ ] PTY ringbuf 性能优化（可选）
-  - PTY_BUF_SIZE 从 4096 增大到 64 KiB（与 AsyncUart 对齐）
-  - 减少高频读写时的唤醒频率
-  - 验证: SSH/tmux 场景吞吐量提升可测量
-  - 参考: kernel/src/pseudofs/dev/tty/pty.rs PTY_BUF_SIZE
-
-**Gate M4**: 性能基准达标 + 与原轮询驱动对比有明显提升
+**Gate P4**: VFS 集成完成 + 用户态 API 可用
 
 ---
 
-## M5: 真板验证
+## P5: 性能优化
 
-> 目标: 在 VisionFive2 等真实硬件上验证异步串口驱动
+> 目标: 性能基准达标，IRQ 频率优化
 
-<!-- T5.1 --> - [ ] VisionFive2 平台适配
-  - 确认板上 UART 型号（是否 16550 兼容）
-  - AsyncUart trait 支持 DwApbUart 等不同硬件
-  - 验证: 交叉编译通过
+<!-- P5.1 --> - [ ] IRQ 频率优化
+  - 监控 IRQ 10 触发频率
+  - 验证无 IRQ 风暴（频率 < 100 Hz）
 
-<!-- T5.2 --> - [ ] 真板中断验证
-  - PLIC 中断号与 QEMU 不同，需适配
-  - 验证: 板上中断回调触发
+<!-- P5.2 --> - [ ] TX 吞吐量测试
+  - 发送 1MB 数据，测量吞吐量
+  - 目标：> 10 KB/s @115200
 
-<!-- T5.3 --> - [ ] 真板串口收发验证
-  - echo 回环测试
-  - 性能基准测试
-  - 验证: 板上串口工作正常
+<!-- P5.3 --> - [ ] RX 延迟测试
+  - 测量 RX 数据到达延迟
+  - 目标：< 500 µs
 
-**Gate M5**: 真板串口收发正常 + 性能数据可信
+<!-- P5.4 --> - [ ] CPU 利用率测试
+  - 无数据时 CPU 利用率
+  - 目标：0%（空闲）
+
+**Gate P5**: 性能基准达标 + IRQ 频率正常
 
 ---
 
-## M6: DMA 探索（远期）
+## P6: 真板验证
 
-> 目标: 探索 DMA 传输通道，为极高吞吐量场景做准备
+> 目标: 在 VisionFive2 真实硬件上验证
 
-<!-- T6.1 --> - [ ] DMA 通道可行性评估
-  - 评估 virtio-console DMA 模式是否可用于串口数据传输
-  - 评估 StarryOS 内存管理是否支持 PageBox 对齐分配
-  - 验证: 可行性报告输出
+<!-- P6.1 --> - [ ] VisionFive2 平台适配
+  - 确认 UART 型号（是否 16550 兼容）
+  - 适配 UART MMIO 地址和 IRQ 号
 
-<!-- T6.2 --> - [ ] DMA 缓冲区管理（如果可行）
-  - PageBox 对齐分配
-  - 物理地址映射
-  - 验证: 分配/释放正确
+<!-- P6.2 --> - [ ] 真板串口验证
+  - 交叉编译
+  - 真板串口收发测试
 
-<!-- T6.3 --> - [ ] 流式 DMA 收发（如果可行）
-  - 零拷贝读取路径
-  - 大数据块传输校验
-  - 验证: 数据校验通过
-
-<!-- T6.4 --> - [ ] DMA + 中断混合策略
-  - 小数据走中断，大数据走 DMA
-  - 阈值可配置
-  - 验证: 混合模式切换正确
-
-**Gate M6**: 1 MB 数据 DMA 传输校验通过 + 与纯中断模式性能对比
+**Gate P6**: 真板串口收发正常
 
 ---
 
 ## 依赖关系
 
 ```
-M0 → M1 → M2（架构 + VFS 验证，底层用 Console 同步引擎）
-               │
-               └→ M3（异步引擎替换，关键替换点）
-                     │
-                     ├→ M4（性能优化）
-                     │      ├→ M5（真板验证）
-                     │      └→ M6（DMA 远期）
+P0（项目规划）
+  ↓
+P1（UART 初始化替代）
+  ↓
+P2（异步串口架构）
+  ↓
+P3（Console 剔除）
+  ↓
+P4（VFS 集成）
+  ↓
+P5（性能优化）
+  ↓
+P6（真板验证）
 ```
-
-**渐进式策略（ADR-015）**：
-
-1. **M0 → M1 → M2**：验证基础架构（底层用 Console 同步引擎，调试能力保留）
-2. **M3**：异步引擎替换（一步到位，风险集中但可控）
-3. **M3 完成后**：
-   - **M4 优先**：性能优化，基于 AsyncUart
-   - **M5 可并行**：真板验证
-   - **M6 远期**：DMA 探索
-
-**风险控制**：
-- M1/M2 验证时调试能力保留（Console 同步输出）
-- M3 是关键替换点，但前置验证已完成，失败可回滚
-- 异步引擎 bug 不影响内核日志输出（earlycon 独立路径）
 
 ---
 
@@ -308,4 +245,22 @@ M0 → M1 → M2（架构 + VFS 验证，底层用 Console 同步引擎）
 
 <!-- 添加时格式: <!-- T{编号} --> - {阻塞描述} - {原因} -->
 
-<!-- TB1 --> - 无
+<!-- PB1 --> - 无
+
+---
+
+## 已完成 Milestone（feat/uart-async 分支，归档）
+
+**原 feat/uart-async 分支的 Milestone（渐进式集成方案）已归档**：
+- M0: 基础设施就绪 ✅
+- M1: 架构验证 ✅
+- M2: VFS 验证 ✅
+- M3: 异步引擎实现（未集成）⚠️ 回滚
+- M4: 性能优化（暂停）
+- M5: 真板验证（暂停）
+
+**归档原因**：分支策略变更，从渐进式集成改为完全剔除 Console 方案。
+
+**相关文档**：
+- 渐进式集成设计文档：`.claude/docs/superpowers/specs/2026-05-28-async-uart-integration-design.md`
+- Console UART 研究文档：`docs/analysis/console-uart-mechanism.md`（保留作为参考）

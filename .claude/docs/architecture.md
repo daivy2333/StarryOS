@@ -5,49 +5,52 @@
 
 ---
 
-<!-- A19 --> ### 2026-05-28 - M3 替换失败回滚（ADR-018 战略转向失败）
+<!-- A20 --> ### 2026-05-28 - 分支策略变更：完全剔除 Console（feat/uart-async-dev2）
 
 **背景**：
-- ADR-018（2026-05-28）提出"AsyncUart 完全替代 Console"的战略转向
-- 尝试实现后发现严重的 IRQ 风暴 + TX busy-loop 问题
-- 问题根因未完全明确，无法继续
-
-**失败症状**：
-1. **IRQ 风暴**：RX-COPIER 和 tty-reader 快速循环唤醒，IRQ 10 异常触发
-   - 症状：`[RX-COPIER] poll: IER=0x00 rx_ready=false` → `[RX-COPIER] returning Pending` → 立即又被唤醒
-   - 影响：系统卡住，Shell 无法启动
-
-2. **TX busy-loop**：TX FIFO 满，UART 状态异常
-   - 症状：`[TX-COPIER] FIFO full, retry_count=1, LSR=0x00 (THR_EMPTY=false TEMT=false)`
-   - LSR=0x00 表示 THR/TSR 有数据正在发送，但 UART 状态不变化
-   - Retry 后 FIFO 仍然满，UART 硬件未正常发送数据
-
-**根因分析（未完全明确）**：
-- UART 硬件可能未正常初始化或配置异常
-- IIR 寄存器（Interrupt Identification）状态未知，无法确认 interrupt 类型
-- THR_EMPTY 状态异常（可能 UART TX 被禁用）
-- Console 初始化后的 UART 状态可能不兼容 AsyncUart
+- feat/uart-async 分支尝试渐进式集成方案（复用 Console UART 初始化）
+- M3 替换失败（IRQ 风暴 + TX busy-loop），问题根因未完全明确
+- Console UART 研究发现：Console 与 AsyncUart 共享 UART 存在数据竞争风险
 
 **决策**：
-- **回滚到 M3 Task 5**（AsyncUart 驱动实现，完全未集成）
-- 回滚点：`d29a28f`（feat(uart-async): complete module exports and fix compilation errors）
-- OS 仍使用 Console 阻塞输出（正常工作）
+- **创建新分支 feat/uart-async-dev2**：完全剔除 Console，从零开始实现
+- **策略变更**：从"渐进式集成"改为"完全替代 Console"
+- **目标**：使用本地 uart_16550 crate + 自实现 UART 初始化，不依赖 axplat
 
-**教训**：
-- ❌ 未验证 UART 硕件状态就开始集成（假设 Console 初始化后的 UART 状态正常）
-- ❌ 未添加足够的调试信息（IIR、MCR、完整 LSR 状态）
-- ❌ ADR-018 战略转向过于激进（未充分验证可行性）
+**原因**：
+- ✅ 避免 Console 与 AsyncUart 的数据竞争（TX 同时写 THR）
+- ✅ 避免 IRQ waker 冲突（tty-reader 与 AsyncUart copier）
+- ✅ 避免 UART 重初始化冲突（Console 初始化状态不明确）
+- ✅ 完全控制 UART 硬件配置（从零开始，状态明确）
 
 **影响**：
-- M3 架构代码保留（AsyncUart trait + ISR + copier），但未集成
-- 需重新评估整体方案，可能需要更根本的设计改动
-- 下一步：添加全面的 UART 状态调试，或重新设计方案
+- feat/uart-async 分支保留文档体系，归档渐进式集成设计
+- feat/uart-async-dev2 分支完全回滚代码，重新开始
+- 新 Milestone 规划：P0（规划）→ P1（UART 初始化替代）→ P2（异步架构）→ P3（Console 剔除）→ P4（VFS 集成）→ P5（性能优化）→ P6（真板验证）
 
-**替代方案（待评估）**：
-1. **方案 A**：添加 IIR/MCR/LSR 详细调试，诊断 UART 硕件状态
-2. **方案 B**：AsyncUart 启动时重新初始化 UART（uart.init()）
-3. **方案 C**：放弃 THRE interrupt，使用纯 polling TX 方案
-4. **方案 D**：回退到"软件路径分离"（ADR-018 之前），Console 和 AsyncUart 共存
+**替代方案（已评估）**：
+- ❌ 方案 A：添加 UART 状态调试 + 修复 IER — 未验证可行性
+- ❌ 方案 B：AsyncUart 重新初始化 UART — 可能破坏 Console RX
+- ❌ 方案 C：纯 polling TX — 性能不如预期
+- ❌ 方案 D：Console 和 AsyncUart 共存 — 数据竞争风险
+- ✅ 方案 E（新分支）：完全剔除 Console — 从零开始，避免冲突
+
+**风险**：
+- ⚠️ 需替代 axplat UART 初始化（可能影响内核启动流程）
+- ⚠️ 需实现 earlycon（内核启动日志输出）
+- ⚠️ Console 剔除范围需明确评估
+
+---
+
+<!-- A19 --> ### 2026-05-28 - M3 替换失败回滚（ADR-018 战略转向失败）⚠️ ARCHIVED
+
+> **已归档** (2026-05-28) — feat/uart-async 分支的失败经验，在新分支重新开始。详细内容见 ADR-020。
+
+---
+
+<!-- A18 --> ### 2026-05-28 - AsyncUart 完全替代 Console（ADR-018 战略转向）⚠️ ARCHIVED
+
+> **已归档** (2026-05-28) — feat/uart-async 分支的战略转向失败，在新分支重新尝试。详细内容见 ADR-019。
 
 ---
 

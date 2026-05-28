@@ -93,11 +93,24 @@
 - **误解影响**: 以为 THR_EMPTY=false 表示 FIFO 有至少 1 个字节，实际表示 FIFO 满
 - **纠正**: THR_EMPTY=1 表示 FIFO 有空位，THR_EMPTY=0 表示 FIFO 满
 - **教训**: 需仔细阅读 UART 规范，不要依赖库的注释（可能有错误）
+- **参考**: docs/analysis/console-uart-mechanism.md（Console UART 研究）
 
-<!-- L86 --> ### Console TX 与 AsyncUart TX 数据竞争（2026-05-28）
-- **症状**: M3 替换失败，TX FIFO 满（LSR=0x00），THR_EMPTY 状态不更新
-- **根因**: Console 的同步阻塞 TX（逐字节忙等待 THR_EMPTY）与 AsyncUart TX copier 同时写 THR 寄存器
-- **竞争场景**:
+<!-- L88 --> ### Console 与 AsyncUart 共享 UART 的数据竞争风险（2026-05-28）
+- **风险类型**:
+  1. **TX 数据竞争**: Console TX（同步阻塞）与 AsyncUart TX copier 同时写 THR 寄存器
+  2. **IRQ waker 冲突**: Console tty-reader 与 AsyncUart copier 竞争 IRQ 10 waker
+  3. **UART 重初始化冲突**: AsyncUart 重初始化可能破坏 Console 配置
+- **根因**: Console 是外部 crate (axplat)，无法完全控制其 UART 操作
+- **解决**: 完全剔除 Console，使用本地 uart_16550 crate（feat/uart-async-dev2 分支）
+- **预防**: 新分支从零开始，避免共享 UART 硬件
+- **参考**: docs/analysis/console-uart-mechanism.md（Console UART 研究）
+
+<!-- L89 --> ### 分支策略变更：完全剔除 Console（2026-05-28）
+- **背景**: feat/uart-async 分支的渐进式集成方案失败（M3 替换失败）
+- **决策**: 创建 feat/uart-async-dev2 分支，完全剔除 Console，从零开始
+- **原因**: 避免 Console 与 AsyncUart 的数据竞争、IRQ waker 冲突、UART 重初始化冲突
+- **新方案**: 使用本地 uart_16550 crate + 自实现 UART 初始化
+- **参考**: ADR-020（architecture.md）
   1. Console.write_bytes() 开始发送字节 0，等待 THR_EMPTY
   2. AsyncUart TX copier try_write() 尝试写 THR → FIFO 满
   3. Console 继续等待 THR_EMPTY → UART 状态异常（THR_EMPTY 标志不更新）
