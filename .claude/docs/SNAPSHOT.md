@@ -1,16 +1,36 @@
 # SNAPSHOT.md - 项目快照
 
 > Generated at 2026-05-24
-> Last updated: 2026-05-27
+> Last updated: 2026-05-28
 
 ---
 
 ## 当前状态
 
-**Milestone**: M2 (VFS 验证) - ✅ 验证通过
-**Status**: VFS 集成功能验证通过（内核内部测试），可进入 M3 异步引擎替换
-**Branch**: feat/uart-async(m1) (主开发分支)
-**验证分支**: feat/uart-async-m2 (内核测试代码)
+**Milestone**: M3 (异步引擎实现) — ⚠️ **回滚状态**
+**Status**: AsyncUart 驱动代码已实现（Task 1-5），编译通过，**完全未集成**
+**Branch**: feat/uart-async
+**Rollback commit**: d29a28f（M3 Task 5 - module exports 完成）
+
+**回滚原因**：
+- M3 替换尝试（Console → AsyncUart）失败
+- **IRQ 风暴问题**：IRQ 10 触发异常，RX-COPIER 循环唤醒
+- **TX busy-loop 问题**：TX FIFO 满，UART 状态异常（LSR=0x00）
+- **UART 硬件未正常发送数据**：FIFO 满后 retry 无效
+
+**当前代码状态**：
+- ✅ AsyncUart trait + Uart16550Async 实现
+- ✅ AsyncBuffer（Ring Buffer + PollSet）实现
+- ✅ ISR（IsrContext + AtomicWaker）实现
+- ✅ AsyncUartDriver（RX/TX copier）实现
+- ✅ Module exports 完成
+- ⚠️ **完全未集成**：ISR 未注册，copier 任务未启动
+- ✅ OS 仍使用 **Console 阻塞输出**（正常工作）
+
+**下一步决策**：
+- 需重新评估整体方案
+- IRQ 风暴 + TX busy-loop 根因未完全明确
+- 可能需要更根本的设计改动（ADR 待更新）
 
 **验证结果**:
 - ✅ DeviceOps trait 实现正确（write_at 成功）

@@ -5,6 +5,52 @@
 
 ---
 
+<!-- A19 --> ### 2026-05-28 - M3 替换失败回滚（ADR-018 战略转向失败）
+
+**背景**：
+- ADR-018（2026-05-28）提出"AsyncUart 完全替代 Console"的战略转向
+- 尝试实现后发现严重的 IRQ 风暴 + TX busy-loop 问题
+- 问题根因未完全明确，无法继续
+
+**失败症状**：
+1. **IRQ 风暴**：RX-COPIER 和 tty-reader 快速循环唤醒，IRQ 10 异常触发
+   - 症状：`[RX-COPIER] poll: IER=0x00 rx_ready=false` → `[RX-COPIER] returning Pending` → 立即又被唤醒
+   - 影响：系统卡住，Shell 无法启动
+
+2. **TX busy-loop**：TX FIFO 满，UART 状态异常
+   - 症状：`[TX-COPIER] FIFO full, retry_count=1, LSR=0x00 (THR_EMPTY=false TEMT=false)`
+   - LSR=0x00 表示 THR/TSR 有数据正在发送，但 UART 状态不变化
+   - Retry 后 FIFO 仍然满，UART 硬件未正常发送数据
+
+**根因分析（未完全明确）**：
+- UART 硬件可能未正常初始化或配置异常
+- IIR 寄存器（Interrupt Identification）状态未知，无法确认 interrupt 类型
+- THR_EMPTY 状态异常（可能 UART TX 被禁用）
+- Console 初始化后的 UART 状态可能不兼容 AsyncUart
+
+**决策**：
+- **回滚到 M3 Task 5**（AsyncUart 驱动实现，完全未集成）
+- 回滚点：`d29a28f`（feat(uart-async): complete module exports and fix compilation errors）
+- OS 仍使用 Console 阻塞输出（正常工作）
+
+**教训**：
+- ❌ 未验证 UART 硕件状态就开始集成（假设 Console 初始化后的 UART 状态正常）
+- ❌ 未添加足够的调试信息（IIR、MCR、完整 LSR 状态）
+- ❌ ADR-018 战略转向过于激进（未充分验证可行性）
+
+**影响**：
+- M3 架构代码保留（AsyncUart trait + ISR + copier），但未集成
+- 需重新评估整体方案，可能需要更根本的设计改动
+- 下一步：添加全面的 UART 状态调试，或重新设计方案
+
+**替代方案（待评估）**：
+1. **方案 A**：添加 IIR/MCR/LSR 详细调试，诊断 UART 硕件状态
+2. **方案 B**：AsyncUart 启动时重新初始化 UART（uart.init()）
+3. **方案 C**：放弃 THRE interrupt，使用纯 polling TX 方案
+4. **方案 D**：回退到"软件路径分离"（ADR-018 之前），Console 和 AsyncUart 共存
+
+---
+
 <!-- A1 --> ### 2026-05-24 - 使用 axtask::future + embassy-sync::AtomicWaker，不引入完整 Embassy
 
 - **决策**: 异步运行时基于 `axtask::future`（block_on + poll_io + register_irq_waker），仅引入 `embassy-sync::AtomicWaker` 用于 ISR 中安全唤醒
