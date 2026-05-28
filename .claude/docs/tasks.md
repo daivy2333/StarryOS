@@ -9,12 +9,12 @@
 
 | Milestone | 目标 | 底层引擎 | Gate | 依赖 | 建议 |
 |-----------|------|----------|------|------|------|
-| **M0** | 基础设施就绪 | — | `make run` + 中断回调触发 | — | 必做 |
-| **M1** | 架构验证 | Console（同步） | Ring Buffer + 中断 + copier 流程正确 | M0 | 必做 |
-| **M2** | VFS 验证 | Console（同步） | DeviceOps + 设备注册 + poll/epoll | M1 | 必做 |
-| **M3** | 异步引擎替换 | AsyncUart | 用户态高性能 + 内核日志共存 | M2 | **关键替换点** |
-| **M4** | 性能优化 | AsyncUart | 性能基准达标 | M3 | 优先 |
-| **M5** | 真板验证 | AsyncUart | VisionFive2 实际验证 | M4 | 可并行 |
+| **M0** | 基础设施就绪 | — | `make run` + 中断回调触发 | — | 必做 ✅ |
+| **M1** | 架构验证 | Console（同步） | Ring Buffer + 中断 + copier 流程正确 | M0 | 必做 ✅ |
+| **M2** | VFS 验证 | Console（同步） | DeviceOps + 设备注册 + poll/epoll | M1 | 必做 ✅ |
+| **M3** | 异步引擎实现（未集成） | AsyncUart | **⚠️ 替换失败回滚**（IRQ 风暴 + TX busy-loop） | M2 | **待重新设计** |
+| **M4** | 性能优化 | AsyncUart | 性能基准达标 | M3 | 优先（暂停） |
+| **M5** | 真板验证 | AsyncUart | VisionFive2 实际验证 | M4 | 可并行（暂停） |
 | **M6** | DMA 探索 | AsyncUart+DMA | DMA 通道可用（远期） | M4 | 远期 |
 
 ---
@@ -145,37 +145,43 @@
 
 ---
 
-## M3: 异步引擎替换（关键替换点）
+## M3: 异步引擎实现（⚠️ 替换失败回滚）
 
-> 目标: 替换 Console 底层为 AsyncUart 异步引擎，实现真正的中断驱动高性能串口
+> **状态**：M3 Task 1-5 完成（AsyncUart 驱动代码实现），**Task 6+ 替换失败**
+> **回滚原因**：IRQ 风暴 + TX busy-loop，UART 硬件状态异常（详见 ADR-019）
+> **回滚点**：d29a28f（M3 Task 5 - module exports 完成）
 
-<!-- T3.1 --> - [ ] AsyncUart trait + Uart16550 实现
-  - 定义 AsyncUart trait（try_read/try_write/enable_rx_intr/disable_rx_intr/...）
-  - Uart16550<MmioBackend> 实现 AsyncUart
-  - 验证: cargo check 通过，MMIO 操作封装正确
+### 已完成（Task 1-5） ✅
 
-<!-- T3.2 --> - [ ] ISR → AtomicWaker → copier 任务模型实现
-  - ISR: 读 IIR → 禁用已触发中断 → AtomicWaker.wake()
-  - RX copier: 真正的硬件 FIFO → rx_buf
-  - TX copier: tx_buf → 真正的硬件 FIFO，使能 TX 中断
-  - 验证: 中断到来 → copier 任务唤醒 → 数据搬运完成
+<!-- T3.1 --> - [x] AsyncUart trait + Uart16550 实现 ✅
+<!-- T3.2 --> - [x] ISR（IsrContext + AtomicWaker）实现 ✅
+<!-- T3.3 --> - [x] AsyncBuffer（Ring Buffer + PollSet）实现 ✅
+<!-- T3.4 --> - [x] AsyncUartDriver（RX/TX copier）实现 ✅
+<!-- T3.5 --> - [x] Module exports + 编译验证 ✅
 
-<!-- T3.3 --> - [ ] 替换 Console 底层
-  - ConsoleDriver 底层从 Console 同步引擎 → AsyncUart 异步引擎
-  - 内核日志仍通过 axhal::console 输出（earlycon 独立路径）
-  - 验证: 用户态 write 异步化，无 CPU 空转
+### 替换失败（Task 6+） ❌ 2026-05-28
 
-<!-- T3.4 --> - [ ] 确认调试安全通道
-  - axhal::console 作为"earlycon"始终可用（独立于异步框架）
-  - AsyncUart 故障时内核日志仍能输出 panic/调试信息
-  - 验证: 故障场景下仍有输出渠道
+**失败症状**：
+- **IRQ 风暴**：RX-COPIER 和 tty-reader 快速循环唤醒，IRQ 10 异常触发
+- **TX busy-loop**：TX FIFO 满，UART 状态异常（LSR=0x00，THR_EMPTY=false TEMT=false）
+- **UART 硕件未正常发送数据**：FIFO 满后 retry 无效
 
-<!-- T3.5 --> - [ ] 性能验证
-  - Echo 回环测试 10s 稳定无丢失
-  - 吞吐量初步测量
-  - 验证: 异步引擎工作正常
+**根本问题（未完全明确）**：
+- UART 硕件配置异常（Console 初始化后的状态不兼容 AsyncUart）
+- 未验证 UART 状态（IIR、MCR、LSR）就开始集成
+- 缺少全面的硬件状态调试信息
 
-**Gate M3**: 异步引擎替换完成，用户态高性能输出 + 内核日志共存 + 调试通道可用
+**教训**：见 ADR-019（architecture.md）
+
+### 待重新设计
+
+**替代方案（待评估）**：
+1. 方案 A：添加全面的 UART 状态调试（IIR/MCR/LSR），诊断硬件问题
+2. 方案 B：AsyncUart 启动时重新初始化 UART（uart.init()）
+3. 方案 C：放弃 THRE interrupt，使用纯 polling TX
+4. 方案 D：回到"软件路径分离"方案（Console 和 AsyncUart 共存）
+
+**Gate M3**：⚠️ **阻塞** — 需重新设计整体方案
 
 ---
 

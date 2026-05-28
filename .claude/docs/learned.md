@@ -56,6 +56,39 @@
   - PollSet.register(waker) 总是执行（支持多个 waker）
 - 验证: 2026-05-27 (T0.3)
 
+<!-- L78 --> ### M3 替换失败 — IRQ 风暴 + TX busy-loop（2026-05-28）
+- **症状**:
+  1. IRQ 风暴：RX-COPIER 和 tty-reader 快速循环唤醒，`[RX-COPIER] poll` → `[RX-COPIER] returning Pending` → 立即又被唤醒
+  2. TX busy-loop：TX FIFO 满，UART 状态异常（LSR=0x00，THR_EMPTY=false TEMT=false）
+  3. UART 硬件未正常发送数据：FIFO 满后 retry 无效，LSR 状态不变化
+- **根因（未完全明确）**:
+  1. UART 硬件配置异常（Console 初始化后的状态不兼容 AsyncUart）
+  2. 未验证 UART 状态（IIR、MCR、LSR）就开始集成
+  3. THR_EMPTY 状态异常（可能 UART TX 被禁用或硬件卡住）
+- **教训**:
+  1. ❌ 未验证硬件状态就开始集成（假设 Console 初始化后的 UART 状态正常）
+  2. ❌ 未添加足够的调试信息（IIR、MCR、完整 LSR 状态）
+  3. ❌ ADR-018 战略转向过于激进（未充分验证可行性）
+- **解决**: 回滚到 M3 Task 5（AsyncUart 驱动实现，未集成），重新评估整体方案
+- **验证**: 2026-05-28（ADR-019）
+
+<!-- L79 --> ### UART 状态调试缺失教训（2026-05-28）
+- **问题**: M3 替换失败时，缺少全面的 UART 硬件状态调试
+- **缺失信息**:
+  1. IIR 寄存器（Interrupt Identification）— 无法确认 interrupt 类型
+  2. MCR 寄存器（Modem Control）— 无法确认 TX 是否被禁用
+  3. LSR 完整值（仅输出 THR_EMPTY/TEMT，未输出错误标志）
+- **后果**: 无法诊断 UART 硬件为什么卡住，只能猜测根因
+- **教训**: 硬件集成前，必须添加全面的寄存器状态调试（IIR/MCR/LSR/IIR）
+- **预防**: 下次集成前，先添加 UART 状态诊断代码
+
+<!-- L80 --> ### THR_EMPTY 状态理解错误（2026-05-28）
+- **问题**: uart_16550 crate 的 THR_EMPTY 注释说"FIFO completely empty"
+- **实际**: THR_EMPTY (Bit 5) 表示 THR 有空位（可以写入），TEMT (Bit 6) 表示完全空闲
+- **误解影响**: 以为 THR_EMPTY=false 表示 FIFO 有至少 1 个字节，实际表示 FIFO 满
+- **纠正**: THR_EMPTY=1 表示 FIFO 有空位，THR_EMPTY=0 表示 FIFO 满
+- **教训**: 需仔细阅读 UART 规范，不要依赖库的注释（可能有错误）
+
 <!-- L68 --> ### 构建环境配置踩坑
 - 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
 - 根因: lwext4_rust crate 需要编译 C 代码，依赖 musl 交叉编译工具链
