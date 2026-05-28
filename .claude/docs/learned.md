@@ -27,6 +27,11 @@
 <!-- L7 --> | DeviceOps 设备注册 | kernel/src/pseudofs/device.rs | DeviceOps trait + Device 包装 | 2026-05-24 |
 <!-- L8 --> | UART 硬件操作 | axhal/src/platform/riscv64_qemu_virt/uart.rs | MMIO 寄存器定义 | 2026-05-24 |
 <!-- L9 --> | PLIC 中断映射 | axhal/src/platform/riscv64_qemu_virt/mod.rs | PLIC 中断号 | 2026-05-24 |
+<!-- L81 --> | uart_16550 寄存器定义 | uart_16550/src/spec.rs | IER/ISR/LSR bitflags + InterruptType 枚举 | 2026-05-28 |
+<!-- L82 --> | uart_16550 MMIO 实现 | uart_16550/src/backend/mmio.rs | read_volatile/write_volatile + 地址计算 | 2026-05-28 |
+<!-- L83 --> | Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct + TtyRead/TtyWrite trait | 2026-05-28 |
+<!-- L84 --> | tty-reader copier | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs | InputReader + poll_fn + register_irq_waker | 2026-05-28 |
+<!-- L85 --> | ConsoleDriver | kernel/src/drivers/serial/console_driver.rs | RX copier + TX sync flush + AsyncBuffer | 2026-05-28 |
 
 ## 踩坑档案
 
@@ -88,6 +93,24 @@
 - **误解影响**: 以为 THR_EMPTY=false 表示 FIFO 有至少 1 个字节，实际表示 FIFO 满
 - **纠正**: THR_EMPTY=1 表示 FIFO 有空位，THR_EMPTY=0 表示 FIFO 满
 - **教训**: 需仔细阅读 UART 规范，不要依赖库的注释（可能有错误）
+
+<!-- L86 --> ### Console TX 与 AsyncUart TX 数据竞争（2026-05-28）
+- **症状**: M3 替换失败，TX FIFO 满（LSR=0x00），THR_EMPTY 状态不更新
+- **根因**: Console 的同步阻塞 TX（逐字节忙等待 THR_EMPTY）与 AsyncUart TX copier 同时写 THR 寄存器
+- **竞争场景**:
+  1. Console.write_bytes() 开始发送字节 0，等待 THR_EMPTY
+  2. AsyncUart TX copier try_write() 尝试写 THR → FIFO 满
+  3. Console 继续等待 THR_EMPTY → UART 状态异常（THR_EMPTY 标志不更新）
+  4. TX copier retry → 无限循环 → TX busy-loop
+- **解决**: 需设计 UART 硬件独占机制（Console 和 AsyncUart 不能同时写 THR）
+- **预防**: 在集成 AsyncUart 前，必须诊断 UART 硬件状态，确认 Console 的 UART 操作模式
+
+<!-- L87 --> ### IRQ Waker 单一限制冲突（2026-05-28）
+- **症状**: IRQ 风暴，RX-COPIER 和 tty-reader 快速循环唤醒
+- **根因**: 当前框架每个 IRQ 只支持一个 waker（interrupt-framework.md 3.3 节）
+- **冲突**: Console tty-reader 已注册 IRQ 10 waker，AsyncUart RX/TX copier 也需注册 → 无法分别唤醒
+- **解决**: 使用 ISR + AtomicWaker 分发机制（ISR 读 ISR 寄存器，根据中断类型唤醒不同的 waker）
+- **预防**: 在集成 AsyncUart 前，必须设计 ISR 分发机制，避免 IRQ waker 冲突
 
 <!-- L68 --> ### 构建环境配置踩坑
 - 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
