@@ -15,7 +15,6 @@ extern crate axlog;
 
 pub mod entry;
 
-mod drivers;
 mod config;
 mod file;
 mod mm;

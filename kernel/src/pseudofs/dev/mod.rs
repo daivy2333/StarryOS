@@ -23,9 +23,6 @@ use rand::{Rng, SeedableRng, rngs::SmallRng};
 
 use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
-#[cfg(feature = "uart-async")]
-use crate::drivers::serial::AsyncUartTestDevice;
-
 const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
 pub(crate) fn new_devfs() -> Filesystem {
@@ -269,18 +266,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(10, 1024),
             Arc::new(CpuDmaLatency),
-        ),
-    );
-
-    // Async UART test device (M1 architecture validation)
-    #[cfg(feature = "uart-async")]
-    root.add(
-        "async_uart_test",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(4, 64),  // Experimental device ID
-            AsyncUartTestDevice::new(),
         ),
     );
 
