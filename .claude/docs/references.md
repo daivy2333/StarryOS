@@ -96,3 +96,4 @@
 <!-- R44 --> | earlycon 内核日志设计方案 | docs/analysis/earlycon-design.md | earlycon 模式分析、polling TX 实现、UART 硬件独占机制、panic 安全机制、与 AsyncUart 共存策略 ✅ 2026-05-28 |
 <!-- R45 --> | AsyncUart 设备注册设计方案 | docs/analysis/async-uart-device-registration.md | DeviceOps trait 分析、Pollable trait 实现、Device 包装流程、/dev/async_uart 注册设计、用户态 API 流程 ✅ 2026-05-28 |
 <!-- R46 --> | IRQ waker 机制验证方案 | docs/analysis/irq-waker-mechanism-verification.md | register_irq_waker 机制、register_irq_hook 分发、ISR + AtomicWaker 分发设计、RX/TX copier 唤醒机制、可行性验证 ✅ 2026-05-28 |
+<!-- R47 --> | AsyncUart 异步串口实现历程 | docs/analysis/async-uart-implementation-history.md | 两分支探索历程、渐进式集成失败、完全剔除 Console 方案、MMIO 权限阻塞发现、ISR 测试验证失败、最终结论与后续策略 ✅ 2026-05-29 |

@@ -275,6 +275,35 @@
 `Device` → `NodeOps` → `FileNodeOps` → `File` → `FileLike`。
 `as_pollable()` 返回 `Some(self)` 以支持 poll/select/epoll。
 
+<!-- L16 --> ### MMIO 权限验证方法论（2026-05-29）
+验证 MMIO 设备权限的方法：
+1. **内核上下文验证**：尝试在内核启动后访问 MMIO 地址
+   - 成功 → 权限可用
+   - LoadFault/StoreFault → 权限受限
+
+2. **ISR 上下文验证**：注册 ISR handler，尝试在 ISR 中访问 MMIO
+   - 成功 → ISR 有特殊权限（可能性低）
+   - LoadFault → ISR 也受限（常见情况）
+
+3. **物理地址验证**：尝试直接访问物理地址
+   - Page Fault → 物理地址未映射
+
+4. **虚拟地址验证**：使用 phys_to_virt 转换后访问
+   - LoadFault/StoreFault → 虚拟地址权限受限
+
+**关键步骤**：
+- 实现最小 ISR handler（尝试读 MMIO 寄存器）
+- 注册 ISR handler 到 IRQ hook
+- 运行内核，触发 ISR 执行（可手动触发中断）
+- 观察 ISR 是否成功读取寄存器，或触发异常
+
+**适用场景**：
+- 验证外部 crate 的 MMIO 权限策略
+- 评估是否可以在 ISR 中操作硬件
+- 确认架构约束是否可绕过
+
+**参考案例**：StarryOS AsyncUart ISR 测试（learned.md L116）
+
 <!-- L45 --> ### Embassy 执行器轮询机制
 1. 任务被 poll → 执行到阻塞点 → 返回 Poll::Pending
 2. 执行器将任务重新加入运行队列末尾，继续执行下一任务
