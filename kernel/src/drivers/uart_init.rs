@@ -32,6 +32,11 @@ pub const UART_MMIO_BASE_PHYS: usize = 0x10000000;
 /// stride 4 会读到超出范围的总线错误（LoadFault）
 pub const UART_STRIDE: u8 = 1;
 
+/// NAPI: consecutive successful reads before entering polling mode
+pub const NAPI_THRESHOLD: u32 = 16;
+/// NAPI: batch size in polling mode
+pub const NAPI_BATCH_SIZE: usize = 64;
+
 /// 获取 UART MMIO 虚拟地址
 fn get_uart_mmio_virt() -> VirtAddr {
     phys_to_virt(PhysAddr::from(UART_MMIO_BASE_PHYS))
