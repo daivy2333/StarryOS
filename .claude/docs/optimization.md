@@ -85,9 +85,7 @@
   - **建议方案**: M3/M4 多设备场景补充 epoll 测试
   - **优先级**: 低（M3/M4 目标）
 
-<!-- O24 --> - ~~MMIO 权限~~ stride=4 问题（已解）
-  - **问题**: 此前认为是 axplat 限制 UART MMIO 权限，2026-05-31 确认根因是 UART_STRIDE=4 越界，改动为 stride=1 后完全正常
-  - **状态**: ✅ 已解决
+<!-- tombstone: O24 --> Archived to archive.md §optimization #O24 2026-05-31 — stride=4 问题已解决
 
 ---
 

@@ -102,31 +102,15 @@
 - 影响: 不影响功能，编译成功
 - 建议: 不清理（遵循"只改必须改的代码"原则）
 
-<!-- L78 --> ### M3 替换失败 — IRQ 风暴 + TX busy-loop（方向 A 失败经验）
-- **症状**:
-  1. IRQ 风暴：RX-COPIER 和 tty-reader 快速循环唤醒，`[RX-COPIER] poll` → `[RX-COPIER] returning Pending` → 立即又被唤醒
-  2. TX busy-loop：TX FIFO 满，UART 状态异常（LSR=0x00，THR_EMPTY=false TEMT=false）
-  3. UART 硬件未正常发送数据：FIFO 满后 retry 无效，LSR 状态不变化
-- **根因（未完全明确）**:
-  1. UART 硬件配置异常（Console 初始化后的状态不兼容 AsyncUart）
-  2. 未验证 UART 状态（IIR、MCR、LSR）就开始集成
-  3. THR_EMPTY 状态异常（可能 UART TX 被禁用或硬件卡住）
-- **教训**:
-  1. ❌ 未验证硬件状态就开始集成（假设 Console 初始化后的 UART 状态正常）
-  2. ❌ 未添加足够的调试信息（IIR、MCR、完整 LSR 状态）
-  3. ❌ 战略转向过于激进（未充分验证可行性）
-- **解决**: 回滚到 M3 Task 5，重新评估整体方案
-- **验证**: 2026-05-28（ADR-019）
+<!-- L78 --> ### M3 替换失败 — IRQ 风暴 + TX busy-loop（方向 A）
+- **症状**: IRQ 风暴 + TX FIFO 满 LSR=0x00
+- **根因**: Console UART 状态不兼容 AsyncUart + stride=4 + 未验证 IIR/MCR/LSR
+- **教训**: 硬件集成前必须 dump 全部寄存器状态；不要假设外设初始化后状态正常
+- **解决**: 回滚，后续 Q0-Q4 独立实现替代
 
-<!-- L79 --> ### UART 状态调试缺失教训
-- **问题**: M3 替换失败时，缺少全面的 UART 硬件状态调试
-- **缺失信息**:
-  1. IIR 寄存器（Interrupt Identification）— 无法确认 interrupt 类型
-  2. MCR 寄存器（Modem Control）— 无法确认 TX 是否被禁用
-  3. LSR 完整值（仅输出 THR_EMPTY/TEMT，未输出错误标志）
-- **后果**: 无法诊断 UART 硬件为什么卡住，只能猜测根因
-- **教训**: 硬件集成前，必须添加全面的寄存器状态调试（IIR/MCR/LSR/IIR）
-- **预防**: 下次集成前，先添加 UART 状态诊断代码
+<!-- L79 --> ### 硬件调试铁律：集成前 dump 全部寄存器
+- **教训**: 集成前必须 `info!(IIR={:02x} MCR={:02x} LSR={:02x})`，否则无法诊断硬件异常
+- **参考**: uart_init.rs `log_uart_state()` 函数
 
 <!-- L80 --> ### THR_EMPTY 状态理解错误
 - **问题**: uart_16550 crate 的 THR_EMPTY 注释说"FIFO completely empty"
@@ -169,19 +153,11 @@
 - **AsyncUart 启动时间点**: kernel::entry::init() 中（T4-T5）
 - **时间差**: earlycon 比 AsyncUart 早约 10-20 ms
 
-<!-- L110 --> ### MMIO 权限问题根因分析（⚠️ 2026-05-31 纠正：见 L121）
-- **问题**: 内核上下文和 ISR 上下文都无法访问 UART MMIO 寄存器
-- ~~根因: axplat 在 boot 阶段映射 UART MMIO，权限被限制~~
-- **纠正**: 真正根因是 UART_STRIDE=4 越界，页表权限完全正常。详见 L121。
+<!-- tombstone: L110-L112-L113-L116 --> Archived to archive.md §learned #L110-L116 2026-05-31 — MMIO 权限诊断被 stride=4 根因（L121）纠正
 
-<!-- L111 --> ### axplat 外部 crate 依赖全景图（⚠️ 见 L121：实际上不需要绕过）
-- **依赖链**: axruntime → axplat-riscv64-qemu-virt → axhal → axtask → axpoll
-- **不可修改**: 所有 crate 均来自 crates.io，无法直接修改
-- **UART 相关**: axplat 负责 UART MMIO 映射和初始化，axhal 提供 console API
-- ~~**关键约束**: UART MMIO 权限由 axplat 控制，kernel 层无法绕过~~ → 实际上不需要绕过，stride=1 即可正常访问
+<!-- tombstone: L111 --> Archived to archive.md §learned #L111 2026-05-31 — axplat 依赖分析（不需要绕过）
 
-<!-- L112 --> ### 绕过 axplat 的可能路径（⚠️ 不需要了）
-- ~~方案 1-4~~ → kernel 层直接用 stride=1 访问 UART MMIO，无需任何绕过
+<!-- tombstone: L112 --> Archived to archive.md §learned #L112 2026-05-31 — 绕过 axplat 方案（不需要了）
 
 <!-- L117 --> ### axplat UART 初始化流程（⚠️ 此条目关于 IER 限制仍准确，但"权限设置"部分已纠正）
 - **初始化时机**: axplat::init::init_early() 中

@@ -21,18 +21,7 @@
 - **风险**: 未来需要 Embassy HAL 高级特性（如 DMA 链）时需重新评估
 - **状态**: ✅ 两个方向均采用
 
-<!-- A2 --> ### 2026-05-24 - 串口与控制台关系——独立硬件 /dev/ttyS0 ⚠️ ARCHIVED
-
-> **已归档** (2026-05-27) — 被 ADR-015 取代。决策：共用 UART0，不再使用独立硬件。
-
-- **决策**: 新增独立硬件串口（QEMU `-serial` 多路配置），注册为 `/dev/ttyS0`，不影响现有 `/dev/console`
-- **原因**: 隔离风险，独立开发测试；初期不破坏控制台稳定性
-- **影响**: 需在 QEMU 启动参数添加第二个 `-serial`；`/dev/console` 和 `/dev/ttyS0` 是两个独立设备
-- **替代方案**:
-  - ❌ A: 复用同一硬件替换 Console — 可能破坏控制台稳定性
-  - ✅ B: 独立硬件独立设备 — 隔离风险
-  - ⚠️ C: 替换 axhal::console 底层 — 远期选项，初期影响面太大
-- **归档原因**: QEMU 第二串口需要补丁未合并，决策共用 UART0
+<!-- tombstone: A2 --> Archived to archive.md §architecture #A2 2026-05-31 — 独立硬件方案被 ADR-015 取代
 
 <!-- A3 --> ### 2026-05-24 - VFS 接口——DeviceOps trait
 
@@ -81,59 +70,9 @@
 
 ## 阶段二：方向 A 渐进式集成（2026-05-25~05-28）
 
-<!-- A7 --> ### 2026-05-25 - Console与AsyncUart共存策略——先独立后统一 ⚠️ ARCHIVED
+<!-- tombstone: A7 --> Archived to archive.md §architecture #A7 2026-05-31 — Console/AsyncUart 共存策略被 ADR-015 取代
 
-> **已归档** (2026-05-27) — 被 ADR-015 取代。决策：共用 UART0，渐进式验证后替换。
-
-- **决策**: 采用方案 C"先独立后统一"——AsyncUart 作为独立 `/dev/ttyS0` 设备，Console 保持不变；远期统一
-- **原因**: 初期隔离风险，不破坏控制台稳定性；AsyncUart 可独立开发测试；远期框架成熟后可将 axhal::console 底层替换为 AsyncUart 实现
-- **影响**: QEMU 需添加第二个 `-serial` 参数；Console 和 AsyncUart 操作不同硬件实例，无竞态
-- **归档原因**: QEMU 第二串口不可用，决策共用 UART0
-
-<!-- A8 --> ### 2026-05-25 - 中断分发架构——ISR → AtomicWaker → copier 任务
-
-- **决策**: 采用模型 1"ISR → AtomicWaker → copier 任务"——ISR 极简原则，数据搬运推迟到任务上下文
-- **原因**: ISR 中不能持有 Mutex 或做阻塞操作；HeapRb 的 Producer/Consumer 不是中断安全；copier 任务在任务上下文中可安全获取 Mutex；AtomicWaker 是 ISR 安全的（无锁，原子操作）。此模型源自 Embassy 中断→异步配合流程：外设完成→中断→HAL 路由信号→执行器通知→任务继续，我们将"HAL 路由"替换为 AtomicWaker::wake()，"执行器"替换为 axtask::future
-- **影响**: ISR 只做三件事：读 IIR → 禁用已触发中断 → AtomicWaker.wake()；copier 任务是唯一操作硬件 FIFO 和 ringbuf 的角色，天然无竞态；需一个 RX copier 任务和一个 TX copier 任务
-- **替代方案**:
-  - ❌ 模型 2: ISR 直接写 ringbuf — HeapRb 非中断安全，数据竞争风险
-  - ❌ 模型 3: 轮询模式 — CPU 空转，高延迟，不符合"高性能"目标
-  - ✅ 模型 1: ISR → AtomicWaker → copier — ISR 极简，数据安全，已验证模式
-- **参考**: Pipe 的 block_on(poll_io(...)) 模式、N_TTY 的 tty-reader copier 模式
-- **状态**: ✅ 设计保留（方向 B 也采用）
-
-<!-- A9 --> ### 2026-05-25 - uart_16550 依赖策略——本地最新版 path 依赖
-
-- **决策**: 使用本地 `/home/daivy/projects/uart_16550` 最新版（v0.6.0），通过 `path = "../../uart_16550"` 依赖
-- **原因**: 本地 v0.6.0 完整覆盖所有中断控制 API（set_interrupt_enable、interrupt_identification、InterruptType 枚举、try_send/try_receive、FifoTriggerLevel、Config）；不需要修改 axplat/axhal；便于后续直接对 uart_16550 crate 升级优化
-- **影响**: kernel/Cargo.toml 添加 path 依赖；与 axhal 中已有的 uart_16550 v0.4.0 可能版本冲突，需处理；发布时需解决路径依赖
-- **替代方案**:
-  - ❌ A: 直接依赖 crates.io v0.4.0 — 缺少中断控制 API，需自己封装
-  - ❌ B: 发布本地 crate 到 crates.io 后统一升级 — 发布流程耗时
-  - ✅ 本地最新版 path 依赖 — 立即可用，便于直接升级优化
-- **关键发现**: 之前分析中认为"缺失"的 API 全部已在本地 v0.6.0 中提供
-- **状态**: ✅ 两个方向均采用
-
-<!-- A10 --> ### 2026-05-25 - Milestone 分期策略——6+1 期，M4 优先，M3 延后
-
-- **决策**: M0~M6 七期规划，M0-M2 串行推进，M4 优先于 M3，M3 建议在 M4 稳定后推进
-- **原因**: M3（Console 统一）涉及修改内核启动核心路径（entry.rs），风险最高；M4（性能优化）在稳定独立串口上推进，有清晰基准；降低集成风险，先验证性能再做统一
-- **影响**: M0→M1→M2 串行必做；M2 完成后 M4 优先推进，M5 可并行（依赖 M2 基础）；M3 建议在 M4 稳定后再做
-- **依赖关系**:
-  ```
-  M0 → M1 → M2
-               ├→ M4（优先）→ M5 → M6
-               └→ M3（延后，风险高）
-  ```
-- **状态**: 方向 A 的规划
-
-<!-- A11 --> ### 2026-05-25 - QEMU 双串口开发策略——独立硬件隔离风险 ⚠️ ARCHIVED
-
-> **已归档** (2026-05-27) — 已不适用。QEMU 第二串口需要补丁未合并，决策共用 UART0。
-
-- **决策**: M0-M2 阶段 QEMU 配置第二个 `-serial`，AsyncUart 操作第二 UART 硬件实例
-- **原因**: Console 串口用于内核日志和 shell 交互，如果直接在上面测试中断驱动可能破坏调试信息输出
-- **归档原因**: QEMU 第二串口不可用
+<!-- tombstone: A11 --> Archived to archive.md §architecture #A11 2026-05-31 — QEMU 双串口策略不可用
 
 <!-- A12 --> ### 2026-05-25 - DMA 远期策略——M0-M4 全中断驱动，DMA 归入 M6
 
@@ -196,16 +135,7 @@
   3. ❌ 战略转向过于激进（未充分验证可行性）
 - **影响**: 回滚到 M3 Task 5，重新评估整体方案
 
-<!-- A18 --> ### 2026-05-28 - AsyncUart 完全替代 Console（战略转向）⚠️ ARCHIVED
-
-> **已归档** (2026-05-28) — 战略转向失败，详见 ADR-019。
-
-- **决策**: 完全剔除 Console，AsyncUart 独占 UART 硬件
-- **实施结果**: ❌ **失败** - M3 替换失败，IRQ 风暴 + TX busy-loop
-
-<!-- A19 --> ### 2026-05-28 - M3 替换失败回滚 ⚠️ ARCHIVED
-
-> **已归档** (2026-05-28) — 详细内容见 ADR-017/018。方向 A 的渐进式集成方案失败。
+<!-- tombstone: A18-A19 --> Archived to archive.md §architecture #A18-A19 2026-05-31 — 方向 A 战略转向失败，被 stride=4 根因发现纠正
 
 ---
 
@@ -252,37 +182,7 @@
   - 多 waker 支持：register_irq_waker 使用 BTreeMap<usize, PollSet>，同一 IRQ 可共存多个 waker
   - ISR 安全约束：禁用中断防止重入（IER 操作）+ AtomicWaker ISR 安全唤醒
 
-<!-- A22 --> ### 2026-05-28 - UART MMIO 权限问题发现
-
-- **背景**: P1 UART 初始化遇到 MMIO 权限阻塞（内核上下文无法访问 UART）
-- **问题**:
-  - Page Fault @ 0x1000001c（物理地址未映射）
-  - StoreFault @ 0xffffffc01000001c（虚拟地址无写入权限）
-  - LoadFault @ 0xffffffc010000008（虚拟地址无读取权限）
-- **根因**: axplat 在 boot 阶段映射 UART MMIO，内核启动后权限被限制
-- **影响**: 无法在内核上下文中访问 UART 寄存器，无法验证/修改 UART 配置
-- **策略调整**: 完全放弃访问 UART 寄存器，依赖 axplat 配置；提出测试 ISR 上下文访问权限
-
-<!-- A23 --> ### 2026-05-29 - ISR UART MMIO 权限测试失败：证明不彻底更改底层支持无法使用异步串口
-
-- **背景**: ADR-022 提出测试 ISR 上下文访问权限的策略
-- **测试结果**:
-  - ✅ ISR handler 成功注册并执行
-  - ❌ ISR 尝试读 UART ISR 寄存器时触发 LoadFault（`stval=0xffffffc010000008`）
-- **关键结论**: ISR 上下文也无法访问 UART 寄存器（MMIO 权限限制仍然存在）
-- **根因分析**:
-  - axplat 在 boot 阶段映射 UART MMIO，权限被限制（只读或禁止）
-  - MMIO 权限限制对**所有上下文**都生效（内核 + ISR）
-  - 外部 crate（axplat）的架构约束无法在 kernel 层绕过
-- **影响**:
-  - ❌ 原设计（ISR 使能 TX 中断）完全不可行
-  - ❌ AsyncUart 异步 TX 路径无法实现（依赖 IER::THR_EMPTY 中断）
-  - ✅ 证明了不彻底更改底层支持就无法使用异步串口
-- **后续策略**:
-  - 方案 A：Polling TX（同步阻塞）— 简单可行，牺牲性能
-  - 方案 B：Boot 阶段修改 UART 配置 — 需修改 axplat，复杂度高
-  - 方案 C：完全依赖 Console — 放弃 AsyncUart 独占目标
-- **决策**: 暂缓 AsyncUart 实现，记录关键发现，等待架构层面决策
+<!-- tombstone: A22-A23 --> Archived to archive.md §architecture #A22-A23 2026-05-31 — MMIO 权限诊断有误，被 ADR-026 stride=4 根因纠正
 
 ---
 
