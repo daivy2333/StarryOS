@@ -19,7 +19,9 @@
 | **Q2** | VFS 集成 | DeviceOps + /dev/async_uart + Console 共存 | ✅ |
 | **Q3** | AsyncUart RX 接管 | Tty<AsyncUartReader, ConsoleWriter> → Shell stdin | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier + ISR，Shell 双向异步 | ✅ |
-| **Q5** | 性能优化 | 中断合并 + NAPI + 零拷贝 | ✅ |
+| **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
+| **Q5.1** | 性能优化续 | NAPI + FCR + 批量 API + 中断分发 | ⏳ |
+| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ⏳ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -27,7 +29,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ⏳ Q5.2 ⏳ Q6 ⏳(硬件)
 ```
 
 **已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
@@ -75,14 +77,19 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q6 ⏳(硬件)
 <!-- Q4.3 --> - [x] TX copier: enable_tx_intr on partial send ✅
 <!-- Q4.4 --> - [x] Gate Q4: Shell stdin/stdout 双向异步，内核日志共存 ✅
 
-### Q5+: bench 分支待做
+### Q5.1: 性能优化续
 
-<!-- Q5+.1 --> - [ ] O2/O34 NAPI 中断合并
-<!-- Q5+.2 --> - [ ] O4/O35 FCR 阈值调优
-<!-- Q5+.3 --> - [ ] O7 uart_16550 批量读写 API
-<!-- Q5+.4 --> - [ ] O17 中断分发效率（BTreeMap→数组）
-<!-- Q5+.5 --> - [ ] O21 用户态自动化测试（Makefile target）
-<!-- Q5+.6 --> - [ ] O22 非阻塞模式测试（ioctl FIONBIO）
+<!-- Q5.1.1 --> - [ ] O2/O34 NAPI 中断合并 — 高吞吐时切轮询模式
+<!-- Q5.1.2 --> - [ ] O4/O35 FCR 阈值调优 — 确认 Console 设置的阈值
+<!-- Q5.1.3 --> - [ ] O7 uart_16550 批量读写 API — 已用单锁 batch 替代，可进一步优化 crate
+<!-- Q5.1.4 --> - [ ] O17 中断分发效率 — BTreeMap → 数组索引
+<!-- Q5.1.5 --> - [ ] Gate Q5.1: 性能基准测试通过
+
+### Q5.2: 测试补全
+
+<!-- Q5.2.1 --> - [ ] O21 用户态自动化测试 — Makefile test target
+<!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)
+<!-- Q5.2.3 --> - [ ] Gate Q5.2: 自动化测试覆盖核心路径
 
 ### Q6: 真板验证 ⏳ 等待硬件
 

@@ -9,7 +9,7 @@
 
 <!-- tombstone: O25-O33 --> Archived to archive.md §optimization #O25-O33 2026-05-31 — 8 项 Q5 性能优化已完成
 
-## Q5+ 待做（feat/uart-async-bench 分支）
+## Q5.1/Q5.2 待做（feat/uart-async-dev2 分支）
 
 ---
 

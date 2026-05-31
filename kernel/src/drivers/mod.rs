@@ -6,12 +6,11 @@
 //! - uart_init: UART 硬件初始化（替代 axplat）
 //! - isr: ISR 分发机制（IRQ 10 → rx_waker/tx_waker）
 //! - ring_buffer: AsyncBuffer（rx_buf + tx_buf + PollSet）
-//! - async_uart: AsyncUart trait + Uart16550Async 实现
 //! - async_driver: RX/TX copier 任务
-//! - device_ops: AsyncUartDevice（DeviceOps + Pollable）
+//! - device_ops: AsyncUartReader/Writer（TtyRead/TtyWrite trait）
+//! - ntty_async: AsyncTty 类型别名
 
 pub mod async_driver;
-pub mod async_uart;
 pub mod device_ops;
 pub mod isr;
 pub mod ntty_async;

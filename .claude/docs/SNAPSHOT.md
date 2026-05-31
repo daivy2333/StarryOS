@@ -35,6 +35,8 @@
 | **Q3** | AsyncUart RX 接管（Tty<AsyncUartReader, ConsoleWriter> → Shell stdin） | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier 接管，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip + rx/tx 独立锁 | ✅ |
+| **Q5.1** | 性能优化续 | NAPI + FCR + 批量 API + 中断分发 | ⏳ |
+| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ⏳ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
@@ -75,11 +77,10 @@ StarryOS/
 ├── kernel/src/
 │   ├── config/           # 内核配置
 │   ├── drivers/          # 异步串口驱动模块
-│   │   ├── mod.rs         # 模块声明（21 行）
+│   │   ├── mod.rs         # 模块声明（19 行）
 │   │   ├── uart_init.rs   # UART 初始化 + IER 缓存（155 行）✅
 │   │   ├── isr.rs         # ISR handler + AtomicWaker（22 行）✅
 │   │   ├── ring_buffer.rs # RingBufRx/Tx + PollSet（58 行）✅
-│   │   ├── async_uart.rs  # ⏳ 占位符（1 行）
 │   │   ├── async_driver.rs# AsyncUartDriver + RX/TX copier（99 行）✅
 │   │   ├── device_ops.rs  # AsyncUartReader/Writer + TtyRead/TtyWrite（33 行）✅
 │   │   └── ntty_async.rs  # AsyncTty 类型别名 + lazy_static（21 行）✅
