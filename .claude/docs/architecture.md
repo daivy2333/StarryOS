@@ -348,3 +348,15 @@
 - **解决**: Q2 阶段关闭 copier，Console 独占 UART。Q3 替换 Console 后再启用 copier，届时 copier 是唯一 UART 读写者
 - **影响**: Q2 的 /dev/async_uart 只提供设备节点和 DeviceOps 基础架构（read/write 在 ring buffer 上操作），实际数据通路（UART ↔ ring buffer）由 Q3 启用
 - **状态**: ✅ Q2 共存验证通过
+
+<!-- A29 --> ### 2026-05-31 - Q4 全异步 TX：TX copier 接管 UART 发送
+
+- **背景**: Q3 实现了 RX 异步但 TX 仍用 Console polling。Q4 将 TX 也切换到异步。
+- **实现**:
+  1. `AsyncUartWriter` 实现 `TtyWrite`——写入 ring buffer
+  2. TX copier 从 ring buffer 读取，写入 UART THR
+  3. 若 FIFO 满且 buffer 有剩余数据 → `enable_tx_intr()` → ISR 在 THR_EMPTY 时唤醒
+  4. ISR 中 `disable_tx_intr()` + `TX_WAKER.wake()` → copier 继续发送
+  5. `Tty<AsyncUartReader, AsyncUartWriter>` 注册为 `/dev/console`
+- **内核日志共存**: `ax_println!` 仍走 `axhal::console::write_bytes()`（Console polling TX），与 TX copier 共享 UART THR，互不冲突
+- **状态**: ✅ Q4 完成

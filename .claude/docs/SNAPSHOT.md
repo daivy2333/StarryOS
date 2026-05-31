@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0 ✅ Q1 ✅ Q2 ✅（Console 共存），Q3 准备中
+> 分支：feat/uart-async-dev2 — Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅，Q5 待做
 
 ---
 
@@ -9,15 +9,17 @@
 
 **分支**: feat/uart-async-dev2
 **目标**: 在 kernel 层独立实现高性能异步串口，不修改外部 crate
-**阶段**: Q0/Q1/Q2 通过，Q2 阶段 Console 与 AsyncUart 共存已验证
+**阶段**: Q0-Q4 全部通过，Shell stdin/stdout 已完全走异步路径
 
 ### 关键发现
 
 | 发现 | 详情 |
 |------|------|
-| **stride=4 根因** | NS16550 仅 8 字节，stride=4 越界 → LoadFault。改 1 后正常 |
-| **copier/Console 竞争** | RX copier 会抢先读 UART FIFO，导致 Shell 收不到输入。Q3 替换 Console 后由 copier 独占 |
-| **Console 共存** | copier OFF 时 Console 正常工作，/dev/async_uart 设备已注册 |
+| **stride=4 根因** | NS16550 仅 8 字节，stride=4 越界 → LoadFault |
+| **copier/Console 竞争** | RX copier 抢先读 FIFO 导致 Shell 无输入；Q3 替换 Console 后独占 |
+| **IER 控制** | uart_16550 v0.6.0 只有 ier() 读接口，需直接 MMIO write_volatile |
+| **critical-section** | embassy-sync AtomicWaker 需要 critical-section 符号，disable_irqs/enable_irqs 实现 |
+| **Tty 泛型绑定** | Tty<R,W> 的 reader/writer 直接替换 Console，无需修改伪终端框架 |
 
 ### 实施路径
 
@@ -26,12 +28,30 @@
 | **Q0** | Spike（stride=1 + 寄存器 + ISR） | ✅ |
 | **Q1** | 驱动架构（ring_buffer + ISR + copier） | ✅ |
 | **Q2** | VFS 集成（DeviceOps + /dev/async_uart + Console 共存） | ✅ |
-| **Q3** | Console 替换（AsyncUart RX 接管 + Tty 绑定） | ✅ |
-| **Q4** | 全异步 RX+TX | TX copier 接管 UART，双向异步 | ✅ |
-| **Q5** | 真板验证 | VisionFive2 | ⏳ |
+| **Q3** | AsyncUart RX 接管（Tty + Shell stdin） | ✅ |
+| **Q4** | 全异步 RX+TX（TX copier 接管） | ✅ |
+| **Q5** | 真板验证（VisionFive2） | ⏳ |
 
-### Q4 架构
+### 最终架构
 
+```
+IRQ 10 → uart_isr_handler
+           ├─ RX: disable_rx_intr → RX_WAKER.wake
+           └─ TX: disable_tx_intr → TX_WAKER.wake
+
+RX copier                     TX copier
+  poll_fn:                     poll_fn:
+    UART.read FIFO               buf.pop_tx
+    buf.push_rx                  UART.write THR
+    enable_rx_intr               enable_tx_intr (if partial)
+    RX_WAKER.register            TX_WAKER.register
+    → Shell stdin ✅             ← Shell stdout ✅
+
+AsyncUartReader::read → ring_buffer pop
+AsyncUartWriter::write → ring_buffer push
+Tty<AsyncUartReader, AsyncUartWriter> → /dev/console
+
+内核日志: ax_println! → Console polling TX（共存）
 ```
 RX: 键盘 → UART → ISR → RX_WAKER → RX copier → ring buffer → Shell stdin ✅
 TX: Shell stdout → AsyncUartWriter → ring buffer → TX copier → UART ✅

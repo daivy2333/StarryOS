@@ -142,3 +142,24 @@
 ### 方向 A M3 的真正失败原因
 
 IRQ 风暴 + TX busy-loop — Console 只使能 RX 中断，AsyncUart 需 TX 中断，IER 配置冲突 + UART 状态不兼容
+
+### Q4: 全异步 RX+TX ✅
+
+<!-- Q4.1 --> - [x] 启用 TX copier + ISR TX 中断流程 ✅
+<!-- Q4.2 --> - [x] 切换 AsyncUartWriter 到 ring buffer TX ✅
+<!-- Q4.3 --> - [x] TX copier: enable_tx_intr on partial send, wake on THR_EMPTY ✅
+<!-- Q4.4 --> - [x] Gate Q4: Shell stdin/stdout 双向异步，内核日志共存 ✅
+
+---
+
+## 最终状态
+
+```
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ⏳
+```
+
+**已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
+- Shell stdin: ISR → RX copier → ring buffer → AsyncUartReader → Tty → Shell
+- Shell stdout: Shell → Tty → AsyncUartWriter → ring buffer → TX copier → UART
+- 内核日志: ax_println! → Console polling TX（共存）
+- /dev/async_uart: DeviceOps + Pollable，用户态可 open/read/write/poll

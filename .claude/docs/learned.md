@@ -231,6 +231,12 @@
 - **解决**: Q2 关闭 copier 让 Console 独占 UART。Q3 替换 Console 后再由 copier 接管
 - **教训**: 共享硬件（同一 UART）的两个 reader 必须互斥访问，不能同时 drain FIFO
 
+<!-- L124 --> ### Q4 全异步 TX 实现要点
+- **TX 中断流**: copier 发送到 FIFO 满 → `enable_tx_intr()` → ISR 在 THR_EMPTY 时 `disable_tx_intr() + wake` → copier 继续
+- **AsyncUartWriter**: 实现 `TtyWrite` → 写入 ring buffer → wake TX copier
+- **内核日志共存**: `ax_println!` 的 Console polling TX 与 TX copier 共享 THR，因 polling TX 每次仅写极少字节，无实质冲突
+- **Tty 泛型绑定**: `Tty<AsyncUartReader, AsyncUartWriter>` 替代 `Tty<Console, Console>`，直接实现 reader/writer trait 即可替换整个终端栈
+
 ## 技巧模式
 
 <!-- L12 --> ### ISR 极简原则
