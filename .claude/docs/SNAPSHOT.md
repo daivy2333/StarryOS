@@ -54,21 +54,6 @@ Tty<AsyncUartReader, AsyncUartWriter> → /dev/console
 
 内核日志: ax_println! → Console polling TX（共存）
 ```
-RX: 键盘 → UART → ISR → RX_WAKER → RX copier → ring buffer → Shell stdin ✅
-TX: Shell stdout → AsyncUartWriter → ring buffer → TX copier → UART ✅
-    内核日志 → ax_println! → Console polling TX（共存）✅
-```
-
-```
-User keystroke → UART RX intr → ISR (disable RX, wake RX_WAKER)
-  → RX copier: read FIFO → push ring buffer → enable RX
-    → AsyncUartReader::read → Shell stdin ✅
-
-Shell stdout → ConsoleWriter::write → axplat polling TX ✅
-Kernel log  → ax_println! → axplat polling TX ✅
-
-TX 路径暂用 Console polling（Q4 切换为异步 TX copier）
-```
 
 ### 两个历史探索方向总结
 
