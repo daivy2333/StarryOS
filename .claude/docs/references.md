@@ -93,7 +93,7 @@
 ### Console UART 研究文档
 
 <!-- R41 --> | docs/analysis/console-uart-mechanism.md | Console UART 工作机制：硬件配置、TX 阻塞机制、RX 中断驱动、数据竞争风险分析 ✅ |
-<!-- R42 --> | docs/analysis/console-removal-scope-analysis.md | Console 软件路径剔除范围：完整架构、初始化流程、设备注册、IRQ 注册、用户态访问路径 ✅ |
+<!-- R42 --> | docs/analysis/console-removal-scope-analysis.md | ⚠️ 前提已变更：方向 C 用 Tty 泛型替换而非物理剔除 Console |
 
 ### UART 初始化与 IRQ 设计文档
 
@@ -105,9 +105,9 @@
 ### 实施历程与可行性评估
 
 <!-- R47 --> | docs/analysis/async-uart-implementation-history.md | AsyncUart 异步串口实现历程：两分支探索历程、渐进式集成失败、完全剔除 Console 方案 ✅ |
-<!-- R48 --> | docs/analysis/bypass-axplat-feasibility.md | 绕过 axplat 从零实现异步串口栈可行性评估：依赖全景图、MMIO 页表权限根因分析 ✅ |
+<!-- R48 --> | docs/analysis/bypass-axplat-feasibility.md | ⚠️ 部分过时：MMIO 页表分析已被 stride=4 纠正，其余仍有参考价值 ✅ |
 <!-- R49 --> | docs/analysis/project-knowledge-map.md | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 ✅ |
-<!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 异步串口探索周总结：Console 分析、OS 架构、UART 分析、双方向探索历程、问题汇总、未来方向 ✅ |
+<!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 📦 已归档，当前状态见 SNAPSHOT.md 和 tasks.md |
 
 ---
 
