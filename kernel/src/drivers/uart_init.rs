@@ -20,7 +20,7 @@ use uart_16550::{
     backend::MmioBackend,
     spec::{
         CLK_FREQUENCY_HZ,
-        registers::{FifoTriggerLevel, IER, ISR, LSR, Parity, WordLength},
+        registers::{FifoTriggerLevel, IER, ISR, LSR, Parity, WordLength, offsets},
     },
 };
 
@@ -56,6 +56,20 @@ lazy_static! {
 pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
     &UART
 }
+
+// IER register manipulation helpers (direct MMIO, no crate caching)
+fn write_ier_reg(value: u8) {
+    let ptr = get_uart_mmio_virt().as_mut_ptr();
+    unsafe { core::ptr::write_volatile(ptr.add(offsets::IER as usize), value) };
+}
+fn read_ier_reg() -> u8 {
+    let ptr = get_uart_mmio_virt().as_ptr() as *const u8;
+    unsafe { core::ptr::read_volatile(ptr.add(offsets::IER as usize)) }
+}
+pub fn enable_rx_intr()  { write_ier_reg(read_ier_reg() | IER::DATA_READY.bits()); }
+pub fn disable_rx_intr() { write_ier_reg(read_ier_reg() & !IER::DATA_READY.bits()); }
+pub fn enable_tx_intr()  { write_ier_reg(read_ier_reg() | IER::THR_EMPTY.bits()); }
+pub fn disable_tx_intr() { write_ier_reg(read_ier_reg() & !IER::THR_EMPTY.bits()); }
 
 /// 初始化 UART 硬件 — Phase 1: 只读寄存器验证
 ///

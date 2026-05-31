@@ -1,8 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Generated at 2026-05-24
 > Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0 Spike ✅，Q1 准备中
+> 分支：feat/uart-async-dev2 — Q0 ✅ Q1 ✅，Q2 准备中
 
 ---
 
@@ -10,15 +9,44 @@
 
 **分支**: feat/uart-async-dev2
 **目标**: 在 kernel 层独立实现高性能异步串口，不修改外部 crate
-**阶段**: Q0 Spike 通过，进入 Q1 驱动架构实现
+**阶段**: Q0/Q1 通过，进入 Q2 VFS 集成
 
 ### 关键发现（2026-05-31）
 
 | 发现 | 详情 | 影响 |
 |------|------|------|
-| **LoadFault 根因** | `UART_STRIDE=4` 错误。NS16550 寄存器仅 0x00-0x07，stride=4 使 ISR 偏移到 base+8（越界） | 移除了"MMIO 权限阻塞"的前提 |
-| **页表分析纠正** | UART MMIO 在最终页表中映射正确，不需修改 axplat | 异步串口 kernel 层独立可行 |
-| **Spike 验证通过** | iomap() + raw pointer 读 + uart_16550 crate + ISR handler 全部通过 | Q0 ✅ |
+| **LoadFault 根因** | `UART_STRIDE=4` 越界（NS16550 仅 0x00-0x07，stride=4 读 base+8 越界） | 修复为 1 后全部正常 |
+| **页表分析纠正** | UART 在 mmio-ranges → new_kernel_aspace 正确映射，不需改 axplat | kernel 层独立可行 |
+| **Spike 验证** | iomap + raw ptr + uart_16550 + ISR 全部通过 | Q0 ✅ |
+| **Q1 架构** | AsyncBuffer + AtomicWaker ISR + RX/TX copier 已启动 | Q1 ✅ |
+
+### 实施路径
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Q0** | Spike 验证（iomap + stride 修复 + 寄存器 + ISR） | ✅ |
+| **Q1** | 驱动架构（ring_buffer + ISR/AtomicWaker + copier） | ✅ |
+| **Q2** | VFS 集成（DeviceOps + Pollable + /dev/async_uart） | ⏳ 当前 |
+| **Q3** | Console 共存/替换（earlycon + N_TTY） | ⏳ |
+| **Q4** | 性能优化（基准达标） | ⏳ |
+| **Q5** | 真板验证（VisionFive2） | ⏳ 远期 |
+
+### Q1 架构
+
+```
+IRQ 10
+  → uart_isr_handler
+      ├─ RX: disable_rx_intr() → RX_WAKER.wake()
+      └─ TX: disable_tx_intr() → TX_WAKER.wake()
+
+RX copier (bg task)              TX copier (bg task)
+  poll_fn loop:                    poll_fn loop:
+    UART.read FIFO                   buf.pop_tx
+    buf.push_rx                      UART.write THR
+    enable_rx_intr                   disable_tx_intr(if empty)
+    RX_WAKER.register                TX_WAKER.register
+    Poll::Pending                    Poll::Pending
+```
 
 ### 两个历史探索方向总结
 
@@ -26,17 +54,6 @@
 |------|------|------|------|----------|
 | **A: 渐进式集成** | feat/uart-async | 复用 Console，逐步替换 | M0-M2 ✅, M3 ❌ | IRQ 风暴 + TX busy-loop + stride=4 |
 | **B: 完全剔除 Console** | feat/uart-async-dev2 | 从零开始独立初始化 | P0 ✅, P1-P2 阻塞 | **stride=4 导致 LoadFault** |
-
-### 实施路径
-
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| **Q0** | Spike 验证（iomap + 寄存器读写 + ISR） | ✅ 完成 |
-| **Q1** | 驱动架构（ring_buffer + async_uart + async_driver） | ⏳ 当前 |
-| **Q2** | VFS 集成（DeviceOps + Pollable + /dev/async_uart） | ⏳ |
-| **Q3** | Console 共存/替换（earlycon + N_TTY） | ⏳ |
-| **Q4** | 性能优化（基准达标） | ⏳ |
-| **Q5** | 真板验证（VisionFive2） | ⏳ 远期 |
 
 ---
 

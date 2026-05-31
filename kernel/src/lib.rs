@@ -23,3 +23,15 @@ mod pseudofs;
 mod syscall;
 mod task;
 mod time;
+
+// Critical section implementation for embassy-sync AtomicWaker
+mod critical_impl {
+    #[unsafe(no_mangle)]
+    unsafe fn _critical_section_1_0_acquire() {
+        axhal::asm::disable_irqs();
+    }
+    #[unsafe(no_mangle)]
+    unsafe fn _critical_section_1_0_release(_: ()) {
+        axhal::asm::enable_irqs();
+    }
+}

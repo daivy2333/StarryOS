@@ -16,7 +16,7 @@
 | Milestone | 目标 | Gate | 状态 |
 |-----------|------|------|------|
 | **Q0** | Spike 验证 | UART 寄存器可读写，ISR 正常 | ✅ 完成 |
-| **Q1** | 驱动架构实现 | RX/TX copier + ISR + Ring Buffer | ⏳ 当前 |
+| **Q1** | 驱动架构实现 | RX/TX copier + ISR + Ring Buffer | ✅ 完成 |
 | **Q2** | VFS 集成 | DeviceOps + 设备注册 + poll/epoll | ⏳ |
 | **Q3** | Console 共存/替换 | 内核日志 + 用户态 Shell 正常 | ⏳ |
 | **Q4** | 性能优化 | P50<500µs, >90% 线速 | ⏳ |
@@ -34,12 +34,12 @@
 
 ### Q1: 驱动架构实现 ⏳
 
-<!-- Q1.1 --> - [ ] 实现 Ring Buffer（AsyncBuffer + PollSet）
-<!-- Q1.2 --> - [ ] 实现 ISR 分发（ISR → read ISR → AtomicWaker.wake）
-<!-- Q1.3 --> - [ ] 实现 RX copier（ISR 唤醒 → 读 UART FIFO → 写 ringbuf）
-<!-- Q1.4 --> - [ ] 实现 TX copier（用户写 ringbuf → ISR 唤醒 → 写 UART THR）
-<!-- Q1.5 --> - [ ] 实现 AsyncUartDriver（封装 RX/TX copier + UART 配置）
-<!-- Q1.6 --> - [ ] Gate Q1: 内核内部测试通过
+<!-- Q1.1 --> - [x] 实现 AsyncBuffer（HeapRb + PollSet）✅
+<!-- Q1.2 --> - [x] 实现 ISR AtomicWaker 分发 ✅
+<!-- Q1.3 --> - [x] 实现 RX copier（ISR 唤醒 → 读 UART FIFO → 写 ringbuf）✅
+<!-- Q1.4 --> - [x] 实现 TX copier（buf pop → 写 UART THR）✅
+<!-- Q1.5 --> - [x] 实现 AsyncUartDriver + critical-section 适配 ✅
+<!-- Q1.6 --> - [x] Gate Q1: copier 启动，Shell 正常，无 crash ✅
 
 ### Q2: VFS 集成 ⏳
 

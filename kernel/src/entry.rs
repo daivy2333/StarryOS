@@ -10,7 +10,7 @@ use axtask::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
-    drivers::{uart_init, isr},
+    drivers::{uart_init, isr, async_driver::AsyncUartDriver},
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty::N_TTY},
@@ -27,6 +27,12 @@ pub fn init(args: &[String], envs: &[String]) {
     // 验证 ISR 上下文是否可以访问 UART 寄存器
     axhal::irq::register_irq_hook(isr::uart_isr_handler);
     ax_println!("[kernel] UART ISR handler registered");
+
+    // Q1: Start async UART copier tasks
+    let driver = AsyncUartDriver::new();
+    driver.start_rx_copier();
+    driver.start_tx_copier();
+    ax_println!("[kernel] AsyncUart RX/TX copiers started");
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();

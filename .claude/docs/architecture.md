@@ -341,4 +341,4 @@
   4. VFS 集成使用 DeviceOps + Pollable trait（参考方向 A M2 经验）
   5. Console 共存：earlycon polling TX 用于内核日志，AsyncUart 用于用户态 Shell
 - **不再需要**: ~~修改 axplat~~、~~页表权限修复~~、~~方案 A/B/C 三选一~~
-- **状态**: ✅ 方向确定，Q1 驱动架构实现中
+- **状态**: ✅ Q0/Q1 完成（2026-05-31）

@@ -220,6 +220,13 @@
 - **关键证据**: raw read at base+5（stride 1）成功，base+8（stride 4）失败 — 同一 4K 页表映射，排除页表问题
 - **影响**: 方向 A M3 和方向 B P1/P2 的全部 LoadFault 阻塞是一次简单的 stride 配置错误
 
+<!-- L122 --> ### Q1 架构关键发现（AtomicWaker + critical-section）
+- **ISR 唤醒模式**: ISR 中禁用对应中断后调用 AtomicWaker::wake()，copier 任务中重新 enable 中断
+- **critical-section**: embassy-sync AtomicWaker 需要 critical-section crate v1.0 的 `_critical_section_1_0_acquire/release` 符号，在 lib.rs 中用 disable_irqs/enable_irqs 实现
+- **UnsafeCell**: 多个 copier 任务共享 AsyncBuffer 需用 UnsafeCell 绕过 Rust 借用检查（单生产者单消费者场景安全）
+- **spawn_with_name + block_on**: axtask 的 spawn 接口收 `FnOnce() + Send + 'static` closure，内部用 `block_on(future)` 包装异步逻辑
+- **IER 直接 MMIO**: uart_16550 v0.6.0 只有 `ier()` 读接口无写接口，需通过 `offsets::IER` 做 `write_volatile` 直接修改
+
 ## 技巧模式
 
 <!-- L12 --> ### ISR 极简原则
