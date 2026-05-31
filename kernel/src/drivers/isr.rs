@@ -10,12 +10,10 @@ pub fn uart_isr_handler(_irq: usize) {
     let isr = uart.isr();
     match isr.interrupt_type() {
         Some(InterruptType::ReceivedDataReady) | Some(InterruptType::ReceptionTimeout) => {
-            drop(uart);
             disable_rx_intr();
             RX_WAKER.wake();
         }
         Some(InterruptType::TransmitterHoldingRegisterEmpty) => {
-            drop(uart);
             disable_tx_intr();
             TX_WAKER.wake();
         }
