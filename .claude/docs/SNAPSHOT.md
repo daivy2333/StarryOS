@@ -1,15 +1,16 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0~Q5 ✅，Q6 待做
+> 分支：feat/uart-async-dev2 — Q0~Q5 ✅，Q6 等待硬件
 
 ---
 
 ## 当前状态
 
 **分支**: feat/uart-async-dev2
-**目标**: 在 kernel 层独立实现高性能异步串口，不修改外部 crate
-**阶段**: Q0-Q5 全部通过，Shell 双向异步，性能优化完成，等待真板验证
+**成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
+**Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
+**下一步**: VisionFive2 真板验证（等待硬件到位）
 
 ### 关键发现
 

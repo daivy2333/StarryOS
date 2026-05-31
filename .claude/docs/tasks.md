@@ -20,7 +20,22 @@
 | **Q3** | AsyncUart RX 接管 | Tty<AsyncUartReader, ConsoleWriter> → Shell stdin | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier + ISR，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | 中断合并 + NAPI + 零拷贝 | ✅ |
-| **Q6** | 真板验证 | VisionFive2 | ⏳ |
+| **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
+
+---
+
+## 最终状态
+
+```
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q6 ⏳(硬件)
+```
+
+**已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
+- Shell stdin: ISR → RX copier → ring buffer → AsyncUartReader → Tty → Shell
+- Shell stdout: Shell → Tty → AsyncUartWriter → ring buffer → TX copier → UART
+- 内核日志: ax_println! → Console polling TX（共存）
+- /dev/async_uart: DeviceOps + Pollable，用户态可 open/read/write/poll
+- 性能优化: IER 缓存、ISR 合并、批量 I/O、rx/tx 独立锁、waker skip
 
 ### Q0: Spike 验证 ✅
 
