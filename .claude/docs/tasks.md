@@ -19,10 +19,9 @@
 | **Q1** | 驱动架构实现 | RX/TX copier + ISR + Ring Buffer | ✅ 完成 |
 | **Q2** | VFS 集成 | DeviceOps + /dev/async_uart + Console 共存 | ✅ |
 | **Q3** | Console 替换 | AsyncUart RX 接管，Console TX | ✅ |
-| **Q4** | 全异步 TX | AsyncUart 双向异步 | ✅ |
-| **Q5** | 真板验证 | VisionFive2 | ⏳ |
-
-### Q0: Spike 验证 ✅
+| **Q4** | 全异步 RX+TX | TX copier + ISR，Shell 双向异步 | ✅ |
+| **Q5** | 性能优化 | 中断合并 + NAPI + 零拷贝 | ⏳ 当前 |
+| **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 <!-- Q0.1 --> - [x] 修复 UART_STRIDE=4→1（LoadFault 根因）✅
 <!-- Q0.2 --> - [x] raw pointer 读 LSR 验证 MMIO 可访问 ✅
@@ -155,7 +154,7 @@ IRQ 风暴 + TX busy-loop — Console 只使能 RX 中断，AsyncUart 需 TX 中
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ⏳
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ⏳ Q6 ⏳
 ```
 
 **已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
@@ -163,3 +162,16 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ⏳
 - Shell stdout: Shell → Tty → AsyncUartWriter → ring buffer → TX copier → UART
 - 内核日志: ax_println! → Console polling TX（共存）
 - /dev/async_uart: DeviceOps + Pollable，用户态可 open/read/write/poll
+
+### Q5: 性能优化 ⏳ 当前
+
+<!-- Q5.1 --> - [ ] 中断合并（FCR 阈值 + 软件延迟）
+<!-- Q5.2 --> - [ ] NAPI 风格批量轮询
+<!-- Q5.3 --> - [ ] 零拷贝 RX 路径探索
+<!-- Q5.4 --> - [ ] Gate Q5: 性能基准达标
+
+### Q6: 真板验证 ⏳
+
+<!-- Q6.1 --> - [ ] VisionFive2 编译适配
+<!-- Q6.2 --> - [ ] 串口收发功能测试
+<!-- Q6.3 --> - [ ] Gate Q6: 真板正常运行
