@@ -9,7 +9,16 @@
 
 <!-- tombstone: O25-O33 --> Archived to archive.md §optimization #O25-O33 2026-05-31 — 8 项 Q5 性能优化已完成
 
-## Q5.1/Q5.2 待做（feat/uart-async-dev2 分支）
+## Q5.1 已完成（2026-05-31）
+
+| 编号 | 内容 | 效果 |
+|------|------|------|
+| O2/O34 | NAPI 中断合并 | 连续成功 ≥16 次后切轮询模式，batch=64，高吞吐时减少 90%+ IRQ |
+| O4/O35 | FCR 阈值日志 | ISR bits 6-7 检查 FIFO 状态，记录触发阈值 |
+| O7 | uart_16550 批量读写 API | receive_bytes/send_bytes 替代逐字节操作，减少函数调用开销 |
+| O34 | TX interleave 修复 | TX copier 用本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 |
+
+## Q5.2 待做（feat/uart-async-dev2 分支）
 
 ---
 
@@ -56,12 +65,10 @@
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
-| O2/O34 | NAPI 中断合并 | 🟡 中 | 高吞吐时切轮询模式 |
-| O4/O35 | FCR 阈值调优 | 🟢 低 | 确认 Console 设置的阈值 |
-| O7 | uart_16550 批量读写 API | 🟡 中 | 已用单锁 batch 替代，可进一步优化 crate |
-| O17 | 中断分发效率 | 🟢 低 | BTreeMap → 数组索引 |
 | O21 | 用户态自动化测试 | 🟢 低 | Makefile test target |
 | O22 | 非阻塞模式测试 | 🟢 低 | ioctl(FIONBIO) |
+
+**已排除**: O17（中断分发效率）— 不需要实现。ISR 使用 AtomicWaker 直接唤醒（O(1)），无需 BTreeMap 分发机制。
 
 ### Q6：真板拿到后
 

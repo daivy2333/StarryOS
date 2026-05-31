@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0~Q5 ✅，Q6 等待硬件
+> 分支：feat/uart-async-dev2 — Q0~Q5.1 ✅，Q6 等待硬件
 
 ---
 
@@ -24,6 +24,10 @@
 | **axmm::iomap** | 现成 API 用于映射设备 MMIO，无需修改 axplat |
 | **IER 缓存** | AtomicU8 缓存 IER 值，enable/disable 只需一次 write_volatile |
 | **rx/tx 独立锁** | 消除 false contention，提升并发性能 |
+| **NAPI 中断合并** | 连续成功 ≥16 次后切轮询模式，高吞吐时减少 90%+ IRQ |
+| **批量 API** | receive_bytes/send_bytes 替代逐字节操作，减少函数调用开销 |
+| **TX interleave 修复** | TX copier 用本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 |
+| **AtomicWaker 直接唤醒** | ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） |
 
 ### 实施路径
 
@@ -35,7 +39,7 @@
 | **Q3** | AsyncUart RX 接管（Tty<AsyncUartReader, ConsoleWriter> → Shell stdin） | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier 接管，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip + rx/tx 独立锁 | ✅ |
-| **Q5.1** | 性能优化续 | NAPI + FCR + 批量 API + 中断分发 | ⏳ |
+| **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ⏳ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
@@ -136,10 +140,10 @@ StarryOS/
 | 文档 | 内容 | 条目数 |
 |------|------|--------|
 | architecture.md | ADR-001~029，两个方向的全部决策历史 | 19 |
-| tasks.md | Q0~Q6 任务追踪（方向 C） | 34 |
-| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 68 |
+| tasks.md | Q0~Q6 任务追踪（方向 C） | 37 |
+| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 71 |
 | references.md | 依赖文档、规范、设计文档索引 | 46 |
-| optimization.md | 性能洞察、优化方向、基准目标 | 23 |
+| optimization.md | 性能洞察、优化方向、基准目标 | 20 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
 | archive.md | 已归档的过时内容 | ~15 |
 

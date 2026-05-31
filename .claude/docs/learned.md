@@ -341,3 +341,22 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
 - **轮询**: batch size 缩小到 `NAPI_BATCH_SIZE`（64），不重新使能 RX 中断
 - **退出**: 一次读取返回 0 → `consecutive` 重置 → 退出轮询 → 使能 RX 中断
 - **效果**: 高吞吐时减少 90%+ IRQ 频率
+
+<!-- L128 --> ### AtomicWaker vs register_irq_waker 设计选择
+- **场景**: ISR 唤醒异步任务时，有两种方案
+- **方案 A: AtomicWaker（本项目采用）**
+  - 静态变量：`static RX_WAKER: AtomicWaker = AtomicWaker::new();`
+  - ISR 中直接调用：`RX_WAKER.wake()`，O(1) 复杂度
+  - 优点：无查找开销、无锁、ISR 安全、代码简单
+  - 适用：固定数量的 waker（RX/TX 各一个）
+- **方案 B: register_irq_waker（axtask 通用方案）**
+  - 使用 `BTreeMap<usize, PollSet>` 存储每个 IRQ 的 waker 集合
+  - ISR 中需要查找对应 PollSet → O(log n) 复杂度
+  - 优点：支持同一 IRQ 注册多个 waker、动态管理
+  - 适用：通用场景（如 Console tty-reader + AsyncUart 共用 IRQ 10）
+- **本项目选择 AtomicWaker 的原因**:
+  1. UART 驱动是专用的，只有 RX/TX 两个方向，各一个 waker
+  2. 不需要动态注册/注销 waker
+  3. ISR 性能要求高（~1.5µs），AtomicWaker::wake() 是原子操作，无分支
+  4. 代码更简洁，无需处理 BTreeMap 的并发问题
+- **结论**: 专用驱动用 AtomicWaker，通用框架用 register_irq_waker。O17 优化不适用本项目。
