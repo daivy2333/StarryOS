@@ -7,7 +7,7 @@ pub struct AsyncUartReader;
 
 impl TtyRead for AsyncUartReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
-        DRIVER.buffer.lock().pop_rx(buf)
+        DRIVER.rx.lock().pop(buf)
     }
 }
 
@@ -16,7 +16,7 @@ pub struct AsyncUartWriter;
 impl TtyWrite for AsyncUartWriter {
     fn write(&self, buf: &[u8]) {
         if buf.is_empty() { return; }
-        DRIVER.buffer.lock().push_tx(buf);
+        DRIVER.tx.lock().push(buf);
     }
 }
 

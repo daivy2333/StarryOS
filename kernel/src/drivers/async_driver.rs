@@ -8,23 +8,26 @@ use axsync::Mutex;
 use lazy_static::lazy_static;
 
 use crate::drivers::isr::{RX_WAKER, TX_WAKER};
-use crate::drivers::ring_buffer::AsyncBuffer;
+use crate::drivers::ring_buffer::{RingBufRx, RingBufTx};
 use crate::drivers::uart_init::{uart_instance, enable_rx_intr, enable_tx_intr};
 
 const COPIER_BUF_SIZE: usize = 1024;
-const BATCH_SIZE: usize = 16; // NS16550 FIFO depth
 
 lazy_static! {
     pub static ref DRIVER: Arc<AsyncUartDriver> = AsyncUartDriver::new();
 }
 
 pub struct AsyncUartDriver {
-    pub buffer: Mutex<AsyncBuffer>,
+    pub rx: Mutex<RingBufRx>,
+    pub tx: Mutex<RingBufTx>,
 }
 
 impl AsyncUartDriver {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { buffer: Mutex::new(AsyncBuffer::new()) })
+        Arc::new(Self {
+            rx: Mutex::new(RingBufRx::new()),
+            tx: Mutex::new(RingBufTx::new()),
+        })
     }
 
     pub fn start_rx_copier(self: &Arc<Self>) {
@@ -42,10 +45,8 @@ impl AsyncUartDriver {
         let mut last_waker: Cell<Option<Waker>> = Cell::new(None);
         loop {
             poll_fn(|cx| {
-                // Batch drain UART FIFO: single SpinNoIrq lock for all reads
                 let mut uart = uart_instance().lock();
                 let mut total = 0;
-                // Read up to BATCH_SIZE at a time (no per-byte LSR check)
                 while total < COPIER_BUF_SIZE {
                     match uart.try_receive_byte() {
                         Ok(byte) => { read_buf[total] = byte; total += 1; }
@@ -53,19 +54,12 @@ impl AsyncUartDriver {
                     }
                 }
                 drop(uart);
-
-                if total > 0 {
-                    self.buffer.lock().push_rx(&read_buf[..total]);
-                }
-
+                if total > 0 { self.rx.lock().push(&read_buf[..total]); }
                 enable_rx_intr();
-
-                // O31: skip AtomicWaker register if waker unchanged
-                let new_waker = cx.waker().clone();
-                if last_waker.replace(Some(new_waker.clone())).as_ref().map_or(true, |old| !old.will_wake(&new_waker)) {
+                let w = cx.waker().clone();
+                if last_waker.replace(Some(w.clone())).as_ref().map_or(true, |old| !old.will_wake(&w)) {
                     RX_WAKER.register(cx.waker());
                 }
-
                 if total > 0 { Poll::Ready(total) } else { Poll::Pending }
             }).await;
         }
@@ -76,34 +70,28 @@ impl AsyncUartDriver {
         let mut last_waker: Cell<Option<Waker>> = Cell::new(None);
         loop {
             poll_fn(|cx| {
-                // Pop from ring buffer (single lock)
                 let pending = {
-                    let mut buf = self.buffer.lock();
-                    let n = buf.pop_tx(&mut write_buf);
-                    if n > 0 { n } else { buf.register_tx_waker(cx); return Poll::Pending; }
+                    let mut buf = self.tx.lock();
+                    let n = buf.pop(&mut write_buf);
+                    if n > 0 { n } else { buf.register_waker(cx); return Poll::Pending; }
                 };
-
-                // Batch write to UART FIFO (single SpinNoIrq lock)
                 let mut uart = uart_instance().lock();
                 let mut sent = 0;
                 for &b in &write_buf[..pending] {
                     match uart.try_send_byte(b) {
                         Ok(_) => { sent += 1; }
                         Err(_) => {
-                            // FIFO full: push remaining back in ONE buffer lock
-                            self.buffer.lock().push_tx(&write_buf[sent..pending]);
+                            self.tx.lock().push(&write_buf[sent..pending]);
                             enable_tx_intr();
                             break;
                         }
                     }
                 }
                 drop(uart);
-
-                let new_waker = cx.waker().clone();
-                if last_waker.replace(Some(new_waker.clone())).as_ref().map_or(true, |old| !old.will_wake(&new_waker)) {
+                let w = cx.waker().clone();
+                if last_waker.replace(Some(w.clone())).as_ref().map_or(true, |old| !old.will_wake(&w)) {
                     TX_WAKER.register(cx.waker());
                 }
-
                 Poll::Ready(())
             }).await;
         }
