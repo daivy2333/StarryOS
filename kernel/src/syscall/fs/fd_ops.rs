@@ -87,7 +87,9 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         .session()
                         .terminal()
                         .ok_or(AxError::NotFound)?;
-                    let path = if term.is::<tty::NTtyDriver>() {
+                    let path = if term.is::<tty::NTtyDriver>()
+                        || term.is::<crate::drivers::AsyncTty>()
+                    {
                         "/dev/console".to_string()
                     } else if let Some(pts) = term.downcast_ref::<tty::PtyDriver>() {
                         format!("/dev/pts/{}", pts.pty_number())

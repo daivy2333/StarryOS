@@ -18,9 +18,9 @@
 | **Q0** | Spike 验证 | UART 寄存器可读写，ISR 正常 | ✅ 完成 |
 | **Q1** | 驱动架构实现 | RX/TX copier + ISR + Ring Buffer | ✅ 完成 |
 | **Q2** | VFS 集成 | DeviceOps + /dev/async_uart + Console 共存 | ✅ |
-| **Q3** | Console 替换 | AsyncUart 接管 UART | ⏳ 当前 |
-| **Q4** | 性能优化 | P50<500µs, >90% 线速 | ⏳ |
-| **Q5** | 真板验证 | VisionFive2 实际验证 | ⏳ 远期 |
+| **Q3** | Console 替换 | AsyncUart RX 接管，Console TX | ✅ |
+| **Q4** | 全异步 TX | AsyncUart 双向异步 | ✅ |
+| **Q5** | 真板验证 | VisionFive2 | ⏳ |
 
 ### Q0: Spike 验证 ✅
 
@@ -32,7 +32,7 @@
 
 **根因**: UART_STRIDE=4 使 ISR 读到 base+8（超出 NS16550 0x00-0x07 寄存器范围）→ LoadFault。
 
-### Q1: 驱动架构实现 ⏳
+### Q1: 驱动架构实现 ⏳ 当前
 
 <!-- Q1.1 --> - [x] 实现 AsyncBuffer（HeapRb + PollSet）✅
 <!-- Q1.2 --> - [x] 实现 ISR AtomicWaker 分发 ✅
@@ -78,21 +78,46 @@
 <!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
 <!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
 
-### Q3: Console 共存/替换 ⏳
+### Q3: Console 替换 ✅
 
-<!-- Q3.1 --> - [ ] earlycon 内核日志方案
-<!-- Q3.2 --> - [ ] Console 与 AsyncUart 硬件共存测试
-<!-- Q3.3 --> - [ ] N_TTY 绑定到 AsyncUart
+<!-- Q3.1 --> - [x] AsyncUartReader/Writer（TtyRead/TtyWrite）✅
+<!-- Q3.2 --> - [x] RX copier 启用 + ISR AtomicWaker ✅
+<!-- Q3.3 --> - [x] Tty<AsyncUartReader, ConsoleWriter> 绑定 Shell ✅
+<!-- Q3.4 --> - [x] Gate Q3: boot 正常，Shell 显示，TX 沿用 Console
+### Q3: Console 替换 ✅
+
+<!-- Q3.1 --> - [x] AsyncUartReader/Writer（TtyRead/TtyWrite）✅
+<!-- Q3.2 --> - [x] RX copier 启用 + ISR AtomicWaker ✅
+<!-- Q3.3 --> - [x] Tty<AsyncUartReader, ConsoleWriter> 绑定 Shell ✅
+<!-- Q3.4 --> - [x] Gate Q3: boot 正常，Shell 显示，TX 沿用 Console
+### Q3: Console 替换 ✅
+
+<!-- Q3.1 --> - [x] AsyncUartReader/Writer（TtyRead/TtyWrite）✅
+<!-- Q3.2 --> - [x] RX copier 启用 + ISR AtomicWaker ✅
+<!-- Q3.3 --> - [x] Tty<AsyncUartReader, ConsoleWriter> 绑定 Shell ✅
+<!-- Q3.4 --> - [x] Gate Q3: boot 正常，Shell 显示，TX 沿用 Console
+### Q3: Console 替换 ✅
+
+<!-- Q3.1 --> - [x] AsyncUartReader/Writer（TtyRead/TtyWrite）✅
+<!-- Q3.2 --> - [x] RX copier 启用 + ISR AtomicWaker ✅
+<!-- Q3.3 --> - [x] Tty<AsyncUartReader, ConsoleWriter> 绑定 Shell ✅
+<!-- Q3.4 --> - [x] Gate Q3: boot 正常，Shell 显示，TX 沿用 Console
+### Q3: Console 替换 ✅
+
+<!-- Q3.1 --> - [x] AsyncUartReader/Writer（TtyRead/TtyWrite）✅
+<!-- Q3.2 --> - [x] RX copier 启用 + ISR AtomicWaker ✅
+<!-- Q3.3 --> - [x] Tty<AsyncUartReader, ConsoleWriter> 绑定 Shell ✅
+<!-- Q3.4 --> - [x] Gate Q3: boot 正常，Shell 显示，TX 沿用 Console
 <!-- Q3.4 --> - [ ] Gate Q3: Shell 走 AsyncUart 正常
 
-### Q4: 性能优化 ⏳
+### Q4: 性能优化 ⏳ 当前
 
 <!-- Q4.1 --> - [ ] 中断合并（FCR 阈值 + 软件延迟）
 <!-- Q4.2 --> - [ ] NAPI 风格批量轮询
 <!-- Q4.3 --> - [ ] 零拷贝 RX 路径探索
 <!-- Q4.4 --> - [ ] Gate Q4: 性能基准达标
 
-### Q5: 真板验证 ⏳
+### Q5: 真板验证 ⏳ 当前
 
 <!-- Q5.1 --> - [ ] VisionFive2 编译适配
 <!-- Q5.2 --> - [ ] 串口收发功能测试

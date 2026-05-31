@@ -225,7 +225,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 1),
-            tty::N_TTY.clone(),
+            crate::drivers::ASYNC_TTY.clone(),
         ),
     );
 

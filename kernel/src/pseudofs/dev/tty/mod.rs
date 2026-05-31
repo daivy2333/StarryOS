@@ -2,7 +2,7 @@ mod ntty;
 mod ptm;
 mod pts;
 mod pty;
-mod terminal;
+pub mod terminal;
 
 use alloc::sync::{Arc, Weak};
 use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
@@ -50,7 +50,7 @@ pub struct Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
-    fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
+    pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
         let is_ptm = matches!(&config.process_mode, ProcessMode::None(_));
         let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));

@@ -26,16 +26,27 @@
 | **Q0** | Spike（stride=1 + 寄存器 + ISR） | ✅ |
 | **Q1** | 驱动架构（ring_buffer + ISR + copier） | ✅ |
 | **Q2** | VFS 集成（DeviceOps + /dev/async_uart + Console 共存） | ✅ |
-| **Q3** | Console 替换（earlycon + AsyncUart 接管 UART） | ⏳ 当前 |
-| **Q4** | 性能优化 | ⏳ |
-| **Q5** | 真板验证 | ⏳ 远期 |
+| **Q3** | Console 替换（AsyncUart RX 接管 + Tty 绑定） | ✅ |
+| **Q4** | 全异步 RX+TX | TX copier 接管 UART，双向异步 | ✅ |
+| **Q5** | 真板验证 | VisionFive2 | ⏳ |
 
-### Q2 共存架构
+### Q4 架构
 
 ```
-Console (axplat) — 独占 UART RX/TX
-AsyncUart — /dev/async_uart 已注册（读写在 ring buffer，无 UART 操作）
-copier 任务 — OFF（Q3 启用，届时接管 UART）
+RX: 键盘 → UART → ISR → RX_WAKER → RX copier → ring buffer → Shell stdin ✅
+TX: Shell stdout → AsyncUartWriter → ring buffer → TX copier → UART ✅
+    内核日志 → ax_println! → Console polling TX（共存）✅
+```
+
+```
+User keystroke → UART RX intr → ISR (disable RX, wake RX_WAKER)
+  → RX copier: read FIFO → push ring buffer → enable RX
+    → AsyncUartReader::read → Shell stdin ✅
+
+Shell stdout → ConsoleWriter::write → axplat polling TX ✅
+Kernel log  → ax_println! → axplat polling TX ✅
+
+TX 路径暂用 Console polling（Q4 切换为异步 TX copier）
 ```
 
 ### 两个历史探索方向总结

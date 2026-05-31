@@ -10,21 +10,21 @@ use axtask::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
-    drivers::{uart_init, isr, async_driver::AsyncUartDriver},
+    drivers::{uart_init, isr, async_driver::DRIVER, ASYNC_TTY},
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
-    pseudofs::{self, dev::tty::N_TTY},
+    pseudofs,
     task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
 };
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
-    // Q2: uart init deferred — let Console handle UART until Q3
-    // uart_init::init_uart_hardware();
-    // axhal::irq::register_irq_hook(isr::uart_isr_handler);
-    // ax_println!("[kernel] UART hardware initialized for AsyncUart");
-
-    ax_println!("[kernel] AsyncUart driver ready (copiers off, Console handles UART)");
+    // Q4: Full async RX+TX
+    uart_init::init_uart_hardware();
+    axhal::irq::register_irq_hook(isr::uart_isr_handler);
+    DRIVER.start_rx_copier();
+    DRIVER.start_tx_copier();
+    ax_println!("[kernel] Q4: AsyncUart RX+TX copiers started");
 
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
@@ -57,7 +57,7 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    N_TTY.bind_to(&proc).expect("Failed to bind ntty");
+    ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
 
     let proc = ProcessData::new(
         proc,

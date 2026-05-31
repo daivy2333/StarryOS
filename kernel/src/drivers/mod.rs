@@ -10,9 +10,12 @@
 //! - async_driver: RX/TX copier 任务
 //! - device_ops: AsyncUartDevice（DeviceOps + Pollable）
 
-pub mod async_driver; // RX/TX copier
-pub mod async_uart; // AsyncUart trait
+pub mod async_driver;
+pub mod async_uart;
 pub mod device_ops;
-pub mod isr; // ISR 分发机制
-pub mod ring_buffer; // AsyncBuffer
-pub mod uart_init; // UART 硬件初始化 // DeviceOps trait
+pub mod isr;
+pub mod ntty_async;
+pub mod ring_buffer;
+pub mod uart_init;
+pub use ntty_async::ASYNC_TTY;
+pub type AsyncTty = crate::pseudofs::dev::tty::Tty<crate::drivers::device_ops::AsyncUartReader, crate::drivers::device_ops::AsyncUartWriter>;
