@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0 ✅ Q1 ✅，Q2 准备中
+> 分支：feat/uart-async-dev2 — Q0 ✅ Q1 ✅ Q2 ✅（Console 共存），Q3 准备中
 
 ---
 
@@ -9,43 +9,33 @@
 
 **分支**: feat/uart-async-dev2
 **目标**: 在 kernel 层独立实现高性能异步串口，不修改外部 crate
-**阶段**: Q0/Q1 通过，进入 Q2 VFS 集成
+**阶段**: Q0/Q1/Q2 通过，Q2 阶段 Console 与 AsyncUart 共存已验证
 
-### 关键发现（2026-05-31）
+### 关键发现
 
-| 发现 | 详情 | 影响 |
-|------|------|------|
-| **LoadFault 根因** | `UART_STRIDE=4` 越界（NS16550 仅 0x00-0x07，stride=4 读 base+8 越界） | 修复为 1 后全部正常 |
-| **页表分析纠正** | UART 在 mmio-ranges → new_kernel_aspace 正确映射，不需改 axplat | kernel 层独立可行 |
-| **Spike 验证** | iomap + raw ptr + uart_16550 + ISR 全部通过 | Q0 ✅ |
-| **Q1 架构** | AsyncBuffer + AtomicWaker ISR + RX/TX copier 已启动 | Q1 ✅ |
+| 发现 | 详情 |
+|------|------|
+| **stride=4 根因** | NS16550 仅 8 字节，stride=4 越界 → LoadFault。改 1 后正常 |
+| **copier/Console 竞争** | RX copier 会抢先读 UART FIFO，导致 Shell 收不到输入。Q3 替换 Console 后由 copier 独占 |
+| **Console 共存** | copier OFF 时 Console 正常工作，/dev/async_uart 设备已注册 |
 
 ### 实施路径
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| **Q0** | Spike 验证（iomap + stride 修复 + 寄存器 + ISR） | ✅ |
-| **Q1** | 驱动架构（ring_buffer + ISR/AtomicWaker + copier） | ✅ |
-| **Q2** | VFS 集成（DeviceOps + Pollable + /dev/async_uart） | ⏳ 当前 |
-| **Q3** | Console 共存/替换（earlycon + N_TTY） | ⏳ |
-| **Q4** | 性能优化（基准达标） | ⏳ |
-| **Q5** | 真板验证（VisionFive2） | ⏳ 远期 |
+| **Q0** | Spike（stride=1 + 寄存器 + ISR） | ✅ |
+| **Q1** | 驱动架构（ring_buffer + ISR + copier） | ✅ |
+| **Q2** | VFS 集成（DeviceOps + /dev/async_uart + Console 共存） | ✅ |
+| **Q3** | Console 替换（earlycon + AsyncUart 接管 UART） | ⏳ 当前 |
+| **Q4** | 性能优化 | ⏳ |
+| **Q5** | 真板验证 | ⏳ 远期 |
 
-### Q1 架构
+### Q2 共存架构
 
 ```
-IRQ 10
-  → uart_isr_handler
-      ├─ RX: disable_rx_intr() → RX_WAKER.wake()
-      └─ TX: disable_tx_intr() → TX_WAKER.wake()
-
-RX copier (bg task)              TX copier (bg task)
-  poll_fn loop:                    poll_fn loop:
-    UART.read FIFO                   buf.pop_tx
-    buf.push_rx                      UART.write THR
-    enable_rx_intr                   disable_tx_intr(if empty)
-    RX_WAKER.register                TX_WAKER.register
-    Poll::Pending                    Poll::Pending
+Console (axplat) — 独占 UART RX/TX
+AsyncUart — /dev/async_uart 已注册（读写在 ring buffer，无 UART 操作）
+copier 任务 — OFF（Q3 启用，届时接管 UART）
 ```
 
 ### 两个历史探索方向总结

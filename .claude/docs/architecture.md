@@ -341,4 +341,10 @@
   4. VFS 集成使用 DeviceOps + Pollable trait（参考方向 A M2 经验）
   5. Console 共存：earlycon polling TX 用于内核日志，AsyncUart 用于用户态 Shell
 - **不再需要**: ~~修改 axplat~~、~~页表权限修复~~、~~方案 A/B/C 三选一~~
-- **状态**: ✅ Q0/Q1 完成（2026-05-31）
+<!-- A28 --> ### 2026-05-31 - copier/Console FIFO 竞争发现：Q2 共存策略
+
+- **背景**: Q2 阶段同时运行 Console 和 AsyncUart copier 时，Shell 无法接收键盘输入
+- **根因**: RX copier 的 `try_receive_byte()` 和 Console tty-reader 的 `read_bytes()` 都读同一个 UART RBR 寄存器。copier 先启动、先执行，抢在 tty-reader 之前把 FIFO 数据全部读走放入 ring buffer，tty-reader 看到空 FIFO，Shell 收不到输入
+- **解决**: Q2 阶段关闭 copier，Console 独占 UART。Q3 替换 Console 后再启用 copier，届时 copier 是唯一 UART 读写者
+- **影响**: Q2 的 /dev/async_uart 只提供设备节点和 DeviceOps 基础架构（read/write 在 ring buffer 上操作），实际数据通路（UART ↔ ring buffer）由 Q3 启用
+- **状态**: ✅ Q2 共存验证通过

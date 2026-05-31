@@ -225,7 +225,11 @@
 - **critical-section**: embassy-sync AtomicWaker 需要 critical-section crate v1.0 的 `_critical_section_1_0_acquire/release` 符号，在 lib.rs 中用 disable_irqs/enable_irqs 实现
 - **UnsafeCell**: 多个 copier 任务共享 AsyncBuffer 需用 UnsafeCell 绕过 Rust 借用检查（单生产者单消费者场景安全）
 - **spawn_with_name + block_on**: axtask 的 spawn 接口收 `FnOnce() + Send + 'static` closure，内部用 `block_on(future)` 包装异步逻辑
-- **IER 直接 MMIO**: uart_16550 v0.6.0 只有 `ier()` 读接口无写接口，需通过 `offsets::IER` 做 `write_volatile` 直接修改
+<!-- L123 --> ### RX copier 与 Console tty-reader FIFO 竞争
+- **症状**: Shell 显示 `starry:~#` 但键盘输入完全无效（`ls` 等命令无响应）
+- **根因**: RX copier 和 Console tty-reader 都读取同一个 UART RBR（FIFO）。copier 先读取 → 数据进入 ring buffer → tty-reader 读 FIFO 时空 → Shell 收不到输入
+- **解决**: Q2 关闭 copier 让 Console 独占 UART。Q3 替换 Console 后再由 copier 接管
+- **教训**: 共享硬件（同一 UART）的两个 reader 必须互斥访问，不能同时 drain FIFO
 
 ## 技巧模式
 

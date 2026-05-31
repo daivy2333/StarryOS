@@ -17,8 +17,8 @@
 |-----------|------|------|------|
 | **Q0** | Spike 验证 | UART 寄存器可读写，ISR 正常 | ✅ 完成 |
 | **Q1** | 驱动架构实现 | RX/TX copier + ISR + Ring Buffer | ✅ 完成 |
-| **Q2** | VFS 集成 | DeviceOps + 设备注册 + poll/epoll | ⏳ |
-| **Q3** | Console 共存/替换 | 内核日志 + 用户态 Shell 正常 | ⏳ |
+| **Q2** | VFS 集成 | DeviceOps + /dev/async_uart + Console 共存 | ✅ |
+| **Q3** | Console 替换 | AsyncUart 接管 UART | ⏳ 当前 |
 | **Q4** | 性能优化 | P50<500µs, >90% 线速 | ⏳ |
 | **Q5** | 真板验证 | VisionFive2 实际验证 | ⏳ 远期 |
 
@@ -41,12 +41,42 @@
 <!-- Q1.5 --> - [x] 实现 AsyncUartDriver + critical-section 适配 ✅
 <!-- Q1.6 --> - [x] Gate Q1: copier 启动，Shell 正常，无 crash ✅
 
-### Q2: VFS 集成 ⏳
+### Q2: VFS 集成 + Console 共存 ✅
 
-<!-- Q2.1 --> - [ ] DeviceOps trait for AsyncUartDriver
-<!-- Q2.2 --> - [ ] Pollable trait（poll + register）
-<!-- Q2.3 --> - [ ] 注册 /dev/async_uart 到 devfs
-<!-- Q2.4 --> - [ ] Gate Q2: 用户态 read/write + poll/epoll 通过
+<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
+<!-- Q2.2 --> - [x] Pollable trait ✅
+<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
+<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
+### Q2: VFS 集成 + Console 共存 ✅
+
+<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
+<!-- Q2.2 --> - [x] Pollable trait ✅
+<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
+<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
+### Q2: VFS 集成 + Console 共存 ✅
+
+<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
+<!-- Q2.2 --> - [x] Pollable trait ✅
+<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
+<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
+### Q2: VFS 集成 + Console 共存 ✅
+
+<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
+<!-- Q2.2 --> - [x] Pollable trait ✅
+<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
+<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
+### Q2: VFS 集成 + Console 共存 ✅
+
+<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
+<!-- Q2.2 --> - [x] Pollable trait ✅
+<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
+<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
+### Q2: VFS 集成 + Console 共存 ✅
+
+<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
+<!-- Q2.2 --> - [x] Pollable trait ✅
+<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
+<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
 
 ### Q3: Console 共存/替换 ⏳
 

@@ -19,20 +19,13 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
-    // UART 硬件初始化（替代 axplat UART init）
-    uart_init::init_uart_hardware();
-    ax_println!("[kernel] UART hardware initialized for AsyncUart");
+    // Q2: uart init deferred — let Console handle UART until Q3
+    // uart_init::init_uart_hardware();
+    // axhal::irq::register_irq_hook(isr::uart_isr_handler);
+    // ax_println!("[kernel] UART hardware initialized for AsyncUart");
 
-    // 🔴 ISR 测试：注册 UART ISR handler
-    // 验证 ISR 上下文是否可以访问 UART 寄存器
-    axhal::irq::register_irq_hook(isr::uart_isr_handler);
-    ax_println!("[kernel] UART ISR handler registered");
+    ax_println!("[kernel] AsyncUart driver ready (copiers off, Console handles UART)");
 
-    // Q1: Start async UART copier tasks
-    let driver = AsyncUartDriver::new();
-    driver.start_rx_copier();
-    driver.start_tx_copier();
-    ax_println!("[kernel] AsyncUart RX/TX copiers started");
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();

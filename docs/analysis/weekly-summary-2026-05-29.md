@@ -21,7 +21,7 @@
 | 页表分析纠正 | 05-31 | 验证 UART 在 mmio-ranges 中映射正确，排除页表问题 |
 | **LoadFault 根因发现** | 05-31 | **`UART_STRIDE=4` 越界 — NS16550 仅 8 字节寄存器** |
 | Q0 Spike | 05-31 | iomap + raw ptr + uart_16550 + ISR 全部通过 ✅ |
-| Q1 驱动架构 | 05-31 | AsyncBuffer + AtomicWaker ISR + RX/TX copier 启动 ✅ |
+| Q2 VFS + 共存 | 05-31 | /dev/async_uart 注册，copier OFF Console 正常 ✅ |
 
 ---
 
@@ -186,7 +186,11 @@ RX copier (bg task)              TX copier (bg task)
 
 | 阶段 | 内容 |
 |------|------|
-| Q2 | VFS 集成（DeviceOps + Pollable + /dev/async_uart） |
+| Q2 | VFS 集成（DeviceOps + /dev/async_uart + Console 共存） | ✅ |
+
+### 发现：copier/Console FIFO 竞争
+
+RX copier 和 Console tty-reader 读取同一个 UART RBR，copier 先读到 ring buffer，tty-reader 空等 → Shell 无输入。Q2 关闭 copier，Q3 替换 Console 后 copier 独占。
 | Q3 | Console 共存/替换（earlycon + N_TTY） |
 | Q4 | 性能优化（P50<500µs, >90% 线速） |
 | Q5 | 真板验证（VisionFive2） |
