@@ -119,6 +119,10 @@ pub fn init_uart_hardware() {
     ax_println!("[UART INIT] Trying uart_16550 crate access...");
     let mut uart = uart_instance().lock();
     log_uart_state(&mut uart);
+    // FCR threshold check: ISR bits 6-7 indicate FIFO status
+    let isr = uart.isr();
+    let fifo_enabled = isr.contains(ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1);
+    ax_println!("[UART INIT] FCR: FIFO enabled={}, trigger level via ISR bits 7-6", fifo_enabled);
 
     ax_println!("[UART INIT] ✅ Phase 1 PASSED: UART registers readable");
 }
