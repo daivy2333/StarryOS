@@ -21,17 +21,20 @@
 | **IER 控制** | uart_16550 v0.6.0 只有 ier() 读接口，需直接 MMIO write_volatile |
 | **critical-section** | embassy-sync AtomicWaker 需要 critical-section 符号，disable_irqs/enable_irqs 实现 |
 | **Tty 泛型绑定** | Tty<R,W> 的 reader/writer 直接替换 Console，无需修改伪终端框架 |
+| **axmm::iomap** | 现成 API 用于映射设备 MMIO，无需修改 axplat |
+| **IER 缓存** | AtomicU8 缓存 IER 值，enable/disable 只需一次 write_volatile |
+| **rx/tx 独立锁** | 消除 false contention，提升并发性能 |
 
 ### 实施路径
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| **Q0** | Spike（stride=1 + 寄存器 + ISR） | ✅ |
-| **Q1** | 驱动架构（ring_buffer + ISR + copier） | ✅ |
+| **Q0** | Spike（stride=1 + 寄存器 + ISR + axmm::iomap） | ✅ |
+| **Q1** | 驱动架构（ring_buffer + ISR + copier + critical-section） | ✅ |
 | **Q2** | VFS 集成（DeviceOps + /dev/async_uart + Console 共存） | ✅ |
-| **Q3** | AsyncUart RX 接管（Tty + Shell stdin） | ✅ |
+| **Q3** | AsyncUart RX 接管（Tty<AsyncUartReader, ConsoleWriter> → Shell stdin） | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier 接管，Shell 双向异步 | ✅ |
-| **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
+| **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip + rx/tx 独立锁 | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
@@ -72,13 +75,14 @@ StarryOS/
 ├── kernel/src/
 │   ├── config/           # 内核配置
 │   ├── drivers/          # 异步串口驱动模块
-│   │   ├── mod.rs         # 模块声明
-│   │   ├── uart_init.rs   # UART 初始化 ✅
-│   │   ├── isr.rs         # ISR handler ✅
-│   │   ├── ring_buffer.rs # ⏳ 占位符
-│   │   ├── async_uart.rs  # ⏳ 占位符
-│   │   ├── async_driver.rs# ⏳ 占位符
-│   │   └── device_ops.rs  # ⏳ 占位符
+│   │   ├── mod.rs         # 模块声明（21 行）
+│   │   ├── uart_init.rs   # UART 初始化 + IER 缓存（155 行）✅
+│   │   ├── isr.rs         # ISR handler + AtomicWaker（22 行）✅
+│   │   ├── ring_buffer.rs # RingBufRx/Tx + PollSet（58 行）✅
+│   │   ├── async_uart.rs  # ⏳ 占位符（1 行）
+│   │   ├── async_driver.rs# AsyncUartDriver + RX/TX copier（99 行）✅
+│   │   ├── device_ops.rs  # AsyncUartReader/Writer + TtyRead/TtyWrite（33 行）✅
+│   │   └── ntty_async.rs  # AsyncTty 类型别名 + lazy_static（21 行）✅
 │   ├── entry.rs          # 内核入口
 │   ├── file/             # 文件系统核心
 │   │   ├── pipe.rs       # 异步管道（参考实现）
@@ -93,11 +97,11 @@ StarryOS/
 ├── docs/analysis/        # 设计分析文档
 ├── .claude/docs/         # 开发文档体系（本文件所在）
 │   ├── SNAPSHOT.md       # 本文件
-│   ├── architecture.md   # 架构决策记录（ADR-001~023）
+│   ├── architecture.md   # 架构决策记录（ADR-001~029，19 条有效）
 │   ├── tasks.md          # 任务追踪（M0~M6 + P0~P6）
-│   ├── learned.md        # 学习记忆（116+ 条目）
-│   ├── references.md     # 外部参考
-│   ├── optimization.md   # 优化记录
+│   ├── learned.md        # 学习记忆（68 条目）
+│   ├── references.md     # 外部参考（46 条目）
+│   ├── optimization.md   # 优化记录（23 条目）
 │   ├── rules.md          # 编码规范
 │   ├── archive.md        # 归档内容
 │   └── superpowers/      # 设计文档和实现计划
@@ -130,10 +134,10 @@ StarryOS/
 
 | 文档 | 内容 | 条目数 |
 |------|------|--------|
-| architecture.md | ADR-001~023，两个方向的全部决策历史 | 23 |
-| tasks.md | M0~M6（方向 A）+ P0~P6（方向 B）任务追踪 | ~30 |
-| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 116+ |
-| references.md | 依赖文档、规范、设计文档索引 | 48+ |
+| architecture.md | ADR-001~029，两个方向的全部决策历史 | 19 |
+| tasks.md | Q0~Q6 任务追踪（方向 C） | 34 |
+| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 68 |
+| references.md | 依赖文档、规范、设计文档索引 | 46 |
 | optimization.md | 性能洞察、优化方向、基准目标 | 23 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
 | archive.md | 已归档的过时内容 | ~15 |
@@ -144,9 +148,18 @@ StarryOS/
 
 | 模块 | 路径 | 用途 |
 |------|------|------|
+| **异步串口驱动** | | |
+| UART 初始化 | kernel/src/drivers/uart_init.rs | UART 硬件初始化 + IER 缓存 |
+| ISR handler | kernel/src/drivers/isr.rs | 中断处理 + AtomicWaker 唤醒 |
+| Ring Buffer | kernel/src/drivers/ring_buffer.rs | RX/TX 环形缓冲区 + PollSet |
+| AsyncUartDriver | kernel/src/drivers/async_driver.rs | RX/TX copier 任务 |
+| TtyRead/TtyWrite | kernel/src/drivers/device_ops.rs | AsyncUartReader/Writer trait 实现 |
+| AsyncTty | kernel/src/drivers/ntty_async.rs | Tty<AsyncUartReader, AsyncUartWriter> |
+| **参考实现** | | |
 | Pipe 异步参考 | kernel/src/file/pipe.rs | poll_io + register_irq_waker 模式 |
 | EventFd 参考 | kernel/src/file/event.rs | 轻量异步通知 |
 | DeviceOps | kernel/src/pseudofs/device.rs | 设备注册 trait |
+| **硬件相关** | | |
 | UART 硬件 | axhal/src/platform/riscv64_qemu_virt/uart.rs | MMIO 寄存器 |
 | PLIC 中断 | axhal/src/platform/riscv64_qemu_virt/mod.rs | 中断号映射 |
 | Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct |

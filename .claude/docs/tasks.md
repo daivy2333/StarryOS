@@ -75,16 +75,6 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q6 ⏳(硬件)
 <!-- Q4.3 --> - [x] TX copier: enable_tx_intr on partial send ✅
 <!-- Q4.4 --> - [x] Gate Q4: Shell stdin/stdout 双向异步，内核日志共存 ✅
 
-### Q5: 性能优化 ✅
-
-<!-- Q5.1 --> - [x] O25-O26 批量 I/O（单锁内排空/填满 FIFO）✅
-<!-- Q5.2 --> - [x] O27 IER 缓存（AtomicU8 消除 RMW）✅
-<!-- Q5.3 --> - [x] O28 ISR 合并（单临界区）✅
-<!-- Q5.4 --> - [x] O29-O30 buf 增大 + TX 单锁 ✅
-<!-- Q5.5 --> - [x] O31 waker skip（will_wake 检查）✅
-<!-- Q5.6 --> - [x] O33 rx/tx 独立 Mutex ✅
-<!-- Q5.7 --> - [x] Gate Q5: Shell 正常，优化已落地 ✅
-
 ### Q5+: bench 分支待做
 
 <!-- Q5+.1 --> - [ ] O2/O34 NAPI 中断合并
@@ -123,13 +113,3 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q6 ⏳(硬件)
 ### 方向 A M3 的真正失败原因
 
 IRQ 风暴 + TX busy-loop — Console + AsyncUart 共享 UART 时的 IER 冲突和 stride=4 错误
-
-### Q5: 性能优化 ✅
-
-<!-- Q5.1 --> - [x] O27 IER 缓存（AtomicU8，消除 RMW MMIO 读）✅
-<!-- Q5.2 --> - [x] O28 ISR 合并（单次 SpinNoIrq 临界区）✅
-<!-- Q5.3 --> - [x] O29 COPIER_BUF_SIZE 256→1024 ✅
-<!-- Q5.4 --> - [x] O30 TX 消除 double buffer lock ✅
-<!-- Q5.5 --> - [x] O25/O26 RX/TX 批量 I/O（单锁内排空/填满）✅
-<!-- Q5.6 --> - [x] O31 AtomicWaker skip re-register（will_wake 检查）✅
-<!-- Q5.7 --> - [x] Gate Q5: Shell 正常，无 crash，`ls /`、`cd`、`pwd` 全部工作 ✅

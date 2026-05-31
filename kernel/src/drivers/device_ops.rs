@@ -1,4 +1,4 @@
-// Placeholder file - will be implemented in subsequent tasks
+// AsyncUartReader/Writer 实现 TtyRead/TtyWrite trait，用于 Tty 泛型绑定
 
 use crate::pseudofs::dev::tty::terminal::ldisc::{TtyRead, TtyWrite};
 use crate::drivers::async_driver::DRIVER;
