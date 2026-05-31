@@ -23,11 +23,3 @@ impl TtyWrite for AsyncUartWriter {
 impl Clone for AsyncUartWriter {
     fn clone(&self) -> Self { Self }
 }
-
-#[derive(Clone)]
-pub struct ConsoleWriter;
-impl TtyWrite for ConsoleWriter {
-    fn write(&self, buf: &[u8]) {
-        axhal::console::write_bytes(buf);
-    }
-}

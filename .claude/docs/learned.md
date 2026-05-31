@@ -360,3 +360,16 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
   3. ISR 性能要求高（~1.5µs），AtomicWaker::wake() 是原子操作，无分支
   4. 代码更简洁，无需处理 BTreeMap 的并发问题
 - **结论**: 专用驱动用 AtomicWaker，通用框架用 register_irq_waker。O17 优化不适用本项目。
+
+<!-- L129 --> ### Console 阻塞串口组件清理（2026-05-31）
+- **背景**: 异步串口（ASYNC_TTY）已完全替代 Console，Console 组件不再使用
+- **清理范围**:
+  1. 删除 `kernel/src/pseudofs/dev/tty/ntty.rs` - Console struct + N_TTY lazy_static
+  2. 删除 `kernel/src/drivers/device_ops.rs` 中的 ConsoleWriter struct
+  3. 删除 `kernel/src/pseudofs/dev/tty/mod.rs` 中的 N_TTY/NTtyDriver 导出
+  4. 修改 `kernel/src/syscall/fs/fd_ops.rs` - 移除 NTtyDriver 类型检查
+- **保留的组件**:
+  - `axhal::console::write_bytes` - earlycon 内核日志（ax_println! 使用）
+  - ASYNC_TTY - 异步串口 TTY 设备
+- **验证**: cargo check 通过，无编译错误
+- **影响**: 代码更简洁，消除死代码，明确异步串口是唯一串口实现

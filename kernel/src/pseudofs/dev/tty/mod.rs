@@ -1,4 +1,3 @@
-mod ntty;
 mod ptm;
 mod pts;
 mod pty;
@@ -24,7 +23,6 @@ use self::terminal::{
     termios::{Termios, Termios2},
 };
 pub use self::{
-    ntty::{N_TTY, NTtyDriver},
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
