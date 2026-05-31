@@ -205,3 +205,22 @@
 <!-- archive: tasks-B -->
 **理由**: P1/P2 因 stride=4 LoadFault 阻塞。stride=1 修复后方向 C 继承 P0 的模块结构和依赖。
 **内容**: P0 规划 ✅ → P1 硬件初始化 ⚠️ → P2 异步架构 ❌（stride=4 阻塞）→ P3-P6 未执行
+
+---
+
+## optimization.md 归档
+
+<!-- archive: O24 -->
+**日期**: 2026-05-31
+**条目**: O24 — MMIO 权限/stride=4 问题
+**状态**: 已解决
+**置信度**: HIGH
+**理由**: 根因确认：UART_STRIDE=4 越界导致 LoadFault，修改为 stride=1 后全部正常
+**恢复条件**: 如需回顾旧版 MMIO 权限误判过程
+
+原始内容:
+
+- stride=4 问题（已解）
+  - 此前认为是 axplat 限制 UART MMIO 权限
+  - 2026-05-31 确认根因是 UART_STRIDE=4 越界
+  - 改动为 stride=1 后完全正常
