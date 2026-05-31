@@ -125,3 +125,78 @@
 ## 已完成优化
 
 <!-- tombstone: O24 --> Archived to archive.md §optimization #O24 2026-05-31 — stride=4 问题已解决
+
+---
+
+## 远期优化方向（从旧 M 系列迁移）
+
+<!-- O1 --> - 零拷贝 RX 路径
+  - 路径: 硬件 → ringbuf → 用户空间，两次 memcpy
+  - 方案: mmap ring buffer 物理页到用户空间（需 VMA 支持）
+  - 优先级: 中 | 阶段: Q5+
+
+<!-- O2 --> - NAPI 风格批量轮询
+  - 中断触发后切轮询模式，处理完切回中断
+  - 优先级: 高 | 阶段: Q5
+
+<!-- O3 --> - DMA 支持
+  - 通过 virtio-console 流式 DMA 卸载 CPU
+  - 优先级: 高 | 阶段: Q6+
+
+<!-- O4 --> - 中断合并 (coalescing)
+  - 硬件 FCR 阈值 + 软件延迟合并
+  - 优先级: 中 | 阶段: Q5
+
+<!-- O5 --> - 优先级调度
+  - 提高 copier 协程优先级减少延迟抖动
+  - 优先级: 低 | 阶段: Q5+
+
+<!-- O7 --> - uart_16550 批量读写 API
+  - try_receive_batch/try_send_batch 减少逐字节 MMIO
+  - 优先级: 高 | 阶段: Q5
+
+<!-- O17 --> - 中断分发效率
+  - register_irq_waker BTreeMap 查找开销 → 数组索引
+  - 优先级: 中 | 阶段: Q5
+
+## VisionFive2 真板优化（Q6 准备）
+
+<!-- O38 --> - VisionFive2 UART 时钟适配
+  - JH7110 UART 时钟频率与 QEMU virt 不同（1.8432 MHz vs 实际板载时钟）
+  - 优先级: 高 | 阶段: Q6
+
+<!-- O39 --> - 真实硬件 FIFO 深度验证
+  - VisionFive2 的 NS16550 兼容 UART 可能有不同 FIFO 深度
+  - 优先级: 中 | 阶段: Q6
+
+<!-- O40 --> - DMA 通道发现与配置
+  - 真板可能有 DMA 控制器可用，QEMU virt 没有
+  - 优先级: 中 | 阶段: Q6+
+
+<!-- O41 --> - 高速波特率支持（>115200）
+  - 真板支持 230400/460800/921600 等高速率
+  - 优先级: 低 | 阶段: Q6+
+
+---
+
+## 性能洞察（保留）
+
+<!-- O19 --> ### 中断频率
+- FCR 阈值 14 字节时，115200 bps 下 ~823 IRQ/秒
+- ISR 开销 < 100 ns（清 IIR + AtomicWaker::wake）
+- 1 Mbps 下 ~7,143 IRQ/秒
+
+<!-- O8 --> ### 延迟分解
+- RX 总延迟 = T_ISR + T_WAKE + T_DRAIN + T_COPY + T_RETURN
+- 目标: < 500 µs @ 115200 bps
+- 瓶颈通常在 T_WAKE（协程调度延迟）
+
+## 测试与自动化（保留）
+
+<!-- O21 --> - 用户态自动化测试
+  - Makefile target: `make test-uart-async`
+  - 优先级: 低 | 阶段: Q5+
+
+<!-- O22 --> - 非阻塞模式测试
+  - ioctl(FIONBIO) + open(O_NONBLOCK) WouldBlock 场景
+  - 优先级: 低 | 阶段: Q5+
