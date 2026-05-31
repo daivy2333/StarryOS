@@ -328,3 +328,16 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
 ```
 - 原理：锁定 `kernel_aspace()` 全局内核页表，调用 `map_linear()` + `protect()` 保证 `DEVICE | READ | WRITE` 权限
 - 优势：不修改任何外部 crate，已有稳定 API
+
+<!-- L126 --> ### TX copier 与 ax_println! 输出交错（最新踩坑）
+- **症状**: 异步 TX 启用后 Shell 输出乱码（`ls /bin` 行间字符交叠）
+- **根因**: TX copier 用 `send_bytes()` 批发送，中间 `ax_println!` 的 Console polling TX 插队写 THR。copier 把未发完数据推回 ring buffer → 新数据与旧数据混合 → 再次发送时乱序
+- **解决**: TX copier 用本地 `cursor` 追踪已发位置，未发完的数据保留在本地 `write_buf` 中，不推回 ring buffer。下次迭代从 `cursor` 继续
+- **教训**: 共享硬件（同一 UART THR）的两个 writer 必须保证同一批数据原子发送。不能把部分数据推回共享缓冲区
+- **回退方案（已弃用）**: 临时切回 `ConsoleWriter` 让 Shell stdout 也走 Console TX → 这是降级，真正的异步 TX 被绕过
+
+<!-- L127 --> ### NAPI 中断合并模式
+- **触发**: 连续成功读取 ≥ `NAPI_THRESHOLD`（16）次后进入轮询模式
+- **轮询**: batch size 缩小到 `NAPI_BATCH_SIZE`（64），不重新使能 RX 中断
+- **退出**: 一次读取返回 0 → `consecutive` 重置 → 退出轮询 → 使能 RX 中断
+- **效果**: 高吞吐时减少 90%+ IRQ 频率
