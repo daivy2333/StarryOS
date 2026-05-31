@@ -19,7 +19,7 @@
 | **Q2** | VFS 集成 | DeviceOps + /dev/async_uart + Console 共存 | ✅ |
 | **Q3** | AsyncUart RX 接管 | Tty<AsyncUartReader, ConsoleWriter> → Shell stdin | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier + ISR，Shell 双向异步 | ✅ |
-| **Q5** | 性能优化 | 中断合并 + NAPI + 零拷贝 | ⏳ 当前 |
+| **Q5** | 性能优化 | 中断合并 + NAPI + 零拷贝 | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### Q0: Spike 验证 ✅
@@ -94,3 +94,13 @@
 ### 方向 A M3 的真正失败原因
 
 IRQ 风暴 + TX busy-loop — Console + AsyncUart 共享 UART 时的 IER 冲突和 stride=4 错误
+
+### Q5: 性能优化 ✅
+
+<!-- Q5.1 --> - [x] O27 IER 缓存（AtomicU8，消除 RMW MMIO 读）✅
+<!-- Q5.2 --> - [x] O28 ISR 合并（单次 SpinNoIrq 临界区）✅
+<!-- Q5.3 --> - [x] O29 COPIER_BUF_SIZE 256→1024 ✅
+<!-- Q5.4 --> - [x] O30 TX 消除 double buffer lock ✅
+<!-- Q5.5 --> - [x] O25/O26 RX/TX 批量 I/O（单锁内排空/填满）✅
+<!-- Q5.6 --> - [x] O31 AtomicWaker skip re-register（will_wake 检查）✅
+<!-- Q5.7 --> - [x] Gate Q5: Shell 正常，无 crash，`ls /`、`cd`、`pwd` 全部工作 ✅

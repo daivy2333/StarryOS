@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0~Q4 ✅，Q5 性能优化中
+> 分支：feat/uart-async-dev2 — Q0~Q5 ✅，Q6 待做
 
 ---
 
@@ -9,7 +9,7 @@
 
 **分支**: feat/uart-async-dev2
 **目标**: 在 kernel 层独立实现高性能异步串口，不修改外部 crate
-**阶段**: Q0-Q4 全部通过，Shell stdin/stdout 完全异步，进入 Q5 性能优化
+**阶段**: Q0-Q5 全部通过，Shell 双向异步，性能优化完成，等待真板验证
 
 ### 关键发现
 
@@ -30,7 +30,7 @@
 | **Q2** | VFS 集成（DeviceOps + /dev/async_uart + Console 共存） | ✅ |
 | **Q3** | AsyncUart RX 接管（Tty + Shell stdin） | ✅ |
 | **Q4** | 全异步 RX+TX | TX copier 接管，Shell 双向异步 | ✅ |
-| **Q5** | 性能优化 | 中断合并 + NAPI + 零拷贝 | ⏳ 当前 |
+| **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构

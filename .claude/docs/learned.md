@@ -213,6 +213,13 @@
 - **内核日志共存**: `ax_println!` 的 Console polling TX 与 TX copier 共享 THR，因 polling TX 每次仅写极少字节，无实质冲突
 - **Tty 泛型绑定**: `Tty<AsyncUartReader, AsyncUartWriter>` 替代 `Tty<Console, Console>`，直接实现 reader/writer trait 即可替换整个终端栈
 
+<!-- L125 --> ### Q5 性能优化关键技术
+- **IER 缓存**: 用 `AtomicU8` 缓存 IER 值，enable/disable 只需一次 `write_volatile`（消除 RMW 的 `read_volatile`）
+- **ISR 合并**: 在同一个 `SpinNoIrq` 临界区内完成 ISR 读 + IER 写，消除 drop+重锁
+- **批量 I/O**: RX copier 在单次锁内排空 FIFO，TX copier 在单次锁内填满 FIFO
+- **waker skip**: 用 `Cell<Option<Waker>>` + `will_wake` 避免重复注册相同的 waker
+- **TX 单锁**: 消除 double buffer lock（pop → send → push_back），改为一次 pop + send，只在 FIFO 满时 push_back
+
 ## 技巧模式
 
 <!-- L12 --> ### ISR 极简原则
