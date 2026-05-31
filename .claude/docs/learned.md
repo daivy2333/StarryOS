@@ -169,36 +169,24 @@
 - **AsyncUart 启动时间点**: kernel::entry::init() 中（T4-T5）
 - **时间差**: earlycon 比 AsyncUart 早约 10-20 ms
 
-<!-- L110 --> ### MMIO 权限问题根因分析（方向 B 关键发现）
+<!-- L110 --> ### MMIO 权限问题根因分析（⚠️ 2026-05-31 纠正：见 L121）
 - **问题**: 内核上下文和 ISR 上下文都无法访问 UART MMIO 寄存器
-- **现象**:
-  - 物理地址 0x1000001c → Page Fault（未映射）
-  - 虚拟地址 0xffffffc01000001c → StoreFault（无写入权限）
-  - 虚拟地址 0xffffffc010000008 → LoadFault（无读取权限）
-- **根因**: axplat 在 boot 阶段映射 UART MMIO，权限被限制（只读或禁止）
-- **影响**: 无法在内核/ISR 上下文中访问 UART 寄存器，无法验证/修改 UART 配置
-- **结论**: 不彻底更改底层支持（axplat）就无法使用异步串口
-- **验证**: 2026-05-29 (ADR-023)
+- ~~根因: axplat 在 boot 阶段映射 UART MMIO，权限被限制~~
+- **纠正**: 真正根因是 UART_STRIDE=4 越界，页表权限完全正常。详见 L121。
 
-<!-- L111 --> ### axplat 外部 crate 依赖全景图
+<!-- L111 --> ### axplat 外部 crate 依赖全景图（⚠️ 见 L121：实际上不需要绕过）
 - **依赖链**: axruntime → axplat-riscv64-qemu-virt → axhal → axtask → axpoll
 - **不可修改**: 所有 crate 均来自 crates.io，无法直接修改
 - **UART 相关**: axplat 负责 UART MMIO 映射和初始化，axhal 提供 console API
-- **关键约束**: UART MMIO 权限由 axplat 控制，kernel 层无法绕过
+- ~~**关键约束**: UART MMIO 权限由 axplat 控制，kernel 层无法绕过~~ → 实际上不需要绕过，stride=1 即可正常访问
 
-<!-- L112 --> ### 绕过 axplat 的可能路径
-- **方案 1**: 修改 axplat 源码（fork 或 PR）— 需上游协调
-- **方案 2**: 在 boot 阶段修改页表权限 — 需深入理解 RISC-V 页表机制
-- **方案 3**: 使用 QEMU 命令行参数修改 MMIO 映射 — 可能不可行
-- **方案 4**: 完全自实现 UART 驱动（不依赖 axplat）— 工作量大
-- **评估**: 方案 1 最合理，但需评估上游接受度
+<!-- L112 --> ### 绕过 axplat 的可能路径（⚠️ 不需要了）
+- ~~方案 1-4~~ → kernel 层直接用 stride=1 访问 UART MMIO，无需任何绕过
 
-<!-- L117 --> ### axplat UART 初始化流程
+<!-- L117 --> ### axplat UART 初始化流程（⚠️ 此条目关于 IER 限制仍准确，但"权限设置"部分已纠正）
 - **初始化时机**: axplat::init::init_early() 中
-- **初始化内容**: MMIO 映射 + 波特率配置 + FIFO 使能 + IER 配置
 - **IER 配置**: 只使能 DATA_READY（RX 中断），不使能 THR_EMPTY（TX 中断）
-- **权限设置**: MMIO 映射权限受限（可能是只读或禁止用户态访问）
-- **影响**: AsyncUart 需要 TX 中断，但无法修改 IER 配置
+- ~~**权限设置**: MMIO 映射权限受限~~ → 实际权限正常（READ|WRITE|DEVICE），见 L121
 
 ---
 
@@ -223,6 +211,14 @@
   - 不修改任何外部 crate
 - **验证**: axmm-0.3.0-preview.2/src/lib.rs:111-131
 - **影响**: 方案 D 无需开发新 API，直接调用 `iomap()` 即可解除 MMIO 访问阻塞
+
+<!-- L121 --> ### LoadFault 根因：stride=4 错误（2026-05-31 关键发现）
+- **症状**: 内核和 ISR 上下文在 `0xffffffc010000008` 处 LoadFault
+- **此前误判**: 认为是 axplat 限制了 UART MMIO 页表权限
+- **真正根因**: NS16550 寄存器仅 `0x00-0x07` 共 8 字节。`UART_STRIDE=4` 下 ISR（offset 2×4=8）读写到 `base+8`=第 9 字节，超出 UART 寄存器范围，QEMU 总线错误被 RISC-V 解释为 LoadFault
+- **验证**: stride=1 下 raw pointer 读 LSR→`0x60` ✅，uart_16550 crate 全部寄存器正常 ✅，ISR handler 正常 ✅，无 IRQ 风暴 ✅
+- **关键证据**: raw read at base+5（stride 1）成功，base+8（stride 4）失败 — 同一 4K 页表映射，排除页表问题
+- **影响**: 方向 A M3 和方向 B P1/P2 的全部 LoadFault 阻塞是一次简单的 stride 配置错误
 
 ## 技巧模式
 

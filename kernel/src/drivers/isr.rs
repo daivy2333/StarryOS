@@ -28,42 +28,32 @@ use crate::drivers::uart_init::uart_instance;
 ///
 /// * `irq` - IRQ 号（由 axhal::irq_handler 传递）
 pub fn uart_isr_handler(irq: usize) {
-    ax_println!("[UART ISR] ISR handler called (IRQ {})", irq);
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static ISR_COUNT: AtomicUsize = AtomicUsize::new(0);
+    let count = ISR_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    // 🔴 关键测试：尝试访问 UART 寄存器（不检查 IRQ 号）
-    ax_println!("[UART ISR] Attempting to access UART registers...");
-
-    // 关键测试：尝试访问 UART 寄存器
     let mut uart = uart_instance().lock();
-
-    ax_println!("[UART ISR] UART lock acquired, attempting to read ISR register...");
-
-    // 尝试读 ISR 寄存器
-    // 如果成功 → ISR 可以访问 UART
-    // 如果失败 → 触发 LoadFault，会看到 panic 或错误日志
     let isr = uart.isr();
 
-    ax_println!("[UART ISR] ✅ ISR register read SUCCESS! ISR={:02x}", isr.bits());
-
-    // 检查中断类型
-    match isr.interrupt_type() {
-        Some(InterruptType::ReceivedDataReady) => {
-            ax_println!("[UART ISR] RX data ready interrupt");
-        }
-        Some(InterruptType::TransmitterHoldingRegisterEmpty) => {
-            ax_println!("[UART ISR] THR empty interrupt");
-        }
-        Some(InterruptType::ReceptionTimeout) => {
-            ax_println!("[UART ISR] RX timeout interrupt");
-        }
-        Some(InterruptType::ReceiverLineStatus) => {
-            ax_println!("[UART ISR] Line status error interrupt");
-        }
-        None => {
-            ax_println!("[UART ISR] No pending interrupt (spurious)");
-        }
-        _ => {
-            ax_println!("[UART ISR] Other interrupt type");
-        }
+    // First ISR call: verify access + log details
+    if count == 0 {
+        ax_println!("[UART ISR] ✅ ISR={:02x} (IRQ {})", isr.bits(), irq);
     }
+
+    // Clear RX interrupt by reading data
+    match isr.interrupt_type() {
+        Some(InterruptType::ReceivedDataReady)
+        | Some(InterruptType::ReceptionTimeout) => {
+            // Drain RX FIFO to clear interrupt
+            let mut drained = 0u32;
+            while let Ok(_) = uart.try_receive_byte() {
+                drained += 1;
+            }
+            if count == 0 {
+                ax_println!("[UART ISR] RX interrupt cleared (drained {} bytes)", drained);
+            }
+        }
+        _ => {}
+    }
+    // ISR dropped here → SpinNoIrq lock released
 }

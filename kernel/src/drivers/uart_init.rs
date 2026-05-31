@@ -27,8 +27,10 @@ use uart_16550::{
 /// UART MMIO 物理地址（RISC-V QEMU virt 平台）
 pub const UART_MMIO_BASE_PHYS: usize = 0x10000000;
 
-/// UART 寄存器 stride（RISC-V MMIO 标准）
-pub const UART_STRIDE: u8 = 4;
+/// UART 寄存器 stride（NS16550 是字节寻址设备，stride=1）
+/// 注意：stride 不能设为 4——NS16550 寄存器仅 0x00-0x07 共 8 字节，
+/// stride 4 会读到超出范围的总线错误（LoadFault）
+pub const UART_STRIDE: u8 = 1;
 
 /// 获取 UART MMIO 虚拟地址
 fn get_uart_mmio_virt() -> VirtAddr {
@@ -55,25 +57,51 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
     &UART
 }
 
-/// 初始化 UART 硬件（AsyncUart 专用配置）
+/// 初始化 UART 硬件 — Phase 1: 只读寄存器验证
 ///
-/// # Strategy Adjustment
+/// 2026-05-31 纠正：此前认为"MMIO 权限阻塞"的结论有误。
+/// 经代码验证，UART MMIO（0x10000000）已被 new_kernel_aspace() 正确映射
+/// 为 READ|WRITE|DEVICE。axmm::iomap() 作为安全保障，确保权限正确。
 ///
-/// **完全放弃访问 UART 寄存器**：
-/// - UART MMIO 区域在内核启动后没有访问权限（LoadFault/StoreFault）
-/// - 无法读取或写入 UART 寄存器
-/// - 依赖 axplat 的 UART 配置（Console 已使能 RX 中断）
-///
-/// **后续策略**：
-/// - P2 阶段通过 ISR 分发机制访问 UART（ISR 可能可以访问 UART）
-/// - 或者在 boot 阶段修改 UART 配置（更早的阶段）
+/// Phase 1 策略（只读）：
+/// - 调用 axmm::iomap() 确保 UART MMIO 页表权限
+/// - 读取 IER/ISR/LSR 寄存器验证 MMIO 读访问
+/// - 不修改硬件配置（保护 Console 不受影响）
 ///
 /// # When to Call
 ///
-/// 当前阶段**不执行任何操作**，仅作为占位符。
+/// 在 entry.rs::init() 中调用，位于 Console 初始化之后、ISR 注册之前。
 pub fn init_uart_hardware() {
-    ax_println!("[UART INIT] Skipped UART register access (MMIO permission issue)");
-    ax_println!("[UART INIT] Will configure UART in ISR handler or boot stage");
+    ax_println!("[UART INIT] Phase 1: MMIO read-only verification");
+
+    // Step 1: Ensure UART MMIO is mapped with DEVICE|READ|WRITE
+    match axmm::iomap(PhysAddr::from(UART_MMIO_BASE_PHYS), 0x1000) {
+        Ok(vaddr) => {
+            ax_println!("[UART INIT] ✅ iomap OK: UART MMIO at {:?}", vaddr);
+        }
+        Err(e) => {
+            ax_println!(
+                "[UART INIT] ⚠️ iomap returned: {:?} (mapping may already exist, continuing)",
+                e
+            );
+        }
+    }
+
+    // Step 2: Direct raw pointer read test (bypass uart_16550 crate)
+    let base_ptr: *const u8 = get_uart_mmio_virt().as_ptr() as *const u8;
+    ax_println!("[UART INIT] base_ptr = {:?}", base_ptr);
+
+    // Try reading LSR register at stride 1 (offset 5), same offset Console uses
+    ax_println!("[UART INIT] Trying raw read at base+5 (stride 1, LSR)...");
+    let lsr_raw: u8 = unsafe { base_ptr.add(5).read_volatile() };
+    ax_println!("[UART INIT] ✅ Raw LSR read: {:#02x}", lsr_raw);
+
+    // Now try the uart_16550 crate path
+    ax_println!("[UART INIT] Trying uart_16550 crate access...");
+    let mut uart = uart_instance().lock();
+    log_uart_state(&mut uart);
+
+    ax_println!("[UART INIT] ✅ Phase 1 PASSED: UART registers readable");
 }
 
 /// 日志输出 UART 寄存器状态（调试验证）

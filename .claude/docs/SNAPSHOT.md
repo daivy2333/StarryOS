@@ -1,39 +1,42 @@
-# SNAPSHOT.md - 项目快照（汇总分支）
+# SNAPSHOT.md - 项目快照
 
 > Generated at 2026-05-24
-> Last updated: 2026-05-29
-> 汇总分支：整合 feat/uart-async 和 feat/uart-async-dev2 两个方向的所有经验
+> Last updated: 2026-05-31
+> 分支：feat/uart-async-dev2 — Q0 Spike ✅，Q1 准备中
 
 ---
 
 ## 当前状态
 
-**分支**: feat/uart-async-consolidated（汇总分支）
-**目标**: 整合两个探索方向的全部经验，形成统一知识库
-**阶段**: 知识整合完成，等待架构层面决策
+**分支**: feat/uart-async-dev2
+**目标**: 在 kernel 层独立实现高性能异步串口，不修改外部 crate
+**阶段**: Q0 Spike 通过，进入 Q1 驱动架构实现
 
-### 两个探索方向总结
+### 关键发现（2026-05-31）
 
-| 方向 | 分支 | 策略 | 结果 | 关键发现 |
+| 发现 | 详情 | 影响 |
+|------|------|------|
+| **LoadFault 根因** | `UART_STRIDE=4` 错误。NS16550 寄存器仅 0x00-0x07，stride=4 使 ISR 偏移到 base+8（越界） | 移除了"MMIO 权限阻塞"的前提 |
+| **页表分析纠正** | UART MMIO 在最终页表中映射正确，不需修改 axplat | 异步串口 kernel 层独立可行 |
+| **Spike 验证通过** | iomap() + raw pointer 读 + uart_16550 crate + ISR handler 全部通过 | Q0 ✅ |
+
+### 两个历史探索方向总结
+
+| 方向 | 分支 | 策略 | 结果 | 真实根因 |
 |------|------|------|------|----------|
-| **A: 渐进式集成** | feat/uart-async (m0→m1→m2→m3→dev) | 复用 Console，逐步替换 | M0-M2 ✅, M3 ❌ | IRQ 风暴 + TX busy-loop，Console UART 状态不兼容 |
-| **B: 完全剔除 Console** | feat/uart-async-dev2 | 从零开始，uart_16550 独立初始化 | P0-P1 ✅, P2 ❌ | MMIO 权限问题，ISR 也无法访问 UART 寄存器 |
+| **A: 渐进式集成** | feat/uart-async | 复用 Console，逐步替换 | M0-M2 ✅, M3 ❌ | IRQ 风暴 + TX busy-loop + stride=4 |
+| **B: 完全剔除 Console** | feat/uart-async-dev2 | 从零开始独立初始化 | P0 ✅, P1-P2 阻塞 | **stride=4 导致 LoadFault** |
 
-### 关键阻塞
+### 实施路径
 
-**MMIO 权限问题**（方向 B 发现）：
-- axplat 在 boot 阶段映射 UART MMIO，权限被限制
-- 内核上下文和 ISR 上下文都无法访问 UART 寄存器
-- 已验证：内核访问 → StoreFault/LoadFault，ISR 访问 → LoadFault
-- **结论**：不彻底更改底层支持（axplat）就无法使用异步串口
-
-### 可行方案（待决策）
-
-| 方案 | 描述 | 优点 | 缺点 |
-|------|------|------|------|
-| **A: Polling TX** | RX 中断驱动 + TX polling | 简单可行，无需修改外部 crate | TX 性能受限 |
-| **B: 修改 axplat** | Boot 阶段修改 UART MMIO 映射权限 | 完整异步 TX | 需修改外部 crate，复杂度高 |
-| **C: 回退 Console** | 完全依赖 Console（渐进式方案） | Console RX 已中断驱动 | 放弃 AsyncUart 独占目标 |
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Q0** | Spike 验证（iomap + 寄存器读写 + ISR） | ✅ 完成 |
+| **Q1** | 驱动架构（ring_buffer + async_uart + async_driver） | ⏳ 当前 |
+| **Q2** | VFS 集成（DeviceOps + Pollable + /dev/async_uart） | ⏳ |
+| **Q3** | Console 共存/替换（earlycon + N_TTY） | ⏳ |
+| **Q4** | 性能优化（基准达标） | ⏳ |
+| **Q5** | 真板验证（VisionFive2） | ⏳ 远期 |
 
 ---
 
@@ -43,8 +46,14 @@
 StarryOS/
 ├── kernel/src/
 │   ├── config/           # 内核配置
-│   ├── drivers/          # 设备驱动（方向 B 新增，已回滚）
-│   │   └── serial/       # 异步串口驱动（方向 A，已回滚）
+│   ├── drivers/          # 异步串口驱动模块
+│   │   ├── mod.rs         # 模块声明
+│   │   ├── uart_init.rs   # UART 初始化 ✅
+│   │   ├── isr.rs         # ISR handler ✅
+│   │   ├── ring_buffer.rs # ⏳ 占位符
+│   │   ├── async_uart.rs  # ⏳ 占位符
+│   │   ├── async_driver.rs# ⏳ 占位符
+│   │   └── device_ops.rs  # ⏳ 占位符
 │   ├── entry.rs          # 内核入口
 │   ├── file/             # 文件系统核心
 │   │   ├── pipe.rs       # 异步管道（参考实现）

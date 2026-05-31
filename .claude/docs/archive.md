@@ -9,6 +9,15 @@
 
 ## architecture.md 归档
 
+<!-- archive: A22-A23-A24 -->
+**日期**: 2026-05-31
+**条目**: A22: UART MMIO 权限问题发现 + A23: ISR MMIO 权限测试失败 + A24: MMIO 权限重新分析
+**原分类**: 架构决策
+**置信度**: HIGH
+**理由**: 2026-05-31 Q0 Spike 确认 LoadFault 根因是 `UART_STRIDE=4` 而非页表权限问题。ADR-022/023 的"MMIO 权限阻塞"诊断有误。ADR-024 的部分纠正仍归因为"测试代码 bug"，实际具体根因是 stride 错误（见 ADR-026）。
+**恢复条件**: 如需回顾早期误判路径，可查看此记录
+**更正参考**: ADR-026（stride 根因确认）、ADR-027（统一方向）
+
 <!-- archive: A2 -->
 **日期**: 2026-05-27
 **条目**: A2: 串口与控制台关系——独立硬件 /dev/ttyS0
@@ -180,3 +189,19 @@
 - reference-implementations.md — 参考实现
 - task-process-model.md — 任务模型
 - uart-16550-crate-reuse.md — uart_16550 已集成
+
+---
+
+## tasks.md 归档
+
+### 方向 A: 渐进式集成（feat/uart-async）— 2026-05-31 归档
+
+<!-- archive: tasks-A -->
+**理由**: M3 因 stride=4 + Console UART 状态不兼容（IRQ 风暴 + TX busy-loop）失败回滚。已验证经验（M0-M2 Ring Buffer + copier + VFS 模式）被方向 C 继承。
+**内容**: M0 基础设施准备 ✅ → M1 架构验证 ✅ → M2 VFS 验证 ✅ → M3 替换失败 ❌ → M4-M6 未执行
+
+### 方向 B: 完全剔除 Console（feat/uart-async-dev2 早期）— 2026-05-31 归档
+
+<!-- archive: tasks-B -->
+**理由**: P1/P2 因 stride=4 LoadFault 阻塞。stride=1 修复后方向 C 继承 P0 的模块结构和依赖。
+**内容**: P0 规划 ✅ → P1 硬件初始化 ⚠️ → P2 异步架构 ❌（stride=4 阻塞）→ P3-P6 未执行

@@ -283,3 +283,62 @@
   - 方案 B：Boot 阶段修改 UART 配置 — 需修改 axplat，复杂度高
   - 方案 C：完全依赖 Console — 放弃 AsyncUart 独占目标
 - **决策**: 暂缓 AsyncUart 实现，记录关键发现，等待架构层面决策
+
+---
+
+## 阶段五：基于新发现的重新出发（2026-05-31）
+
+<!-- A24 --> ### 2026-05-31 - MMIO 权限重新分析：此前结论有误，UART 在最终页表中正确映射
+
+- **背景**: ADR-022/023 认为 UART MMIO 权限被 axplat 限制，导致方向 B P1/P2 阻塞。2026-05-31 经深入代码阅读验证后发现此结论有误。
+- **验证结果**:
+  1. `axconfig.toml` 的 `mmio-ranges` 明确包含 `[0x1000_0000, 0x1000]`（UART）
+  2. `axplat::mem::mmio_ranges()` → `axhal::mem::memory_regions()` 将 UART MMIO 包含在内
+  3. `axmm::init_memory_management()` → `new_kernel_aspace()` → `map_linear(phys_to_virt(0x10000000), 0x10000000, 0x1000, READ|WRITE|DEVICE)` 将 UART 正确映射
+  4. Console 的 `MmioSerialPort` 访问 `0xffffffc010000000` 能正常工作恰好证明了映射有效——与"初始化时机"无关
+- **纠正结论**: 此前方向 B P1/P2 的 LoadFault/StoreFault **不是页表权限问题**，是测试代码 bug（地址计算、stride 匹配、或实现错误）
+- **影响**:
+  - ✅ 移除"必须修改 axplat"的阻塞条件
+  - ✅ 异步串口可在 kernel 层独立实现，不改任何外部 crate
+  - ✅ `axmm::iomap()` 可作为安全保障（已存在 API，调用即可确保权限）
+- **状态**: ✅ 归档 ADR-022/023 的结论为已纠正
+
+<!-- A25 --> ### 2026-05-31 - 基于 dev2 分支重新出发：Q0→Q5 新规划
+
+- **背景**: MMIO 权限分析纠正后，方向 B 的 P1/P2 阻塞解除。基于 dev2 分支重新出发，使用 axmm::iomap() 作为安全网。
+- **决策**:
+  1. **Spike 优先（Q0）**: 先在 entry.rs 调用 `axmm::iomap(PhysAddr::from(0x10000000), 0x1000)` 验证 UART 寄存器可读写，再推进后续
+  2. **不改外部 crate**: 所有实现均在 `kernel/src/drivers/` 下，~320 行新代码
+  3. **复用方向 A 已验证架构**: Ring Buffer + ISR → AtomicWaker → copier 任务 + DeviceOps + VFS 集成
+  4. **方向 A 教训吸取**: M3 失败根因是 Console UART 状态不兼容（IER 冲突 + TX busy-loop），需在 Q1 完成前验证 UART 配置
+- **新 Milestone**: Q0（Spike）→ Q1（driver 架构）→ Q2（VFS 集成）→ Q3（Console 共存/替换）→ Q4（性能优化）→ Q5（真板验证）
+- **替代方案**: 无。此方案是当前唯一不修改外部 crate 的可行路径。
+- **状态**: ✅ Q0 完成（2026-05-31）
+
+<!-- A26 --> ### 2026-05-31 - LoadFault 根因确认：stride=4 错误，非页表权限问题
+
+- **背景**: Q0 Spike 中先调用 `axmm::iomap()` 成功，但 `uart.isr()` 仍触发 LoadFault。对比 Console（stride=1，正常工作）和我们的代码（stride=4，LoadFault），发现根因。
+- **根因**: NS16550 寄存器空间仅 0x00-0x07 共 8 字节。`UART_STRIDE=4` 下 ISR（register offset 2 × stride 4 = 8）读写到 `base+8`，超出 UART 寄存器范围。QEMU NS16550 设备只响应 0x00-0x07 范围内的访问，越界访问产生总线错误，RISC-V CPU 将其解释为 LoadFault。
+- **验证**: stride=1 下 raw pointer 读 LSR（base+5）→ `0x60` ✅。同时 stride=4 的 base+8 → LoadFault ❌。同一 4K 页表映射内两个地址不同结果，排除了页表问题。
+- **影响**: 方向 A M3 和方向 B P1/P2 的"MMIO 权限阻塞"诊断全部有误。真正阻塞原因：
+  - 方向 A M3: stride=4 + Console UART 状态不兼容（IER 冲突 + TX busy-loop）
+  - 方向 B P1/P2: stride=4 导致 LoadFault
+- **校正**: ADR-022/023 的"页表权限"结论作废。stride=1 后全部测试通过：
+  - ✅ uart_16550 crate 读写 IER/ISR/LSR
+  - ✅ ISR handler 正常执行（读 ISR 寄存器 + drain RX FIFO）
+  - ✅ Console/Shell 正常运行
+  - ✅ 无 IRQ 风暴
+- **状态**: ✅ 阻塞解除，方向确定
+
+<!-- A27 --> ### 2026-05-31 - 统一方向：kernel 层独立实现异步串口
+
+- **背景**: 经两个方向探索（A: 渐进式集成, B: 完全剔除 Console）+ 根因发现（stride=4），方向已明确。
+- **决策**: 在 dev2 分支，kernel 层独立实现完整异步串口栈，不修改任何外部 crate。
+- **核心策略**:
+  1. UART 维护一个 `SpinNoIrq<Uart16550<MmioBackend>>` 实例（stride=1）
+  2. ISR → AtomicWaker → copier 任务模型（复用方向 A M1/M2 验证过的架构）
+  3. RX/TX copier 使用 poll_fn + register_irq_waker 模式（参考 Pipe/EventFd）
+  4. VFS 集成使用 DeviceOps + Pollable trait（参考方向 A M2 经验）
+  5. Console 共存：earlycon polling TX 用于内核日志，AsyncUart 用于用户态 Shell
+- **不再需要**: ~~修改 axplat~~、~~页表权限修复~~、~~方案 A/B/C 三选一~~
+- **状态**: ✅ 方向确定，Q1 驱动架构实现中
