@@ -210,17 +210,12 @@
 
 ## optimization.md 归档
 
-<!-- archive: O24 -->
+<!-- archive: O25-O33 -->
 **日期**: 2026-05-31
-**条目**: O24 — MMIO 权限/stride=4 问题
-**状态**: 已解决
+**条目**: O25-O31, O33 — Q5 性能优化（已完成）
 **置信度**: HIGH
-**理由**: 根因确认：UART_STRIDE=4 越界导致 LoadFault，修改为 stride=1 后全部正常
-**恢复条件**: 如需回顾旧版 MMIO 权限误判过程
+**理由**: 7 项优化已实现并验证
+**恢复条件**: 需回顾具体优化实现
 
-原始内容:
-
-- stride=4 问题（已解）
-  - 此前认为是 axplat 限制 UART MMIO 权限
-  - 2026-05-31 确认根因是 UART_STRIDE=4 越界
-  - 改动为 stride=1 后完全正常
+已完成: O25 batch RX, O26 batch TX, O27 IER cache, O28 ISR merge,
+O29 buf 1024, O30 TX single lock, O31 waker skip, O33 split rx/tx locks
