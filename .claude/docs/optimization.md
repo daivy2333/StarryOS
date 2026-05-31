@@ -1,6 +1,6 @@
-# optimization.md — 优化记录
+# optimization.md — 优化记录（汇总）
 
-> 由 project-rules-generator 初始化，由 project-docs-assistant 日常维护。
+> 由 project-docs-assistant 维护，汇总分支整合。
 > 条目格式: <!-- O{编号} --> - {问题描述}，每条含当前影响、建议方案。
 
 ---
@@ -29,7 +29,7 @@
 
 <!-- O5 --> - 优先级调度
   - 当前影响: 后台协程可能被其他任务抢占，延迟抖动增大
-  - 建议方案: 若 axtask 支持优先级，提高协程优先级；否则可参考 Embassy InterruptExecutor 多优先级模式，在 axtask 之上实现多优先级调度域
+  - 建议方案: 若 axtask 支持优先级，提高协程优先级；否则可参考 Embassy InterruptExecutor 多优先级模式
   - 优先级: 低 | 阶段: M4+
 
 <!-- O6 --> - ringbuf 溢出策略
@@ -51,50 +51,48 @@
 <!-- O16 --> - PTY ringbuf 性能优化
   - 当前影响: PTY buffer 仅 4096 字节，高频读写时唤醒频繁；SpinNoPreempt 锁有开销
   - 建议方案: 增大 PTY buffer 至 64 KiB（与 AsyncUart 对齐）；考虑无锁 ringbuf 原子操作
-  - 优先级: 低 | 阶段: M4 (性能优化，与 AsyncUart buffer 对齐)
+  - 优先级: 低 | 阶段: M4
   - 参考: kernel/src/pseudofs/dev/tty/pty.rs PTY_BUF_SIZE
 
 <!-- O17 --> - 中断分发效率优化
   - 当前影响: register_irq_waker 通过全局 BTreeMap 查找 IRQ 号，每次中断有查找开销
   - 建议方案: IRQ 号直接映射（数组索引）而非 BTreeMap；批量中断处理减少 PLIC claim/complete MMIO 延迟
-  - 优先级: 中 | 阶段: M4 (与 NAPI 批量处理协同)
+  - 优先级: 中 | 阶段: M4
   - 参考: axtask::future::poll.rs POLL_IRQ BTreeMap
 
 <!-- O18 --> - 系统调用层批量读取
   - 当前影响: 每次 read() 都有 block_on(poll_io) 包装，waker 注册/唤醒有开销
   - 建议方案: VFS 层批量读取接口；raw 模式零拷贝路径（直接从 rx_buf 到用户空间）
-  - 优先级: 低 | 阶段: M2+ (与 termios raw 模式协同)
+  - 优先级: 低 | 阶段: M2+
 
-<!-- O20 --> - 数据完整性量化延后到 M4（2026-05-27）
+<!-- O20 --> - 数据完整性量化延后到 M4
   - **问题**: M2 无数据完整性量化指标（如 MD5 校验、100% 完整性）
-  - **当前影响**: M2 只验证功能正确性（内核内部测试），无量化指标
-  - **建议方案**: M4 建立 echo 回环自动化测试后量化数据完整性（MD5 校验、字节比对）
-  - **优先级**: 低（M4 目标，不影响 M2 Gate）
-  - **相关决策**: learned.md L75-L76（非阻塞/epoll 延后）
+  - **建议方案**: M4 建立 echo 回环自动化测试后量化数据完整性
+  - **优先级**: 低（M4 目标）
 
-<!-- O21 --> - 自动化部署延后到 M4（2026-05-27）
+<!-- O21 --> - 自动化部署延后到 M4
   - **问题**: M2 使用内核内部测试，无用户态程序自动化部署
-  - **当前影响**: 内核测试自动化，无需手动部署；但用户态验证延后
-  - **建议方案**:
-    - M4 建立 Makefile target：`make test-uart-async`
-    - 自动编译 → 打包到 rootfs → 启动 QEMU → 自动执行测试
-    - 适合回归测试和性能基准建立
-  - **优先级**: 低（M4 目标，M2 内核测试已自动化）
-  - **相关决策**: learned.md L77（内核内部测试）
+  - **建议方案**: M4 建立 Makefile target：`make test-uart-async`
+  - **优先级**: 低（M4 目标）
 
-<!-- O22 --> - 非阻塞模式测试延后到 M3/M4（2026-05-27）
+<!-- O22 --> - 非阻塞模式测试延后到 M3/M4
   - **问题**: M2 只测阻塞模式，非阻塞 WouldBlock 场景未覆盖
-  - **当前影响**: ioctl(FIONBIO) 未实现，无法测试非阻塞模式
-  - **建议方案**: M3/M4 实现 ioctl(FIONBIO) 或 open(O_NONBLOCK)，补充非阻塞测试
+  - **建议方案**: M3/M4 实现 ioctl(FIONBIO) 或 open(O_NONBLOCK)
   - **优先级**: 中（M3/M4 目标）
-  - **相关决策**: learned.md L75（非阻塞测试延后）
 
-<!-- O23 --> - epoll 测试延后到 M3/M4（2026-05-27）
+<!-- O23 --> - epoll 测试延后到 M3/M4
   - **问题**: M2 只测 poll，不测 epoll
-  - **当前影响**: 单设备场景 epoll 优势不明显，poll 测试已足够验证 Pollable trait
   - **建议方案**: M3/M4 多设备场景补充 epoll 测试
   - **优先级**: 低（M3/M4 目标）
-  - **相关决策**: learned.md L76（epoll 测试延后）
+
+<!-- O24 --> - MMIO 权限问题解决（方向 B 关键阻塞）
+  - **问题**: axplat 限制 UART MMIO 权限，内核/ISR 都无法访问
+  - **当前影响**: 无法实现完整的异步 TX（依赖 IER::THR_EMPTY 中断）
+  - **建议方案**:
+    - 方案 A: Polling TX（牺牲性能，但可行）
+    - 方案 B: 修改 axplat（需上游协调）
+    - 方案 C: Boot 阶段修改页表权限
+  - **优先级**: 高（阻塞方向 B）
 
 ---
 

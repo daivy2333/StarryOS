@@ -1,13 +1,12 @@
-# learned.md — 项目学习记忆
+# learned.md — 项目学习记忆（汇总）
 
-> 由 project-rules-generator 初始化，由 project-docs-assistant 日常维护。
+> 由 project-docs-assistant 维护，汇总分支整合。
 > 条目格式: <!-- L{编号} --> 标记开头，支持 grep 精确定位。
+> 汇总两个方向（渐进式集成 + 完全剔除 Console）的全部经验。
 
 ---
 
 ## API 路径
-
-<!-- 添加时格式: <!-- L{编号} --> | 名称 | 路径 | 用途 | 时间 | -->
 
 <!-- L1 --> | axtask::future::block_on | 异步任务阻塞执行 | 2026-05-24 |
 <!-- L2 --> | axtask::future::poll_io | WouldBlock → register → await 标准模式 | 2026-05-24 |
@@ -17,19 +16,32 @@
 <!-- L65 --> | RISC-V musl 工具链路径 | /opt/musl/riscv64-linux-musl-cross/bin | 编译 lwext4_rust C 代码 | 2026-05-27 |
 <!-- L66 --> | rootfs 下载地址 | https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz | 1GB 磁盘镜像 | 2026-05-27 |
 <!-- L67 --> | disk.img 位置 | 项目根目录 + make/disk.img | make run 需要后者 | 2026-05-27 |
+<!-- L81 --> | uart_16550 寄存器定义 | uart_16550/src/spec.rs | IER/ISR/LSR bitflags + InterruptType 枚举 | 2026-05-28 |
+<!-- L82 --> | uart_16550 MMIO 实现 | uart_16550/src/backend/mmio.rs | read_volatile/write_volatile + 地址计算 | 2026-05-28 |
+<!-- L94 --> | uart_16550 init API | uart_16550/src/lib.rs:406-523 | SerialPort::new_mmio + Config + init，完整初始化流程 | 2026-05-28 |
+<!-- L95 --> | uart_16550 Config 字段 | uart_16550/src/config.rs:114-154 | baud_rate/data_bits/interrupts/fifo_trigger_level | 2026-05-28 |
+<!-- L96 --> | UART 中断类型枚举 | uart_16550/src/spec.rs:315-414 | InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout/LineStatus） | 2026-05-28 |
+<!-- L97 --> | register_irq_waker 实现 | axtask/src/future/poll.rs:43-66 | BTreeMap<usize, PollSet>，支持同一 IRQ 注册多个 waker | 2026-05-28 |
+<!-- L98 --> | register_irq_hook 全局唯一 | axhal/src/irq.rs:12-28 | AtomicUsize compare_exchange，只能注册一次 | 2026-05-28 |
+<!-- L99 --> | AtomicWaker ISR 安全 | embassy-sync/src/waitqueue/atomic_waker.rs:42-63 | CriticalSectionRawMutex + wake_by_ref，ISR 中无阻塞 | 2026-05-28 |
+<!-- L100 --> | PollSet 容量上限 | axpoll/src/lib.rs:66-150 | 容量 64，超过唤醒旧 waker（环形缓冲） | 2026-05-28 |
+<!-- L101 --> | DeviceOps trait 核心方法 | kernel/src/pseudofs/device.rs:28-55 | read_at/write_at/ioctl/as_pollable/flags | 2026-05-28 |
+<!-- L102 --> | Pollable trait 定义 | axpoll/src/lib.rs | poll() + register()，支持 poll/select/epoll | 2026-05-28 |
+<!-- L103 --> | IoEvents 标志 | axpoll/src/lib.rs | IN/OUT/HUP/ERR/RDNORM/WRNORM | 2026-05-28 |
+<!-- L104 --> | axlog LogIf trait | axlog-0.3.0-preview.2/src/lib.rs | console_write_str() → axhal::console::write_bytes() | 2026-05-28 |
+<!-- L105 --> | panic handler 实现 | axruntime-0.3.0-preview.2/src/lang_items.rs | panic() → ax_println! → polling TX | 2026-05-28 |
+<!-- L106 --> | uart_16550 retry_until_ok macro | uart_16550-0.4.0/src/lib.rs | loop { if let Ok(ok) = $cond { break ok; } } | 2026-05-28 |
 <!-- L116 --> | axhal::mem::phys_to_virt | 物理地址到虚拟地址转换（返回 VirtAddr） | 2026-05-28 |
 
-## 文件速查
+---
 
-<!-- 添加时格式: <!-- L{编号} --> | 名称 | 路径 | 用途 | 时间 | -->
+## 文件速查
 
 <!-- L5 --> | Pipe 异步管道 | kernel/src/file/pipe.rs | poll_io + register_irq_waker 模式参考 | 2026-05-24 |
 <!-- L6 --> | EventFd | kernel/src/file/event.rs | 轻量异步通知模式参考 | 2026-05-24 |
 <!-- L7 --> | DeviceOps 设备注册 | kernel/src/pseudofs/device.rs | DeviceOps trait + Device 包装 | 2026-05-24 |
 <!-- L8 --> | UART 硬件操作 | axhal/src/platform/riscv64_qemu_virt/uart.rs | MMIO 寄存器定义 | 2026-05-24 |
 <!-- L9 --> | PLIC 中断映射 | axhal/src/platform/riscv64_qemu_virt/mod.rs | PLIC 中断号 | 2026-05-24 |
-<!-- L81 --> | uart_16550 寄存器定义 | uart_16550/src/spec.rs | IER/ISR/LSR bitflags + InterruptType 枚举 | 2026-05-28 |
-<!-- L82 --> | uart_16550 MMIO 实现 | uart_16550/src/backend/mmio.rs | read_volatile/write_volatile + 地址计算 | 2026-05-28 |
 <!-- L83 --> | Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct + TtyRead/TtyWrite trait | 2026-05-28 |
 <!-- L84 --> | tty-reader copier | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs | InputReader + poll_fn + register_irq_waker | 2026-05-28 |
 <!-- L85 --> | ConsoleDriver | kernel/src/drivers/serial/console_driver.rs | RX copier + TX sync flush + AsyncBuffer | 2026-05-28 |
@@ -38,9 +50,9 @@
 <!-- L92 --> | tty-reader 任务名 | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs:276 | spawn_with_name("tty-reader") | 2026-05-28 |
 <!-- L93 --> | PTY 与 Console 分离 | kernel/src/pseudofs/dev/tty/pty.rs | PTY 不依赖 Console 硬件，可保留 | 2026-05-28 |
 
-## 踩坑档案
+---
 
-<!-- 添加时格式: <!-- L{编号} --> ### [{问题标题}] 后跟症状→根因→解 -->
+## 踩坑档案
 
 <!-- L10 --> ### embassy-executor 与 axtask 冲突
 - 症状: 引入完整 Embassy 后调度器冲突
@@ -66,7 +78,31 @@
   - PollSet.register(waker) 总是执行（支持多个 waker）
 - 验证: 2026-05-27 (T0.3)
 
-<!-- L78 --> ### M3 替换失败 — IRQ 风暴 + TX busy-loop（2026-05-28）
+<!-- L68 --> ### 构建环境配置踩坑
+- 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
+- 根因: lwext4_rust crate 需要编译 C 代码，依赖 musl 交叉编译工具链
+- 解:
+  1. 工具链位于 `/opt/musl/riscv64-linux-musl-cross/bin`
+  2. 构建前设置 `export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH`
+  3. 系统已有其他 RISC-V 工具链，但 musl 版本是必需的
+- 验证: 2026-05-27 (T0.4)
+
+<!-- L69 --> ### rootfs 下载与部署踩坑
+- 症状: make rootfs 下载失败（SSL 连接中断），disk.img not found
+- 根因: GitHub releases 下载不稳定 + Makefile 需要 disk.img 在 make/ 目录
+- 解:
+  1. 手动下载 `https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz`
+  2. 解压 `xz -d rootfs-riscv64.img.xz`
+  3. 复制到两处：`cp rootfs-riscv64.img disk.img && cp disk.img make/disk.img`
+- 验证: 2026-05-27 (T0.4)
+
+<!-- L70 --> ### 构建警告清理经验
+- 症状: 编译有10个 unused warnings（dead_code）
+- 分析: 这些是项目原有代码的未使用函数，不是我们添加依赖导致
+- 影响: 不影响功能，编译成功
+- 建议: 不清理（遵循"只改必须改的代码"原则）
+
+<!-- L78 --> ### M3 替换失败 — IRQ 风暴 + TX busy-loop（方向 A 失败经验）
 - **症状**:
   1. IRQ 风暴：RX-COPIER 和 tty-reader 快速循环唤醒，`[RX-COPIER] poll` → `[RX-COPIER] returning Pending` → 立即又被唤醒
   2. TX busy-loop：TX FIFO 满，UART 状态异常（LSR=0x00，THR_EMPTY=false TEMT=false）
@@ -78,11 +114,11 @@
 - **教训**:
   1. ❌ 未验证硬件状态就开始集成（假设 Console 初始化后的 UART 状态正常）
   2. ❌ 未添加足够的调试信息（IIR、MCR、完整 LSR 状态）
-  3. ❌ ADR-018 战略转向过于激进（未充分验证可行性）
-- **解决**: 回滚到 M3 Task 5（AsyncUart 驱动实现，未集成），重新评估整体方案
+  3. ❌ 战略转向过于激进（未充分验证可行性）
+- **解决**: 回滚到 M3 Task 5，重新评估整体方案
 - **验证**: 2026-05-28（ADR-019）
 
-<!-- L79 --> ### UART 状态调试缺失教训（2026-05-28）
+<!-- L79 --> ### UART 状态调试缺失教训
 - **问题**: M3 替换失败时，缺少全面的 UART 硬件状态调试
 - **缺失信息**:
   1. IIR 寄存器（Interrupt Identification）— 无法确认 interrupt 类型
@@ -92,165 +128,103 @@
 - **教训**: 硬件集成前，必须添加全面的寄存器状态调试（IIR/MCR/LSR/IIR）
 - **预防**: 下次集成前，先添加 UART 状态诊断代码
 
-<!-- L80 --> ### THR_EMPTY 状态理解错误（2026-05-28）
+<!-- L80 --> ### THR_EMPTY 状态理解错误
 - **问题**: uart_16550 crate 的 THR_EMPTY 注释说"FIFO completely empty"
 - **实际**: THR_EMPTY (Bit 5) 表示 THR 有空位（可以写入），TEMT (Bit 6) 表示完全空闲
 - **误解影响**: 以为 THR_EMPTY=false 表示 FIFO 有至少 1 个字节，实际表示 FIFO 满
 - **纠正**: THR_EMPTY=1 表示 FIFO 有空位，THR_EMPTY=0 表示 FIFO 满
 - **教训**: 需仔细阅读 UART 规范，不要依赖库的注释（可能有错误）
-- **参考**: docs/analysis/console-uart-mechanism.md（Console UART 研究）
 
-<!-- L88 --> ### Console 与 AsyncUart 共享 UART 的数据竞争风险（2026-05-28）
+<!-- L88 --> ### Console 与 AsyncUart 共享 UART 的数据竞争风险
 - **风险类型**:
   1. **TX 数据竞争**: Console TX（同步阻塞）与 AsyncUart TX copier 同时写 THR 寄存器
   2. **IRQ waker 冲突**: Console tty-reader 与 AsyncUart copier 竞争 IRQ 10 waker
   3. **UART 重初始化冲突**: AsyncUart 重初始化可能破坏 Console 配置
 - **根因**: Console 是外部 crate (axplat)，无法完全控制其 UART 操作
-- **解决**: 完全剔除 Console，使用本地 uart_16550 crate（feat/uart-async-dev2 分支）
-- **预防**: 新分支从零开始，避免共享 UART 硬件
-- **参考**: docs/analysis/console-uart-mechanism.md（Console UART 研究）
+- **解决**: 完全剔除 Console，使用本地 uart_16550 crate（方向 B 策略）
 
-<!-- L89 --> ### 分支策略变更：完全剔除 Console（2026-05-28）
+<!-- L89 --> ### 分支策略变更：完全剔除 Console（方向 B 策略）
 - **背景**: feat/uart-async 分支的渐进式集成方案失败（M3 替换失败）
 - **决策**: 创建 feat/uart-async-dev2 分支，完全剔除 Console，从零开始
 - **原因**: 避免 Console 与 AsyncUart 的数据竞争、IRQ waker 冲突、UART 重初始化冲突
 - **新方案**: 使用本地 uart_16550 crate + 自实现 UART 初始化
-- **参考**: ADR-020（architecture.md）
 
-<!-- L94 --> | uart_16550 init API | uart_16550/src/lib.rs:406-523 | SerialPort::new_mmio + Config + init，完整初始化流程 | 2026-05-28 |
-<!-- L95 --> | uart_16550 Config 字段 | uart_16550/src/config.rs:114-154 | baud_rate/data_bits/interrupts/fifo_trigger_level | 2026-05-28 |
-<!-- L96 --> | UART 中断类型枚举 | uart_16550/src/spec.rs:315-414 | InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout/LineStatus） | 2026-05-28 |
-<!-- L97 --> | register_irq_waker 实现 | axtask/src/future/poll.rs:43-66 | BTreeMap<usize, PollSet>，支持同一 IRQ 注册多个 waker | 2026-05-28 |
-<!-- L98 --> | register_irq_hook 全局唯一 | axhal/src/irq.rs:12-28 | AtomicUsize compare_exchange，只能注册一次 | 2026-05-28 |
-<!-- L99 --> | AtomicWaker ISR 安全 | embassy-sync/src/waitqueue/atomic_waker.rs:42-63 | CriticalSectionRawMutex + wake_by_ref，ISR 中无阻塞 | 2026-05-28 |
-<!-- L100 --> | PollSet 容量上限 | axpoll/src/lib.rs:66-150 | 容量 64，超过唤醒旧 waker（环形缓冲） | 2026-05-28 |
-<!-- L101 --> | DeviceOps trait 核心方法 | kernel/src/pseudofs/device.rs:28-55 | read_at/write_at/ioctl/as_pollable/flags | 2026-05-28 |
-<!-- L102 --> | Pollable trait 定义 | axpoll/src/lib.rs | poll() + register()，支持 poll/select/epoll | 2026-05-28 |
-<!-- L103 --> | IoEvents 标志 | axpoll/src/lib.rs | IN/OUT/HUP/ERR/RDNORM/WRNORM | 2026-05-28 |
-<!-- L104 --> | axlog LogIf trait | axlog-0.3.0-preview.2/src/lib.rs | console_write_str() → axhal::console::write_bytes() | 2026-05-28 |
-<!-- L105 --> | panic handler 实现 | axruntime-0.3.0-preview.2/src/lang_items.rs | panic() → ax_println! → polling TX | 2026-05-28 |
-<!-- L106 --> | uart_16550 retry_until_ok macro | uart_16550-0.4.0/src/lib.rs | loop { if let Ok(ok) = $cond { break ok; } } | 2026-05-28 |
-
-<!-- L107 --> ### ISR 分发机制设计要点（2026-05-28）
+<!-- L107 --> ### ISR 分发机制设计要点
 - **ISR 中读 ISR 寄存器**：判断 InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout）
 - **禁用中断防止重入**：ISR 中临时禁用 RX/TX 中断（IER 操作）
 - **AtomicWaker 精确唤醒**：rx_waker/tx_waker 分别唤醒
 - **ISR 执行原则**：最小工作（读 ISR + 禁用中断 + 唤醒 waker）
 - **ISR 安全约束**：无阻塞、无锁、MMIO read/write 安全
 
-<!-- L108 --> ### UART 初始化配置差异（2026-05-28）
+<!-- L108 --> ### UART 初始化配置差异
 - **Console 配置**：IER::DATA_READY（只使能 RX 中断）
 - **AsyncUart 配置**：IER::DATA_READY | IER::THR_EMPTY（RX + TX 中断）
 - **关键差异**：Console 禁用 TX 中断，AsyncUart 必须使能 TX 中断
 - **解决方案**：UART 重新 init 时使能 TX 中断（覆盖 Console 配置）
 
-<!-- L109 --> ### earlycon 启动时机分析（2026-05-28）
+<!-- L109 --> ### earlycon 启动时机分析
 - **earlycon 可用时间点**: axruntime::rust_main 中 axplat::init::init_early() 后（T0-T2）
 - **axlog::init()**: 第 160 行，启用内核日志框架
 - **ax_println!**: 启动 LOGO 输出（约 17 ms polling TX）
-- **AsyncUart 可用时间点**: axtask::init_scheduler() 后（T9-T10）
-- **earlycon 比 AsyncUart 早约 10-20 ms 可用**
+- **AsyncUart 启动时间点**: kernel::entry::init() 中（T4-T5）
+- **时间差**: earlycon 比 AsyncUart 早约 10-20 ms
 
-<!-- L110 --> ### Polling TX 性能影响（2026-05-28）
-- **波特率 115200 bps**: 每字节 ~87 µs CPU 空转
-- **启动 LOGO（200 字节）**: ~17 ms CPU 穽转
-- **总启动时间增加**: 100-200 ms（估算，多条日志）
-- **性能权衡**: 调试安全优先，启动速度次优
-- **优化方向**: DMA TX（远期，需硬件支持）
+<!-- L110 --> ### MMIO 权限问题根因分析（方向 B 关键发现）
+- **问题**: 内核上下文和 ISR 上下文都无法访问 UART MMIO 寄存器
+- **现象**:
+  - 物理地址 0x1000001c → Page Fault（未映射）
+  - 虚拟地址 0xffffffc01000001c → StoreFault（无写入权限）
+  - 虚拟地址 0xffffffc010000008 → LoadFault（无读取权限）
+- **根因**: axplat 在 boot 阶段映射 UART MMIO，权限被限制（只读或禁止）
+- **影响**: 无法在内核/ISR 上下文中访问 UART 寄存器，无法验证/修改 UART 配置
+- **结论**: 不彻底更改底层支持（axplat）就无法使用异步串口
+- **验证**: 2026-05-29 (ADR-023)
 
-<!-- L111 --> ### AsyncUart 设备注册关键路径（2026-05-28）
-- **用户态 open("/dev/async_uart")** → syscall open → FS_CONTEXT.resolve → Device::new → File::new → FD_TABLE.add
-- **用户态 read(fd, buf)** → syscall read → FD_TABLE.get → FileLike::read → poll_io → DeviceOps::read_at → rx_buffer.pop
-- **用户态 poll(&pollfd)** → syscall poll → do_poll → FileLike::poll → AsyncUartDevice::poll → IoEvents
-- **关键流程**: WouldBlock → poll_io 自动注册 waker → wake() → 重试 read_at
+<!-- L111 --> ### axplat 外部 crate 依赖全景图
+- **依赖链**: axruntime → axplat-riscv64-qemu-virt → axhal → axtask → axpoll
+- **不可修改**: 所有 crate 均来自 crates.io，无法直接修改
+- **UART 相关**: axplat 负责 UART MMIO 映射和初始化，axhal 提供 console API
+- **关键约束**: UART MMIO 权限由 axplat 控制，kernel 层无法绕过
 
-<!-- L112 --> ### DeviceOps trait 异步支持模式（2026-05-28）
-- **read_at 返回 WouldBlock**：触发 poll_io 等待
-- **as_pollable 返回 Some(self)**：支持 poll/select/epoll
-- **poll() 检查 IoEvents**：IN（可读）OUT（可写）
-- **register() 注册 waker**：poll_rx/poll_tx PollSet
-- **wake() 唤醒等待任务**：数据到达或缓冲区有空间
+<!-- L112 --> ### 绕过 axplat 的可能路径
+- **方案 1**: 修改 axplat 源码（fork 或 PR）— 需上游协调
+- **方案 2**: 在 boot 阶段修改页表权限 — 需深入理解 RISC-V 页表机制
+- **方案 3**: 使用 QEMU 命令行参数修改 MMIO 映射 — 可能不可行
+- **方案 4**: 完全自实现 UART 驱动（不依赖 axplat）— 工作量大
+- **评估**: 方案 1 最合理，但需评估上游接受度
 
-<!-- L87 --> ### IRQ Waker 单一限制冲突（2026-05-28）
-- **症状**: IRQ 风暴，RX-COPIER 和 tty-reader 快速循环唤醒
-- **根因**: 当前框架每个 IRQ 只支持一个 waker（interrupt-framework.md 3.3 节）
-- **冲突**: Console tty-reader 已注册 IRQ 10 waker，AsyncUart RX/TX copier 也需注册 → 无法分别唤醒
-- **解决**: 使用 ISR + AtomicWaker 分发机制（ISR 读 ISR 寄存器，根据中断类型唤醒不同的 waker）
-- **预防**: 在集成 AsyncUart 前，必须设计 ISR 分发机制，避免 IRQ waker 冲突
+<!-- L117 --> ### axplat UART 初始化流程
+- **初始化时机**: axplat::init::init_early() 中
+- **初始化内容**: MMIO 映射 + 波特率配置 + FIFO 使能 + IER 配置
+- **IER 配置**: 只使能 DATA_READY（RX 中断），不使能 THR_EMPTY（TX 中断）
+- **权限设置**: MMIO 映射权限受限（可能是只读或禁止用户态访问）
+- **影响**: AsyncUart 需要 TX 中断，但无法修改 IER 配置
 
-<!-- L88 --> ### uart_16550 API 类型引用踩坑（2026-05-28）
-- **症状**: Plan 文档指定 `InterruptStatus::FIFOS_ENABLED` 和 `LineStatus::TRANSMITTER_EMPTY`，但编译失败
-- **根因**: uart_16550 crate 的类型定义在 `spec::registers` 模块，不是顶层模块
-- **解决**: 正确引用方式：
-  - ISR: `ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1`（不是 InterruptStatus）
-  - LSR: `LSR::TRANSMITTER_EMPTY`（不是 LineStatus）
-  - Import: `use uart_16550::spec::registers::{ISR, LSR};`
-- **预防**: 查阅 uart_16550/src/spec.rs 确认类型定义位置
+---
 
-<!-- L89 --> ### 静态初始化 non-const 函数踩坑（2026-05-28）
-- **症状**: `pub static UART = SpinNoIrq::new(unsafe { Uart16550::new_mmio(...) })` 编译失败
-- **根因**: Rust 静态初始化要求 const fn，但 `Uart16550::new_mmio` 是 non-const
-- **解决**: 使用 `lazy_static!` macro：
-  ```rust
-  lazy_static! {
-      static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
-          // SAFETY: ...
-          Uart16550::new_mmio(...)
-      });
-  }
-  ```
-- **预防**: 检查 API 是否为 const fn，非 const 使用 lazy_static 或 once_cell
+<!-- L118 --> ### Console MMIO 权限分析纠正（关键发现）
+- **背景**: 此前分析文档认为"Console 因在页表切换前初始化而能访问 UART MMIO，新代码因在页表切换后无法访问"，进而得出"MMIO 权限阻塞，必须修改 axplat"的结论。
+- **纠正**: 此分析有误。Console 能访问 UART MMIO 的真正原因是：
+  1. UART MMIO 地址 `0x10000000` 明确列在 `axconfig.toml → [devices].mmio-ranges` 中
+  2. `mmio_ranges()` → `axhal::mem::memory_regions()` → `new_kernel_aspace().map_linear()` 将 UART 以 `READ | WRITE | DEVICE` 标志映射进最终内核页表
+  3. Console 的静态 `MmioSerialPort` 访问 `0xffffffc010000000` 命中有效映射，**与初始化时机无关**
+- **结论**: 页表权限不是阻塞原因。若测试代码在同一虚拟地址上 LoadFault，根因可能是地址计算错误、stride 不匹配、PMP 配置等，**而非页表权限**。
+- **验证路径**: `axplat-riscv64-qemu-virt/axconfig.toml` → `src/mem.rs mmio_ranges()` → `axhal/src/mem.rs ALL_MEM_REGIONS` → `axmm/src/lib.rs new_kernel_aspace()` → `KERNEL_ASPACE`
+- **影响**: 移除了"必须修改 axplat"的前提条件，异步串口实现可在 kernel 层独立解决
 
-<!-- L90 --> ### SAFETY comment 要求（Iron Law #10）（2026-05-28）
-- **症状**: Code review 发现 unsafe block 缺少 SAFETY comment，违反 Iron Law #10
-- **要求**: 所有 unsafe block 必须有 `// SAFETY:` 注释解释安全性
-- **示例**:
-  ```rust
-  unsafe {
-      // SAFETY: UART_MMIO_BASE (0x10000000) is the documented MMIO address for
-      // UART0 on RISC-V QEMU virt platform. This address is guaranteed to be
-      // valid by the platform specification, and we have exclusive access
-      // protected by SpinNoIrq.
-      Uart16550::new_mmio(...)
-  }
-  ```
-- **预防**: Code review 阶段强制检查 SAFETY comment
-
-<!-- L91 --> ### embassy-sync v0.6.2 没有 nightly feature（2026-05-28）
-- **症状**: Plan 文档指定 `embassy-sync = { version = "0.6.2", features = ["nightly"] }`，但编译失败
-- **根因**: embassy-sync v0.6.2 没有 nightly feature（available: defmt, log, std, turbowakers）
-- **解决**: 删除 features specification，AtomicWaker 可正常工作：`embassy-sync = "0.6.2"`
-- **预防**: 使用 `cargo info embassy-sync` 检查可用 features
-
-<!-- L68 --> ### 构建环境配置踩坑
-- 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
-- 根因: lwext4_rust crate 需要编译 C 代码，依赖 musl 交叉编译工具链
-- 解:
-  1. 工具链位于 `/opt/musl/riscv64-linux-musl-cross/bin`
-  2. 构建前设置 `export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH`
-  3. 系统已有其他 RISC-V 工具链（riscv64-linux-gnu-gcc, riscv64-unknown-elf-gcc），但 musl 版本是必需的
-- 验证: 2026-05-27 (T0.4)
-
-<!-- L69 --> ### rootfs 下载与部署踩坑
-- 症状: make rootfs 下载失败（SSL 连接中断），disk.img not found
-- 根因: GitHub releases 下载不稳定 + Makefile 需要 disk.img 在 make/ 目录
-- 解:
-  1. 手动下载 `https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz`
-  2. 解压 `xz -d rootfs-riscv64.img.xz`
-  3. 复制到两处：`cp rootfs-riscv64.img disk.img && cp disk.img make/disk.img`
-  4. Makefile 会自动复制 rootfs-riscv64.img → make/disk.img（如果 rootfs 下载成功）
-- 验证: 2026-05-27 (T0.4)
-
-<!-- L70 --> ### 构建警告清理经验
-- 症状: 编译有10个 unused warnings（dead_code）
-- 分析: 这些是项目原有代码的未使用函数，不是我们添加依赖导致
-- 影响: 不影响功能，编译成功
-- 建议: 不清理（遵循"只改必须改的代码"原则，避免引入不必要变更）
-- 验证: 2026-05-27 (T0.4)
+<!-- L119 --> ### axmm::iomap() 现成 API（关键技术发现）
+- **发现**: `axmm` crate 已提供 `iomap()` 函数，专门用于将设备 MMIO 映射到内核页表
+- **函数签名**: `pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr>`
+- **内部实现**: `kernel_aspace().lock().map_linear()` + `protect()`，使用 `DEVICE | READ | WRITE` 标志
+- **调用方式**: `axmm::iomap(PhysAddr::from(0x10000000), 0x1000)`
+- **关键特性**:
+  - 如果映射已存在，静默跳过 `map_linear()` 后仍调用 `protect()` 确保权限正确
+  - 自动 flush TLB（cursor drop 时）
+  - 不修改任何外部 crate
+- **验证**: axmm-0.3.0-preview.2/src/lib.rs:111-131
+- **影响**: 方案 D 无需开发新 API，直接调用 `iomap()` 即可解除 MMIO 访问阻塞
 
 ## 技巧模式
-
-<!-- 添加时格式: <!-- L{编号} --> ### [{技巧标题}] 后跟描述 -->
 
 <!-- L12 --> ### ISR 极简原则
 中断处理只做三件事：
@@ -264,419 +238,97 @@
 - TX: 用户空间 → ringbuf → 硬件 FIFO
 - 后台协程是唯一操作硬件的角色，天然无竞态
 
-<!-- L14 --> ### Pollable 模式
-参考 Pipe 实现：
-- `poll()`: 非阻塞查询当前事件状态
-- `register()`: 保存 Waker，等待唤醒
-- `PollSet` 容量上限 64 个 Waker
-
-<!-- L15 --> ### VFS 集成转换链
-设备实现 `DeviceOps` trait → 包装为 `Device` → 自动获得 `FileLike` 能力。
-`Device` → `NodeOps` → `FileNodeOps` → `File` → `FileLike`。
-`as_pollable()` 返回 `Some(self)` 以支持 poll/select/epoll。
-
-<!-- L16 --> ### MMIO 权限验证方法论（2026-05-29）
-验证 MMIO 设备权限的方法：
-1. **内核上下文验证**：尝试在内核启动后访问 MMIO 地址
-   - 成功 → 权限可用
-   - LoadFault/StoreFault → 权限受限
-
-2. **ISR 上下文验证**：注册 ISR handler，尝试在 ISR 中访问 MMIO
-   - 成功 → ISR 有特殊权限（可能性低）
-   - LoadFault → ISR 也受限（常见情况）
-
-3. **物理地址验证**：尝试直接访问物理地址
-   - Page Fault → 物理地址未映射
-
-4. **虚拟地址验证**：使用 phys_to_virt 转换后访问
-   - LoadFault/StoreFault → 虚拟地址权限受限
-
-**关键步骤**：
-- 实现最小 ISR handler（尝试读 MMIO 寄存器）
-- 注册 ISR handler 到 IRQ hook
-- 运行内核，触发 ISR 执行（可手动触发中断）
-- 观察 ISR 是否成功读取寄存器，或触发异常
-
-**适用场景**：
-- 验证外部 crate 的 MMIO 权限策略
-- 评估是否可以在 ISR 中操作硬件
-- 确认架构约束是否可绕过
-
-**参考案例**：StarryOS AsyncUart ISR 测试（learned.md L116）
-
-<!-- L45 --> ### Embassy 执行器轮询机制
-1. 任务被 poll → 执行到阻塞点 → 返回 Poll::Pending
-2. 执行器将任务重新加入运行队列末尾，继续执行下一任务
-3. 被唤醒的任务重新入队（仅轮询被唤醒的任务，而非全部）
-4. 无任务可执行时 CPU 进入休眠（WFE/WFI）——无空转轮询
-5. 即使某任务被频繁唤醒，也不会独占 CPU——公平调度保证
-与 StarryOS 的关系: 我们用 axtask::future 而非 embassy-executor，但异步调度原理相同。
-block_on + poll_io 的模式本质就是执行器轮询 + waker 唤醒。
-
-<!-- L46 --> ### Embassy 中断与异步的配合流程
-1. 任务被轮询，尝试取得进展
-2. 任务指示外设执行操作，并等待
-3. 外设完成操作，发出中断
-4. HAL 将中断信号路由到外设，更新外设状态
-5. 执行器收到通知，任务可继续被轮询
-映射到 StarryOS: ISR → AtomicWaker::wake() → axtask 协程被唤醒 → poll 继续执行。
-这就是 ADR-008 ISR → AtomicWaker → copier 任务模型的底层原理。
-
-<!-- L47 --> ### Embassy 异步 vs 中断驱动对比
-- 中断驱动: 需要全局 Mutex 保护共享状态，代码复杂度高（70+ 行）
-- Embassy 异步: 同样简洁（25 行），但多了 Waker 自动休眠/唤醒
-- 关键差异: 异步版本 wait_for_edge().await 使任务挂起，无任务时 CPU 进入睡眠
-- 这验证了我们的选择: axtask::future 异步模式比传统中断驱动代码更简洁，且同样零 CPU 空转
-
-<!-- L48 --> ### embassy-sync 与 nightly 兼容性
-Embassy 使用 `type_alias_impl_trait` 等 nightly 特性。
-embassy-sync 本身可能不需要所有 nightly 特性，但需要验证与 nightly-2026-02-25 的兼容性。
-参见存疑 Q8 (L31)。验证方法: 在 Cargo.toml 添加依赖后 `cargo check`。
-
-<!-- L49 --> ### InterruptExecutor 多优先级模式
-Embassy 支持创建多个 InterruptExecutor 实例，以不同优先级运行任务。
-这对应 optimization.md O5 "优先级调度"——远期若 axtask 不支持优先级，
-可考虑在 axtask 之上实现类似的多优先级调度域。
-
-<!-- L60 --> ### TX 同步阻塞实测时间（理论估算）
-波特率 115200 bps 下：
-- 发送 1 字节: ~86.8 µs CPU 空转
-- 发送 1 KB: ~87 ms CPU 空转
-- 发送 64 KB: ~5.5 s CPU 空转
-波特率 1 Mbps 下：
-- 发送 1 KB: ~10 ms CPU 空转
-- 发送 64 KB: ~640 ms CPU 穽转
-这是当前 Console write_bytes 忙等待循环的阻塞时长，验证了异步化必要性。
-
-<!-- L61 --> ### RX 接收路径多层开销分析
-Console (N_TTY) 接收路径虽中断驱动，但经过多层处理：
-- UART → Console.read_bytes → N_TTY → ldisc → termios → 用户态
-- 即使 raw 模式，数据仍经过 ldisc 处理路径（条件判断、信号检测）
-- 多层 buffer 复制：Console buffer → N_TTY buffer → 用户态 buffer
-AsyncUart 优化：默认 raw 模式直接读写 rx_buf，跳过 ldisc，零行规则开销。
-
-<!-- L62 --> ### 异步改造预期性能目标
-| 指标 | 目标 | 当前状态 | 改进幅度 |
-|------|------|---------|---------|
-| 最大波特率 | 1 Mbps (可扩展至 2 Mbps) | 受阻于同步阻塞 | 10x ↑ |
-| 吞吐量 | > 90% 线速 (115200 bps 下 > 10 KB/s) | 受阻于 CPU 空转 | 估算 5x ↑ |
-| RX 延迟 | P50 < 500 µs, P99 < 2 ms | 已中断驱动但多层开销 | 估算 2x ↓ |
-| CPU 利用率（空闲） | 0% | TX 阻塞时 100% 穽转 | 100% ↓ |
-| 多端口并发 | 4 端口 | 1 端口 | 4x ↑ |
-参见 docs/analysis/serial-optimization-preview.md 第 6 节。
-
-## 依赖关系图
-
-<!-- 添加时格式: <!-- L{编号} --> 关键依赖间的调用/依赖关系 -->
-
-<!-- L16 --> axtask::future ← register_irq_waker ← PLIC ISR → AtomicWaker::wake → 协程唤醒
-<!-- L17 --> UartAsyncDriver → ringbuf::HeapRb (rx_buf + tx_buf) → axpoll::PollSet (rx_wakers + tx_wakers)
-<!-- L18 --> DeviceOps trait → Device wrapper → FileLike → poll/select/epoll
-
-## 存疑问题
-
-<!-- 添加时格式: <!-- L{编号} --> - {存疑问题} — {影响} — {需要确认对象} -->
-
-<!-- L24 --> - Q1: QEMU virt 平台是否支持第二个 16550 UART？ — **已解决**：标准 QEMU 不支持（需补丁未合并），决策共用 UART0。参见 ADR-013、ADR-014、ADR-015。
-<!-- tombstone: L25 --> Archived to archive.md §learned #L25 2026-05-25 — 已决策 (ADR-009)
-<!-- L26 --> - Q3: 上板子时的 UART 型号？是否仍是 16550 兼容？ — AsyncUart trait 设计范围 — 老师
-<!-- L27 --> - Q4: register_irq 和 register_irq_waker 同时注册同一 IRQ 时的语义？ — **已解决**: register_irq_waker 支持同一 IRQ 注册多个 waker（BTreeMap<usize, PollSet>），与 Console tty-reader 共存 ✅ 2026-05-27
-<!-- tombstone: L28 --> Archived to archive.md §learned #L28 2026-05-25 — 已解决
-<!-- L29 --> - Q6: （已分析）N_TTY tty-reader 与 register_irq_waker 的配合方式 — 参见 reference-implementations.md — 代码追踪
-<!-- L30 --> - Q7: 多核场景下 PLIC claim/complete 的竞态？ — 当前单核可忽略 — RISC-V PLIC 规范
-<!-- L31 --> - Q8: embassy-sync 哪个版本与 nightly-2026-02-25 兼容？ — 依赖选型 — **已解决**: embassy-sync v0.6.2 与 nightly-2026-02-25 兼容，cargo check 通过 ✅ 2026-05-27
-<!-- L32 --> - Q9: register_irq_waker 是 per-cpu 还是全局的？ — **已解决**: 全局（static POLL_IRQ: SpinNoIrq<BTreeMap<usize, PollSet>>），多核场景需考虑锁竞争 ✅ 2026-05-27
-<!-- L33 --> - Q10: axtask 的 spawn 是否支持 Future？还是只支持闭包？ — 异步任务创建方式 — 代码确认
-<!-- L34 --> - Q11: PollSet 是否支持链式 Waker？一个事件唤醒多个等待者？ — poll/epoll 集成 — 代码审查
-<!-- L35 --> - Q12: ringbuf::HeapRb 的 advance_read_index 是否需要 &mut？ — ISR 与 copier 分工 — ringbuf 文档
-<!-- L36 --> - Q13: PollSet 容量 64 是否足够？ — 多路复用场景 — 使用场景分析
-<!-- L37 --> - Q14: block_on 在内核任务上下文中是否可重入？ — 嵌套异步操作的安全性 — axtask 代码确认
-<!-- L38 --> - Q15: 项目长期目标是否要替换 Console 底层为 AsyncUart？ — 远期架构方向 — 老师
-<!-- L39 --> - Q16: 能否获得真实硬件（如 VisionFive2）进行验证？ — 报告的平台适配章节 — 老师
-<!-- L40 --> - Q17: 报告中是否需要用户态测试程序的源码？ — 测试框架交付范围 — 老师
-<!-- L41 --> - Q18: 性能基准的最低要求？QEMU 数据是否可接受？ — 性能量化可信度 — 老师
-<!-- tombstone: L42 --> Archived to archive.md §learned #L42 2026-05-25 — 已决策 (ADR-009)
-<!-- tombstone: L43 --> Archived to archive.md §learned #L43 2026-05-25 — 已确认 (ADR-009)
-<!-- tombstone: L44 --> Archived to archive.md §learned #L44 2026-05-25 — 已决策 (ADR-007)
-
-## 待探索
-
-<!-- 添加时格式: <!-- L{编号} --> - {待探索项} -->
-
-<!-- L21 --> - embassy-sync::Channel 是否有优于 ringbuf 的场景
-<!-- L22 --> - axtask 协程优先级调度对延迟抖动的影响
-<!-- L23 --> - Termios 行规则在 read_at/write_at 中的具体集成方式
-
----
-
-## 关键代码路径（2026-05-25 补充）
-
-<!-- L50 --> ### axplat-riscv64-qemu-virt（上游 crates.io，不可直接修改）
-- `console.rs` — MmioSerialPort 初始化 + write_bytes/read_bytes/irq_num
-- `irq.rs` — PLIC claim/complete + HandlerTable + set_enable/register/unregister
-- `axconfig.toml` — UART_PADDR=0x10000000, UART_IRQ=0x0a, PLIC_PADDR=0x0c000000
-
-<!-- L51 --> ### axhal（上游 crates.io，不可直接修改）
-- `irq.rs` — register_irq_hook(全局唯一) + irq_handler(分发到 axplat + hook)
-
-<!-- L52 --> ### axtask（上游 crates.io，不可直接修改）
-- `future/mod.rs` — block_on 实现（AxWaker → unblock_task）
-- `future/poll.rs` — poll_io 实现 + register_irq_waker 实现（POLL_IRQ BTreeMap → irq_hook → PollSet.wake）
-
-<!-- L53 --> ### kernel（可修改）
-- `file/pipe.rs` — 异步管道参考：Shared { buffer: Mutex<HeapRb>, poll_rx/poll_tx: PollSet }
-- `file/event.rs` — EventFd 参考：AtomicU64 + PollSet
-- `pseudofs/device.rs` — DeviceOps trait + Device 包装
-- `pseudofs/dev/mod.rs` — builder() 注册 /dev 设备（添加新设备入口）
-- `pseudofs/dev/tty/mod.rs` — Tty<R,W> 实现 DeviceOps + Pollable
-- `pseudofs/dev/tty/ntty.rs` — Console + register_irq_waker 使用
-- `pseudofs/dev/tty/terminal/ldisc.rs` — tty-reader copier: spawn_with_name + poll_fn 循环
-- `entry.rs` — 内核入口：mount_all → spawn init → N_TTY.bind_to
-
-<!-- L54 --> ### uart_16550 本地项目（可修改）
-- `src/spec.rs` — bitflags: InterruptEnable, InterruptIdentification, LineStatus, FifoControl
-- `src/backend/mmio.rs` — MmioBackend
-- `src/lib.rs` — SerialPort<M>: set_interrupt_enable, interrupt_identification, try_send/try_receive, set_fifo_trigger_level, Config
-
-<!-- L55 --> ### 中断完整路径
-```
-UART 硬件信号 → PLIC → S_EXT trap → axhal::irq_handler
-  → axplat::handle (PLIC claim → HandlerTable.handle → PLIC complete)
-  → IRQ_HOOK (register_irq_waker 注册的 irq_hook)
-  → POLL_IRQ[irq].wake() → PollSet.wake()
-  → axtask scheduler 唤醒等待任务
+<!-- L71 --> ### poll_io 标准模式
+```rust
+poll_fn(|cx| {
+    match try_operation() {
+        Ok(val) => Poll::Ready(val),
+        Err(WouldBlock) => {
+            register_irq_waker(IRQ_NUM, cx.waker());
+            Poll::Pending
+        }
+    }
+}).await
 ```
 
-<!-- L56 --> ### Console 中断驱动模式（ntty.rs 参考）
-Console (N_TTY) 已实现中断驱动：
-- `ProcessMode::External` 使用 `register_irq_waker(irq, &waker)`
-- tty-reader copier 任务：`spawn_with_name + poll_fn` 循环
-- 这与 AsyncUart 设计的 ISR → AtomicWaker → copier 模型完全一致
-- 参考：`kernel/src/pseudofs/dev/tty/ntty.rs:37-42` + `ldisc.rs:256-278`
-
-<!-- L57 --> ### PTY 纯软件终端（pty.rs 参考）
-PTY 不涉及硬件，使用 ringbuf 作为数据通道：
-- master_to_slave + slave_to_master 两个 HeapRb<u8>
-- PtyWriter 使用 `SpinNoPreempt<Prod<Buffer>>` + PollSet
-- 与 AsyncUart 的 rx_buf/tx_buf + PollSet 设计一致
-- 参考：`kernel/src/pseudofs/dev/tty/pty.rs`
-
-<!-- L58 --> ### vsock ≠串口（virtio socket）
-vsock 是 virtio socket 设备，用于虚拟机与主机通信：
-- 不是传统串口，是 socket API (AF_VSOCK)
-- 基于 virtqueue DMA 传输，性能远高于模拟 UART
-- 可参考用于 M6 DMA 探索，但不属于 AsyncUart 设计范围
-- 实现：`axnet-ng/src/vsock/` + `axdriver_virtio/src/socket.rs`
-
-<!-- L59 --> ### 串口接口总结
-StarryOS 中串口相关接口：
-| 类型 | 硬件 |位置 | 用途 |
-|------|------|------|------|
-| Console | UART | ntty.rs | 系统控制台 |
-| PTY | 无 | pty.rs | 终端模拟器 |
-| vsock | virtio | axnet-ng/vsock | VM通信（非串口）|
-
-<!-- L60 --> ### 外部 crate 层次结构（不可修改）
-StarryOS 依赖的外部 crate（来自 crates.io）：
-```
-axruntime (启动框架)
-  ↓
-axplat-riscv64-qemu-virt (平台实现)
-  ├─ console.rs: MmioSerialPort + write_bytes (同步阻塞!)
-  ├─ irq.rs: PLIC + HandlerTable
-  └─ axconfig.toml: UART_PADDR, UART_IRQ
-  ↓
-axhal (硬件抽象层)
-  └─ 导出 axplat::console::* (不可修改!)
-  ↓
-axtask (任务调度)
-  ├─ future/mod.rs: block_on
-  ├─ future/poll.rs: poll_io + register_irq_waker
-  └─ scheduler
-  ↓
-kernel (本地项目，可修改)
-  └─ pseudofs/dev/tty/ntty.rs: Console, N_TTY
-```
-**关键约束**: axhal::console 是外部 crate，无法修改其同步阻塞实现。
-
-<!-- L61 --> ### 内核日志与用户态 Console 的软件路径分离
-M3 Console 统一后的两条输出路径：
-```
-路径 A: 内核日志（同步阻塞，不可避免）
-  axlog::info!
-    → axhal::console::write_bytes (外部 crate)
-    → MmioSerialPort::write_bytes (忙等待)
-    → UART THR
-
-路径 B: 用户态 Console（异步，性能优化）
-  用户态 write("/dev/console")
-    → N_TTY.write_at (DeviceOps)
-    → Console.write (TtyWrite 替换实现)
-    → AsyncUart tx_buf
-    → TX copier 任务
-    → UART THR
-```
-**共用同一硬件**: 两条路径写入同一 UART THR，但软件路径独立。
-**内核日志始终可用**: 不依赖异步框架是否正常工作。
-
-<!-- L62 --> ### earlycon 调试安全机制
-axhal::console 作为"earlycon"提供调试安全保障：
-- **独立于异步框架**: axhal::console 直接 MMIO 操作，不依赖 axtask/AsyncUart
-- **始终可用**: AsyncUart copier 任务卡死、缓冲区溢出时，内核日志仍能输出
-- **panic 信息可靠**: 系统崩溃时仍有输出渠道
-- **启动早期可用**: axruntime::init 阶段（异步框架未初始化）就可输出
-- **不需要额外实现**: axhal::console 本身就是 earlycon，始终存在
-参考: Linux kernel earlycon + 正常 console 的分离模式
-
-<!-- L71 --> ### 构建命令速查
-```bash
-# 设置环境（每次构建前执行）
-export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH
-
-# 编译内核
-make build
-
-# 运行内核（需要 disk.img）
-make run
-
-# 生成 rootfs（或手动下载）
-make rootfs
-
-# QEMU 退出: Ctrl+A 然后 X
+<!-- L72 --> ### AtomicWaker 使用模式
+```rust
+static WAKER: AtomicWaker = AtomicWaker::new();
+// 任务上下文注册
+WAKER.register(cx.waker());
+// ISR 中唤醒
+WAKER.wake();
 ```
 
-<!-- L72 --> ### M0 Gate 验证要点
-M0 验证内容：
-1. `cargo check` 编译通过 → 依赖正确
-2. `make build` 编译通过 → 工具链正确
-3. `make run` 内核启动 → rootfs 正确
-4. 看到 shell 可交互 → Console 正常工作
-关键：每一步都可能遇到环境问题，需要逐层排查
+<!-- L73 --> ### 设备注册到 devfs 模式
+```rust
+// 在 pseudofs/dev/mod.rs builder() 中
+builder.add_device(
+    "async_uart_test",
+    DeviceId::new(4, 64),
+    Arc::new(Device::new(async_uart_test_device)),
+);
+```
 
-<!-- L73 --> ### uart_16550 版本共存说明
-Cargo.lock 中存在两个 uart_16550 版本：
-- **uart_16550 v0.4.0**：来自 crates.io，被 axplat-riscv64-qemu-virt 等上游 crate 使用
-- **uart_16550 v0.6.0**：来自本地 path，被 starry-kernel 使用
-原因：
-  - axplat-riscv64-qemu-virt（上游 crate）依赖 crates.io 的 v0.4.0，用于其 console 实现
-  - kernel（我们的项目）依赖本地最新 v0.6.0，用于 AsyncUart（新增中断控制 API）
-  - Cargo 允许不同 crate 使用不同版本的同一依赖
-影响：
-  - 两者互不影响，各自使用各自版本的 API
-  - axplat::console 用 v0.4.0，AsyncUart 用 v0.6.0
-统一方案（远期）：
-  - 将 uart_16550 v0.6.0 发布到 crates.io
-  - 提 PR 给 axplat 项目升级依赖
-验证: 2026-05-27 (M0 Gate)
+<!-- L74 --> ### UART 状态诊断模式
+```rust
+// 集成前必须诊断
+let ier = uart.interrupt_enable();
+let iir = uart.interrupt_identification();
+let lsr = uart.line_status();
+let mcr = uart.modem_control();
+log::info!("UART State: IER={:#x} IIR={:#x} LSR={:#x} MCR={:#x}", ier, iir, lsr, mcr);
+```
 
-<!-- L74 --> ### M1 Console 共用数据竞争（预期行为）
-- 症状: `cat /dev/async_uart_test` 输入数据后，shell 也收到部分数据并尝试执行命令
-- 根因: M1 测试设备 `async_uart_test` 和 `/dev/console` 共用 `axhal::console::read_bytes()`，两者竞争读取
-- 表现:
-  - `echo "hello" > /dev/async_uart_test` → Console 输出 "hello" ✅
-  - `cat /dev/async_uart_test` 输入 "world" → cat 显示 "world" ✅
-  - shell 同时收到部分数据 → 执行 `world` 命令报错 ⚠️
-- 设计决策: ADR-013/014 已记录，M1 用 Console 验证架构，接受共用竞争
-- 解决: M3 替换底层为 AsyncUart，路径分离
-- 验证: 2026-05-27 (M1 Gate)
+<!-- L75 --> ### 内核内部测试模式
+```rust
+// 在 kernel/src/drivers/serial/test.rs
+pub fn run_tests() {
+    test_device_creation();
+    test_write_at();
+    test_pollable();
+    // ...
+}
+// 在 entry.rs init() 中调用
+drivers::serial::test::run_tests();
+```
 
-<!-- L75 --> ### 非阻塞模式测试延后到 M3/M4（2026-05-27）
-- **现象**: M2 只测阻塞模式，不测非阻塞 WouldBlock 场景
-- **原因**: 简化 M2 范围，快速验证核心 VFS 集成功能；非阻塞涉及 ioctl 实现，增加复杂度
-- **影响**: M2 Gate 验证不覆盖非阻塞场景，但阻塞模式已验证核心流程
-- **决策位置**: architecture.md ADR-016, optimization.md O03-O04
-- **何时解决**: M3/M4 补充非阻塞测试
-- **验证**: M2 内核测试通过 ✅
+<!-- L76 --> ### 条件编译开关模式
+```rust
+#[cfg(feature = "async_uart")]
+pub fn init() {
+    // AsyncUart 初始化
+}
+#[cfg(not(feature = "async_uart"))]
+pub fn init() {
+    // Console 初始化（默认）
+}
+```
 
-<!-- L76 --> ### epoll 测试延后到 M3/M4（2026-05-27）
-- **现象**: M2 只测 poll，不测 epoll
-- **原因**: poll 是 Pollable trait 的直接体现，验证核心实现；epoll 需多 fd 才体现优势，M2 只有单设备
-- **影响**: M2 Gate 验证不覆盖 epoll，但 poll 成功 → as_pollable() 正确 → epoll 自然工作
-- **决策位置**: architecture.md ADR-016, optimization.md O03-O04
-- **何时解决**: M3/M4 补充 epoll 测试（多设备场景）
-- **验证**: M2 内核测试通过 ✅
+<!-- L77 --> ### UART 重初始化安全模式
+```rust
+// 1. 读取当前配置
+let current_ier = uart.interrupt_enable();
+// 2. 只修改需要的位
+uart.set_interrupt_enable(current_ier | IER::THR_EMPTY);
+// 3. 验证修改结果
+let new_ier = uart.interrupt_enable();
+assert!(new_ier.contains(IER::THR_EMPTY));
+```
 
-<!-- L77 --> ### M2 测试程序技术选择：内核内部测试（2026-05-27）
-- **技术**: 内核内部测试代码（`kernel/src/drivers/serial/test.rs`），启动时自动执行
-- **原因**:
-  - 用户态测试部署麻烦（ABI 兼容性、rootfs 挂载、手动操作）
-  - 内核测试更简单、自动化、无部署复杂度
-  - 直接使用内核 API（DeviceOps trait），无需用户态 syscall
-- **测试内容**: DeviceOps trait (write_at) + Pollable trait (poll) + TX 路径验证
-- **验证**: M2 所有自动化测试通过 ✅
-- **分支策略**: feat/uart-async-m2（验证分支）→ feat/uart-async(m1)（主开发分支，记录结果）
-- **适用场景**: 内核功能验证，无需用户态交互
+<!-- L120 --> ### iomap 设备 MMIO 映射模式
+```rust
+// 在 entry.rs::init() 中，确保设备 MMIO 可访问
+use axmm::iomap;
+use memory_addr::{PhysAddr, PAGE_SIZE_4K};
 
-<!-- L113 --> ### UART MMIO 权限问题：内核启动后无法访问 UART 寄存器（2026-05-28）
-- **现象**: 
-  - Page Fault @ 0x1000001c（物理地址未映射到虚拟地址空间）
-  - StoreFault @ 0xffffffc01000001c（虚拟地址无写入权限）
-  - LoadFault @ 0xffffffc010000008（虚拟地址无读取权限）
-- **根因**:
-  - axplat 在 boot 阶段初始化 UART 并映射 MMIO（完整权限）
-  - 内核启动后（entry.rs init），MMIO 权限被限制（只读或完全禁止）
-  - UART MMIO 地址 0x10000000 在内核启动后无法访问
-- **影响**:
-  - 无法重新初始化 UART 硬件（uart.init()）
-  - 无法修改 UART 配置（IER 寄存器使能 TX 中断）
-  - 无法读取 UART 状态（ISR/IER/LSR 寄存器）
-  - AsyncUart 无法使能 TX 中断，异步发送失败
-- **尝试方案**:
-  1. 使用物理地址 → Page Fault（未映射）
-  2. 使用 phys_to_virt 转换 → StoreFault/LoadFault（权限限制）
-  3. MMIO write_volatile 直接写入 → StoreFault（权限限制）
-- **当前策略**: 跳过 UART 寄存器访问，依赖 axplat 配置，测试 ISR 上下文访问权限
-- **后续决策**: ISR 测试结果决定整体架构策略
-- **验证**: 内核启动成功 ✅，但 UART 配置无法验证 ⚠️
+// 映射 UART MMIO (addr=0x10000000, size=4K)
+let vaddr = iomap(PhysAddr::from(0x10000000), PAGE_SIZE_4K)
+    .expect("Failed to map device MMIO");
 
-<!-- L114 --> ### phys_to_virt 使用：物理地址到虚拟地址转换（2026-05-28）
-- **API**: `axhal::mem::phys_to_virt(PhysAddr::from(phys_addr))`
-- **返回**: `VirtAddr`（虚拟地址）
-- **用法**: `virt_addr.as_mut_ptr()` 获取指针
-- **约束**: 
-  - `PhysAddr::from()` 不是 const trait，不能用于 const 定义
-  - 需要在函数或 lazy_static 中动态计算
-- **示例**: UART MMIO 物理地址 0x10000000 → 虚拟地址 0xffffffc010000000
-- **验证**: 编译成功 ✅，但虚拟地址访问权限受限 ⚠️
-
-<!-- L115 --> ### UART MMIO 权限策略调整：放弃寄存器访问，测试 ISR 上下文（2026-05-28）⚠️ ARCHIVED
-- **决策**: 完全放弃在内核启动后访问 UART 寄存器
-- **原因**: MMIO 权限限制无法绕过（StoreFault/LoadFault）
-- **影响**: 
-  - 无法使能 TX 中断（IER::THR_EMPTY）
-  - AsyncUart 异步发送功能缺失
-  - 依赖 axplat 的 UART 配置（Console 只使能 RX 中断）
-- **后续策略**: 
-  - ✅ 已完成 ISR 测试（2026-05-29）
-  - ❌ ISR 也无法访问 UART（LoadFault @ stval=0xffffffc010000008）
-  - 需调整整体架构策略（polling TX 或其他方案）
-- **验证位置**: P2.1 ISR 分发机制测试
-- **适用场景**: MMIO 设备权限受限时的替代方案探索
-- **归档原因**: ISR 测试已完成，决策已更新到 L116
-
-<!-- L116 --> ### ISR UART MMIO 权限测试失败：ISR 上下文也无法访问 UART（2026-05-29）
-- **现象**:
-  - ISR handler 成功注册并执行（`[UART ISR] ISR handler called`）
-  - ISR 尝试读 UART ISR 寄存器时触发 LoadFault
-  - `Exception(LoadFault) @ 0xffffffc08026c9ea, stval=0xffffffc010000008`
-- **根因**:
-  - UART MMIO 虚拟地址 `0xffffffc010000008`（ISR 寄存器）
-  - ISR 在中断上下文执行，但 MMIO 权限限制仍然存在
-  - axplat 在 boot 阶段设置的 MMIO 权限对 ISR 上下文也生效
-- **关键结论**:
-  - ❌ ISR 无法访问 UART 寄存器（与内核上下文一样）
-  - ❌ 原设计（ISR 使能 TX 中断）不可行
-  - ✅ 证明了不彻底更改底层支持就无法使用异步串口
-- **验证证据**:
-  - ISR 注册成功：`[kernel] UART ISR handler registered`
-  - ISR 执行成功：`[UART ISR] ISR handler called (IRQ ...)`
-  - UART 访问失败：`Exception(LoadFault) @ stval=0xffffffc010000008`
-- **后续策略**（见 ADR-023）:
-  - 方案 A：Polling TX（同步阻塞，简单可行）
-  - 方案 B：Boot 阶段修改 UART 配置（修改 axplat，复杂）
-  - 方案 C：完全依赖 Console（回退 feat/uart-async）
-- **教训**:
-  - MMIO 权限问题不仅存在于内核上下文，ISR 上下文也受限
-  - 外部 crate（axplat）的架构约束对整个系统都有影响
-  - 需在设计初期验证关键假设（ISR 是否可以访问 MMIO）
-- **验证**: 2026-05-29（ISR 测试完成）
+// 现在可以安全访问
+let ptr = vaddr.as_mut_ptr() as *mut u8;
+unsafe { ptr.add(5).read_volatile() }; // 读 LSR
+```
+- 原理：锁定 `kernel_aspace()` 全局内核页表，调用 `map_linear()` + `protect()` 保证 `DEVICE | READ | WRITE` 权限
+- 优势：不修改任何外部 crate，已有稳定 API

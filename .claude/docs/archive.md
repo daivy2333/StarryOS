@@ -1,4 +1,4 @@
-# archive.md — 文档归档
+# archive.md — 文档归档（汇总）
 
 > 自动归档记录，由 project-archivist 维护。
 > 按源文档分节，每条含日期、编号、置信度、理由、恢复条件。
@@ -7,11 +7,61 @@
 
 ---
 
-## learned.md 归档
+## architecture.md 归档
 
-<!-- learned.md entries below -->
+<!-- archive: A2 -->
+**日期**: 2026-05-27
+**条目**: A2: 串口与控制台关系——独立硬件 /dev/ttyS0
+**原分类**: 架构决策
+**置信度**: HIGH
+**理由**: 已被 ADR-015 取代（渐进式开发策略：共用 UART0，M1/M2 用 Console 验证，M3 替换 AsyncUart）
+**恢复条件**: 需要回顾早期"独立硬件"设计思路时
+
+原始内容:
+
+<!-- A2 --> ### 2026-05-24 - 串口与控制台关系——独立硬件 /dev/ttyS0
+
+- **决策**: 新增独立硬件串口（QEMU `-serial` 多路配置），注册为 `/dev/ttyS0`，不影响现有 `/dev/console`
+- **原因**: 隔离风险，独立开发测试；初期不破坏控制台稳定性
+- **影响**: 需在 QEMU 启动参数添加第二个 `-serial`；`/dev/console` 和 `/dev/ttyS0` 是两个独立设备
 
 ---
+
+<!-- archive: A7 -->
+**日期**: 2026-05-27
+**条目**: A7: Console与AsyncUart共存策略——先独立后统一
+**原分类**: 架构决策
+**置信度**: HIGH
+**理由**: 已被 ADR-015 取代（渐进式开发策略：共用 UART0，不再有"先独立后统一"阶段）
+**恢复条件**: 需要回顾早期共存策略时
+
+原始内容:
+
+<!-- A7 --> ### 2026-05-25 - Console与AsyncUart共存策略——先独立后统一
+
+- **决策**: 采用方案 C"先独立后统一"——AsyncUart 作为独立 `/dev/ttyS0` 设备，Console 保持不变；远期统一
+- **原因**: 初期隔离风险，不破坏控制台稳定性；AsyncUart 可独立开发测试
+
+---
+
+<!-- archive: A11 -->
+**日期**: 2026-05-27
+**条目**: A11: QEMU 双串口开发策略——独立硬件隔离风险
+**原分类**: 架构决策
+**置信度**: HIGH
+**理由**: 已不适用（QEMU 第二串口需要补丁未合并，决策共用 UART0）
+**恢复条件**: 需要回顾早期双串口策略时
+
+原始内容:
+
+<!-- A11 --> ### 2026-05-25 - QEMU 双串口开发策略——独立硬件隔离风险
+
+- **决策**: M0-M2 阶段 QEMU 配置第二个 `-serial`，AsyncUart 操作第二 UART 硬件实例
+- **原因**: Console 串口用于内核日志和 shell 交互，如果直接在上面测试中断驱动可能破坏调试信息输出
+
+---
+
+## learned.md 归档
 
 <!-- archive: L24 -->
 **日期**: 2026-05-27
@@ -98,95 +148,7 @@
 
 ---
 
-## optimization.md 归档
-
-<!-- optimization.md entries below -->
-
----
-
-## tasks.md 归档
-
-<!-- tasks.md entries below -->
-
----
-
-## architecture.md 归档
-
-<!-- architecture.md entries below -->
-
----
-
-<!-- archive: A2 -->
-**日期**: 2026-05-27
-**条目**: A2: 串口与控制台关系——独立硬件 /dev/ttyS0
-**原分类**: 架构决策
-**置信度**: HIGH
-**理由**: 已被 ADR-015 取代（渐进式开发策略：共用 UART0，M1/M2 用 Console 验证，M3 替换 AsyncUart）
-**恢复条件**: 需要回顾早期"独立硬件"设计思路时
-
-原始内容:
-
-<!-- A2 --> ### 2026-05-24 - 串口与控制台关系——独立硬件 /dev/ttyS0
-
-- **决策**: 新增独立硬件串口（QEMU `-serial` 多路配置），注册为 `/dev/ttyS0`，不影响现有 `/dev/console`
-- **原因**: 隔离风险，独立开发测试；初期不破坏控制台稳定性
-- **影响**: 需在 QEMU 启动参数添加第二个 `-serial`；`/dev/console` 和 `/dev/ttyS0` 是两个独立设备
-
----
-
-<!-- archive: A7 -->
-**日期**: 2026-05-27
-**条目**: A7: Console与AsyncUart共存策略——先独立后统一
-**原分类**: 架构决策
-**置信度**: HIGH
-**理由**: 已被 ADR-015 取代（渐进式开发策略：共用 UART0，不再有"先独立后统一"阶段）
-**恢复条件**: 需要回顾早期共存策略时
-
-原始内容:
-
-<!-- A7 --> ### 2026-05-25 - Console与AsyncUart共存策略——先独立后统一
-
-- **决策**: 采用方案 C"先独立后统一"——AsyncUart 作为独立 `/dev/ttyS0` 设备，Console 保持不变；远期统一
-- **原因**: 初期隔离风险，不破坏控制台稳定性；AsyncUart 可独立开发测试
-
----
-
-<!-- archive: A11 -->
-**日期**: 2026-05-27
-**条目**: A11: QEMU 双串口开发策略——独立硬件隔离风险
-**原分类**: 架构决策
-**置信度**: HIGH
-**理由**: 已不适用（QEMU 第二串口需要补丁未合并，决策共用 UART0）
-**恢复条件**: 需要回顾早期双串口策略时
-
-原始内容:
-
-<!-- A11 --> ### 2026-05-25 - QEMU 双串口开发策略——独立硬件隔离风险
-
-- **决策**: M0-M2 阶段 QEMU 配置第二个 `-serial`，AsyncUart 操作第二 UART 硬件实例
-- **原因**: Console 串口用于内核日志和 shell 交互，如果直接在上面测试中断驱动可能破坏调试信息输出
-
----
-
-<!-- architecture.md entries continue -->
-
-## SNAPSHOT.md 归档
-
-<!-- SNAPSHOT.md entries below -->
-
----
-
-## references.md 归档
-
-<!-- references.md entries below -->
-
----
-
-## docs/analysis/ 归档（探索者临时文档）
-
-<!-- docs/analysis/ entries below -->
-
----
+## docs/analysis/ 归档
 
 <!-- archive: docs-analysis-batch-2026-05-28 -->
 **日期**: 2026-05-28
