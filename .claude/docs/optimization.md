@@ -1,7 +1,7 @@
 # optimization.md — 优化记录
 
 > 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
-> 2026-06-01 基于性能分析文档更新 Q7 优化计划。
+> 2026-06-01 基于性能分析文档完成 Q7 优化（O42/O43/O44）。
 > 条目格式: <!-- O{编号} --> 标记开头，支持 grep 精确定位。
 
 ---
@@ -28,16 +28,13 @@
 
 ---
 
-## Q7 用户态性能修复（2026-06-01 分析驱动）
+## Q7 用户态性能修复（2026-06-01 已完成）
 
-> 基于 `docs/analysis/user-async-perf-analysis.md` 和 `docs/analysis/nonblocking-mode-analysis.md`
-> 三大根因修复，预计在 dev2 分支实施。
-
-| 编号 | 内容 | 优先级 | 说明 | 影响 |
+| 编号 | 内容 | 优先级 | 影响 | 状态 |
 |------|------|--------|------|------|
-| **O42** | 修复 yield storm | 🔴 高 | `ProcessMode::Manual` → `External`，ldisc 独立 tty-reader 任务 + PollSet 注册 | 消除无数据时高频 yield-re-schedule，空闲 CPU 归零 |
-| **O43** | 传播 FIONBIO nonblocking | 🔴 高 | Tty struct 添加 `nonblocking: AtomicBool`，传播到 `read_at()` → `ldisc.read()` | `ioctl(FIONBIO)` 对 TTY 读生效，无数据时立即返回 EAGAIN |
-| **O44** | 修正 benchmark | 🟡 中 | TX 改 /dev/null → /dev/console，延迟加 tcdrain()，RX 加 raw mode 用户态测试 | benchmark 反映真实串口吞吐量（~11.5 KB/s） |
+| **O42** | 修复 yield storm | 🔴 高 | 消除无数据时高频 yield-re-schedule | ✅ Manual→External |
+| **O43** | 传播 FIONBIO nonblocking | 🔴 高 | ioctl(FIONBIO) 对 TTY 读生效 | ✅ Tty+ldisc+ctl |
+| **O44** | 修正 benchmark | 🟡 中 | TX /dev/console + tcdrain + FIONBIO | ✅ 新建 benchmark.c |
 
 **O42 实施细节**:
 - `ntty_async.rs`: 创建 `Arc<PollSet>`，传入 `ProcessMode::External(Box::new(move |waker| poll_rx.register(waker)))`

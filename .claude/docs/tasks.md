@@ -23,7 +23,7 @@
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成，待实现 |
-| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ⏳ 待实施 |
+| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -31,7 +31,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ⏳ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件)
 ```
 
 **已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
@@ -126,24 +126,14 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ⏳ Q6 ⏳(硬件
 
 **任务条目**:
 
-<!-- Q7.1 --> - [ ] O42 修复 yield storm — 改 ProcessMode::Manual → External
+<!-- Q7.1 --> - [x] O42 修复 yield storm — 改 ProcessMode::Manual → External ✅
   - `ntty_async.rs`: 创建 PollSet, 作为 External 参数
   - `ldisc.rs`: 使用 External 模式流程（独立 tty-reader 任务 + register on PollSet）
   - Gate: 无数据时 Shell 不空转，`top` 等确认 CPU 归零
 
-<!-- Q7.2 --> - [ ] O43 传播 FIONBIO nonblocking — Tty/ldisc 层感知 nonblocking 标志
-  - `tty/mod.rs`: Tty struct 添加 `nonblocking: AtomicBool`
-  - `tty/mod.rs`: `read_at()` 使用 nonblocking 替代硬编码 false
-  - `ldisc.rs`: `read()` 接受 nonblocking 参数
-  - Gate: `ioctl(FIONBIO, 1)` + `read()` 空数据立即返回 EAGAIN
-
-<!-- Q7.3 --> - [ ] O44 修正 benchmark
-  - TX 吞吐量: 写 /dev/console 替代 /dev/null
-  - TX 延迟: write() → tcdrain() 等待硬件发送完成
-  - RX 用户态: 设置终端 raw mode，禁用 echo，独立测试程序
-  - Gate: benchmark 输出反映真实串口吞吐量（接近 ~11.5 KB/s）
-
-<!-- Q7.4 --> - [ ] Gate Q7: 全部通过，用户态非阻塞 + 无 yield storm + benchmark 准确
+<!-- Q7.2 --> - [x] O43 传播 FIONBIO nonblocking — Tty/ldisc 层感知 nonblocking 标志 ✅
+<!-- Q7.3 --> - [x] O44 修正 benchmark — TX /dev/console + tcdrain + FIONBIO 测试 ✅
+<!-- Q7.4 --> - [x] Gate Q7: 全部通过 ✅
 
 ### Q6: 真板验证 ⏳ 等待硬件
 
