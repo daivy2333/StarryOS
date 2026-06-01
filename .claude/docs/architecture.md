@@ -260,3 +260,37 @@
   5. `Tty<AsyncUartReader, AsyncUartWriter>` 注册为 `/dev/console`
 - **内核日志共存**: `ax_println!` 仍走 `axhal::console::write_bytes()`（Console polling TX），与 TX copier 共享 UART THR，互不冲突
 - **状态**: ✅ Q4 完成
+
+<!-- A30 --> ### 2026-06-01 - Console 与 Async 共存架构决策
+
+- **背景**: 异步串口（Async）已完成，性能测试显示 Async 在 CPU 效率、延迟等方面优于 Console。是否可以完全剔除 Console，让 Async 也负责内核日志输出？
+- **决策**: 保持 Console 与 Async 共存，各司其职
+- **原因**:
+  1. **ax_println! 依赖 Console**：ax_println! 调用 LogIf::console_write_str → axhal::console::write_bytes，这是外部 crate（axplat-riscv64-qemu-virt），无法修改
+  2. **早期启动需要 Console**：ax_println! 在内核启动早期就使用，Async 驱动在稍后才初始化
+  3. **panic 处理需要 Console**：panic handler 使用 ax_println!，需要可靠的输出方式
+  4. **当前方案工作正常**：Console 和 Async 共享 UART THR，互不冲突
+- **影响**:
+  - ✅ Console 负责：内核日志（ax_println!）、早期启动日志、panic 处理
+  - ✅ Async 负责：Shell I/O、用户态程序、高性能数据传输
+  - ✅ 两者共存，各取所长
+- **替代方案**:
+  - ❌ 完全剔除 Console — ax_println! 依赖外部 crate，无法修改
+  - ❌ 修改 ax_println! 实现 — 需要修改外部 crate，早期启动时 Async 未初始化
+  - ✅ 保持共存 — 简单可靠，工作正常
+- **状态**: ✅ 当前方案
+
+<!-- A31 --> ### 2026-06-01 - RX 测试方法决策
+
+- **背景**: Async 异步串口的 RX 测试可以在内核态直接测试 Ring Buffer，但 Console 阻塞串口无法测试 RX。
+- **决策**: Async 使用内核态 RX 测试，Console 跳过 RX 测试
+- **原因**:
+  1. **Async 有 Ring Buffer**：可以存储大量数据（64 KB），支持大数据量测试
+  2. **Console 没有 Ring Buffer**：read_bytes() 是非阻塞的（try_receive），没有数据立即返回 0
+  3. **FIFO 无法直接测试**：容量小（16 字节）、非阻塞读取、需要外部数据注入、与 Shell 竞争
+  4. **用户态 RX 都无法测试**：TTY 层回显导致 Shell 抢先读取数据
+- **影响**:
+  - ✅ Async RX 测试：Ring Buffer 读取 588,776 KB/s，延迟 P50 600 ns
+  - ❌ Console RX 测试：跳过（无 Ring Buffer，非阻塞读取）
+  - ✅ 用户态 RX 测试：跳过（TTY 竞争条件）
+- **状态**: ✅ 当前方案

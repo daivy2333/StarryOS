@@ -173,7 +173,7 @@
 ### 局限性
 
 - QEMU 串口模拟不等待硬件，write() 立即返回
-- 真实硬件上 Async 优势可能更明显
+- 真实硬件上 Async 优势可能更明显（我猜的）
 - 用户态 RX 测试受 TTY 竞争条件限制
 - Console 无法测试 RX（无 Ring Buffer，非阻塞读取）
 
