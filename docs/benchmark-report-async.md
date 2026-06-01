@@ -2,8 +2,9 @@
 
 > 项目：StarryOS
 > 分支：feat/uart-async-bench
-> 日期：2026-06-01
+> 日期：2026-06-01（Q7 修复后更新）
 > 测试环境：QEMU riscv64-virt
+> **注意**：QEMU 不仿真真实串口时序（86.8 µs/byte @115200），吞吐量数值偏高。真板将接近 ~11.5 KB/s。
 
 ---
 
@@ -11,13 +12,21 @@
 
 ### 测试目标
 
-测量 Async 异步串口的性能指标，包括：
-- 内核态 Ring Buffer 读写速度
-- 用户态 write() 速度和延迟
-- 内存占用
-- CPU 占用
-- 中断处理
-- Shell 功能
+测量 Async 异步串口在 Q7 修复后的性能指标：
+- 用户态 TX 吞吐量（/dev/console + tcdrain）
+- TX 单字节延迟（write + tcdrain）
+- 非阻塞模式（FIONBIO）
+- 内核态 Ring Buffer 速度
+- 内存 / CPU / IRQ 统计
+
+### Q7 修复项
+
+| 编号 | 修复 | 影响 |
+|------|------|------|
+| O42 | yield storm：Manual→External ProcessMode | 空闲不再空转 |
+| O43 | FIONBIO 传播到 TTY/ldisc | open/fcntl/ioctl 均可设置非阻塞 |
+| O44 | benchmark 修正 + TCSBRK 实现 | 测量真实串口路径 |
+| — | TCSBRK (tcdrain) 实现 | write + tcdrain 等待硬件发送完成 |
 
 ### 测试环境
 
@@ -91,135 +100,99 @@
 
 ---
 
-## 3. 用户态测试结果
+## 3. 用户态测试结果（Q7 修正后）
 
 ### 3.1 TX 吞吐量测试
 
-**测试方法**：测试不同数据大小（64/256/1024/4096 字节），每种 1000 次
+**测试方法**：写 `/dev/console`（非 /dev/null），每次后 `tcdrain()` 等待硬件发送完成。100 次迭代，4 种数据大小。
 
-| 数据大小 | 吞吐量 | 说明 |
-|----------|--------|------|
-| **64 bytes** | 10,352 KB/s | 小数据，系统调用开销大 |
-| **256 bytes** | 41,763 KB/s | 中等数据 |
-| **1024 bytes** | 114,825 KB/s | 大数据，性能更好 |
-| **4096 bytes** | 227,298 KB/s | 最佳性能 |
+| 数据大小 | 吞吐量 (QEMU) | 预期 (真板) | 说明 |
+|----------|-------------|------------|------|
+| **64 bytes** | ~153 KB/s | ~11.5 KB/s | 小数据，tcdrain 开销占比大 |
+| **256 bytes** | ~230 KB/s | ~11.5 KB/s | |
+| **1024 bytes** | ~238 KB/s | ~11.5 KB/s | |
+| **4096 bytes** | ~230 KB/s | ~11.5 KB/s | |
 
-### 3.2 write() 延迟测试
+> ⚠️ QEMU 的 16550 模拟不仿真串口线延迟（86.8 µs/byte），tcdrain 几乎立即返回。
+> 真板（VisionFive2 @ 115200 bps）上所有数据大小都应收敛到 ~11.5 KB/s。
 
-**测试方法**：100 次单字节 write()，计算 P50/P95/P99
+### 3.2 TX 单字节延迟（write + tcdrain）
 
-| 指标 | 值 | 说明 |
-|------|-----|------|
-| **P50 延迟** | 7.9 µs | 中位数延迟 |
-| **P95 延迟** | 12.2 µs | 95 分位延迟 |
-| **P99 延迟** | 43.1 µs | 99 分位延迟 |
-| **最小延迟** | 7.7 µs | 最快一次 |
-| **最大延迟** | 43.1 µs | 最慢一次 |
-| **平均延迟** | 8.8 µs | 平均值 |
+| 指标 | 值 (QEMU) | 说明 |
+|------|----------|------|
+| **P50** | ~0.15 ms | 中位数延迟 |
+| **P95** | ~0.19 ms | |
+| **P99** | ~0.85 ms | |
+| **平均** | ~0.16 ms | |
 
-### 3.3 数据完整性测试
+包含路径：user write → ring buffer push → TX copier → UART THR → tcdrain (TCSBRK poll)。
 
-| 指标 | 值 | 说明 |
-|------|-----|------|
-| **发送数据** | 256 字节 | 测试数据 |
-| **写入成功** | 256 字节 | 全部写入 |
-| **状态** | PASS | 写入测试通过 |
+### 3.3 非阻塞模式 (FIONBIO)
 
-### 3.4 压力测试
-
-| 指标 | 值 | 说明 |
-|------|-----|------|
-| **持续时间** | 2.0 秒 | 测试时长 |
-| **迭代次数** | 227,850 | 写入次数 |
-| **总数据量** | 233 MB | 总共写入 |
-| **吞吐量** | 113,922 KB/s | 平均吞吐量 |
-| **状态** | PASS | 压力测试通过 |
+| 测试 | 结果 | 说明 |
+|------|------|------|
+| `open(O_NONBLOCK)` + `read()` | ✅ PASS (EAGAIN) | O43 修复后生效 |
+| `ioctl(FIONBIO, 1)` + `read()` | ✅ PASS (EAGAIN) | |
+| `fcntl(F_SETFL, O_NONBLOCK)` + `read()` | ✅ PASS (EAGAIN) | |
 
 ---
 
 ## 4. 用户态 RX 测试说明
 
-### 为什么不在用户态测试 RX
+**当前状态**：用户态 RX 测试在内核态完成（直接操作 Ring Buffer），绕过 TTY 回显问题。
 
-**问题**：TTY 层回显导致 read() 卡住
-
-```
-benchmark write("AAAAA") → UART 发送 → QEMU 回显 → Shell 读取
-                                                    ↓
-benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
-```
-
-**原因**：
-1. TTY 设备默认会回显输入的字符
-2. Shell 和 benchmark 程序都在读取 `/dev/console`
-3. Shell 先读取了回显数据
-4. benchmark 程序的 read() 永远等不到数据
-
-**这不是功能错误**：TTY 回显是正常行为，串口工作完全正常，只是性能测试需要特殊方法。
-
-### 解决方案：内核态 RX 测试
-
-**测试方法**：直接操作 Ring Buffer，绕过 TTY 层
-
-**结果**：
-- RX Ring Buffer 读取：588,776 KB/s
+- RX Ring Buffer 读取：~413 MB/s
 - RX 延迟 P50：600 ns
-- CPU 效率：2.45 cycles/ns
+- Ring Buffer 不是瓶颈（413 MB/s >> 串口线速 11.52 KB/s）
 
-**是否能反映用户态性能**：是的，因为 Ring Buffer 不是瓶颈（588 MB/s vs 串口线速 11.52 KB/s），用户态开销（系统调用 ~1-2 µs）可以忽略。
+**未来方向**：设置终端 raw mode + 禁用 echo，可实现用户态 RX 测试。
 
 ---
 
-## 5. 测试方法说明
+## 5. 测试方法
 
-### 内核态测试
+### 内核态（benchmark.rs）
+- **Ring Buffer TX**：push 102,400 bytes，测量速度 + CPU
+- **Ring Buffer RX**：pop 65,536 bytes + 100 次单字节延迟
+- 启动时自动运行，输出到串口日志
 
-- **TX 测试**：写入 102,400 字节到 Ring Buffer，测量速度和 CPU 占用
-- **RX 测试**：从 Ring Buffer 读取 65,536 字节，测量速度和 CPU 占用
-- **RX 延迟测试**：读取 100 个单字节，测量每次读取延迟
-- **优点**：精度高（纳秒级）、无系统调用开销、绕过 TTY 竞争条件
+### 用户态（benchmark.c，Q7 修正后）
+- **TX 吞吐量**：`write(/dev/console) + tcdrain()`，100 次 × 4 种大小
+- **TX 延迟**：单字节 `write + tcdrain`，100 次，计算 P50/P95/P99
+- **非阻塞测试**：`open(O_NONBLOCK)` / `ioctl(FIONBIO)` / `fcntl(F_SETFL)` 三种入口
+- **编译**：`riscv64-linux-musl-gcc -static`
 
-### 用户态测试
-
-- **吞吐量**：测试 64/256/1024/4096 字节，每种 1000 次
-- **延迟**：100 次单字节 write()，计算 P50/P95/P99
-- **压力测试**：持续 2 秒写入，测量总吞吐量
-- **RX 测试**：跳过（TTY 竞争条件，在内核态完成）
-
-### 局限性
-
-- QEMU 串口模拟不等待硬件，write() 立即返回
-- 真实硬件上性能可能不同
-- 用户态 RX 测试受 TTY 竞争条件限制
+### QEMU 时序说明
+QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。真板 VisionFive2 @ 115200 bps 将产生 ~11.5 KB/s 的准确吞吐量。
 
 ---
 
 ## 6. 结论
 
-### 性能总结
+### Q7 修复总结
+
+| 修复 | 状态 | 效果 |
+|------|------|------|
+| O42  yield storm | ✅ | External ProcessMode 消除空闲空转 |
+| O43  FIONBIO 传播 | ✅ | 非阻塞读 open/fcntl/ioctl 全部生效 |
+| O44  benchmark | ✅ | 真实 /dev/console 路径 + tcdrain |
+| TCSBRK | ✅ | tcdrain 等待 ring buffer + UART drain |
+
+### 性能（QEMU）
 
 | 维度 | 结果 |
 |------|------|
-| **TX Ring Buffer** | 215 MB/s |
-| **RX Ring Buffer** | 589 MB/s |
-| **RX 延迟 P50** | 600 ns |
-| **write() P50** | 7.9 µs |
-| **内存占用** | 128 KB |
-| **压力测试** | 114 MB/s 持续 2 秒 |
+| TX 用户态 @ /dev/console + tcdrain | ~200 KB/s（QEMU，真板 ~11.5） |
+| TX 延迟 P50 | ~0.15 ms |
+| FIONBIO nonblocking read | ✅ EAGAIN |
+| Ring Buffer TX | ~180 MB/s |
+| Ring Buffer RX | ~413 MB/s |
 
-### 关键发现
+### 待验证（真板 VisionFive2）
 
-- ✅ Ring Buffer 读写速度远超串口线速（215-589 MB/s vs 11.52 KB/s）
-- ✅ RX 延迟极低（P50: 600 ns）
-- ✅ write() 延迟低（P50: 7.9 µs）
-- ✅ 压力测试稳定（114 MB/s 持续 2 秒）
-- ✅ 异步架构性能优秀
-
-### 后续工作
-
-1. **真板验证**：在 VisionFive2 上测试
-2. **性能调优**：调整 NAPI 参数
-3. **DMA 支持**：探索 DMA 传输
+- 真实串口吞吐量 ~11.5 KB/s @ 115200 bps
+- DMA 可行性
+- 高速波特率（230400+）
 
 ---
 
