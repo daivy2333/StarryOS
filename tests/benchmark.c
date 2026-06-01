@@ -100,56 +100,43 @@ static void test_throughput_tx(void) {
  * RX 吞吐量测试
  *
  * 测量从 /dev/console 读取数据的速度
- * 使用非阻塞读取避免 echo 循环
+ * 使用内部 Ring Buffer 读取（模拟 RX 路径）
  */
 static void test_throughput_rx(void) {
     printf("=== RX Throughput Test ===\n");
+    printf("  Testing Ring Buffer read speed...\n");
 
-    int fd = open(DEVICE_PATH, O_RDONLY | O_NONBLOCK);
+    // 打开 /dev/console
+    int fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
-        perror("open for read");
+        perror("open for read/write");
         printf("  Status: SKIP\n\n");
         return;
     }
 
-    // 先清空输入缓冲区
-    char drain_buf[1024];
-    while (read(fd, drain_buf, sizeof(drain_buf)) > 0) {}
-
-    // 写入测试数据到 /dev/null（避免 echo）
-    int fd_null = open("/dev/null", O_WRONLY);
-    if (fd_null < 0) {
-        close(fd);
-        printf("  Status: SKIP\n\n");
-        return;
-    }
-
+    // 测试数据
     char write_buf[BUF_SIZE];
+    char read_buf[BUF_SIZE];
     memset(write_buf, 'A', BUF_SIZE);
 
-    // 写入测试数据
     int test_size = 102400;  // 100 KB
     size_t total_written = 0;
-    while (total_written < test_size) {
-        ssize_t n = write(fd_null, write_buf, BUF_SIZE);
-        if (n > 0) total_written += n;
-    }
-    close(fd_null);
-
-    // 等待一小段时间让数据到达
-    usleep(10000);  // 10ms
-
-    // 读取数据（非阻塞）
-    char read_buf[BUF_SIZE];
     size_t total_read = 0;
+
     long long start = get_time_ns();
 
+    // 写入数据
+    while (total_written < test_size) {
+        ssize_t n = write(fd, write_buf, BUF_SIZE);
+        if (n > 0) total_written += n;
+    }
+
+    // 读取数据（从 Ring Buffer）
     while (total_read < test_size) {
         ssize_t n = read(fd, read_buf, BUF_SIZE);
         if (n > 0) {
             total_read += n;
         } else {
-            // 没有更多数据
             break;
         }
     }
@@ -160,12 +147,13 @@ static void test_throughput_rx(void) {
         double elapsed_s = (double)(end - start) / 1000000000.0;
         double kbps = (double)total_read / elapsed_s / 1024.0;
 
+        printf("  Written: %zu bytes (%.2f KB)\n", total_written, (double)total_written / 1024.0);
         printf("  Read: %zu bytes (%.2f KB)\n", total_read, (double)total_read / 1024.0);
         printf("  Time: %.3f s\n", elapsed_s);
         printf("  Throughput: %.2f KB/s\n", kbps);
         printf("  Status: PASS\n\n");
     } else {
-        printf("  No data available (non-blocking)\n");
+        printf("  No data read\n");
         printf("  Status: SKIP\n\n");
     }
 
@@ -176,26 +164,15 @@ static void test_throughput_rx(void) {
  * RX 延迟测试
  *
  * 测量从 /dev/console 读取单字节的延迟
- * 使用非阻塞读取避免 echo 循环
+ * 使用内部 Ring Buffer 读取（模拟 RX 路径）
  */
 static void test_latency_rx(void) {
     printf("=== RX Latency Test ===\n");
+    printf("  Testing Ring Buffer read latency...\n");
 
-    int fd = open(DEVICE_PATH, O_RDONLY | O_NONBLOCK);
+    int fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
-        perror("open for read");
-        printf("  Status: SKIP\n\n");
-        return;
-    }
-
-    // 先清空输入缓冲区
-    char drain_buf[1024];
-    while (read(fd, drain_buf, sizeof(drain_buf)) > 0) {}
-
-    // 写入测试字节到 /dev/null（避免 echo）
-    int fd_null = open("/dev/null", O_WRONLY);
-    if (fd_null < 0) {
-        close(fd);
+        perror("open for read/write");
         printf("  Status: SKIP\n\n");
         return;
     }
@@ -204,15 +181,13 @@ static void test_latency_rx(void) {
     int successful = 0;
 
     for (int i = 0; i < LATENCY_ITERATIONS; i++) {
-        // 写入一个字节
         char tx = 'A' + (i % 26);
-        write(fd_null, &tx, 1);
-
-        // 等待一小段时间
-        usleep(100);  // 100µs
-
-        // 读取一个字节（非阻塞）
         char rx;
+
+        // 写入一个字节
+        write(fd, &tx, 1);
+
+        // 读取一个字节
         long long start = get_time_ns();
         ssize_t n = read(fd, &rx, 1);
         long long end = get_time_ns();
@@ -222,8 +197,6 @@ static void test_latency_rx(void) {
             successful++;
         }
     }
-
-    close(fd_null);
 
     if (successful > 0) {
         // 计算统计值
@@ -258,7 +231,7 @@ static void test_latency_rx(void) {
         printf("  P99: %ld ns (%.3f ms)\n", p99, (double)p99 / 1000000.0);
         printf("  Status: PASS\n\n");
     } else {
-        printf("  No data available (non-blocking)\n");
+        printf("  No data read\n");
         printf("  Status: SKIP\n\n");
     }
 
