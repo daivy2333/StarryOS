@@ -15,6 +15,7 @@
 - 内核态操作速度
 - 用户态 write() 速度和延迟
 - 内存占用
+- CPU 占用
 - Shell 功能
 
 ### 1.2 测试环境
@@ -67,36 +68,44 @@ ISR 中断驱动
 | 指标 | Console (阻塞) | Async (异步) | 差异 |
 |------|---------------|--------------|------|
 | **操作类型** | polling TX | Ring Buffer 写入 | 不同实现 |
-| **操作速度** | 483 KB/s | 206,654 KB/s | Async 快 428x |
+| **操作速度** | 550.69 KB/s | 210,970 KB/s | **Async 快 383x** |
+| **CPU Cycles** | 492,914 | 27,420,885 | Async 更多 |
+| **CPU Usage** | 2.3% | 57.8% | Console 更低 |
 | **操作目标** | FIFO | Ring Buffer | 不同 |
 
 **分析**：
 - Console 的 polling TX 测量的是 CPU → FIFO 的速度（需要等待硬件）
 - Async 的 Ring Buffer 写入测量的是 CPU → 内存的速度（不需要等待硬件）
 - **差异原因**：Console 需要轮询等待 FIFO 有空位，Async 直接写入内存
-- **对比意义**：Async 的内核态操作更快，因为它避免了硬件等待
+- **CPU 占用**：Console 只有 2.3%，Async 有 57.8%，因为 Async 写入更多数据
+- **对比意义**：Async 的内核态操作更快，但消耗更多 CPU
 
 ### 2.2 用户态 write() 性能
 
 | 指标 | Console (阻塞) | Async (异步) | 差异 |
 |------|---------------|--------------|------|
-| **write() 速度** | 572 KB/s | 46,296 KB/s | **Async 快 80x** |
-| **write() P50** | 16.3 µs | 6.9 µs | **Async 快 2.4x** |
-| **write() P95** | 29.5 µs | 10.8 µs | **Async 快 2.7x** |
-| **write() P99** | 278.4 µs | 244.6 µs | Async 稍快 |
+| **write() P50** | 8.1 µs | 6.5 µs | **Async 快 1.2x** |
+| **write() P95** | 15.0 µs | 12.2 µs | **Async 快 1.2x** |
+| **write() P99** | 64.4 µs | 88.9 µs | Console 稍快 |
+
+**不同数据大小吞吐量**：
+
+| 数据大小 | Console | Async | 差异 |
+|----------|---------|-------|------|
+| **64 bytes** | 13,188 KB/s | 10,470 KB/s | Console 稍快 |
+| **256 bytes** | 37,398 KB/s | 32,441 KB/s | Console 稍快 |
+| **1024 bytes** | 158,773 KB/s | 155,964 KB/s | 相近 |
+| **4096 bytes** | 266,680 KB/s | 307,763 KB/s | **Async 快 1.2x** |
 
 **分析**：
-- **write() 速度**：Async 快 80 倍
-  - Console：write() 需要轮询等待 FIFO 有空位，同步阻塞
-  - Async：write() 只写入 Ring Buffer，立即返回
-- **write() 延迟**：Async 快 2.4-2.7 倍
-  - Console：每个字节都需要获取锁并等待硬件
-  - Async：只写入 Ring Buffer，操作简单快速
+- **write() 延迟**：Async 在 P50/P95 稍快，但 P99 稍慢
+- **吞吐量**：小数据时 Console 稍快，大数据时 Async 更快
+- **差异原因**：两者都受 QEMU 串口模拟影响，差异不大
 
 **对比意义**：
-- 两个串口都是执行相同的用户态操作：write(fd, buf, len)
-- **Async 的 write() 更快，因为它不需要等待硬件 FIFO**
-- 这是有意义的性能对比，反映了实际使用中的差异
+- 两个串口的用户态性能差异不大
+- 都受限于 QEMU 串口模拟
+- 真实硬件上可能有更大差异
 
 ### 2.3 内存占用
 
@@ -111,7 +120,21 @@ ISR 中断驱动
 - Console：无缓冲区，直接硬件访问
 - Async：128 KB Ring Buffer，支持批量处理
 
-### 2.4 Shell 功能
+### 2.4 压力测试
+
+| 指标 | Console (阻塞) | Async (异步) | 差异 |
+|------|---------------|--------------|------|
+| **持续时间** | 2.0 秒 | 2.0 秒 | 相同 |
+| **迭代次数** | 238,220 | 230,706 | 相近 |
+| **总数据量** | 243 MB | 236 MB | 相近 |
+| **吞吐量** | 119,106 KB/s | 115,350 KB/s | 相近 |
+
+**分析**：
+- 两者的压力测试性能相近
+- 都能稳定运行 2 秒
+- 吞吐量都在 115-119 MB/s
+
+### 2.5 Shell 功能
 
 | 测试项 | Console (阻塞) | Async (异步) | 状态 |
 |--------|---------------|--------------|------|
@@ -124,43 +147,39 @@ ISR 中断驱动
 
 ## 3. 性能指标详解
 
-### 3.1 write() 速度对比
+### 3.1 write() 延迟对比
 
 **Console 阻塞串口**：
-```
-write() → axhal::console::write_bytes() → send_raw() → 轮询等待 FIFO
-```
-- 每个字节都需要轮询等待 FIFO 有空位
-- 同步阻塞，CPU 忙等
-- 速度：572 KB/s
+- P50: 8.1 µs
+- P95: 15.0 µs
+- P99: 64.4 µs
 
 **Async 异步串口**：
-```
-write() → AsyncUartWriter::write() → Ring Buffer push → 立即返回
-```
-- 只写入 Ring Buffer，立即返回
-- 异步非阻塞，CPU 可做其他事
-- 速度：46,296 KB/s
-
-**差异原因**：
-- Console 需要等待硬件，Async 只写内存
-- Async 的 write() 不等待数据真正发送
-
-### 3.2 write() 延迟对比
-
-**Console 阻塞串口**：
-- P50: 16.3 µs
-- P95: 29.5 µs
-- P99: 278.4 µs
-
-**Async 异步串口**：
-- P50: 6.9 µs
-- P95: 10.8 µs
-- P99: 244.6 µs
+- P50: 6.5 µs
+- P95: 12.2 µs
+- P99: 88.9 µs
 
 **差异原因**：
 - Console 的 write() 需要获取锁并等待 FIFO
 - Async 的 write() 只写入 Ring Buffer，操作简单
+- P99 差异可能是 QEMU 调度导致
+
+### 3.2 CPU 占用对比
+
+**Console 阻塞串口**：
+- CPU Usage: 2.3%
+- CPU Cycles: 492,914
+- 说明：polling TX 操作效率高
+
+**Async 异步串口**：
+- CPU Usage: 57.8%
+- CPU Cycles: 27,420,885
+- 说明：Ring Buffer 写入操作消耗更多 CPU
+
+**差异原因**：
+- Console 的 polling TX 只写入少量数据（120 字节）
+- Async 的 Ring Buffer 写入更多数据（102,400 字节）
+- CPU 占用与数据量成正比
 
 ### 3.3 内存占用对比
 
@@ -186,21 +205,26 @@ write() → AsyncUartWriter::write() → Ring Buffer push → 立即返回
 
 **Console polling TX 测试**：
 ```rust
-let iterations = 10;
+// 开始 CPU 占用测量
+start_cpu_measurement();
 let start_time = monotonic_time_nanos();
 
+let iterations = 10;
 for _ in 0..iterations {
     ax_println!("[BENCH] test");
 }
 
 let end_time = monotonic_time_nanos();
-let throughput_kbps = total_bytes as f64 / elapsed_s / 1024.0;
+let cpu_cycles = stop_cpu_measurement();
 ```
 
 **Async Ring Buffer 测试**：
 ```rust
 let test_data = vec![0u8; 1024];
 let iterations = 100;
+
+// 开始 CPU 占用测量
+benchmark::start_cpu_measurement();
 let start_time = monotonic_time_nanos();
 
 for _ in 0..iterations {
@@ -210,18 +234,21 @@ for _ in 0..iterations {
 }
 
 let end_time = monotonic_time_nanos();
-let throughput_kbps = total_bytes as f64 / elapsed_s / 1024.0;
+let cpu_cycles = benchmark::stop_cpu_measurement();
 ```
 
 ### 4.2 用户态测试
 
-**write() 速度测试**：
+**不同数据大小测试**：
 ```c
-const int test_size = 1024;
-const int iterations = 10;
+int sizes[] = {64, 256, 1024, 4096};
+int iterations = 1000;
 
-for (int i = 0; i < iterations; i++) {
-    write(fd, buf, test_size);
+for (int s = 0; s < 4; s++) {
+    int test_size = sizes[s];
+    for (int i = 0; i < iterations; i++) {
+        write(fd, buf, test_size);
+    }
 }
 ```
 
@@ -235,16 +262,28 @@ for (int i = 0; i < 100; i++) {
 }
 ```
 
+**压力测试**：
+```c
+int duration_sec = 2;
+while (1) {
+    long long now = get_time_ns();
+    if ((now - start) > (long long)duration_sec * 1000000000LL) {
+        break;
+    }
+    write(fd, buf, test_size);
+}
+```
+
 ### 4.3 测量局限性
 
 **无法测量的指标**：
 - 串口线速（QEMU 不等待）
 - 端到端延迟（需要硬件支持）
-- CPU 占用（需要性能计数器）
 
 **可以测量的指标**：
 - write() 系统调用速度
 - write() 系统调用延迟
+- CPU 占用
 - 内存占用
 - Shell 功能
 
@@ -256,30 +295,33 @@ for (int i = 0; i < 100; i++) {
 
 | 指标 | Console | Async | 胜出 | 说明 |
 |------|---------|-------|------|------|
-| **write() 速度** | 572 KB/s | 46,296 KB/s | **Async** | Async 不等待硬件 |
-| **write() P50** | 16.3 µs | 6.9 µs | **Async** | Async 操作更简单 |
-| **write() P95** | 29.5 µs | 10.8 µs | **Async** | Async 无硬件等待 |
-| **write() P99** | 278.4 µs | 244.6 µs | **Async** | 都受 QEMU 调度影响 |
-| **内存占用** | 0 KB | 128 KB | **Console** | Async 有 Ring Buffer |
+| **内核态速度** | 550 KB/s | 210,970 KB/s | **Async** | Async 写入内存更快 |
+| **CPU 占用** | 2.3% | 57.8% | **Console** | Console 更省 CPU |
+| **write() P50** | 8.1 µs | 6.5 µs | **Async** | Async 稍快 |
+| **write() P95** | 15.0 µs | 12.2 µs | **Async** | Async 稍快 |
+| **write() P99** | 64.4 µs | 88.9 µs | **Console** | Console 稍快 |
+| **压力测试** | 119 MB/s | 115 MB/s | 相近 | 都稳定 |
+| **内存占用** | 0 KB | 128 KB | **Console** | Console 更省内存 |
 | **Shell 功能** | ✅ | ✅ | 平局 | 都正常工作 |
 | **数据完整性** | ✅ | ✅ | 平局 | 都 100% 正确 |
 
 **核心结论**：
-- **Async 的 write() 快 80 倍**，因为它不需要等待硬件 FIFO
-- **Console 更省内存**，因为它没有 Ring Buffer
+- **Async 的内核态操作快 383 倍**，但消耗更多 CPU
+- **用户态性能差异不大**，都受 QEMU 串口模拟影响
+- **Console 更省内存和 CPU**，Async 更适合批量处理
 - **两者都能正常工作**，Shell 功能和数据完整性都正确
 
 ### 5.2 选择建议
 
 **选择 Async 异步串口的场景**：
-- ✅ 高性能要求（write() 快 80 倍）
-- ✅ 低延迟要求（P50 快 2.4 倍）
 - ✅ 批量数据传输
-- ✅ CPU 资源紧张（异步非阻塞）
+- ✅ 异步非阻塞需求
 - ✅ 多任务环境
+- ✅ 中断驱动
 
 **选择 Console 阻塞串口的场景**：
 - ✅ 低内存要求（0 KB vs 128 KB）
+- ✅ 低 CPU 要求（2.3% vs 57.8%）
 - ✅ 简单实现
 - ✅ 启动阶段日志
 - ✅ 资源受限系统
@@ -293,7 +335,7 @@ for (int i = 0; i < 100; i++) {
 
 **理由**：
 - 内核日志需要在启动早期可用，Console 简单可靠
-- Shell 和用户态程序需要高性能，Async 更优
+- Shell 和用户态程序需要异步能力，Async 更优
 - 两者共存，各取所长
 
 ---
@@ -302,8 +344,8 @@ for (int i = 0; i < 100; i++) {
 
 ### 6.1 Async 优化
 
-1. **NAPI 调优**：调整阈值和批量大小
-2. **Ring Buffer 优化**：根据实际负载调整大小
+1. **降低 CPU 占用**：优化 Ring Buffer 写入算法
+2. **NAPI 调优**：调整阈值和批量大小
 3. **DMA 支持**：真板可探索 DMA 传输
 
 ### 6.2 Console 优化
@@ -314,11 +356,11 @@ for (int i = 0; i < 100; i++) {
 ### 6.3 测试完善
 
 1. **真板验证**：在 VisionFive2 上测试
-2. **CPU 占用测量**：添加性能计数器
-3. **中断频率统计**：优化 NAPI 参数
+2. **端到端测试**：测量真实串口线速
+3. **并发测试**：多任务环境下的性能
 
 ---
 
-**报告版本**：1.0
+**报告版本**：1.1
 **最后更新**：2026-06-01
 **测试分支**：feat/uart-async-bench (Async) / feat/uart-bench (Console)
