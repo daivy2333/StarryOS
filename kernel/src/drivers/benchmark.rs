@@ -145,19 +145,24 @@ pub fn calculate_cpu_usage(cycles: u64, elapsed_ns: u64) -> f64 {
 /// 1. 测试 polling TX 速度（ax_println!）
 /// 2. 测试硬件理论极限
 /// 3. 输出统计信息
+///
+/// 统一测试数据量：102,400 字节（与 Async 一致）
 pub fn run_throughput_test() {
     ax_println!("[BENCH] Running Console throughput test...");
 
-    // 测试 1: polling TX 速度
-    ax_println!("[BENCH] Test 1: polling TX speed");
+    // 测试 1: polling TX 速度（统一数据量）
+    ax_println!("[BENCH] Test 1: polling TX speed (unified data size)");
+
+    // 统一测试数据量：102,400 字节（与 Async 一致）
+    let test_data = [0u8; 1024]; // 使用 0x00 避免终端输出
+    let iterations = 100; // 100 次 × 1024 字节 = 102,400 字节
 
     // 开始 CPU 占用测量
     start_cpu_measurement();
     let start_time = monotonic_time_nanos();
 
-    let iterations = 10;
     for _ in 0..iterations {
-        ax_println!("[BENCH] test");
+        axhal::console::write_bytes(&test_data);
     }
 
     let end_time = monotonic_time_nanos();
@@ -165,14 +170,14 @@ pub fn run_throughput_test() {
 
     let elapsed_ns = end_time - start_time;
     let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
-    let total_bytes = iterations * 12; // "[BENCH] test\n" 约 12 字节
+    let total_bytes = iterations * 1024; // 102,400 字节
     let throughput_kbps = total_bytes as f64 / elapsed_s / 1024.0;
     let cpu_usage = calculate_cpu_usage(cpu_cycles, elapsed_ns);
 
     ax_println!("[BENCH] polling TX: {:.2} KB/s", throughput_kbps);
     ax_println!("[BENCH] Total: {} bytes in {:.2} ms", total_bytes, elapsed_ns as f64 / 1_000_000.0);
     ax_println!("[BENCH] CPU Cycles: {}", cpu_cycles);
-    ax_println!("[BENCH] CPU Usage: {:.1}%", cpu_usage);
+    ax_println!("[BENCH] CPU Usage: {:.2} cycles/ns", cpu_usage);
 
     // 测试 2: 硬件理论极限
     ax_println!("[BENCH] Test 2: Hardware limits");
