@@ -103,10 +103,10 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 |---------|------|------|
 | **CPU 效率** | Async ⬆ 14.5x | 265 vs 3,835 cycles/byte |
 | **write() 延迟** | Async ⬆ 2.2–7.5x | P50 7.9 vs 17.5 µs |
-| **非阻塞读** | Async ✅ | Console 无此能力 |
+| **非阻塞读** | Async  | Console 无此能力 |
 | **吞吐量（真板）** | 持平 ~11.5 KB/s | 同受波特率限制 |
-| **内存** | Console ⬆ | 0 KB vs 128 KB |
-| **复杂度** | Console ⬆ | 更简单，但更局限 |
+| **内存** | Console  | 0 KB vs 128 KB |
+| **复杂度** | Console  | 更简单，但更局限 |
 
 ### Q7 修复项（本报告基准）
 
