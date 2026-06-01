@@ -3,6 +3,8 @@
 //! 提供内核态性能统计和测试接口
 //! 用于测量异步串口驱动的吞吐量、延迟、内存占用、CPU 占用等指标
 
+extern crate alloc;
+use alloc::vec;
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use axhal::time::monotonic_time_nanos;
 
