@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-01
-> 分支：feat/uart-async-dev2 — Q0~Q7 ✅，Q6 等待硬件
+> 分支：feat/uart-async-bench — Q0~Q7 ✅，Q6 等待硬件
 
 ---
 
