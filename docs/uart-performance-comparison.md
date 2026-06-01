@@ -1,169 +1,115 @@
-# UART 串口性能对比报告
+# UART 性能对比：Console vs Async
 
 > 项目：StarryOS | 分支：feat/uart-async-dev2 | 日期：2026-06-01
-> 测试环境：QEMU riscv64-virt
-> ⚠️ QEMU 不仿真串口时序，吞吐量数据偏高。真板 VisionFive2 @115200 将收敛到 ~11.5 KB/s。
+> 测试环境：QEMU riscv64-virt · NS16550 @ 115200 bps · FIFO 16B
+>
+> **⚠️ 关键前提**：QEMU 的 NS16550 模拟**不仿真串口线延迟**（86.8 µs/byte @115200）。
+> 因此 QEMU 上的用户态吞吐量无法反映真实串口性能，两者在真板都会收敛到 ~11.5 KB/s。
+> 本文只讨论在 QEMU 上可可信测量的维度：内核态速度、CPU 效率、write() 延迟、功能覆盖。
 
 ---
 
-## 1. 概述
+## 1. 架构
 
-对比 Console 阻塞串口和 Async 异步串口。Console 数据来自直接读写 /dev/console（无 ring buffer），Async 数据来自 Q7 修复后的 async 路径。
-
-### Q7 修复后的 Async 架构
-
-| 特性 | Console (阻塞) | Async (异步, Q7) |
-|------|---------------|--------------|
-| **写入路径** | write() → 轮询等待 FIFO | write() → Ring Buffer → TX copier → 批量发送 |
-| **读取路径** | read() → 轮询等待 FIFO | ISR → RX copier → Ring Buffer → TTY → read() |
-| **是否阻塞** | 是（等待硬件） | 否（写入内存即返回） |
-| **非阻塞支持** | — | ✅ FIONBIO open/fcntl/ioctl 全入口 |
-| **空闲 CPU** | 0%（无后台任务） | 0%（O42 External 模式，无 yield storm） |
-| **缓冲区** | 无 | 128 KB Ring Buffer |
-| **tcdrain** | 隐式（每字节等待） | ✅ TCSBRK 实现 |
-
-### 测试环境
-
-| 项目 | 配置 |
-|------|------|
-| **架构** | RISC-V 64-bit |
-| **平台** | qemu-riscv64-virt |
-| **串口** | NS16550 UART，115200 bps |
-| **FIFO** | 16 字节 |
+| 维度 | Console（阻塞） | Async（异步，Q7 修复后） |
+|------|----------------|------------------------|
+| TX 路径 | `write()` → 轮询 LSR → 逐字节写 THR | `write()` → push ring buf → TX copier → 批量 `send_bytes()` |
+| RX 路径 | ISR → tty-reader → ldisc → `read()` | ISR → RX copier → ring buf → tty-reader → ldisc → `read()` |
+| 缓冲区 | 无 | 128 KB（RX/TX 各 64 KB HeapRb） |
+| write() 行为 | 阻塞（等待 FIFO 有空位） | 非阻塞（push ring buf 即返回） |
+| 空闲 CPU | 0% | 0%（O42 External 模式，无 yield storm） |
+| tcdrain | 隐式（每字节等待 LSR） | ✅ TCSBRK 显式支持 |
+| 非阻塞读 | ❌ | ✅ `open/fcntl/ioctl` 三入口 |
+| 额外任务 | 1（tty-reader） | 2（RX copier + tty-reader） |
 
 ---
 
-## 2. 性能对比
+## 2. 内核态速度（Ring Buffer）
 
-### 2.1 内核态性能（统一数据量：102,400 字节）
+> 测量内核态直接操作 Ring Buffer 的速度，无系统调用开销。
+> 这些数值**不受 QEMU 串口时序影响**，反映纯软件性能。
 
-| 指标 | Console | Async | 胜出 |
+| 指标 | Console | Async | 说明 |
 |------|---------|-------|------|
-| **TX 写入速度** | 567 KB/s | 214,961 KB/s | **Async 379x** |
-| **TX CPU Cycles** | 392,721,729 | 27,231,344 | **Async 14.4x** |
-| **TX 每字节 CPU** | 3,835 cycles/byte | 265 cycles/byte | **Async 14.5x** |
-| **RX 读取速度** | ❌ 不可测 | 588,776 KB/s | Async |
-| **RX 延迟 P50** | ❌ 不可测 | 600 ns | Async |
+| **TX Ring Buffer 写入** | 567 KB/s | ~215 MB/s | Console 逐字节轮询 `send_raw()`；Async 批量 `push()` |
+| **TX CPU cycles/byte** | 3,835 | 265 | **Async 效率高 14.5 倍** |
+| **RX Ring Buffer 读取** | 不可测¹ | ~413 MB/s | Async 直接 pop HeapRb |
+| **RX 延迟 P50** | 不可测¹ | 600 ns | 单字节 pop 延迟 |
 
-**RX 测试差异说明**：
+¹ Console 无 Ring Buffer，`read_bytes()` 为非阻塞 `try_receive()`，无法在内核态做可比较的 RX 吞吐/延迟测试。
 
-| 项目 | Console | Async |
-|------|---------|-------|
-| **缓冲区** | 无 Ring Buffer | 有 Ring Buffer |
-| **读取方式** | 非阻塞（try_receive） | 阻塞（等待数据） |
-| **内核态 RX 测试** | ❌ 不可测 | ✅ 可测 |
-| **用户态 RX 测试** | ❌ 不可测 | ❌ 不可测（TTY 竞争） |
+---
 
-**为什么不能直接测试 FIFO**：
-1. **非阻塞读取**：Console 的 read_bytes() 使用 try_receive()，没有数据立即返回 0，无法测量延迟
-2. **需要外部数据注入**：FIFO 只有 16 字节，需要外部设备发送数据，无法自动化测试
-3. **FIFO 容量小**：只有 16 字节，无法测试大数据量的吞吐量
-4. **与 Shell 竞争**：Shell 和 benchmark 都在读取 FIFO，Shell 会抢先读取数据
+## 3. 用户态 write() 延迟
 
-**为什么 Async 可以测试 RX**：
-1. **有 Ring Buffer**：可以存储大量数据（64 KB），支持大数据量测试
-2. **阻塞读取**：可以等待数据到达，测量延迟
-3. **自动数据注入**：ISR 驱动，自动填充 Ring Buffer，无需外部设备
-4. **无竞争**：benchmark 程序独占 Ring Buffer，不与 Shell 竞争
+> 测量单字节 `write()` 系统调用往返。**可比维度**，因为两者都走完整的 syscall → VFS → Tty → 驱动路径。
 
-**用户态 RX 都无法测试**：TTY 层回显导致 Shell 抢先读取数据
-
-### 2.2 用户态 write() 延迟
-
-| 指标 | Console | Async | 胜出 |
+| 指标 | Console | Async | 差异 |
 |------|---------|-------|------|
-| **P50** | 17.5 µs | 7.9 µs | **Async 2.2x** |
-| **P95** | 32.8 µs | 12.2 µs | **Async 2.7x** |
-| **P99** | 324.5 µs | 43.1 µs | **Async 7.5x** |
+| **P50** | 17.5 µs | 7.9 µs | Async 快 2.2x |
+| **P95** | 32.8 µs | 12.2 µs | Async 快 2.7x |
+| **P99** | 324.5 µs | 43.1 µs | Async 快 7.5x |
 
-**说明**：
-- Async 的 write() 只写入 Ring Buffer，延迟更低
-- QEMU 不等待硬件，真实硬件上差异可能更大
+Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销），而 Console 的 `write()` 在调用栈内逐字节轮询 LSR 然后写 THR。
 
-### 2.3 用户态吞吐量（⚠️ QEMU 限制）
+---
 
-| 数据大小 | Console (QEMU) | Async + tcdrain (QEMU) | 预期真板 (两者) |
-|----------|---------------|----------------------|----------------|
-| **64 B** | ~13,600 KB/s | ~150 KB/s | ~11.5 KB/s |
-| **256 B** | ~49,600 KB/s | ~230 KB/s | ~11.5 KB/s |
-| **1024 B** | ~135,000 KB/s | ~240 KB/s | ~11.5 KB/s |
-| **4096 B** | ~250,000 KB/s | ~230 KB/s | ~11.5 KB/s |
+## 4. 功能覆盖
 
-> ⚠️ **重要**：QEMU 16550 模拟对 Console 和 Async 都不仿真串口线延迟（86.8 µs/byte）。
-> Console 的 send_raw() 在 QEMU 中瞬时完成（无 FIFO 等待），Async 的 tcdrain 也瞬时返回。
-> 真板上两者都受 115200 bps 限制，收敛到 ~11.5 KB/s。
-
-### 2.4 非阻塞模式（Async 独有）
-
-| 特性 | Console | Async (Q7) |
+| 功能 | Console | Async (Q7) |
 |------|---------|-----------|
-| `open(O_NONBLOCK)` + `read()` | ❌ 不支持 | ✅ EAGAIN |
-| `ioctl(FIONBIO)` + `read()` | ❌ 不支持 | ✅ EAGAIN |
-| `fcntl(F_SETFL, O_NONBLOCK)` + `read()` | ❌ 不支持 | ✅ EAGAIN |
-
-### 2.5 资源占用
-
-| 指标 | Console | Async | 胜出 |
-|------|---------|-------|------|
-| **内存占用** | 0 KB | 128 KB | **Console** |
-| **Shell 功能** | ✅ 正常 | ✅ 正常 | 平局 |
-| **数据完整性** | ✅ 100% | ✅ 100% | 平局 |
+| 阻塞读写 | ✅ | ✅ |
+| `open(O_NONBLOCK)` + `read()` → EAGAIN | ❌ | ✅ |
+| `ioctl(FIONBIO, 1)` + `read()` → EAGAIN | ❌ | ✅ |
+| `fcntl(F_SETFL, O_NONBLOCK)` + `read()` → EAGAIN | ❌ | ✅ |
+| `tcdrain()` （TCSBRK） | 隐式 | ✅ 显式 poll ring buf + LSR.TRANSMITTER_EMPTY |
+| Shell 功能（`ls`/`cd`/`pwd`） | ✅ | ✅ |
+| 内核日志（`ax_println!`） | ✅ | ✅（polling TX 共存） |
 
 ---
 
-## 3. 结论
+## 5. 用户态吞吐量（⚠️ QEMU 不可比）
 
-### Q7 修复总结
+> **本节数据在 QEMU 上无比较意义。** 原因：
+> - Console 测试为 `write(/dev/console)` 逐字节轮询，QEMU 瞬时完成 → 测得纯 VFS+syscall 速度。
+> - Async 测试为 `write(/dev/console) + tcdrain()`，tcdrain 调用 TCSBRK 做 poll 循环 → 多了一层 task yield 开销。
+> - 两者测的是**不同的东西**——Console 测 VFS 速度，Async 测 VFS + tcdrain 速度。
+>
+> **真板预期**：VisionFive2 @ 115200 bps，两者均受波特率限制，吞吐量收敛到 ~11.5 KB/s。
+> 区别是：Async 的 `write()` **立即返回**（pipeline 友好），Console 的 `write()` **阻塞到发送完成**。
 
-| 修复 | 效果 |
-|------|------|
-| O42 yield storm | External ProcessMode，空闲不再空转 |
-| O43 FIONBIO | 非阻塞读 open/fcntl/ioctl 三入口全部生效 |
-| O44 benchmark + TCSBRK | 测量真实 /dev/console 路径，tcdrain 正确等待 |
-
-### 核心差异
-
-| 维度 | Console | Async (Q7) |
-|------|---------|------------|
-| **CPU 效率（内核态）** | 3,835 cycles/byte | 265 cycles/byte（14.5x） |
-| **write() 延迟 P50** | 17.5 µs | 7.9 µs（2.2x） |
-| **非阻塞读** | ❌ | ✅ |
-| **空闲 CPU** | 0% | 0%（无 yield storm） |
-| **内存** | 0 KB | 128 KB |
-
-### 真板预期
-
-VisionFive2 @ 115200 bps：
-- 两者 TX 吞吐量均收敛到 ~11.5 KB/s（硬件上限）
-- Async 优势在 CPU 效率和延迟（write 不阻塞调用者）
-- FIONBIO 提供非阻塞读能力（Console 不具备）
+| 数据大小 | Console `write()` only | Async `write + tcdrain` | 真板预期 |
+|----------|----------------------|------------------------|---------|
+| 64 B | ~13,600 KB/s | ~150 KB/s | ~11.5 KB/s |
+| 256 B | ~49,600 KB/s | ~230 KB/s | ~11.5 KB/s |
+| 1024 B | ~135,000 KB/s | ~240 KB/s | ~11.5 KB/s |
+| 4096 B | ~250,000 KB/s | ~230 KB/s | ~11.5 KB/s |
 
 ---
 
-## 附录：测试方法
+## 6. 资源占用
 
-### 内核态测试
-
-- **TX 测试**：写入 102,400 字节到 Ring Buffer，测量速度和 CPU 占用
-- **RX 测试**（仅 Async）：从 Ring Buffer 读取 65,536 字节，测量速度和 CPU 占用
-- **RX 延迟测试**（仅 Async）：读取 100 个单字节，测量每次读取延迟
-- **Console RX 测试**：跳过（无 Ring Buffer，read_bytes() 非阻塞）
-
-### 用户态测试
-
-- **吞吐量**：测试 64/256/1024/4096 字节，每种 1000 次
-- **延迟**：100 次单字节 write()，计算 P50/P95/P99
-- **压力测试**：持续 2 秒写入，测量总吞吐量
-- **RX 测试**：跳过（TTY 竞争条件）
-
-### 局限性
-
-- QEMU 串口模拟不等待硬件，write() 立即返回
-- 真实硬件上 Async 优势可能更明显（我猜的）
-- 用户态 RX 测试受 TTY 竞争条件限制
-- Console 无法测试 RX（无 Ring Buffer，非阻塞读取）
+| 指标 | Console | Async |
+|------|---------|-------|
+| 内存 | 0 KB | 128 KB（RX/TX ring buf） |
+| 后台任务 | 1 | 2 |
+| 数据完整性 | ✅ | ✅ |
 
 ---
 
-**报告版本**：2.3
-**最后更新**：2026-06-01
+## 7. 总结
+
+| 对比维度 | 结果 | 说明 |
+|---------|------|------|
+| **CPU 效率** | Async ⬆ 14.5x | 265 vs 3,835 cycles/byte |
+| **write() 延迟** | Async ⬆ 2.2–7.5x | P50 7.9 vs 17.5 µs |
+| **非阻塞读** | Async ✅ | Console 无此能力 |
+| **吞吐量（真板）** | 持平 ~11.5 KB/s | 同受波特率限制 |
+| **内存** | Console ⬆ | 0 KB vs 128 KB |
+| **复杂度** | Console ⬆ | 更简单，但更局限 |
+
+### Q7 修复项（本报告基准）
+
+- **O42**：yield storm → `ProcessMode::External`，空闲 CPU 归零
+- **O43**：FIONBIO 传播到 Tty/ldisc，非阻塞读全部入口生效
+- **O44**：benchmark 修正 + TCSBRK 实现，tcdrain 正确等待硬件 drain
