@@ -108,9 +108,9 @@
 <!-- R48 --> | docs/analysis/bypass-axplat-feasibility.md | ⚠️ 部分过时：MMIO 页表分析已被 stride=4 纠正，其余仍有参考价值 ✅ |
 <!-- R49 --> | docs/analysis/project-knowledge-map.md | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 ✅ |
 <!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 📦 已归档，当前状态见 SNAPSHOT.md 和 tasks.md |
-<!-- R51 --> | docs/uart-performance-comparison.md | UART 串口性能对比报告：Console vs Async 统一数据量对比（CPU 效率 Async 快 14.3 倍） |
-<!-- R52 --> | docs/benchmark-report-async.md | Async 异步串口详细测试报告：内核态、用户态、压力测试 |
-<!-- R53 --> | docs/benchmark-report-console.md | Console 阻塞串口详细测试报告：内核态、用户态、压力测试 |
+<!-- R51 --> | docs/benchmark-report-async.md | Async 异步串口性能测试报告：内核态和用户态测试结果、与 Console 对比 |
+<!-- R52 --> | docs/analysis/user-async-perf-analysis.md | 用户态异步串口性能分析：三嵌套 block_on/poll_io、yield storm、Manual 模式问题、benchmark 缺陷、对比阻塞 Console |
+<!-- R53 --> | docs/analysis/nonblocking-mode-analysis.md | 非阻塞模式 FIONBIO 分析：当前实现、nonblocking 标志未传播到 TTY 层、实现方案、测试用例 |
 <!-- R54 --> | docs/analysis/uart-benchmark-optimization.md | 性能测试优化方案：CPU 占用测量、中断频率统计、测试方法改进 |
 
 ---

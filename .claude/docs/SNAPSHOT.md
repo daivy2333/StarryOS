@@ -1,17 +1,17 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-01
-> 分支：feat/uart-async-dev2 — Q0~Q5.1 ✅，性能测试完成，Console 已清理，Q6 等待硬件
+> 分支：feat/uart-async-dev2 — Q0~Q5.1 ✅，Q5.2 分析完成，Q6 等待硬件
 
 ---
 
 ## 当前状态
 
-**分支**: feat/uart-async-dev2
+**分支**: feat/uart-async-dev2（性能分析完成，待实施优化）
 **成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
-**性能测试**: 完成 Console vs Async 对比（统一数据量 102,400 字节）
-**下一步**: VisionFive2 真板验证（等待硬件到位）
+**近期分析**: 完成用户态异步性能打平/反超阻塞串口的根因分析，完成 FIONBIO 非阻塞模式分析
+**下一步**: 修复 yield storm + FIONBIO 传播
 
 ### 关键发现
 
@@ -30,6 +30,13 @@
 | **TX interleave 修复** | TX copier 用本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 |
 | **AtomicWaker 直接唤醒** | ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） |
 | **Console 组件清理** | 删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 |
+| **性能测试框架** | 内核态统计 + 用户态 benchmark.c + 自动化脚本 |
+| **三重 yield storm** | 用户态 async read 路径有 3 层嵌套 block_on/poll_io，Manual 模式 waker.wake_by_ref() 导致无数据时高频 yield-re-schedule |
+| **Manual 模式缺陷** | ProcessMode::Manual 的 register_rx_waker 立即唤醒调用者，产生 yield storm；应改为 External 模式消除 |
+| **Benchmark 不测 UART** | TX 吞吐量写 /dev/null（绕过 UART），未测量真实串口吞吐量 |
+| **FIONBIO 不生效** | nonblocking 标志在 File 层存储，但 Tty::read_at 和 ldisc::read 硬编码 false，不传播到内层 |
+| **Async VS 阻塞上限** | 115200 bps = 11.52 KB/s 硬件上限，async 在吞吐量上不可能超越阻塞 Console |
+| **Async RX 多一次拷贝** | UART FIFO → ring buffer → ldisc buf → user buf（3 次 vs Console 的 2 次） |
 
 ### 实施路径
 
@@ -42,7 +49,7 @@
 | **Q4** | 全异步 RX+TX | TX copier 接管，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip + rx/tx 独立锁 | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
-| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ⏳ |
+| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
@@ -101,13 +108,13 @@ StarryOS/
 │   │       └── tty/      # TTY/Console/ldisc
 │   ├── syscall/          # 系统调用
 │   └── task/             # 任务管理
-├── docs/analysis/        # 设计分析文档
+├── docs/analysis/        # 设计分析文档（~16 份）
 ├── .claude/docs/         # 开发文档体系（本文件所在）
 │   ├── SNAPSHOT.md       # 本文件
 │   ├── architecture.md   # 架构决策记录（ADR-001~029，19 条有效）
 │   ├── tasks.md          # 任务追踪（M0~M6 + P0~P6）
-│   ├── learned.md        # 学习记忆（68 条目）
-│   ├── references.md     # 外部参考（46 条目）
+│   ├── learned.md        # 学习记忆（81 条目）
+│   ├── references.md     # 外部参考（53 条目）
 │   ├── optimization.md   # 优化记录（23 条目）
 │   ├── rules.md          # 编码规范
 │   ├── archive.md        # 归档内容
@@ -143,8 +150,8 @@ StarryOS/
 |------|------|--------|
 | architecture.md | ADR-001~029，两个方向的全部决策历史 | 19 |
 | tasks.md | Q0~Q6 任务追踪（方向 C） | 37 |
-| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 75 |
-| references.md | 依赖文档、规范、设计文档索引 | 50 |
+| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 81 |
+| references.md | 依赖文档、规范、设计文档索引 | 53 |
 | optimization.md | 性能洞察、优化方向、基准目标 | 20 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
 | docs/uart-performance-comparison.md | Console vs Async 性能对比报告 | - |
@@ -172,5 +179,8 @@ StarryOS/
 | **硬件相关** | | |
 | UART 硬件 | axhal/src/platform/riscv64_qemu_virt/uart.rs | MMIO 寄存器 |
 | PLIC 中断 | axhal/src/platform/riscv64_qemu_virt/mod.rs | 中断号映射 |
-| Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct |
-| tty-reader | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs | RX copier 参考 |
+| Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct（已删除） |
+| TTY ldisc | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs | 行规则处理 + Manual/External 模式 |
+| **新分析文档** | | |
+| 用户态性能分析 | docs/analysis/user-async-perf-analysis.md | yield storm、Manual 模式缺陷、benchmark 问题 |
+| 非阻塞模式分析 | docs/analysis/nonblocking-mode-analysis.md | FIONBIO 实现、nonblocking 未传播、实现方案 |
