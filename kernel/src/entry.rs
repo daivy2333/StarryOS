@@ -69,8 +69,10 @@ fn run_startup_benchmark() {
     ax_println!("[BENCH] ISR Count: {}", irq_count);
 
     // 测试 5: 中断频率统计
-    let irq_frequency = benchmark::get_irq_frequency(elapsed_ns);
-    ax_println!("[BENCH] IRQ Frequency: {:.2} IRQ/s", irq_frequency);
+    match benchmark::get_irq_frequency(elapsed_ns) {
+        Some(freq) => ax_println!("[BENCH] IRQ Frequency: {:.2} IRQ/s", freq),
+        None => ax_println!("[BENCH] IRQ Frequency: N/A (only {} IRQs)", crate::drivers::uart_init::get_irq_count()),
+    }
 
     // 测试 6: NAPI 效果报告
     benchmark::report_napi_effect();

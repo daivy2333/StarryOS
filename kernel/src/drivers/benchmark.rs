@@ -145,29 +145,37 @@ pub fn stop_cpu_measurement() -> u64 {
 
 /// 计算 CPU 占用率
 ///
-/// 假设 CPU 频率为 1GHz（QEMU 默认）
+/// 使用实际测量的 cycle 数和时间计算
+/// 注意：QEMU 的 cycle 计数器可能与真实硬件不同
 pub fn calculate_cpu_usage(cycles: u64, elapsed_ns: u64) -> f64 {
-    // 假设 CPU 频率为 1GHz
-    let cpu_freq_hz = 1_000_000_000.0;
-    let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
-    let expected_cycles = cpu_freq_hz * elapsed_s;
-
-    if expected_cycles > 0.0 {
-        (cycles as f64 / expected_cycles) * 100.0
+    // 使用实际测量的 cycle 数和时间
+    // CPU 占用率 = (cycles / elapsed_ns) * 100%
+    // 这表示每纳秒消耗的 cycle 数
+    if elapsed_ns > 0 {
+        let cycles_per_ns = cycles as f64 / elapsed_ns as f64;
+        // 返回每纳秒的 cycle 数（不是百分比）
+        cycles_per_ns
     } else {
         0.0
     }
 }
 
 /// 中断频率统计
-pub fn get_irq_frequency(elapsed_ns: u64) -> f64 {
+///
+/// 只在有足够 IRQ 时返回有效频率
+pub fn get_irq_frequency(elapsed_ns: u64) -> Option<f64> {
     let irq_count = super::uart_init::get_irq_count();
-    let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
 
-    if elapsed_s > 0.0 {
-        irq_count as f64 / elapsed_s
+    // 只在有多个 IRQ 时才计算频率
+    if irq_count > 1 {
+        let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
+        if elapsed_s > 0.0 {
+            Some(irq_count as f64 / elapsed_s)
+        } else {
+            None
+        }
     } else {
-        0.0
+        None
     }
 }
 
