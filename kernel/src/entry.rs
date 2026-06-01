@@ -30,6 +30,9 @@ fn run_startup_benchmark() {
     // 使用 0 字节避免数据泄漏到输出
     let test_data = vec![0u8; 1024];
     let iterations = 100;
+
+    // 开始 CPU 占用测量
+    benchmark::start_cpu_measurement();
     let start_time = monotonic_time_nanos();
 
     // 通过 ring buffer 写入，模拟 TX 路径
@@ -40,13 +43,18 @@ fn run_startup_benchmark() {
     }
 
     let end_time = monotonic_time_nanos();
+    let cpu_cycles = benchmark::stop_cpu_measurement();
+
     let elapsed_ns = end_time - start_time;
     let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
     let total_bytes = iterations * 1024;
     let throughput_kbps = total_bytes as f64 / elapsed_s / 1024.0;
+    let cpu_usage = benchmark::calculate_cpu_usage(cpu_cycles, elapsed_ns);
 
     ax_println!("[BENCH] Ring Buffer Write: {:.2} KB/s", throughput_kbps);
     ax_println!("[BENCH] Total: {} bytes in {:.2} ms", total_bytes, elapsed_ns as f64 / 1_000_000.0);
+    ax_println!("[BENCH] CPU Cycles: {}", cpu_cycles);
+    ax_println!("[BENCH] CPU Usage: {:.1}%", cpu_usage);
 
     // 测试 2: 硬件理论极限
     ax_println!("[BENCH] Hardware Line Rate: 11.52 KB/s (115200 bps)");
@@ -59,6 +67,13 @@ fn run_startup_benchmark() {
     // 测试 4: ISR 统计（通过 uart_init 模块）
     let irq_count = crate::drivers::uart_init::get_irq_count();
     ax_println!("[BENCH] ISR Count: {}", irq_count);
+
+    // 测试 5: 中断频率统计
+    let irq_frequency = benchmark::get_irq_frequency(elapsed_ns);
+    ax_println!("[BENCH] IRQ Frequency: {:.2} IRQ/s", irq_frequency);
+
+    // 测试 6: NAPI 效果报告
+    benchmark::report_napi_effect();
 
     ax_println!("[BENCH] Startup benchmark complete");
     ax_println!("[BENCH] Note: Actual throughput limited by UART line rate (11.52 KB/s)");

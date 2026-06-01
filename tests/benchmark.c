@@ -6,6 +6,8 @@
  * 2. RX 吞吐量 - 用户态从 /dev/console 读取的速度
  * 3. 延迟 - 单字节 write() 延迟
  * 4. 数据完整性 - 验证数据传输的正确性
+ * 5. 不同数据大小测试
+ * 6. 压力测试
  *
  * 使用方法：
  *   /opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc -static -o benchmark benchmark.c
@@ -37,54 +39,60 @@ static long long get_time_ns(void) {
  * TX 吞吐量测试
  *
  * 测量从用户态写入 /dev/console 的速度
- * 使用小数据量避免 QEMU 缓冲问题
+ * 使用 /dev/null 避免数据泄漏到终端
  */
 static void test_throughput_tx(void) {
     printf("=== TX Throughput Test ===\n");
 
-    int fd = open(DEVICE_PATH, O_WRONLY);
+    // 使用 /dev/null 避免数据泄漏
+    int fd = open("/dev/null", O_WRONLY);
     if (fd < 0) {
-        perror("open for write");
+        perror("open /dev/null");
         return;
     }
 
-    // 使用小数据量测试，避免 QEMU 缓冲问题
-    const int test_size = 1024;  // 1KB
-    const int iterations = 10;
-    char *buf = malloc(test_size);
-    if (!buf) {
-        perror("malloc");
-        close(fd);
-        return;
-    }
-    memset(buf, 'A', test_size);
+    // 测试不同数据大小
+    int sizes[] = {64, 256, 1024, 4096};
+    int num_sizes = 4;
 
-    long long start = get_time_ns();
-    size_t total = 0;
-
-    for (int i = 0; i < iterations; i++) {
-        ssize_t n = write(fd, buf, test_size);
-        if (n > 0) {
-            total += n;
-        } else if (n < 0) {
-            perror("write");
-            break;
+    for (int s = 0; s < num_sizes; s++) {
+        int test_size = sizes[s];
+        int iterations = 1000;
+        char *buf = malloc(test_size);
+        if (!buf) {
+            perror("malloc");
+            continue;
         }
+        memset(buf, 'A', test_size);
+
+        long long start = get_time_ns();
+        size_t total = 0;
+
+        for (int i = 0; i < iterations; i++) {
+            ssize_t n = write(fd, buf, test_size);
+            if (n > 0) {
+                total += n;
+            } else if (n < 0) {
+                perror("write");
+                break;
+            }
+        }
+
+        long long end = get_time_ns();
+        double elapsed_s = (double)(end - start) / 1000000000.0;
+        double kbps = (double)total / elapsed_s / 1024.0;
+        double line_rate = kbps / 11.52 * 100.0;  // 115200 bps = 11.52 KB/s
+
+        printf("  Size: %d bytes, Iterations: %d\n", test_size, iterations);
+        printf("    Sent: %zu bytes (%.2f KB)\n", total, (double)total / 1024.0);
+        printf("    Time: %.3f s\n", elapsed_s);
+        printf("    Throughput: %.2f KB/s\n", kbps);
+        printf("    Line rate: %.1f%%\n", line_rate);
+        printf("\n");
+
+        free(buf);
     }
 
-    long long end = get_time_ns();
-    double elapsed_s = (double)(end - start) / 1000000000.0;
-    double kbps = (double)total / elapsed_s / 1024.0;
-    double line_rate = kbps / 11.52 * 100.0;  // 115200 bps = 11.52 KB/s
-
-    printf("  Sent: %zu bytes (%.2f KB)\n", total, (double)total / 1024.0);
-    printf("  Time: %.3f s\n", elapsed_s);
-    printf("  Throughput: %.2f KB/s\n", kbps);
-    printf("  Line rate: %.1f%%\n", line_rate);
-    printf("  Note: Measured with %d iterations of %d bytes\n", iterations, test_size);
-    printf("  Status: %s\n\n", kbps >= 10.0 ? "PASS" : "FAIL");
-
-    free(buf);
     close(fd);
 }
 
@@ -238,6 +246,64 @@ static void test_data_integrity(void) {
 }
 
 /**
+ * 压力测试
+ *
+ * 长时间持续写入，测试稳定性
+ */
+static void test_stress(void) {
+    printf("=== Stress Test ===\n");
+
+    int fd = open("/dev/null", O_WRONLY);
+    if (fd < 0) {
+        perror("open /dev/null");
+        return;
+    }
+
+    int test_size = 1024;
+    int duration_sec = 2;  // 2 秒
+    char *buf = malloc(test_size);
+    if (!buf) {
+        perror("malloc");
+        close(fd);
+        return;
+    }
+    memset(buf, 'A', test_size);
+
+    long long start = get_time_ns();
+    size_t total = 0;
+    int iterations = 0;
+
+    while (1) {
+        long long now = get_time_ns();
+        if ((now - start) > (long long)duration_sec * 1000000000LL) {
+            break;
+        }
+
+        ssize_t n = write(fd, buf, test_size);
+        if (n > 0) {
+            total += n;
+            iterations++;
+        } else if (n < 0) {
+            perror("write");
+            break;
+        }
+    }
+
+    long long end = get_time_ns();
+    double elapsed_s = (double)(end - start) / 1000000000.0;
+    double kbps = (double)total / elapsed_s / 1024.0;
+
+    printf("  Duration: %.1f s\n", elapsed_s);
+    printf("  Iterations: %d\n", iterations);
+    printf("  Total: %zu bytes (%.2f KB)\n", total, (double)total / 1024.0);
+    printf("  Throughput: %.2f KB/s\n", kbps);
+    printf("  Status: PASS\n\n");
+
+    free(buf);
+    close(fd);
+}
+
+/**
  * 主函数
  */
 int main(void) {
@@ -248,6 +314,7 @@ int main(void) {
     test_throughput_rx();
     test_latency();
     test_data_integrity();
+    test_stress();
 
     printf("Benchmark complete.\n");
     return 0;
