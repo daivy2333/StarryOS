@@ -1,27 +1,26 @@
 # UART 串口性能对比报告
 
-> 项目：StarryOS
-> 分支：feat/uart-async-dev2
-> 日期：2026-06-01
+> 项目：StarryOS | 分支：feat/uart-async-dev2 | 日期：2026-06-01
 > 测试环境：QEMU riscv64-virt
+> ⚠️ QEMU 不仿真串口时序，吞吐量数据偏高。真板 VisionFive2 @115200 将收敛到 ~11.5 KB/s。
 
 ---
 
 ## 1. 概述
 
-### 测试目标
+对比 Console 阻塞串口和 Async 异步串口。Console 数据来自直接读写 /dev/console（无 ring buffer），Async 数据来自 Q7 修复后的 async 路径。
 
-对比 Console 阻塞串口和 Async 异步串口的性能差异。
+### Q7 修复后的 Async 架构
 
-### 架构对比
-
-| 特性 | Console (阻塞) | Async (异步) |
+| 特性 | Console (阻塞) | Async (异步, Q7) |
 |------|---------------|--------------|
-| **写入路径** | write() → 轮询等待 FIFO → 写入寄存器 | write() → Ring Buffer → TX copier → 批量发送 |
-| **读取路径** | read() → 轮询等待 FIFO → 读取寄存器 | ISR → RX copier → Ring Buffer → read() |
+| **写入路径** | write() → 轮询等待 FIFO | write() → Ring Buffer → TX copier → 批量发送 |
+| **读取路径** | read() → 轮询等待 FIFO | ISR → RX copier → Ring Buffer → TTY → read() |
 | **是否阻塞** | 是（等待硬件） | 否（写入内存即返回） |
+| **非阻塞支持** | — | ✅ FIONBIO open/fcntl/ioctl 全入口 |
+| **空闲 CPU** | 0%（无后台任务） | 0%（O42 External 模式，无 yield storm） |
 | **缓冲区** | 无 | 128 KB Ring Buffer |
-| **中断使用** | 无（轮询） | 有（ISR 驱动） |
+| **tcdrain** | 隐式（每字节等待） | ✅ TCSBRK 实现 |
 
 ### 测试环境
 
@@ -81,27 +80,26 @@
 - Async 的 write() 只写入 Ring Buffer，延迟更低
 - QEMU 不等待硬件，真实硬件上差异可能更大
 
-### 2.3 用户态吞吐量
+### 2.3 用户态吞吐量（⚠️ QEMU 限制）
 
-| 数据大小 | Console | Async | 胜出 |
-|----------|---------|-------|------|
-| **64 B** | 13,623 KB/s | 10,352 KB/s | Console 1.3x |
-| **256 B** | 49,592 KB/s | 41,763 KB/s | Console 1.2x |
-| **1024 B** | 135,215 KB/s | 114,825 KB/s | Console 1.2x |
-| **4096 B** | 250,956 KB/s | 227,298 KB/s | Console 1.1x |
+| 数据大小 | Console (QEMU) | Async + tcdrain (QEMU) | 预期真板 (两者) |
+|----------|---------------|----------------------|----------------|
+| **64 B** | ~13,600 KB/s | ~150 KB/s | ~11.5 KB/s |
+| **256 B** | ~49,600 KB/s | ~230 KB/s | ~11.5 KB/s |
+| **1024 B** | ~135,000 KB/s | ~240 KB/s | ~11.5 KB/s |
+| **4096 B** | ~250,000 KB/s | ~230 KB/s | ~11.5 KB/s |
 
-**差异原因**：
-- 小数据时 Console 稍快：send_raw() 在 QEMU 中不等待硬件，Async 的 push() 需要拷贝数据 + 唤醒 TX copier
-- 大数据时差异缩小：Console 锁获取次数累积（N 次），Async 只需 1 次锁
-- 真实硬件上 Async 优势会更明显（send_raw() 需要等待 FIFO）
+> ⚠️ **重要**：QEMU 16550 模拟对 Console 和 Async 都不仿真串口线延迟（86.8 µs/byte）。
+> Console 的 send_raw() 在 QEMU 中瞬时完成（无 FIFO 等待），Async 的 tcdrain 也瞬时返回。
+> 真板上两者都受 115200 bps 限制，收敛到 ~11.5 KB/s。
 
-### 2.4 压力测试（持续 2 秒）
+### 2.4 非阻塞模式（Async 独有）
 
-| 指标 | Console | Async | 差异 |
-|------|---------|-------|------|
-| **迭代次数** | 241,714 | 227,850 | 相近 |
-| **总数据量** | 247 MB | 233 MB | 相近 |
-| **吞吐量** | 120,854 KB/s | 113,922 KB/s | 相近 |
+| 特性 | Console | Async (Q7) |
+|------|---------|-----------|
+| `open(O_NONBLOCK)` + `read()` | ❌ 不支持 | ✅ EAGAIN |
+| `ioctl(FIONBIO)` + `read()` | ❌ 不支持 | ✅ EAGAIN |
+| `fcntl(F_SETFL, O_NONBLOCK)` + `read()` | ❌ 不支持 | ✅ EAGAIN |
 
 ### 2.5 资源占用
 
@@ -115,42 +113,30 @@
 
 ## 3. 结论
 
-### 性能总结
+### Q7 修复总结
 
-| 维度 | 胜出 | 倍数 |
-|------|------|------|
-| **CPU 效率** | Async | 14.5x |
-| **write() 延迟** | Async | 2.2-7.5x |
-| **内核态 TX 速度** | Async | 379x |
-| **内核态 RX 速度** | Async | 589 MB/s |
-| **RX 延迟** | Async | 600 ns |
-| **内存占用** | Console | 128 KB vs 0 KB |
+| 修复 | 效果 |
+|------|------|
+| O42 yield storm | External ProcessMode，空闲不再空转 |
+| O43 FIONBIO | 非阻塞读 open/fcntl/ioctl 三入口全部生效 |
+| O44 benchmark + TCSBRK | 测量真实 /dev/console 路径，tcdrain 正确等待 |
 
-### 核心结论
+### 核心差异
 
-- **Async CPU 效率高 14.5 倍**：每字节 265 cycles vs 3,835 cycles
-- **Async 延迟低 2.2-7.5 倍**：P50 从 17.5µs 降到 7.9µs
-- **Async RX 性能优秀**：589 MB/s 读取速度，600 ns 延迟
-- **Console 更省内存**：0 KB vs 128 KB
-- **两者功能都正常**：Shell、数据完整性均通过
-- **用户态吞吐量差异小**：受 QEMU 影响，真实硬件上 Async 优势会更明显
+| 维度 | Console | Async (Q7) |
+|------|---------|------------|
+| **CPU 效率（内核态）** | 3,835 cycles/byte | 265 cycles/byte（14.5x） |
+| **write() 延迟 P50** | 17.5 µs | 7.9 µs（2.2x） |
+| **非阻塞读** | ❌ | ✅ |
+| **空闲 CPU** | 0% | 0%（无 yield storm） |
+| **内存** | 0 KB | 128 KB |
 
-### 选择建议
+### 真板预期
 
-| 场景 | 推荐 | 理由 |
-|------|------|------|
-| **高性能/低延迟** | Async | CPU 效率高 14.5x，延迟低 2.2x |
-| **批量数据传输** | Async | 大数据吞吐量更高 |
-| **多任务环境** | Async | 异步非阻塞，中断驱动 |
-| **低内存系统** | Console | 无缓冲区，0 KB |
-| **启动日志** | Console | 简单可靠，无需初始化 |
-
-### StarryOS 方案
-
-- **内核日志**：Console polling TX（ax_println!）
-- **Shell/用户态**：Async 异步串口
-
-两者共存，各取所长。
+VisionFive2 @ 115200 bps：
+- 两者 TX 吞吐量均收敛到 ~11.5 KB/s（硬件上限）
+- Async 优势在 CPU 效率和延迟（write 不阻塞调用者）
+- FIONBIO 提供非阻塞读能力（Console 不具备）
 
 ---
 

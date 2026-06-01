@@ -156,8 +156,8 @@ StarryOS/
 | references.md | 依赖文档、规范、设计文档索引 | 53 |
 | optimization.md | 性能洞察、优化方向、基准目标 | 20 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
-| docs/uart-performance-comparison.md | Console vs Async 性能对比报告 | - |
-| docs/benchmark-report-async.md | Async 详细测试报告 | - |
+| docs/uart-performance-comparison.md | Console vs Async 对比报告 | ✅ Q7 更新 |
+| docs/benchmark-report-async.md | Async 详细测试报告 | ✅ Q7 更新 |
 | docs/benchmark-report-console.md | Console 详细测试报告 | - |
 | archive.md | 已归档的过时内容 | ~15 |
 
