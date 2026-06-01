@@ -203,3 +203,54 @@ pub fn report_napi_effect() {
     ax_println!("NAPI Batch Size: {}", super::uart_init::NAPI_BATCH_SIZE);
     ax_println!("==========================");
 }
+
+/// 运行 RX 吞吐量测试
+///
+/// 测试 Ring Buffer 读取速度
+/// 注意：这个测试只测量 Ring Buffer 读取，不包括 UART 读取
+pub fn run_rx_throughput_test() {
+    use super::ring_buffer::BUF_SIZE;
+
+    ax_println!("[BENCH] Running RX throughput test...");
+    ax_println!("[BENCH] Test: Ring Buffer read speed");
+
+    // 测试 Ring Buffer 读取速度
+    let test_data = vec![0u8; 1024];
+    let iterations = 100;
+
+    // 先填充 Ring Buffer
+    for _ in 0..iterations {
+        let mut rx_buf = super::async_driver::DRIVER.rx.lock();
+        rx_buf.push(&test_data);
+        drop(rx_buf);
+    }
+
+    // 测试读取速度
+    start_cpu_measurement();
+    let start_time = monotonic_time_nanos();
+
+    let mut read_buf = vec![0u8; 1024];
+    let mut total_read = 0;
+    for _ in 0..iterations {
+        let mut rx_buf = super::async_driver::DRIVER.rx.lock();
+        let n = rx_buf.pop(&mut read_buf);
+        total_read += n;
+        drop(rx_buf);
+    }
+
+    let end_time = monotonic_time_nanos();
+    let cpu_cycles = stop_cpu_measurement();
+
+    let elapsed_ns = end_time - start_time;
+    let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
+    let throughput_kbps = total_read as f64 / elapsed_s / 1024.0;
+    let cpu_usage = calculate_cpu_usage(cpu_cycles, elapsed_ns);
+
+    ax_println!("[BENCH] RX Ring Buffer read: {:.2} KB/s", throughput_kbps);
+    ax_println!("[BENCH] Total: {} bytes in {:.2} ms", total_read, elapsed_ns as f64 / 1_000_000.0);
+    ax_println!("[BENCH] CPU Cycles: {}", cpu_cycles);
+    ax_println!("[BENCH] CPU Usage: {:.2} cycles/ns", cpu_usage);
+
+    ax_println!("[BENCH] RX throughput test complete");
+    ax_println!("[BENCH] Note: This measures Ring Buffer read speed, not UART receive speed");
+}

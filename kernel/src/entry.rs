@@ -77,6 +77,9 @@ fn run_startup_benchmark() {
     // 测试 6: NAPI 效果报告
     benchmark::report_napi_effect();
 
+    // 测试 7: RX Ring Buffer 读取速度
+    benchmark::run_rx_throughput_test();
+
     ax_println!("[BENCH] Startup benchmark complete");
     ax_println!("[BENCH] Note: Actual throughput limited by UART line rate (11.52 KB/s)");
 }
