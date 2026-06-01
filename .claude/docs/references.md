@@ -108,6 +108,7 @@
 <!-- R48 --> | docs/analysis/bypass-axplat-feasibility.md | ⚠️ 部分过时：MMIO 页表分析已被 stride=4 纠正，其余仍有参考价值 ✅ |
 <!-- R49 --> | docs/analysis/project-knowledge-map.md | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 ✅ |
 <!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 📦 已归档，当前状态见 SNAPSHOT.md 和 tasks.md |
+<!-- R51 --> | docs/uart-performance-comparison.md | UART 串口性能对比报告：Console vs Async 性能测试、选择建议 |
 
 ---
 
