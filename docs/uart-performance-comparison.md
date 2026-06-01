@@ -66,14 +66,15 @@ ISR 中断驱动
 
 | 指标 | Console (阻塞) | Async (异步) | 差异 |
 |------|---------------|--------------|------|
-| **操作类型** | polling TX | Ring Buffer 写入 | 不同层次 |
+| **操作类型** | polling TX | Ring Buffer 写入 | 不同实现 |
 | **操作速度** | 483 KB/s | 206,654 KB/s | Async 快 428x |
 | **操作目标** | FIFO | Ring Buffer | 不同 |
 
 **分析**：
-- Console 的 polling TX 测量的是 CPU → FIFO 的速度
-- Async 的 Ring Buffer 写入测量的是 CPU → 内存的速度
-- 两者测量层次不同，无法直接对比
+- Console 的 polling TX 测量的是 CPU → FIFO 的速度（需要等待硬件）
+- Async 的 Ring Buffer 写入测量的是 CPU → 内存的速度（不需要等待硬件）
+- **差异原因**：Console 需要轮询等待 FIFO 有空位，Async 直接写入内存
+- **对比意义**：Async 的内核态操作更快，因为它避免了硬件等待
 
 ### 2.2 用户态 write() 性能
 
@@ -86,11 +87,16 @@ ISR 中断驱动
 
 **分析**：
 - **write() 速度**：Async 快 80 倍
-  - Console：需要轮询等待 FIFO，同步阻塞
-  - Async：只写入 Ring Buffer，立即返回
+  - Console：write() 需要轮询等待 FIFO 有空位，同步阻塞
+  - Async：write() 只写入 Ring Buffer，立即返回
 - **write() 延迟**：Async 快 2.4-2.7 倍
-  - Console：每个字节都需要获取锁并等待
-  - Async：只写入 Ring Buffer，操作简单
+  - Console：每个字节都需要获取锁并等待硬件
+  - Async：只写入 Ring Buffer，操作简单快速
+
+**对比意义**：
+- 两个串口都是执行相同的用户态操作：write(fd, buf, len)
+- **Async 的 write() 更快，因为它不需要等待硬件 FIFO**
+- 这是有意义的性能对比，反映了实际使用中的差异
 
 ### 2.3 内存占用
 
@@ -248,15 +254,20 @@ for (int i = 0; i < 100; i++) {
 
 ### 5.1 性能对比总结
 
-| 指标 | Console | Async | 胜出 |
-|------|---------|-------|------|
-| **write() 速度** | 572 KB/s | 46,296 KB/s | **Async** |
-| **write() P50** | 16.3 µs | 6.9 µs | **Async** |
-| **write() P95** | 29.5 µs | 10.8 µs | **Async** |
-| **write() P99** | 278.4 µs | 244.6 µs | **Async** |
-| **内存占用** | 0 KB | 128 KB | **Console** |
-| **Shell 功能** | ✅ | ✅ | 平局 |
-| **数据完整性** | ✅ | ✅ | 平局 |
+| 指标 | Console | Async | 胜出 | 说明 |
+|------|---------|-------|------|------|
+| **write() 速度** | 572 KB/s | 46,296 KB/s | **Async** | Async 不等待硬件 |
+| **write() P50** | 16.3 µs | 6.9 µs | **Async** | Async 操作更简单 |
+| **write() P95** | 29.5 µs | 10.8 µs | **Async** | Async 无硬件等待 |
+| **write() P99** | 278.4 µs | 244.6 µs | **Async** | 都受 QEMU 调度影响 |
+| **内存占用** | 0 KB | 128 KB | **Console** | Async 有 Ring Buffer |
+| **Shell 功能** | ✅ | ✅ | 平局 | 都正常工作 |
+| **数据完整性** | ✅ | ✅ | 平局 | 都 100% 正确 |
+
+**核心结论**：
+- **Async 的 write() 快 80 倍**，因为它不需要等待硬件 FIFO
+- **Console 更省内存**，因为它没有 Ring Buffer
+- **两者都能正常工作**，Shell 功能和数据完整性都正确
 
 ### 5.2 选择建议
 
