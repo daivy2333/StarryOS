@@ -72,29 +72,10 @@
 | **1024 B** | 135,215 KB/s | 114,825 KB/s | Console 1.2x |
 | **4096 B** | 250,956 KB/s | 227,298 KB/s | Console 1.1x |
 
-**差异原因分析**：
-
-**write() 路径对比**：
-
-| 步骤 | Console | Async |
-|------|---------|-------|
-| **锁获取** | N 次（每字节） | 1 次 |
-| **写入操作** | send_raw（轮询 FIFO） | push()（内存拷贝） |
-| **任务调度** | 无 | 唤醒 TX copier |
-
-**小数据时 Console 稍快**：
-- Console 的 send_raw() 在 QEMU 中很快（不等待硬件）
-- Async 的 push() 需要拷贝数据到 Ring Buffer
-- Async 还需要唤醒 TX copier 任务（任务调度开销）
-
-**大数据时 Async 稍快**：
-- Console 的锁获取次数累积（N 次）
-- Async 只需要 1 次锁 + 1 次 push()
-- 批量处理优势体现
-
-**QEMU 的影响**：
-- QEMU 中 send_raw() 不等待硬件，Console 开销很小
-- 真实硬件上 send_raw() 需要等待 FIFO，Async 优势会更明显
+**差异原因**：
+- 小数据时 Console 稍快：send_raw() 在 QEMU 中不等待硬件，Async 的 push() 需要拷贝数据 + 唤醒 TX copier
+- 大数据时差异缩小：Console 锁获取次数累积（N 次），Async 只需 1 次锁
+- 真实硬件上 Async 优势会更明显（send_raw() 需要等待 FIFO）
 
 ### 2.4 压力测试（持续 2 秒）
 
@@ -140,40 +121,14 @@ benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
 
 ### 3.2 解决方案：内核态 RX 测试
 
-**测试方法**：
-- 直接操作 Ring Buffer，绕过 TTY 层
-- 在内核态进行 RX 测试
-- 避免竞争条件
-
-**优势**：
-- 绕过 TTY 层
-- 直接测试 Ring Buffer
-- 结果准确
-- 实现简单
+**测试方法**：直接操作 Ring Buffer，绕过 TTY 层
 
 **结果**：
 - RX Ring Buffer 读取：588,776 KB/s
 - RX 延迟 P50：600 ns
 - CPU 效率：2.45 cycles/ns
 
-### 3.3 内核态测试是否能反映用户态性能
-
-**是的，可以正确反映**，因为：
-
-1. **Ring Buffer 是瓶颈**：
-   - 串口线速 11.52 KB/s
-   - Ring Buffer 速度 588,776 KB/s
-   - Ring Buffer 不是瓶颈
-
-2. **用户态开销很小**：
-   - 系统调用 ~1-2 µs
-   - TTY 处理 ~1-2 µs
-   - 相对于串口线速可以忽略
-
-3. **测试目的**：
-   - 验证 Ring Buffer 性能足够
-   - 验证异步架构有效
-   - 不需要精确到用户态
+**是否能反映用户态性能**：是的，因为 Ring Buffer 不是瓶颈（588 MB/s vs 串口线速 11.52 KB/s），用户态开销（系统调用 ~1-2 µs）可以忽略。
 
 ---
 
@@ -198,18 +153,6 @@ benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
 - **Console 更省内存**：0 KB vs 128 KB
 - **两者功能都正常**：Shell、数据完整性均通过
 - **用户态吞吐量差异小**：受 QEMU 影响，真实硬件上 Async 优势会更明显
-
-### QEMU 影响说明
-
-**QEMU 中**：
-- send_raw() 不等待硬件，Console 开销很小
-- Async 的 Ring Buffer 拷贝 + 任务调度开销相对较大
-- 导致用户态吞吐量差异不大
-
-**真实硬件上**：
-- send_raw() 需要等待 FIFO，Console 开销很大
-- Async 的 write() 只写入 Ring Buffer，很快返回
-- **预期 Async 优势会更明显**
 
 ### 选择建议
 
@@ -253,5 +196,5 @@ benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
 
 ---
 
-**报告版本**：2.1
+**报告版本**：2.2
 **最后更新**：2026-06-01
