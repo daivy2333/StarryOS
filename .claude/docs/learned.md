@@ -400,17 +400,26 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
   - 功能：start/stop/report/memory/get_stats
 - **启动时自动测试**:
   - `entry.rs` 中调用 `run_startup_benchmark()`
-  - 启动时自动运行 TX 吞吐量测试
+  - 启动时自动运行 TX/RX 吞吐量和延迟测试
   - 通过 `ax_println!` 输出结果
 - **集成点**:
   - `async_driver.rs` 中调用 `benchmark::record_rx/tx()`
   - `isr.rs` 中调用 `benchmark::record_irq()`
   - `entry.rs` 中调用 `benchmark::memory_usage()` 和 `run_startup_benchmark()`
-- **用户态脚本**:
-  - `tests/benchmark.sh` - 使用 busybox 内置命令测试
-  - 测试项：吞吐量、响应时间、文件 I/O、内存使用
-- **已知问题**:
-  - Shell 无法直接调用内核函数（`bench` 命令不可用）
-  - 终端转义序列 `^[[38;11R` 回显问题（QEMU 串口配置）
-  - 用户态程序需要编译并添加到 rootfs
+- **用户态测试**:
+  - `tests/benchmark.c` - 用户态测试程序
+  - 测试项：TX 吞吐量、write() 延迟、压力测试
+  - RX 测试在内核态完成（TTY 竞争条件）
 - **编译验证**: cargo check 通过
+
+<!-- L132 --> ### RX 测试 TTY 竞争条件（2026-06-01）
+- **问题**: 用户态 RX 测试卡住，read() 永远等不到数据
+- **原因**: TTY 层回显导致 Shell 抢先读取数据
+  - benchmark write("AAAAA") → UART 发送 → QEMU 回显 → Shell 读取
+  - benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
+- **这不是功能错误**: TTY 回显是正常行为，Shell 读取用户输入是正确的行为
+- **解决方案**: 在内核态直接测试 Ring Buffer，绕过 TTY 层
+- **测试函数**:
+  - `run_rx_throughput_test()` - RX 吞吐量测试
+  - `run_rx_latency_test()` - RX 延迟测试
+- **结果**: RX Ring Buffer 读取 588,776 KB/s，延迟 P50 600 ns
