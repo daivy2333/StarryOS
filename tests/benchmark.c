@@ -100,58 +100,55 @@ static void test_throughput_tx(void) {
  * RX 吞吐量测试
  *
  * 测量从 /dev/console 读取数据的速度
- * 等待用户输入数据
+ * 自动写入数据然后读取（模拟输入）
  */
 static void test_throughput_rx(void) {
     printf("=== RX Throughput Test ===\n");
-    printf("  Please type some text and press Enter:\n");
+    printf("  Auto-injecting data...\n");
 
-    int fd = open(DEVICE_PATH, O_RDONLY);
+    // 使用同一个 fd 进行读写
+    int fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
-        perror("open for read");
+        perror("open for read/write");
         return;
     }
 
-    char buf[BUF_SIZE];
-    size_t total = 0;
-    long long start = 0;
-    int started = 0;
+    // 准备测试数据
+    char write_buf[BUF_SIZE];
+    char read_buf[BUF_SIZE];
+    memset(write_buf, 'A', BUF_SIZE);
 
-    printf("  Reading...\n");
+    size_t total_written = 0;
+    size_t total_read = 0;
+    int test_size = 102400;  // 100 KB
 
-    // 等待用户输入
-    while (1) {
-        ssize_t n = read(fd, buf, BUF_SIZE);
+    long long start = get_time_ns();
+
+    // 写入数据
+    while (total_written < test_size) {
+        ssize_t n = write(fd, write_buf, BUF_SIZE);
         if (n > 0) {
-            if (!started) {
-                start = get_time_ns();
-                started = 1;
-            }
-            total += n;
-
-            // 检查是否有换行符（用户按了 Enter）
-            for (int i = 0; i < n; i++) {
-                if (buf[i] == '\n' || buf[i] == '\r') {
-                    goto done;
-                }
-            }
+            total_written += n;
         }
     }
 
-done:
-    if (total > 0 && started) {
-        long long end = get_time_ns();
-        double elapsed_s = (double)(end - start) / 1000000000.0;
-        double kbps = (double)total / elapsed_s / 1024.0;
-
-        printf("  Received: %zu bytes (%.2f KB)\n", total, (double)total / 1024.0);
-        printf("  Time: %.3f s\n", elapsed_s);
-        printf("  Throughput: %.2f KB/s\n", kbps);
-        printf("  Status: PASS\n\n");
-    } else {
-        printf("  No data received\n");
-        printf("  Status: SKIP\n\n");
+    // 读取数据
+    while (total_read < test_size) {
+        ssize_t n = read(fd, read_buf, BUF_SIZE);
+        if (n > 0) {
+            total_read += n;
+        }
     }
+
+    long long end = get_time_ns();
+    double elapsed_s = (double)(end - start) / 1000000000.0;
+    double kbps = (double)total_read / elapsed_s / 1024.0;
+
+    printf("  Written: %zu bytes (%.2f KB)\n", total_written, (double)total_written / 1024.0);
+    printf("  Read: %zu bytes (%.2f KB)\n", total_read, (double)total_read / 1024.0);
+    printf("  Time: %.3f s\n", elapsed_s);
+    printf("  Throughput: %.2f KB/s\n", kbps);
+    printf("  Status: PASS\n\n");
 
     close(fd);
 }
@@ -160,27 +157,31 @@ done:
  * RX 延迟测试
  *
  * 测量从 /dev/console 读取单字节的延迟
- * 等待用户输入字符
+ * 自动写入字符然后读取（模拟输入）
  */
 static void test_latency_rx(void) {
     printf("=== RX Latency Test ===\n");
-    printf("  Please type %d characters:\n", LATENCY_ITERATIONS);
+    printf("  Auto-injecting bytes...\n");
 
-    int fd = open(DEVICE_PATH, O_RDONLY);
+    int fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
-        perror("open for read");
+        perror("open for read/write");
         return;
     }
 
     long latencies_ns[LATENCY_ITERATIONS];
     int successful = 0;
 
-    printf("  Reading characters...\n");
-
     for (int i = 0; i < LATENCY_ITERATIONS; i++) {
+        char tx = 'A' + (i % 26);
+        char rx;
+
         long long start = get_time_ns();
 
-        char rx;
+        // 写入一个字节
+        write(fd, &tx, 1);
+
+        // 读取一个字节
         ssize_t n = read(fd, &rx, 1);
         if (n == 1) {
             long long end = get_time_ns();
