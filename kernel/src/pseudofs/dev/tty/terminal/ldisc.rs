@@ -325,7 +325,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
+    pub fn read(&mut self, buf: &mut [u8], nonblocking: bool) -> AxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -360,7 +360,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             _ => unreachable!(),
         };
         let pollable = WaitPollable(set);
-        block_on(poll_io(&pollable, IoEvents::IN, false, || {
+        block_on(poll_io(&pollable, IoEvents::IN, nonblocking, || {
             total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
             self.poll_tx.wake();
             (total_read >= vmin)
