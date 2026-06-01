@@ -7,11 +7,10 @@
 
 ## 当前状态
 
-**分支**: feat/uart-async-dev2（性能分析完成，待实施优化）
+**分支**: feat/uart-async-dev2（Q7 完成，准备 Q6 真板验证）
 **成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
-**近期分析**: 完成用户态异步性能打平/反超阻塞串口的根因分析，完成 FIONBIO 非阻塞模式分析
-**Q7 已完成**: yield storm 修复、FIONBIO 传播、benchmark 修正
+**Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正 + TCSBRK 实现（O44）
 **下一步**: Q6 VisionFive2 真板验证（等待硬件到位）
 
 ### 关键发现
@@ -37,9 +36,10 @@
 | **Benchmark 不测 UART** | TX 吞吐量写 /dev/null（绕过 UART），未测量真实串口吞吐量 |
 | **FIONBIO 不生效** | nonblocking 标志在 File 层存储，但 Tty::read_at 和 ldisc::read 硬编码 false，不传播到内层 |
 | **Async VS 阻塞上限** | 115200 bps = 11.52 KB/s 硬件上限，async 在吞吐量上不可能超越阻塞 Console |
-| **Async RX 多一次拷贝** | UART FIFO → ring buffer → ldisc buf → user buf（3 次 vs Console 的 2 次） |
-
-### 实施路径
+| **QEMU 时序限制** | QEMU 16550 不仿真串口线延迟，吞吐量数据偏高；真板才反映真实 ~11.5 KB/s |
+| **TCSBRK 实现** | tcdrain 通过 poll 循环检查 ring buffer + LSR.TRANSMITTER_EMPTY（bit 6, TEMT） |
+| **O_NONBLOCK 传播** | open()/fcntl/ioctl 三个入口都需转发 FIONBIO 到 Tty，缺一不可 |
+| **LSR 位注意** | THR_EMPTY=bit5（可写），TRANSMITTER_EMPTY=bit6（THR+移位寄存器全空=真正 drain） |
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|

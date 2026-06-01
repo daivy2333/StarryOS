@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
-> 2026-06-01 已完成用户态异步性能分析 + FIONBIO 非阻塞模式分析，Q7 规划中。
+> 2026-06-01 会话总结：Q7 全部完成（O42/O43/O44），TCSBRK 实现，O_NONBLOCK 全入口传播。
 > 条目格式: <!-- Q{编号} --> 标记开头，支持 grep 精确定位。
 > 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 

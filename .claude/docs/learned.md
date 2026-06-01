@@ -451,3 +451,41 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
 - **关键点**: 3 层嵌套 block_on、Manual 模式 waker.wake_by_ref()、无 nonblocking 传播
 - **文件**: kernel/src/file/fs.rs → kernel/src/pseudofs/dev/tty/mod.rs → .../terminal/ldisc.rs
 - **参考**: `docs/analysis/user-async-perf-analysis.md`
+
+<!-- L139 --> ### TCSBRK (tcdrain) 实现：poll ring buffer + LSR.TRANSMITTER_EMPTY（2026-06-01）
+- **需求**: `tcdrain(fd)` 调用 `ioctl(fd, TCSBRK=0x5409)`，需等待 TX 数据完全发送
+- **实现**: `block_on(poll_fn(|cx| { check ring buffer empty + LSR::TRANSMITTER_EMPTY; if not ready { cx.waker().wake_by_ref(); Pending } }))`
+- **关键**: 必须查 `TRANSMITTER_EMPTY`（bit 6, TEMT）而非 `THR_EMPTY`（bit 5），否则 THR 空但移位寄存器还在发 → tcdrain 过早返回
+- **文件**: `kernel/src/syscall/fs/ctl.rs:43-58`
+- **QEMU 限制**: QEMU 16550 不仿真串口线延迟，tcdrain 几乎瞬时返回，吞吐量 ~200 KB/s 而非 ~11.5 KB/s
+
+<!-- L140 --> ### O_NONBLOCK 必须通过三个入口全部传播（2026-06-01）
+- **问题**: 最初只在 `sys_ioctl(FIONBIO)` 做了 `f.ioctl(cmd, nb)` 转发，但 `open(O_NONBLOCK)` 和 `fcntl(F_SETFL, O_NONBLOCK)` 只在 File 层设置 flag，未传播到 Tty
+- **症状**: `open("/dev/console", O_RDWR | O_NONBLOCK)` 后 `read()` 仍然阻塞
+- **解决**: 三个入口都加 `f.ioctl(FIONBIO, nb as usize)`:
+  - `syscall/fs/fd_ops.rs:106` — open() 路径
+  - `syscall/fs/fd_ops.rs:254` — fcntl F_SETFL 路径
+  - `syscall/fs/ctl.rs:31` — sys_ioctl 路径
+- **教训**: 任何跨层状态传播都必须穷举所有入口，一个遗漏 = 功能不完整
+
+<!-- L141 --> ### QEMU 16550 串口模拟的时序欺骗（2026-06-01）
+- **现象**: QEMU 上 TX 吞吐量测出 150-250 MB/s（用户态），远超 115200 bps 理论值 11.5 KB/s
+- **根因**: QEMU 的 NS16550 模拟不仿真真实串口线延迟（86.8 µs/byte），UART FIFO 数据处理为瞬时
+- **影响**: 所有基于 tcdrain/轮询 LSR 的吞吐量测试在 QEMU 上均不可信
+- **真板预期**: VisionFive2 @ 115200 bps → ~11.5 KB/s（受硬件波特率限制）
+- **可靠指标（QEMU 也可测）**: 内核态 ring buffer 速度、write() 延迟、CPU cycles/byte
+
+<!-- L142 --> ### LSR::TRANSMITTER_EMPTY vs THR_EMPTY 的位差异（2026-06-01）
+- `LSR::THR_EMPTY` = bit 5: THR 可接受新字节（FIFO 有空位）
+- `LSR::TRANSMITTER_EMPTY` = bit 6: THR + 移位寄存器都为空 = 真正 drain
+- **踩坑**: 最初误用 `LSR::TEMT`（不存在）编译失败；用 `THR_EMPTY` 会导致 tcdrain 过早返回
+- **文件**: `uart_16550/src/spec.rs:904/914` 定义了这两个 bitflag
+
+<!-- L143 --> ### 2026-06-01 会话总结（Q7 完成）
+- **分析**: 两份深度分析文档（user-async-perf-analysis.md, nonblocking-mode-analysis.md）
+- **O42**: yield storm → `ProcessMode::External`，1 行改动（ntty_async.rs）
+- **O43**: FIONBIO 传播到 Tty/ldisc，3 文件改动（tty/mod.rs, ldisc.rs, ctl.rs）
+- **O44**: benchmark 修正（写 /dev/console + tcdrain）+ TCSBRK 实现
+- **补充修复**: O_NONBLOCK open/fcntl 入口转发、LSR 位修正
+- **文档**: 重写 comparison 报告、更新全部体系文档
+- **分支**: dev2 和 bench 均已同步（bench 多了 benchmark.c）
