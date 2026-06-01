@@ -55,10 +55,19 @@
 | **内核态 RX 测试** | ❌ 不可测 | ✅ 可测 |
 | **用户态 RX 测试** | ❌ 不可测 | ❌ 不可测（TTY 竞争） |
 
-**原因分析**：
-- **Console 无法测试 RX**：没有 Ring Buffer，read_bytes() 是非阻塞的，没有数据立即返回 0
-- **Async 可以测试 RX**：有 Ring Buffer，可以直接测试读取速度和延迟
-- **用户态 RX 都无法测试**：TTY 层回显导致 Shell 抢先读取数据
+**为什么不能直接测试 FIFO**：
+1. **非阻塞读取**：Console 的 read_bytes() 使用 try_receive()，没有数据立即返回 0，无法测量延迟
+2. **需要外部数据注入**：FIFO 只有 16 字节，需要外部设备发送数据，无法自动化测试
+3. **FIFO 容量小**：只有 16 字节，无法测试大数据量的吞吐量
+4. **与 Shell 竞争**：Shell 和 benchmark 都在读取 FIFO，Shell 会抢先读取数据
+
+**为什么 Async 可以测试 RX**：
+1. **有 Ring Buffer**：可以存储大量数据（64 KB），支持大数据量测试
+2. **阻塞读取**：可以等待数据到达，测量延迟
+3. **自动数据注入**：ISR 驱动，自动填充 Ring Buffer，无需外部设备
+4. **无竞争**：benchmark 程序独占 Ring Buffer，不与 Shell 竞争
+
+**用户态 RX 都无法测试**：TTY 层回显导致 Shell 抢先读取数据
 
 ### 2.2 用户态 write() 延迟
 
