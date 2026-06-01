@@ -373,3 +373,29 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
   - ASYNC_TTY - 异步串口 TTY 设备
 - **验证**: cargo check 通过，无编译错误
 - **影响**: 代码更简洁，消除死代码，明确异步串口是唯一串口实现
+
+<!-- L130 --> ### 性能测试框架（2026-06-01）
+- **内核态测试**: kernel/src/drivers/benchmark.rs
+  - CPU 占用测量：RISC-V cycle 计数器
+  - NAPI 效果报告：IRQ 频率统计
+  - Ring Buffer 写入测试
+- **用户态测试**: tests/benchmark.c
+  - TX 吞吐量：不同数据大小（64/256/1024/4096 字节）
+  - write() 延迟：P50/P95/P99
+  - 压力测试：持续 2 秒写入
+- **自动化脚本**: scripts/benchmark.sh
+- **测试分支**: feat/uart-async-bench（Async）、feat/uart-bench（Console）
+
+<!-- L131 --> ### CPU 测试数据量统一（2026-06-01）
+- **问题**: Console 测试写入 120 字节，Async 测试写入 102,400 字节，数据量差 853 倍
+- **影响**: CPU 占用数据无法公平对比（Console 2.3% vs Async 57.8%）
+- **解决**: 统一测试数据量为 102,400 字节
+- **结果**: Console 3,835 cycles/byte，Async 268 cycles/byte，Async 效率高 14.3 倍
+- **教训**: 性能对比必须统一测试条件，否则数据有误导性
+
+<!-- L132 --> ### Console vs Async 性能对比结果（2026-06-01）
+- **CPU 效率**: Async 快 14.3 倍（268 vs 3,835 cycles/byte）
+- **延迟**: Async P50 快 2.7 倍（6.5µs vs 17.5µs）
+- **内存**: Console 0 KB，Async 128 KB
+- **压力测试**: 相近（115-121 MB/s）
+- **结论**: Async 在 CPU 效率和延迟上更优，Console 在内存占用上更优

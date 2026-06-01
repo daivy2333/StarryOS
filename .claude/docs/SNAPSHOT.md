@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-05-31
-> 分支：feat/uart-async-dev2 — Q0~Q5.1 ✅，Console 已清理，Q6 等待硬件
+> Last updated: 2026-06-01
+> 分支：feat/uart-async-dev2 — Q0~Q5.1 ✅，性能测试完成，Console 已清理，Q6 等待硬件
 
 ---
 
@@ -10,6 +10,7 @@
 **分支**: feat/uart-async-dev2
 **成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
+**性能测试**: 完成 Console vs Async 对比（统一数据量 102,400 字节）
 **下一步**: VisionFive2 真板验证（等待硬件到位）
 
 ### 关键发现
@@ -142,10 +143,13 @@ StarryOS/
 |------|------|--------|
 | architecture.md | ADR-001~029，两个方向的全部决策历史 | 19 |
 | tasks.md | Q0~Q6 任务追踪（方向 C） | 37 |
-| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 72 |
-| references.md | 依赖文档、规范、设计文档索引 | 46 |
+| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 75 |
+| references.md | 依赖文档、规范、设计文档索引 | 50 |
 | optimization.md | 性能洞察、优化方向、基准目标 | 20 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
+| docs/uart-performance-comparison.md | Console vs Async 性能对比报告 | - |
+| docs/benchmark-report-async.md | Async 详细测试报告 | - |
+| docs/benchmark-report-console.md | Console 详细测试报告 | - |
 | archive.md | 已归档的过时内容 | ~15 |
 
 ---
