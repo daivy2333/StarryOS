@@ -1,0 +1,15 @@
+This is a test data file for UART RX performance testing.
+The quick brown fox jumps over the lazy dog.
+0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+Nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in.
+Reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla.
+Pariatur. Excepteur sint occaecat cupidatat non proident.
+Sunt in culpa qui officia deserunt mollit anim id est laborum.
+Testing UART async driver performance with various data patterns.
+This line contains special characters: !@#$%^&*()_+-=[]{}|;':\",./<>?
+Numbers: 1234567890 9876543210 1111111111 2222222222 3333333333
+Repeated patterns: ABCABCABCABCABC 123123123123123 XYZXYZXYZXYZXYZ
+End of test data for UART RX performance benchmark.
