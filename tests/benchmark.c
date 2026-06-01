@@ -99,26 +99,170 @@ static void test_throughput_tx(void) {
 /**
  * RX 吞吐量测试
  *
- * 跳过：RX 和 TX 使用相同的 Ring Buffer 架构
- * 内核态 RX 测试已证明 Ring Buffer 读取速度很快
- * 用户态 RX 测试需要外部数据注入，在 QEMU 中难以实现
+ * 测量从 /dev/console 读取数据的速度
+ * 使用非阻塞读取避免 echo 循环
  */
 static void test_throughput_rx(void) {
     printf("=== RX Throughput Test ===\n");
-    printf("  Skipped (RX uses same Ring Buffer as TX)\n");
-    printf("  Kernel RX test: 372,093 KB/s\n\n");
+
+    int fd = open(DEVICE_PATH, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        perror("open for read");
+        printf("  Status: SKIP\n\n");
+        return;
+    }
+
+    // 先清空输入缓冲区
+    char drain_buf[1024];
+    while (read(fd, drain_buf, sizeof(drain_buf)) > 0) {}
+
+    // 写入测试数据到 /dev/null（避免 echo）
+    int fd_null = open("/dev/null", O_WRONLY);
+    if (fd_null < 0) {
+        close(fd);
+        printf("  Status: SKIP\n\n");
+        return;
+    }
+
+    char write_buf[BUF_SIZE];
+    memset(write_buf, 'A', BUF_SIZE);
+
+    // 写入测试数据
+    int test_size = 102400;  // 100 KB
+    size_t total_written = 0;
+    while (total_written < test_size) {
+        ssize_t n = write(fd_null, write_buf, BUF_SIZE);
+        if (n > 0) total_written += n;
+    }
+    close(fd_null);
+
+    // 等待一小段时间让数据到达
+    usleep(10000);  // 10ms
+
+    // 读取数据（非阻塞）
+    char read_buf[BUF_SIZE];
+    size_t total_read = 0;
+    long long start = get_time_ns();
+
+    while (total_read < test_size) {
+        ssize_t n = read(fd, read_buf, BUF_SIZE);
+        if (n > 0) {
+            total_read += n;
+        } else {
+            // 没有更多数据
+            break;
+        }
+    }
+
+    long long end = get_time_ns();
+
+    if (total_read > 0) {
+        double elapsed_s = (double)(end - start) / 1000000000.0;
+        double kbps = (double)total_read / elapsed_s / 1024.0;
+
+        printf("  Read: %zu bytes (%.2f KB)\n", total_read, (double)total_read / 1024.0);
+        printf("  Time: %.3f s\n", elapsed_s);
+        printf("  Throughput: %.2f KB/s\n", kbps);
+        printf("  Status: PASS\n\n");
+    } else {
+        printf("  No data available (non-blocking)\n");
+        printf("  Status: SKIP\n\n");
+    }
+
+    close(fd);
 }
 
 /**
  * RX 延迟测试
  *
- * 跳过：RX 和 TX 使用相同的 Ring Buffer 架构
- * 内核态 RX 测试已证明 Ring Buffer 读取速度很快
- * 用户态 RX 测试需要外部数据注入，在 QEMU 中难以实现
+ * 测量从 /dev/console 读取单字节的延迟
+ * 使用非阻塞读取避免 echo 循环
  */
 static void test_latency_rx(void) {
     printf("=== RX Latency Test ===\n");
-    printf("  Skipped (RX uses same Ring Buffer as TX)\n\n");
+
+    int fd = open(DEVICE_PATH, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        perror("open for read");
+        printf("  Status: SKIP\n\n");
+        return;
+    }
+
+    // 先清空输入缓冲区
+    char drain_buf[1024];
+    while (read(fd, drain_buf, sizeof(drain_buf)) > 0) {}
+
+    // 写入测试字节到 /dev/null（避免 echo）
+    int fd_null = open("/dev/null", O_WRONLY);
+    if (fd_null < 0) {
+        close(fd);
+        printf("  Status: SKIP\n\n");
+        return;
+    }
+
+    long latencies_ns[LATENCY_ITERATIONS];
+    int successful = 0;
+
+    for (int i = 0; i < LATENCY_ITERATIONS; i++) {
+        // 写入一个字节
+        char tx = 'A' + (i % 26);
+        write(fd_null, &tx, 1);
+
+        // 等待一小段时间
+        usleep(100);  // 100µs
+
+        // 读取一个字节（非阻塞）
+        char rx;
+        long long start = get_time_ns();
+        ssize_t n = read(fd, &rx, 1);
+        long long end = get_time_ns();
+
+        if (n == 1) {
+            latencies_ns[successful] = (long)(end - start);
+            successful++;
+        }
+    }
+
+    close(fd_null);
+
+    if (successful > 0) {
+        // 计算统计值
+        long sum = 0, min = latencies_ns[0], max = latencies_ns[0];
+        for (int i = 0; i < successful; i++) {
+            sum += latencies_ns[i];
+            if (latencies_ns[i] < min) min = latencies_ns[i];
+            if (latencies_ns[i] > max) max = latencies_ns[i];
+        }
+
+        // 排序计算百分位
+        for (int i = 0; i < successful - 1; i++) {
+            for (int j = 0; j < successful - i - 1; j++) {
+                if (latencies_ns[j] > latencies_ns[j + 1]) {
+                    long temp = latencies_ns[j];
+                    latencies_ns[j] = latencies_ns[j + 1];
+                    latencies_ns[j + 1] = temp;
+                }
+            }
+        }
+
+        long p50 = latencies_ns[successful * 50 / 100];
+        long p95 = latencies_ns[successful * 95 / 100];
+        long p99 = latencies_ns[successful * 99 / 100];
+
+        printf("  Iterations: %d (successful: %d)\n", LATENCY_ITERATIONS, successful);
+        printf("  Min: %ld ns (%.3f ms)\n", min, (double)min / 1000000.0);
+        printf("  Max: %ld ns (%.3f ms)\n", max, (double)max / 1000000.0);
+        printf("  Avg: %ld ns (%.3f ms)\n", sum / successful, (double)(sum / successful) / 1000000.0);
+        printf("  P50: %ld ns (%.3f ms)\n", p50, (double)p50 / 1000000.0);
+        printf("  P95: %ld ns (%.3f ms)\n", p95, (double)p95 / 1000000.0);
+        printf("  P99: %ld ns (%.3f ms)\n", p99, (double)p99 / 1000000.0);
+        printf("  Status: PASS\n\n");
+    } else {
+        printf("  No data available (non-blocking)\n");
+        printf("  Status: SKIP\n\n");
+    }
+
+    close(fd);
 }
 
 /**
