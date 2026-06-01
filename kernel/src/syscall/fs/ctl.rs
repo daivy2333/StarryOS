@@ -33,7 +33,10 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         if val != 0 && val != 1 {
             return Err(AxError::InvalidInput);
         }
-        f.set_nonblocking(val != 0)?;
+        let nb = val != 0;
+        f.set_nonblocking(nb)?;
+        // also propagate to the device (TTY) so read_at/ldisc can check it
+        let _ = f.ioctl(cmd, nb as usize);
         return Ok(0);
     }
     f.ioctl(cmd, arg)

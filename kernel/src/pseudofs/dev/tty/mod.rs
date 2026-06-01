@@ -4,7 +4,7 @@ mod pty;
 pub mod terminal;
 
 use alloc::sync::{Arc, Weak};
-use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
+use core::{any::Any, ops::Deref, sync::atomic::{AtomicBool, Ordering}, task::Context};
 
 use axerrno::{AxError, AxResult};
 use axfs_ng_vfs::NodeFlags;
@@ -45,6 +45,7 @@ pub struct Tty<R, W> {
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
     is_ptm: bool,
+    nonblocking: AtomicBool,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -58,6 +59,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             ldisc,
             writer,
             is_ptm,
+            nonblocking: AtomicBool::new(false),
         })
     }
 }
@@ -84,13 +86,14 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
+        let nb = self.nonblocking.load(Ordering::Acquire);
         block_on(poll_io(
             &self.terminal.job_control,
             IoEvents::IN,
-            false,
+            nb,
             || {
                 if self.is_ptm || self.terminal.job_control.current_in_foreground() {
-                    self.ldisc.lock().read(buf)
+                    self.ldisc.lock().read(buf, nb)
                 } else {
                     Err(AxError::WouldBlock)
                 }
@@ -166,13 +169,12 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .session()
                     .unset_terminal(&(self.this.upgrade().unwrap() as _))
                 {
-                    // TODO: If the process was session leader, send SIGHUP and
-                    // SIGCONT to the foreground process group and all processes
-                    // in the current session lose their
-                    // controlling terminal.
                 } else {
                     warn!("Failed to unset terminal");
                 }
+            }
+            FIONBIO => {
+                self.nonblocking.store(arg != 0, Ordering::Release);
             }
             _ => return Err(AxError::NotATty),
         }
