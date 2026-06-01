@@ -43,13 +43,22 @@
 | **TX 写入速度** | 567 KB/s | 214,961 KB/s | **Async 379x** |
 | **TX CPU Cycles** | 392,721,729 | 27,231,344 | **Async 14.4x** |
 | **TX 每字节 CPU** | 3,835 cycles/byte | 265 cycles/byte | **Async 14.5x** |
-| **RX 读取速度** | N/A | 588,776 KB/s | Async 可测 |
-| **RX 延迟 P50** | N/A | 600 ns | Async 可测 |
+| **RX 读取速度** | ❌ 不可测 | 588,776 KB/s | Async |
+| **RX 延迟 P50** | ❌ 不可测 | 600 ns | Async |
 
-**说明**：
-- Console 轮询等待 FIFO，消耗大量 CPU
-- Async 直接写入 Ring Buffer，操作简单高效
-- RX 测试在内核态完成（绕过 TTY 竞争条件）
+**RX 测试差异说明**：
+
+| 项目 | Console | Async |
+|------|---------|-------|
+| **缓冲区** | 无 Ring Buffer | 有 Ring Buffer |
+| **读取方式** | 非阻塞（try_receive） | 阻塞（等待数据） |
+| **内核态 RX 测试** | ❌ 不可测 | ✅ 可测 |
+| **用户态 RX 测试** | ❌ 不可测 | ❌ 不可测（TTY 竞争） |
+
+**原因分析**：
+- **Console 无法测试 RX**：没有 Ring Buffer，read_bytes() 是非阻塞的，没有数据立即返回 0
+- **Async 可以测试 RX**：有 Ring Buffer，可以直接测试读取速度和延迟
+- **用户态 RX 都无法测试**：TTY 层回显导致 Shell 抢先读取数据
 
 ### 2.2 用户态 write() 延迟
 
@@ -95,44 +104,7 @@
 
 ---
 
-## 3. 用户态 RX 测试说明
-
-### 3.1 为什么不在用户态测试 RX
-
-**问题**：TTY 层回显导致 read() 卡住
-
-```
-benchmark write("AAAAA") → UART 发送 → QEMU 回显 → Shell 读取
-                                                    ↓
-benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
-```
-
-**原因**：
-1. TTY 设备默认会回显输入的字符
-2. Shell 和 benchmark 程序都在读取 `/dev/console`
-3. Shell 先读取了回显数据
-4. benchmark 程序的 read() 永远等不到数据
-
-**这不是功能错误**：
-- TTY 回显是正常行为
-- Shell 读取用户输入是正确的行为
-- 串口工作完全正常
-- 只是性能测试需要特殊方法
-
-### 3.2 解决方案：内核态 RX 测试
-
-**测试方法**：直接操作 Ring Buffer，绕过 TTY 层
-
-**结果**：
-- RX Ring Buffer 读取：588,776 KB/s
-- RX 延迟 P50：600 ns
-- CPU 效率：2.45 cycles/ns
-
-**是否能反映用户态性能**：是的，因为 Ring Buffer 不是瓶颈（588 MB/s vs 串口线速 11.52 KB/s），用户态开销（系统调用 ~1-2 µs）可以忽略。
-
----
-
-## 4. 结论
+## 3. 结论
 
 ### 性能总结
 
@@ -178,23 +150,25 @@ benchmark read() 等待 ← 数据被 Shell 读走了 ← 回显数据
 ### 内核态测试
 
 - **TX 测试**：写入 102,400 字节到 Ring Buffer，测量速度和 CPU 占用
-- **RX 测试**：从 Ring Buffer 读取 65,536 字节，测量速度和 CPU 占用
-- **RX 延迟测试**：读取 100 个单字节，测量每次读取延迟
+- **RX 测试**（仅 Async）：从 Ring Buffer 读取 65,536 字节，测量速度和 CPU 占用
+- **RX 延迟测试**（仅 Async）：读取 100 个单字节，测量每次读取延迟
+- **Console RX 测试**：跳过（无 Ring Buffer，read_bytes() 非阻塞）
 
 ### 用户态测试
 
 - **吞吐量**：测试 64/256/1024/4096 字节，每种 1000 次
 - **延迟**：100 次单字节 write()，计算 P50/P95/P99
 - **压力测试**：持续 2 秒写入，测量总吞吐量
-- **RX 测试**：跳过（TTY 竞争条件，在内核态完成）
+- **RX 测试**：跳过（TTY 竞争条件）
 
 ### 局限性
 
 - QEMU 串口模拟不等待硬件，write() 立即返回
 - 真实硬件上 Async 优势可能更明显
 - 用户态 RX 测试受 TTY 竞争条件限制
+- Console 无法测试 RX（无 Ring Buffer，非阻塞读取）
 
 ---
 
-**报告版本**：2.2
+**报告版本**：2.3
 **最后更新**：2026-06-01
