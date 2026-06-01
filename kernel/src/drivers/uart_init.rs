@@ -9,6 +9,7 @@
 //! - 数据格式：8-N-1
 
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use axhal::mem::phys_to_virt;
 use axlog::info;
@@ -37,6 +38,19 @@ pub const NAPI_THRESHOLD: u32 = 16;
 /// NAPI: batch size in polling mode
 pub const NAPI_BATCH_SIZE: usize = 64;
 
+/// ISR 中断计数器
+static IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// 记录一次 ISR 中断
+pub fn record_irq() {
+    IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// 获取 ISR 中断总数
+pub fn get_irq_count() -> u64 {
+    IRQ_COUNT.load(Ordering::Relaxed)
+}
+
 /// 获取 UART MMIO 虚拟地址
 fn get_uart_mmio_virt() -> VirtAddr {
     phys_to_virt(PhysAddr::from(UART_MMIO_BASE_PHYS))
@@ -63,7 +77,7 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
 }
 
 // IER register manipulation helpers (direct MMIO, cached to reduce RMW)
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::AtomicU8;
 static CACHED_IER: AtomicU8 = AtomicU8::new(0);
 
 fn write_ier(value: u8) {

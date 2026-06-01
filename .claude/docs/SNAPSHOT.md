@@ -29,6 +29,7 @@
 | **TX interleave 修复** | TX copier 用本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 |
 | **AtomicWaker 直接唤醒** | ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） |
 | **Console 组件清理** | 删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 |
+| **性能测试框架** | 内核态统计 + 用户态 benchmark.c + 自动化脚本 |
 
 ### 实施路径
 
@@ -142,8 +143,8 @@ StarryOS/
 |------|------|--------|
 | architecture.md | ADR-001~029，两个方向的全部决策历史 | 19 |
 | tasks.md | Q0~Q6 任务追踪（方向 C） | 37 |
-| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 72 |
-| references.md | 依赖文档、规范、设计文档索引 | 46 |
+| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 74 |
+| references.md | 依赖文档、规范、设计文档索引 | 47 |
 | optimization.md | 性能洞察、优化方向、基准目标 | 20 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
 | archive.md | 已归档的过时内容 | ~15 |

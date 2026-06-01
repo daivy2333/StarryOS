@@ -1,6 +1,8 @@
 use alloc::{
     string::{String, ToString},
     sync::Arc,
+    vec,
+    vec::Vec,
 };
 
 use axfs::FS_CONTEXT;
@@ -10,12 +12,57 @@ use axtask::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
-    drivers::{uart_init, isr, async_driver::DRIVER, ASYNC_TTY},
+    drivers::{uart_init, isr, async_driver::DRIVER, ASYNC_TTY, benchmark},
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs,
     task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
 };
+
+/// 运行启动时的性能测试
+fn run_startup_benchmark() {
+    use crate::drivers::ring_buffer::BUF_SIZE;
+    use axhal::time::monotonic_time_nanos;
+
+    ax_println!("[BENCH] Running startup benchmark...");
+
+    // 测试 1: Ring Buffer 吞吐量测试（模拟异步路径）
+    // 使用 0 字节避免数据泄漏到输出
+    let test_data = vec![0u8; 1024];
+    let iterations = 100;
+    let start_time = monotonic_time_nanos();
+
+    // 通过 ring buffer 写入，模拟 TX 路径
+    for _ in 0..iterations {
+        let mut tx_buf = crate::drivers::async_driver::DRIVER.tx.lock();
+        tx_buf.push(&test_data);
+        drop(tx_buf);
+    }
+
+    let end_time = monotonic_time_nanos();
+    let elapsed_ns = end_time - start_time;
+    let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
+    let total_bytes = iterations * 1024;
+    let throughput_kbps = total_bytes as f64 / elapsed_s / 1024.0;
+
+    ax_println!("[BENCH] Ring Buffer Write: {:.2} KB/s", throughput_kbps);
+    ax_println!("[BENCH] Total: {} bytes in {:.2} ms", total_bytes, elapsed_ns as f64 / 1_000_000.0);
+
+    // 测试 2: 硬件理论极限
+    ax_println!("[BENCH] Hardware Line Rate: 11.52 KB/s (115200 bps)");
+    ax_println!("[BENCH] FIFO Depth: 16 bytes");
+
+    // 测试 3: 内存统计
+    ax_println!("[BENCH] Ring Buffer Memory: {} KB ({} bytes)", BUF_SIZE / 1024, BUF_SIZE);
+    ax_println!("[BENCH] Total Buffer Memory: {} KB ({} bytes)", BUF_SIZE * 2 / 1024, BUF_SIZE * 2);
+
+    // 测试 4: ISR 统计（通过 uart_init 模块）
+    let irq_count = crate::drivers::uart_init::get_irq_count();
+    ax_println!("[BENCH] ISR Count: {}", irq_count);
+
+    ax_println!("[BENCH] Startup benchmark complete");
+    ax_println!("[BENCH] Note: Actual throughput limited by UART line rate (11.52 KB/s)");
+}
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
@@ -25,6 +72,12 @@ pub fn init(args: &[String], envs: &[String]) {
     DRIVER.start_rx_copier();
     DRIVER.start_tx_copier();
     ax_println!("[kernel] Q4: AsyncUart RX+TX copiers started");
+
+    // 初始化 benchmark 模块并显示内存统计
+    benchmark::memory_usage();
+
+    // 运行简单的性能测试
+    run_startup_benchmark();
 
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");

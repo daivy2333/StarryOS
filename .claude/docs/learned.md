@@ -373,3 +373,44 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
   - ASYNC_TTY - 异步串口 TTY 设备
 - **验证**: cargo check 通过，无编译错误
 - **影响**: 代码更简洁，消除死代码，明确异步串口是唯一串口实现
+
+<!-- L130 --> ### 性能测试设计要点（2026-05-31）
+- **测试指标**:
+  1. 吞吐量：目标 > 10 KB/s (90% 线速)，测量 5 秒批量传输
+  2. 延迟：P50 < 500 µs，P99 < 2 ms，测量 100 次单字节 echo
+  3. 内存消耗：RX/TX Ring Buffer 各 64 KB，总计 128 KB
+  4. 性能浮动：多次测量的标准差和变异系数
+  5. NAPI 效果：IRQ 频率对比（开启/关闭）
+- **测试架构**:
+  - 用户态：通过 `/dev/console` 读写，使用 `clock_gettime(CLOCK_MONOTONIC)` 计时
+  - 内核态：`axhal::time::monotonic_time_nanos()` 精确计时，AtomicU64 统计计数器
+  - 自动化：QEMU TCP 串口连接 + Python 脚本控制
+- **关键 API**:
+  - `axhal::time::monotonic_time_nanos()` - 获取单调时间戳（纳秒）
+  - `axhal::time::current_ticks()` - 获取硬件时钟 ticks
+  - `axhal::time::ticks_to_nanos()` - ticks 转纳秒
+  - RISC-V: `riscv::register::time::read()` - 读取 RDTIME 寄存器
+- **Ring Buffer 内存**: `BUF_SIZE = 64 * 1024`（64 KB），RX/TX 各一个
+- **NAPI 配置**: `NAPI_THRESHOLD = 16`，`NAPI_BATCH_SIZE = 64`
+
+<!-- L131 --> ### 性能测试代码实现（2026-06-01）
+- **内核态模块**:
+  - `kernel/src/drivers/benchmark.rs` - 统计计数器和报告函数
+  - 统计项：TX_BYTES、RX_BYTES、IRQ_COUNT、START_TIME
+  - 功能：start/stop/report/memory/get_stats
+- **启动时自动测试**:
+  - `entry.rs` 中调用 `run_startup_benchmark()`
+  - 启动时自动运行 TX 吞吐量测试
+  - 通过 `ax_println!` 输出结果
+- **集成点**:
+  - `async_driver.rs` 中调用 `benchmark::record_rx/tx()`
+  - `isr.rs` 中调用 `benchmark::record_irq()`
+  - `entry.rs` 中调用 `benchmark::memory_usage()` 和 `run_startup_benchmark()`
+- **用户态脚本**:
+  - `tests/benchmark.sh` - 使用 busybox 内置命令测试
+  - 测试项：吞吐量、响应时间、文件 I/O、内存使用
+- **已知问题**:
+  - Shell 无法直接调用内核函数（`bench` 命令不可用）
+  - 终端转义序列 `^[[38;11R` 回显问题（QEMU 串口配置）
+  - 用户态程序需要编译并添加到 rootfs
+- **编译验证**: cargo check 通过

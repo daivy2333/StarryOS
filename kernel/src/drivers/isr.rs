@@ -1,11 +1,13 @@
 use embassy_sync::waitqueue::AtomicWaker;
 use uart_16550::spec::registers::InterruptType;
-use crate::drivers::uart_init::{uart_instance, disable_rx_intr, disable_tx_intr};
+use crate::drivers::uart_init::{uart_instance, disable_rx_intr, disable_tx_intr, record_irq};
 
 pub static RX_WAKER: AtomicWaker = AtomicWaker::new();
 pub static TX_WAKER: AtomicWaker = AtomicWaker::new();
 
 pub fn uart_isr_handler(_irq: usize) {
+    record_irq();
+
     let mut uart = uart_instance().lock();
     let isr = uart.isr();
     match isr.interrupt_type() {

@@ -9,8 +9,11 @@
 //! - async_driver: RX/TX copier 任务
 //! - device_ops: AsyncUartReader/Writer（TtyRead/TtyWrite trait）
 //! - ntty_async: AsyncTty 类型别名
+//! - benchmark: 性能测试统计模块
+//! - benchmark_cmd: Benchmark 命令接口
 
 pub mod async_driver;
+pub mod benchmark;
 pub mod device_ops;
 pub mod isr;
 pub mod ntty_async;

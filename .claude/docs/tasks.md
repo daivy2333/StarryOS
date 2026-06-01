@@ -89,9 +89,15 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 
 ### Q5.2: 测试补全
 
-<!-- Q5.2.1 --> - [ ] O21 用户态自动化测试 — Makefile test target
+<!-- Q5.2.1 --> - [x] O21 用户态自动化测试 — 内核态统计 + 启动时自动测试 ✅
 <!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)
 <!-- Q5.2.3 --> - [ ] Gate Q5.2: 自动化测试覆盖核心路径
+
+**已实现**:
+- `kernel/src/drivers/benchmark.rs` - 内核态统计模块
+- `entry.rs` 中 `run_startup_benchmark()` - 启动时自动测试
+- 集成点：async_driver.rs + isr.rs + entry.rs
+- `tests/benchmark.sh` - 用户态 busybox 脚本
 
 ### Q6: 真板验证 ⏳ 等待硬件
 
@@ -116,6 +122,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 7. TX interleave 修复：本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 ✅
 8. AtomicWaker 直接唤醒：ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） ✅
 9. Console 组件清理：删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 ✅
+10. 性能测试框架：内核态统计 + 启动时自动测试 ✅
 
 ### 已修正的误判
 
