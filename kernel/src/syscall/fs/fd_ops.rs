@@ -11,6 +11,7 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Refere
 use axtask::current;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
+use linux_raw_sys::ioctl::FIONBIO;
 
 use crate::{
     file::{
@@ -105,6 +106,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     };
     if flags & O_NONBLOCK != 0 {
         f.set_nonblocking(true)?;
+        let _ = f.ioctl(linux_raw_sys::ioctl::FIONBIO, 1);
     }
     add_file_like(f, flags & O_CLOEXEC != 0)
 }
@@ -251,7 +253,10 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Ok(0)
         }
         F_SETFL => {
-            get_file_like(fd)?.set_nonblocking(arg & (O_NONBLOCK as usize) > 0)?;
+            let nb = arg & (O_NONBLOCK as usize) > 0;
+            let f = get_file_like(fd)?;
+            f.set_nonblocking(nb)?;
+            let _ = f.ioctl(FIONBIO, nb as usize);
             Ok(0)
         }
         F_GETFL => {
