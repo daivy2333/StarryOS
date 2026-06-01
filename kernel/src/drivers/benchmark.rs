@@ -193,6 +193,36 @@ pub fn run_throughput_test() {
     ax_println!("[BENCH] Note: polling TX bypasses UART driver, measures CPU output speed");
 }
 
+/// 运行 Console RX 吞吐量测试
+///
+/// 测试 Console 读取速度
+/// 注意：Console 没有 Ring Buffer，read_bytes() 是非阻塞的
+/// 需要外部数据注入才能测试
+pub fn run_rx_throughput_test() {
+    ax_println!("[BENCH] Running Console RX throughput test...");
+
+    // Console 没有 Ring Buffer，无法直接测试 RX 吞吐量
+    // read_bytes() 是非阻塞的，如果没有数据立即返回 0
+    ax_println!("[BENCH] Console has no Ring Buffer");
+    ax_println!("[BENCH] read_bytes() is non-blocking (try_receive)");
+    ax_println!("[BENCH] RX throughput test skipped (no buffer to measure)");
+}
+
+/// 运行 Console RX 延迟测试
+///
+/// 测试 Console 读取延迟
+/// 注意：Console 没有 Ring Buffer，read_bytes() 是非阻塞的
+/// 需要外部数据注入才能测试
+pub fn run_rx_latency_test() {
+    ax_println!("[BENCH] Running Console RX latency test...");
+
+    // Console 没有 Ring Buffer，无法直接测试 RX 延迟
+    // read_bytes() 是非阻塞的，如果没有数据立即返回 0
+    ax_println!("[BENCH] Console has no Ring Buffer");
+    ax_println!("[BENCH] read_bytes() is non-blocking (try_receive)");
+    ax_println!("[BENCH] RX latency test skipped (no buffer to measure)");
+}
+
 /// 运行 Shell I/O 测试
 ///
 /// 测试 Shell 基本功能

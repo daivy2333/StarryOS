@@ -25,6 +25,10 @@ pub fn init(args: &[String], envs: &[String]) {
     // 运行 Console 吞吐量测试
     benchmark::run_throughput_test();
 
+    // 运行 Console RX 测试
+    benchmark::run_rx_throughput_test();
+    benchmark::run_rx_latency_test();
+
     // 运行 Shell I/O 测试
     benchmark::run_shell_test();
 

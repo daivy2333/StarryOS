@@ -69,7 +69,22 @@ let cpu_cycles = stop_cpu_measurement();
 - 测量的是 CPU 输出到 FIFO 的速度
 - 不包括数据在串口线上的传输时间
 
-### 2.2 内存占用
+### 2.2 RX 读取测试
+
+**测试方法**：测试 Console 的 read_bytes() 函数
+
+**测试结果**：
+- Console 没有 Ring Buffer
+- read_bytes() 是非阻塞的（try_receive）
+- 如果没有数据，立即返回 0
+- 无法直接测试 RX 吞吐量和延迟
+
+**分析**：
+- Console 的 RX 是同步阻塞的，没有缓冲区
+- 需要外部数据注入才能测试
+- 与 Async 的 RX 测试面临相同的 TTY 竞争条件问题
+
+### 2.3 内存占用
 
 **测试结果**：
 
