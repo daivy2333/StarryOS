@@ -109,6 +109,8 @@
 <!-- R49 --> | docs/analysis/project-knowledge-map.md | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 ✅ |
 <!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 📦 已归档，当前状态见 SNAPSHOT.md 和 tasks.md |
 <!-- R51 --> | docs/benchmark-report-async.md | Async 异步串口性能测试报告：内核态和用户态测试结果、与 Console 对比 |
+<!-- R52 --> | docs/analysis/user-async-perf-analysis.md | 用户态异步串口性能分析：三嵌套 block_on/poll_io、yield storm、Manual 模式问题、benchmark 缺陷、对比阻塞 Console |
+<!-- R53 --> | docs/analysis/nonblocking-mode-analysis.md | 非阻塞模式 FIONBIO 分析：当前实现、nonblocking 标志未传播到 TTY 层、实现方案、测试用例 |
 
 ---
 

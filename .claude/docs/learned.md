@@ -433,3 +433,40 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
   - 结论部分简化
   - 选择建议合并
 - **效果**: 文档从 384 行减少到 200 行，更易阅读
+
+<!-- L134 --> ### 三层嵌套 block_on/poll_io 导致 yield storm（2026-06-01）
+- **问题**: 用户态 async read 路径有 3 层嵌套 `block_on(poll_io(...))`: File → Tty/JobControl → Ldisc/WaitPollable
+- **根因**: `ProcessMode::Manual` 中 `register_rx_waker()` 调用 `waker.wake_by_ref()`，导致 waker 注册后**立即唤醒** task
+- **效果**: 形成高频 yield-re-schedule 循环（yield storm），无数据时空耗 CPU
+- **解决方向**: 改用 `ProcessMode::External` 消除立即唤醒，或优化 WaitPollable 的 register 行为
+- **参考**: `docs/analysis/user-async-perf-analysis.md`
+
+<!-- L135 --> ### 异步 VS 阻塞串口性能边界（2026-06-01）
+- **上限**: 115200 bps = 11.52 KB/s，无论同步异步都受此限制
+- **Async TX 优势**: write() 返回快（~1 us vs 87 us/byte busy-wait），适合 pipeline
+- **Async RX 劣势**: 多一次 ring buffer 拷贝（UART FIFO → ring buf → ldisc buf → user buf）
+- **CPU 空闲**: Manual 模式下 yield storm 导致空闲 CPU 更高
+- **结论**: 异步在吞吐量上**不可能**超过阻塞 Console（硬件上限），优势在不阻塞调用方
+- **参考**: `docs/analysis/user-async-perf-analysis.md`
+
+<!-- L136 --> ### 当前 benchmark 不测量实际 UART 吞吐量（2026-06-01）
+- **问题**: `tests/benchmark.c` 的 TX 吞吐量测试写入 `/dev/null`（非 `/dev/console`），绕过 UART
+- **延迟测试**: 测量的是 ring buffer push 时间（~1 us），不是硬件发送延迟
+- **RX 用户态测试**: 被跳过（TTY echo loop），内核态测试绕过 TTY 层
+- **解决**: TX 测试需 write → tcdrain() 等实际发送完成；RX 需 raw mode + 独立测试程序
+- **参考**: `docs/analysis/user-async-perf-analysis.md`
+
+<!-- L137 --> ### FIONBIO nonblocking 标志未传播到 TTY 层（2026-06-01）
+- **问题**: `File::read()` 将 nonblocking 传入 `poll_io`，但 `Tty::read_at()` 和 `ldisc.read()` 内部 `block_on(poll_io(...))` 硬编码 `false`
+- **影响**: `ioctl(FIONBIO)`、`fcntl(F_SETFL, O_NONBLOCK)`、`open(O_NONBLOCK)` 对 TTY 读均无效
+- **TX 路径**: AsyncUartWriter::write() 天然非阻塞（push ring buffer），不受影响
+- **解决**: Tty struct 添加 AtomicBool nonblocking，传播到 read_at → ldisc
+- **参考**: `docs/analysis/nonblocking-mode-analysis.md`
+
+<!-- L138 --> ### 用户态 async read 完整路径追踪（2026-06-01）
+- **路径**: sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
+  → Device::read_at → Tty::read_at → block_on(poll_io(JobControl, IN, false, || ldisc.read()))
+  → ldisc.read → block_on(poll_io(WaitPollable, IN, false, || buf_rx.pop_slice()))
+- **关键点**: 3 层嵌套 block_on、Manual 模式 waker.wake_by_ref()、无 nonblocking 传播
+- **文件**: kernel/src/file/fs.rs → kernel/src/pseudofs/dev/tty/mod.rs → .../terminal/ldisc.rs
+- **参考**: `docs/analysis/user-async-perf-analysis.md`

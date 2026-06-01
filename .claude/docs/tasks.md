@@ -1,6 +1,7 @@
 # tasks.md — 任务追踪
 
-> 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
+> 由 project-docs-assistant 维护，feat/uart-async-bench → 将带回 dev2。
+> 2026-06-01 已完成用户态异步性能分析和 FIONBIO 非阻塞模式分析。
 > 条目格式: <!-- Q{编号} --> 标记开头，支持 grep 精确定位。
 > 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
@@ -8,7 +9,7 @@
 
 ## 当前: 方向 C — kernel 层独立实现（feat/uart-async-dev2）
 
-> 2026-05-31 stride=4 根因确认 + Q0-Q4 全部通过。异步串口在 kernel 层独立实现，Shell 双向异步。
+> 2026-06-01 完成性能分析：发现 3 层 yield storm、Manual 模式缺陷、benchmark 不测 UART、FIONBIO 不传播。
 
 ### Milestone 概览
 
@@ -21,7 +22,7 @@
 | **Q4** | 全异步 RX+TX | TX copier + ISR，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
-| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ⏳ |
+| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成，待实现 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -90,7 +91,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 ### Q5.2: 测试补全
 
 <!-- Q5.2.1 --> - [x] O21 用户态自动化测试 — 内核态统计 + 启动时自动测试 ✅
-<!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)
+<!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)（✅ 分析完成，见 docs/analysis/nonblocking-mode-analysis.md）
 <!-- Q5.2.3 --> - [ ] Gate Q5.2: 自动化测试覆盖核心路径
 
 **已实现**:
@@ -98,6 +99,10 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 - `entry.rs` 中 `run_startup_benchmark()` - 启动时自动测试
 - 集成点：async_driver.rs + isr.rs + entry.rs
 - `tests/benchmark.sh` - 用户态 busybox 脚本
+
+**分析完成**:
+- `docs/analysis/user-async-perf-analysis.md` — 用户态异步性能打平/反超阻塞串口的 5 大根因
+- `docs/analysis/nonblocking-mode-analysis.md` — FIONBIO 实现现状、nonblocking 未传播到 TTY、3 种实现方案
 
 ### Q6: 真板验证 ⏳ 等待硬件
 
@@ -124,6 +129,13 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 9. Console 组件清理：删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 ✅
 10. 性能测试框架：内核态统计 + 启动时自动测试 ✅
 
+### 待解决的问题
+
+1. **三重 yield storm** — 用户态 async read 有 3 层 block_on/poll_io（File→Tty/JobControl→Ldisc/WaitPollable），Manual 模式 waker.wake_by_ref() 导致无数据时高频 yield-re-schedule
+2. **Manual 模式缺陷** — ProcessMode::Manual 中 register_rx_waker 直接 wake_by_ref，应改为 External 模式使用 PollSet
+3. **Benchmark 不测 UART** — TX 吞吐量测试通过 /dev/null（绕过 UART）；延迟测试只测 ring buffer push。需改为 write→tcdrain() 测量真实串口吞吐量
+4. **FIONBIO 不传播到 TTY** — nonblocking 标志在 File 层存储，Tty::read_at 和 ldisc.read 硬编码 false。三处需修改：Tty struct 添加 nonblocking 字段、Tty::read_at 传播、ldisc.read 支持
+
 ### 已修正的误判
 
 1. **LoadFault 根因**: stride=4 越界，非"MMIO 权限阻塞"
@@ -134,3 +146,11 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 ### 方向 A M3 的真正失败原因
 
 IRQ 风暴 + TX busy-loop — Console + AsyncUart 共享 UART 时的 IER 冲突和 stride=4 错误
+
+### 新发现的架构问题（2026-06-01 性能分析）
+
+1. **用户态性能上限是波特率**：115200 bps = 11.52 KB/s，异步在吞吐量上不可能超越阻塞 Console
+2. **Async RX 多一次拷贝**：UART FIFO → ring buffer → ldisc buf → user buf（3 次 vs Console 的 2 次）
+3. **ProcessMode::Manual 在空闲时产生 yield storm**：waker.wake_by_ref() 导致 yield-re-schedule 循环
+4. **FIONBIO 对 TTY 不生效**：nonblocking 标志未传播到 Tty/ldisc 层
+5. **benchmark.c 不测真实 UART 吞吐量**：TX 测试写 /dev/null，不经过 UART
