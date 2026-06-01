@@ -1,7 +1,9 @@
 use alloc::{ffi::CString, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
+    future::poll_fn,
     mem::offset_of,
+    task::Poll,
     time::Duration,
 };
 
@@ -9,7 +11,7 @@ use axerrno::{AxError, AxResult};
 use axfs::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
-use axtask::current;
+use axtask::{current, future::block_on};
 use linux_raw_sys::{
     general::*,
     ioctl::{FIONBIO, TIOCGWINSZ},
@@ -35,22 +37,36 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         }
         let nb = val != 0;
         f.set_nonblocking(nb)?;
-        // also propagate to the device (TTY) so read_at/ldisc can check it
         let _ = f.ioctl(cmd, nb as usize);
         return Ok(0);
     }
-    f.ioctl(cmd, arg)
-        .map(|result| result as isize)
-        .inspect_err(|err| {
-            if *err == AxError::NotATty {
-                // glibc likes to call TIOCGWINSZ on non-terminal files, just
-                // ignore it
-                if cmd == TIOCGWINSZ {
-                    return;
+    // TCSBRK (0x5409): tcdrain support — wait for TX ring buffer + UART FIFO drain
+    if cmd == 0x5409 {
+        use uart_16550::spec::registers::LSR;
+        block_on(poll_fn(|cx| {
+            let tx_empty = crate::drivers::async_driver::DRIVER.tx.lock().is_empty();
+            if tx_empty {
+                let mut uart = crate::drivers::uart_init::uart_instance().lock();
+                let lsr = uart.lsr();
+                if lsr.contains(LSR::TRANSMITTER_EMPTY) {
+                    return Poll::Ready(Ok(0isize));
                 }
-                warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
             }
-        })
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }))
+    } else {
+        f.ioctl(cmd, arg)
+            .map(|result| result as isize)
+            .inspect_err(|err| {
+                if *err == AxError::NotATty {
+                    if cmd == TIOCGWINSZ {
+                        return;
+                    }
+                    warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
+                }
+            })
+    }
 }
 
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {

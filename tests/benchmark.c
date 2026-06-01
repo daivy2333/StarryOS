@@ -47,7 +47,7 @@ static void test_tx_throughput(void) {
         int iterations = 100;
         char *buf = malloc(test_size);
         if (!buf) { perror("malloc"); continue; }
-        memset(buf, 'A', test_size);
+        memset(buf, 0, test_size);    /* non-printable — doesn't clutter terminal */
 
         long long start = get_time_ns();
         size_t total = 0;
