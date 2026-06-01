@@ -108,8 +108,7 @@
 <!-- R48 --> | docs/analysis/bypass-axplat-feasibility.md | ⚠️ 部分过时：MMIO 页表分析已被 stride=4 纠正，其余仍有参考价值 ✅ |
 <!-- R49 --> | docs/analysis/project-knowledge-map.md | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 ✅ |
 <!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 📦 已归档，当前状态见 SNAPSHOT.md 和 tasks.md |
-<!-- R51 --> | docs/analysis/uart-benchmark-design.md | UART 异步串口性能测试设计：测试方案、指标定义、实现计划、结果格式 |
-<!-- R52 --> | docs/benchmark-report.md | UART 异步串口性能参数报告：测试方法、测试项目、性能表现、结论 |
+<!-- R51 --> | docs/benchmark-report-async.md | Async 异步串口性能测试报告：内核态和用户态测试结果、与 Console 对比 |
 
 ---
 
