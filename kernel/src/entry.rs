@@ -10,6 +10,7 @@ use axtask::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
+    drivers::benchmark,
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty::N_TTY},
@@ -18,6 +19,15 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
+    // 显示内存统计
+    benchmark::memory_usage();
+
+    // 运行 Console 吞吐量测试
+    benchmark::run_throughput_test();
+
+    // 运行 Shell I/O 测试
+    benchmark::run_shell_test();
+
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
 
