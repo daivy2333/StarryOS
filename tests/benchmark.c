@@ -100,24 +100,133 @@ static void test_throughput_tx(void) {
  * RX 吞吐量测试
  *
  * 测量从 /dev/console 读取数据的速度
- * 使用超时机制避免无限阻塞
+ * 等待用户输入数据
  */
 static void test_throughput_rx(void) {
     printf("=== RX Throughput Test ===\n");
-    printf("  Skipped (requires external data injection)\n");
-    printf("  Use: echo 'test data' | nc localhost 4444\n\n");
+    printf("  Please type some text and press Enter:\n");
+
+    int fd = open(DEVICE_PATH, O_RDONLY);
+    if (fd < 0) {
+        perror("open for read");
+        return;
+    }
+
+    char buf[BUF_SIZE];
+    size_t total = 0;
+    long long start = 0;
+    int started = 0;
+
+    printf("  Reading...\n");
+
+    // 等待用户输入
+    while (1) {
+        ssize_t n = read(fd, buf, BUF_SIZE);
+        if (n > 0) {
+            if (!started) {
+                start = get_time_ns();
+                started = 1;
+            }
+            total += n;
+
+            // 检查是否有换行符（用户按了 Enter）
+            for (int i = 0; i < n; i++) {
+                if (buf[i] == '\n' || buf[i] == '\r') {
+                    goto done;
+                }
+            }
+        }
+    }
+
+done:
+    if (total > 0 && started) {
+        long long end = get_time_ns();
+        double elapsed_s = (double)(end - start) / 1000000000.0;
+        double kbps = (double)total / elapsed_s / 1024.0;
+
+        printf("  Received: %zu bytes (%.2f KB)\n", total, (double)total / 1024.0);
+        printf("  Time: %.3f s\n", elapsed_s);
+        printf("  Throughput: %.2f KB/s\n", kbps);
+        printf("  Status: PASS\n\n");
+    } else {
+        printf("  No data received\n");
+        printf("  Status: SKIP\n\n");
+    }
+
+    close(fd);
 }
 
 /**
  * RX 延迟测试
  *
  * 测量从 /dev/console 读取单字节的延迟
- * 需要外部逐字节发送数据
+ * 等待用户输入字符
  */
 static void test_latency_rx(void) {
     printf("=== RX Latency Test ===\n");
-    printf("  Skipped (requires external byte injection)\n");
-    printf("  Use: echo -n 'A' | nc localhost 4444\n\n");
+    printf("  Please type %d characters:\n", LATENCY_ITERATIONS);
+
+    int fd = open(DEVICE_PATH, O_RDONLY);
+    if (fd < 0) {
+        perror("open for read");
+        return;
+    }
+
+    long latencies_ns[LATENCY_ITERATIONS];
+    int successful = 0;
+
+    printf("  Reading characters...\n");
+
+    for (int i = 0; i < LATENCY_ITERATIONS; i++) {
+        long long start = get_time_ns();
+
+        char rx;
+        ssize_t n = read(fd, &rx, 1);
+        if (n == 1) {
+            long long end = get_time_ns();
+            latencies_ns[successful] = (long)(end - start);
+            successful++;
+        }
+    }
+
+    if (successful > 0) {
+        // 计算统计值
+        long sum = 0, min = latencies_ns[0], max = latencies_ns[0];
+        for (int i = 0; i < successful; i++) {
+            sum += latencies_ns[i];
+            if (latencies_ns[i] < min) min = latencies_ns[i];
+            if (latencies_ns[i] > max) max = latencies_ns[i];
+        }
+
+        // 排序计算百分位
+        for (int i = 0; i < successful - 1; i++) {
+            for (int j = 0; j < successful - i - 1; j++) {
+                if (latencies_ns[j] > latencies_ns[j + 1]) {
+                    long temp = latencies_ns[j];
+                    latencies_ns[j] = latencies_ns[j + 1];
+                    latencies_ns[j + 1] = temp;
+                }
+            }
+        }
+
+        long p50 = latencies_ns[successful * 50 / 100];
+        long p95 = latencies_ns[successful * 95 / 100];
+        long p99 = latencies_ns[successful * 99 / 100];
+
+        printf("  Iterations: %d (successful: %d)\n", LATENCY_ITERATIONS, successful);
+        printf("  Min: %ld ns (%.3f ms)\n", min, (double)min / 1000000.0);
+        printf("  Max: %ld ns (%.3f ms)\n", max, (double)max / 1000000.0);
+        printf("  Avg: %ld ns (%.3f ms)\n", sum / successful, (double)(sum / successful) / 1000000.0);
+        printf("  P50: %ld ns (%.3f ms)\n", p50, (double)p50 / 1000000.0);
+        printf("  P95: %ld ns (%.3f ms)\n", p95, (double)p95 / 1000000.0);
+        printf("  P99: %ld ns (%.3f ms)\n", p99, (double)p99 / 1000000.0);
+        printf("  Status: PASS\n\n");
+    } else {
+        printf("  No data received\n");
+        printf("  Status: SKIP\n\n");
+    }
+
+    close(fd);
 }
 
 /**
