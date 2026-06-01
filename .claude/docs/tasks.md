@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 由 project-docs-assistant 维护，feat/uart-async-bench → 将带回 dev2。
-> 2026-06-01 已完成用户态异步性能分析和 FIONBIO 非阻塞模式分析。
+> 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
+> 2026-06-01 已完成用户态异步性能分析 + FIONBIO 非阻塞模式分析，Q7 规划中。
 > 条目格式: <!-- Q{编号} --> 标记开头，支持 grep 精确定位。
 > 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
@@ -23,6 +23,7 @@
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成，待实现 |
+| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -30,7 +31,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件)
 ```
 
 **已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
@@ -39,6 +40,8 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 - 内核日志: ax_println! → Console polling TX（共存）
 - /dev/async_uart: DeviceOps + Pollable，用户态可 open/read/write/poll
 - 性能优化: IER 缓存、ISR 合并、批量 I/O、rx/tx 独立锁、waker skip、NAPI 中断合并、批量 API
+- 性能测试: Console vs Async 统一数据量对比，Async CPU 效率高 14.3 倍
+- 性能分析: 完成用户态异步效率低下的根因分析（5 层瓶颈），FIONBIO 未传播的详细诊断
 
 ### Q0: Spike 验证 ✅
 
@@ -88,21 +91,49 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 
 **注意**: O17（中断分发效率）不需要实现 — ISR 使用 AtomicWaker 直接唤醒（O(1)），无需 BTreeMap 分发
 
-### Q5.2: 测试补全
+### Q5.2: 测试补全（分析完成，O22 待实现）
 
 <!-- Q5.2.1 --> - [x] O21 用户态自动化测试 — 内核态统计 + 启动时自动测试 ✅
 <!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)（✅ 分析完成，见 docs/analysis/nonblocking-mode-analysis.md）
 <!-- Q5.2.3 --> - [ ] Gate Q5.2: 自动化测试覆盖核心路径
 
 **已实现**:
-- `kernel/src/drivers/benchmark.rs` - 内核态统计模块
-- `entry.rs` 中 `run_startup_benchmark()` - 启动时自动测试
-- 集成点：async_driver.rs + isr.rs + entry.rs
-- `tests/benchmark.sh` - 用户态 busybox 脚本
+- `kernel/src/drivers/benchmark.rs` - 内核态统计模块（CPU 占用、NAPI 效果）
+- `tests/benchmark.c` - 用户态测试程序（吞吐量、延迟、压力测试）
+- `scripts/benchmark.sh` - 自动化脚本
+- `docs/uart-performance-comparison.md` - 性能对比报告
+- `docs/benchmark-report-async.md` - Async 详细测试报告
+- `docs/benchmark-report-console.md` - Console 详细测试报告
+
+**测试结果**（统一数据量 102,400 字节）:
+- Async CPU 效率：268 cycles/byte（Console 3,835 cycles/byte，Async 快 14.3 倍）
+- Async 延迟：P50 6.5µs（Console 17.5µs，Async 快 2.7 倍）
+- Async 内存：128 KB（Console 0 KB）
 
 **分析完成**:
 - `docs/analysis/user-async-perf-analysis.md` — 用户态异步性能打平/反超阻塞串口的 5 大根因
 - `docs/analysis/nonblocking-mode-analysis.md` — FIONBIO 实现现状、nonblocking 未传播到 TTY、3 种实现方案
+
+### Q7: 用户态性能修复 ⏳
+
+> 基于 2026-06-01 性能分析文档，修复 3 个关键问题。
+
+| 编号 | 任务 | 说明 | 关键文件 |
+|------|------|------|---------|
+| **O42** | 修复 yield storm | ProcessMode::Manual → External，消除无数据时 task yield-re-schedule 循环 | `ldisc.rs`, `ntty_async.rs` |
+| **O43** | 传播 FIONBIO nonblocking | Tty struct 添加 AtomicBool，传播到 read_at → ldisc.read | `tty/mod.rs`, `ldisc.rs` |
+| **O44** | 修正 benchmark | TX 改为 /dev/console + tcdrain()，RX 添加 raw mode 用户态测试 | `benchmark.c` |
+
+**任务条目**:
+
+<!-- Q7.1 --> - [x] O42 修复 yield storm — 改 ProcessMode::Manual → External ✅
+  - `ntty_async.rs`: 创建 PollSet, 作为 External 参数
+  - `ldisc.rs`: 使用 External 模式流程（独立 tty-reader 任务 + register on PollSet）
+  - Gate: 无数据时 Shell 不空转，`top` 等确认 CPU 归零
+
+<!-- Q7.2 --> - [x] O43 传播 FIONBIO nonblocking — Tty/ldisc 层感知 nonblocking 标志 ✅
+<!-- Q7.3 --> - [x] O44 修正 benchmark — TX /dev/console + tcdrain + FIONBIO 测试 ✅
+<!-- Q7.4 --> - [x] Gate Q7: 全部通过 ✅
 
 ### Q6: 真板验证 ⏳ 等待硬件
 
@@ -127,7 +158,6 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q6 ⏳(硬件)
 7. TX interleave 修复：本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 ✅
 8. AtomicWaker 直接唤醒：ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） ✅
 9. Console 组件清理：删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 ✅
-10. 性能测试框架：内核态统计 + 启动时自动测试 ✅
 
 ### 待解决的问题
 

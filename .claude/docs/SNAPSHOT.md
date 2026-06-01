@@ -1,17 +1,18 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-01
-> 分支：feat/uart-async-bench — Q0~Q5.1 ✅，Q5.2 分析完成，Q6 等待硬件
+> 分支：feat/uart-async-dev2 — Q0~Q7 ✅，Q6 等待硬件
 
 ---
 
 ## 当前状态
 
-**分支**: feat/uart-async-bench（性能分析分支）
+**分支**: feat/uart-async-dev2（性能分析完成，待实施优化）
 **成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
 **近期分析**: 完成用户态异步性能打平/反超阻塞串口的根因分析，完成 FIONBIO 非阻塞模式分析
-**下一步**: 修复 yield storm + FIONBIO 传播 → dev2 分支进行优化
+**Q7 已完成**: yield storm 修复、FIONBIO 传播、benchmark 修正
+**下一步**: Q6 VisionFive2 真板验证（等待硬件到位）
 
 ### 关键发现
 
@@ -50,6 +51,7 @@
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip + rx/tx 独立锁 | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成 |
+| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
@@ -154,6 +156,9 @@ StarryOS/
 | references.md | 依赖文档、规范、设计文档索引 | 53 |
 | optimization.md | 性能洞察、优化方向、基准目标 | 20 |
 | rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
+| docs/uart-performance-comparison.md | Console vs Async 性能对比报告 | - |
+| docs/benchmark-report-async.md | Async 详细测试报告 | - |
+| docs/benchmark-report-console.md | Console 详细测试报告 | - |
 | archive.md | 已归档的过时内容 | ~15 |
 
 ---
