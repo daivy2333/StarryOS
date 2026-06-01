@@ -97,15 +97,26 @@ static void test_throughput_tx(void) {
 }
 
 /**
- * 吞吐量测试（RX）
+ * RX 吞吐量测试
  *
- * 注意：RX 吞吐量测试需要外部发送数据
- * 在 QEMU 环境中，可以通过 TCP 串口连接发送数据
+ * 跳过：Console 没有 Ring Buffer，read_bytes() 是非阻塞的
+ * 需要外部数据注入才能测试
  */
 static void test_throughput_rx(void) {
     printf("=== RX Throughput Test ===\n");
-    printf("  Note: RX test requires external data injection\n");
-    printf("  Use QEMU TCP serial connection to send data\n\n");
+    printf("  Skipped (Console has no Ring Buffer)\n");
+    printf("  read_bytes() is non-blocking (try_receive)\n\n");
+}
+
+/**
+ * RX 延迟测试
+ *
+ * 跳过：Console 没有 Ring Buffer，read_bytes() 是非阻塞的
+ * 需要外部数据注入才能测试
+ */
+static void test_latency_rx(void) {
+    printf("=== RX Latency Test ===\n");
+    printf("  Skipped (Console has no Ring Buffer)\n\n");
 }
 
 /**
@@ -284,12 +295,13 @@ static void test_stress(void) {
  * 主函数
  */
 int main(void) {
-    printf("UART Async Benchmark\n");
-    printf("====================\n\n");
+    printf("UART Console Benchmark\n");
+    printf("======================\n\n");
 
     test_throughput_tx();
     test_throughput_rx();
     test_latency();
+    test_latency_rx();
     test_data_integrity();
     test_stress();
 
