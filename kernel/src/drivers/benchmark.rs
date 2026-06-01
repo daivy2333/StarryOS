@@ -208,19 +208,19 @@ pub fn report_napi_effect() {
 
 /// 运行 RX 吞吐量测试
 ///
-/// 测试 Ring Buffer 读取速度
-/// 注意：这个测试只测量 Ring Buffer 读取，不包括 UART 读取
+/// 测试 Ring Buffer 读取速度（绕过 TTY 层）
+/// 直接操作 Ring Buffer，避免 TTY 回显问题
 pub fn run_rx_throughput_test() {
     use super::ring_buffer::BUF_SIZE;
 
     ax_println!("[BENCH] Running RX throughput test...");
-    ax_println!("[BENCH] Test: Ring Buffer read speed");
+    ax_println!("[BENCH] Test: Ring Buffer read speed (direct)");
 
     // 测试 Ring Buffer 读取速度
     let test_data = vec![0u8; 1024];
     let iterations = 100;
 
-    // 先填充 Ring Buffer
+    // 先填充 RX Ring Buffer
     for _ in 0..iterations {
         let mut rx_buf = super::async_driver::DRIVER.rx.lock();
         rx_buf.push(&test_data);
@@ -255,4 +255,68 @@ pub fn run_rx_throughput_test() {
 
     ax_println!("[BENCH] RX throughput test complete");
     ax_println!("[BENCH] Note: This measures Ring Buffer read speed, not UART receive speed");
+}
+
+/// 运行 RX 延迟测试
+///
+/// 测试 Ring Buffer 读取延迟（绕过 TTY 层）
+/// 直接操作 Ring Buffer，避免 TTY 回显问题
+pub fn run_rx_latency_test() {
+    ax_println!("[BENCH] Running RX latency test...");
+    ax_println!("[BENCH] Test: Ring Buffer read latency (direct)");
+
+    let iterations = 100;
+    let mut latencies = vec![0u64; iterations];
+    let mut successful = 0;
+
+    for i in 0..iterations {
+        // 写入一个字节到 RX Ring Buffer
+        let test_byte = vec![b'A' + (i % 26) as u8];
+        let mut rx_buf = super::async_driver::DRIVER.rx.lock();
+        rx_buf.push(&test_byte);
+        drop(rx_buf);
+
+        // 读取一个字节
+        let mut read_buf = vec![0u8; 1];
+        let start = monotonic_time_nanos();
+        let mut rx_buf = super::async_driver::DRIVER.rx.lock();
+        let n = rx_buf.pop(&mut read_buf);
+        drop(rx_buf);
+        let end = monotonic_time_nanos();
+
+        if n == 1 {
+            latencies[successful] = (end - start) as u64;
+            successful += 1;
+        }
+    }
+
+    if successful > 0 {
+        // 计算统计值
+        let mut sum = 0u64;
+        let mut min = latencies[0];
+        let mut max = latencies[0];
+        for i in 0..successful {
+            sum += latencies[i];
+            if latencies[i] < min { min = latencies[i]; }
+            if latencies[i] > max { max = latencies[i]; }
+        }
+
+        // 排序计算百分位
+        latencies[..successful].sort();
+
+        let p50 = latencies[successful * 50 / 100];
+        let p95 = latencies[successful * 95 / 100];
+        let p99 = latencies[successful * 99 / 100];
+
+        ax_println!("[BENCH] Iterations: {} (successful: {})", iterations, successful);
+        ax_println!("[BENCH] Min: {} ns ({:.3} ms)", min, min as f64 / 1_000_000.0);
+        ax_println!("[BENCH] Max: {} ns ({:.3} ms)", max, max as f64 / 1_000_000.0);
+        ax_println!("[BENCH] Avg: {} ns ({:.3} ms)", sum / successful as u64, (sum / successful as u64) as f64 / 1_000_000.0);
+        ax_println!("[BENCH] P50: {} ns ({:.3} ms)", p50, p50 as f64 / 1_000_000.0);
+        ax_println!("[BENCH] P95: {} ns ({:.3} ms)", p95, p95 as f64 / 1_000_000.0);
+        ax_println!("[BENCH] P99: {} ns ({:.3} ms)", p99, p99 as f64 / 1_000_000.0);
+        ax_println!("[BENCH] RX latency test complete");
+    } else {
+        ax_println!("[BENCH] No successful reads");
+    }
 }

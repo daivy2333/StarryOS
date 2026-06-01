@@ -80,6 +80,9 @@ fn run_startup_benchmark() {
     // 测试 7: RX Ring Buffer 读取速度
     benchmark::run_rx_throughput_test();
 
+    // 测试 8: RX Ring Buffer 读取延迟
+    benchmark::run_rx_latency_test();
+
     ax_println!("[BENCH] Startup benchmark complete");
     ax_println!("[BENCH] Note: Actual throughput limited by UART line rate (11.52 KB/s)");
 }
