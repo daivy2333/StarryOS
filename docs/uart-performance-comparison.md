@@ -68,9 +68,29 @@
 | **1024 B** | 135,215 KB/s | 155,964 KB/s | **Async 1.2x** |
 | **4096 B** | 250,956 KB/s | 307,763 KB/s | **Async 1.2x** |
 
-**说明**：
-- 小数据时 Console 稍快（系统调用开销）
-- 大数据时 Async 更快（批量处理优势）
+**差异原因分析**：
+
+**write() 路径对比**：
+
+| 步骤 | Console | Async |
+|------|---------|-------|
+| **锁获取** | N 次（每字节） | 1 次 |
+| **写入操作** | send_raw（轮询 FIFO） | push()（内存拷贝） |
+| **任务调度** | 无 | 唤醒 TX copier |
+
+**小数据时 Console 稍快**：
+- Console 的 send_raw() 在 QEMU 中很快（不等待硬件）
+- Async 的 push() 需要拷贝数据到 Ring Buffer
+- Async 还需要唤醒 TX copier 任务（任务调度开销）
+
+**大数据时 Async 稍快**：
+- Console 的锁获取次数累积（N 次）
+- Async 只需要 1 次锁 + 1 次 push()
+- 批量处理优势体现
+
+**QEMU 的影响**：
+- QEMU 中 send_raw() 不等待硬件，Console 开销很小
+- 真实硬件上 send_raw() 需要等待 FIFO，Async 优势会更明显
 
 ### 2.4 压力测试（持续 2 秒）
 
@@ -107,6 +127,19 @@
 - **Async 延迟低 2.7-3.6 倍**：P50 从 17.5µs 降到 6.5µs
 - **Console 更省内存**：0 KB vs 128 KB
 - **两者功能都正常**：Shell、数据完整性均通过
+- **用户态吞吐量差异小**：受 QEMU 影响，真实硬件上 Async 优势会更明显
+
+### QEMU 影响说明
+
+**QEMU 中**：
+- send_raw() 不等待硬件，Console 开销很小
+- Async 的 Ring Buffer 拷贝 + 任务调度开销相对较大
+- 导致用户态吞吐量差异不大
+
+**真实硬件上**：
+- send_raw() 需要等待 FIFO，Console 开销很大
+- Async 的 write() 只写入 Ring Buffer，很快返回
+- **预期 Async 优势会更明显**
 
 ### 选择建议
 
