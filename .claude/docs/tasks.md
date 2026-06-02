@@ -94,7 +94,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件
 ### Q5.2: 测试补全（分析完成，O22 待实现）
 
 <!-- Q5.2.1 --> - [x] O21 用户态自动化测试 — 内核态统计 + 启动时自动测试 ✅
-<!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)（✅ 分析完成，见 docs/analysis/nonblocking-mode-analysis.md）
+<!-- Q5.2.2 --> - [x] O22 非阻塞模式测试 — ioctl(FIONBIO)（✅ 分析完成，见 docs/analysis/nonblocking-mode-analysis.md）
 <!-- Q5.2.3 --> - [ ] Gate Q5.2: 自动化测试覆盖核心路径
 
 **已实现**:
