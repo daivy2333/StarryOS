@@ -489,3 +489,20 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
 - **补充修复**: O_NONBLOCK open/fcntl 入口转发、LSR 位修正
 - **文档**: 重写 comparison 报告、更新全部体系文档
 - **分支**: dev2 和 bench 均已同步（bench 多了 benchmark.c）
+
+<!-- L144 --> ### tcdrain 真异步化：PollSet + DRAIN_WAKER（2026-06-01）
+- **三段式等待**:
+  1. ring buf 有数据 → 注册 `tx.poll`（copier pop 时 `poll.wake()` 唤醒 tcdrain）
+  2. ring buf 空但 UART 还在发 → 注册 `DRAIN_WAKER`（ISR TX 中断时唤醒）
+  3. ring buf 空 + UART TEMT → 返回
+- **double-check 模式**: `check TEMT → register DRAIN_WAKER → check TEMT again → park`，防止 ISR 在检查与注册之间触发而丢失唤醒
+- **DRAIN_WAKER**: 独立 AtomicWaker（不覆盖 TX_WAKER），ISR 中 `TX_WAKER.wake()` + `DRAIN_WAKER.wake()` 同时调用
+- **效果**: 64 字节 tcdrain 从 9 次切换降至 ~6 次，QEMU 延迟 ~300→~200 µs
+- **文件**: `kernel/src/drivers/isr.rs:8`, `kernel/src/syscall/fs/ctl.rs:44-65`
+
+<!-- L145 --> ### benchmark 测试公平性诊断（2026-06-01）
+- **问题**: Console `write()` 本身阻塞到发送完成，Async `write()` 非阻塞 push + 显式 `tcdrain()`。测的不是同一个时间点
+- **Console QEMU**: 纯 VFS+MMIO 速度（~5 µs/64B），因为 QEMU LSR 永远 THR_EMPTY
+- **Async QEMU**: VFS + 任务切换（~300 µs/64B），因为 tcdrain 需要多次 poll → yield
+- **公平对比**: 去除 tcdrain，只比 write() 延迟（Async 快 2.2-7.5x，§3 已验证）
+- **真板**: 两者受 115200 bps 限制，收敛到 ~11.5 KB/s；QEMU 的差距是人工产物

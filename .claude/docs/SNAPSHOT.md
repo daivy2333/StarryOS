@@ -11,6 +11,7 @@
 **成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
 **Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正 + TCSBRK 实现（O44）
+**O45 已完成**: tcdrain 真异步化（PollSet + DRAIN_WAKER，消除协作自旋）
 **下一步**: Q6 VisionFive2 真板验证（等待硬件到位）
 
 ### 关键发现
@@ -40,6 +41,8 @@
 | **TCSBRK 实现** | tcdrain 通过 poll 循环检查 ring buffer + LSR.TRANSMITTER_EMPTY（bit 6, TEMT） |
 | **O_NONBLOCK 传播** | open()/fcntl/ioctl 三个入口都需转发 FIONBIO 到 Tty，缺一不可 |
 | **LSR 位注意** | THR_EMPTY=bit5（可写），TRANSMITTER_EMPTY=bit6（THR+移位寄存器全空=真正 drain） |
+| **DRAIN_WAKER** | 专用 AtomicWaker，ISR TX 中断时唤醒 tcdrain，替代 wake_by_ref 自旋 |
+| **tcdrain 性能** | QEMU 上 64B 从 9 次切换降到 6 次，延迟 ~300→~200 µs（真板上可忽略） |
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|

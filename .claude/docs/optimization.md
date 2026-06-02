@@ -107,10 +107,50 @@
 
 | 编号 | 内容 | 说明 |
 |------|------|------|
+| O45 | tcdrain 真异步化 | 🟡 中 | ✅ PollSet + DRAIN_WAKER，消除 wake_by_ref 自旋 |
 | O1/O36 | 零拷贝 RX | mmap ring buffer 到用户空间 |
 | O5 | 协程优先级调度 | 取决于 axtask 支持 |
 | O37 | kernel log TX 合并 | ax_println! 走 ring buffer |
 | O32 | poll_fn 闭包 | 编译器可能已优化 |
+
+**O45 — tcdrain 真异步化 详细说明**：
+
+当前 TCSBRK 实现（`ctl.rs:43-57`）:
+```rust
+block_on(poll_fn(|cx| {
+    if DRIVER.tx.lock().is_empty()
+        && uart.lsr().contains(LSR::TRANSMITTER_EMPTY) {
+        return Ready(Ok(0));
+    }
+    cx.waker().wake_by_ref();  // ← 协作自旋，每次失败立即重调度
+    Pending
+}))
+```
+
+问题：`wake_by_ref()` + `Pending` 产生协作式自旋。64 字节数据需要 TX copier 发送 4 批（每批 16 字节 FIFO），tcdrain 每次检查 ring buffer 非空 → 重调度 → copier 发一批 → 重调度 → ... 共 9 次任务切换（~270 µs QEMU）。
+
+优化方案：用 PollSet 注册替代自旋。
+```rust
+block_on(poll_fn(|cx| {
+    let mut tx = DRIVER.tx.lock();
+    if tx.is_empty() {
+        drop(tx);
+        if uart.lsr().contains(LSR::TRANSMITTER_EMPTY) { return Ready(Ok(0)); }
+        TX_WAKER.register(cx.waker());  // UART 还在发 → 等 TX ISR 唤醒
+    } else {
+        tx.poll.register(cx.waker());   // ring buf 有数据 → 等 copier pop 唤醒
+    }
+    Pending
+}))
+```
+
+关键：`RingBufTx::pop()` 已调用 `self.poll.wake()`（`ring_buffer.rs:48`）。只需在 TCSBRK 中注册到 `tx.poll`，copier 每清空一批数据就会唤醒 tcdrain。不需要「9 次切换等 4 批数据全发完」，而是「copier 发一批 → 自动唤醒 tcdrain 检查一次」。
+
+预期效果：
+- QEMU: 切换次数从 9 降至 ~4，延迟从 ~300 µs 降至 ~130 µs
+- 真板: 9 µs → 4 µs（可忽略，但更优雅）
+
+注意：TX_WAKER 是 AtomicWaker（单槽），TX copier 也注册在上面。tcdrain 注册会覆盖 copier。需添加独立的 drain PollSet 或改用定时器补偿。真实现需额外设计。
 
 ---
 
