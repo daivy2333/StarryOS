@@ -1,34 +1,34 @@
-# StarryOS Async UART — Manual QA Report
+# StarryOS 异步串口 — 手动 QA 测试报告
 
-> **Branch**: `feat/uart-async-bench` (Q0–Q7, O45)
-> **Date**: 2026-06-02
-> **Platform**: QEMU riscv64-virt · NS16550 UART · 115200 bps
-> **Tester**: Manual interactive session
-
----
-
-## 1. Test Matrix
-
-| # | Scenario | Commands | Verification |
-|---|----------|----------|-------------|
-| T1 | Shell Basics | `ls`, `cd`, `pwd` | navigation intact after Q7 |
-| T2 | TX – Small | `echo "test"` (4 B), `echo "123…56"` (16 B) | instant echo, no loss |
-| T3 | TX – Medium | `dd if=/dev/zero of=/dev/console bs=64 count=10` | 640 B written |
-| T4 | TX – Large | `dd if=/dev/zero of=/dev/console bs=4096 count=10` | 20 KB written |
-| T5 | RX – Echo Integrity | `cat /etc/passwd` | full output, no truncation |
-| T6 | Concurrency | `dd … & sleep 0.5; ls /bin` | shell responsive under TX load |
-| T7 | Shell Input | `read x && echo "you typed: $x"` | typed input correctly received |
-| T8 | Pipe TX | `ls -laR / \| cat > /dev/console` | recursive listing piped through console |
-| T9 | Stress – Multi-writer | `for i in 1 2 3; do dd …; done &` with interactive commands | no crash, shell functional |
-| T10 | FIONBIO (e2e) | `./benchmark` | O_NONBLOCK & ioctl both PASS |
-| T11 | E2E Latency | `./benchmark` | avg 150.7 µs, P99 252.9 µs |
-| T12 | E2E Throughput | `./benchmark` | 4096 B → 97.9 % line efficiency (projected) |
+> **分支**: `feat/uart-async-bench`（Q0–Q7 全部完成，含 O45）
+> **日期**: 2026-06-02
+> **平台**: QEMU riscv64-virt · NS16550 UART · 115200 bps
+> **测试方式**: 交互式手动测试
 
 ---
 
-## 2. Evidence — Raw Terminal Output
+## 1. 测试矩阵
 
-### T1 – Shell Basics
+| 编号 | 场景 | 命令 | 验证点 |
+|------|------|------|--------|
+| T1 | 基础 Shell | `ls`, `cd`, `pwd` | Q7 后导航正常 |
+| T2 | TX 小数据 | `echo "test"` (4 B), `echo "123…56"` (16 B) | 即时回显，无丢失 |
+| T3 | TX 中数据 | `dd if=/dev/zero of=/dev/console bs=64 count=10` | 640 B 完整写入 |
+| T4 | TX 大数据 | `dd if=/dev/zero of=/dev/console bs=4096 count=10` | 20 KB 完整写入 |
+| T5 | RX 回显完整性 | `cat /etc/passwd` | 完整输出，无截断 |
+| T6 | 并发 TX+RX | `dd … & sleep 0.5; ls /bin` | TX 负载下 Shell 不卡 |
+| T7 | Shell 输入 | `read x && echo "you typed: $x"` | 输入正确接收 |
+| T8 | 管道 TX | `ls -laR / \| cat > /dev/console` | 递归列表通过管道完整输出 |
+| T9 | 混合压力 | `for i in 1 2 3; do dd …; done &` + 交互命令 | 无 crash，Shell 正常 |
+| T10 | FIONBIO (e2e) | `./benchmark` | O_NONBLOCK 和 ioctl 双 PASS |
+| T11 | 端到端延迟 | `./benchmark` | avg 150.7 µs，P99 252.9 µs |
+| T12 | 端到端吞吐量 | `./benchmark` | 4096 B → 真板预测效率 97.9 % |
+
+---
+
+## 2. 原始证据 — 终端输出
+
+### T1 — 基础 Shell
 
 ```
 starry:~# ls /
@@ -41,7 +41,7 @@ base64         df             grep           ln             mpstat         rev  
 ...
 ```
 
-### T2 – TX Small Data
+### T2 — TX 小数据
 
 ```
 starry:/# echo "=== small TX ==="
@@ -52,7 +52,7 @@ starry:/# echo "1234567890123456"
 1234567890123456
 ```
 
-### T3 – TX Medium Data
+### T3 — TX 中数据
 
 ```
 starry:/# dd if=/dev/zero of=/dev/console bs=64 count=10
@@ -61,7 +61,7 @@ starry:/# dd if=/dev/zero of=/dev/console bs=64 count=10
 640 bytes (640B) copied, 0.001783 seconds, 350.5KB/s
 ```
 
-### T4 – TX Large Data
+### T4 — TX 大数据
 
 ```
 starry:/# dd if=/dev/zero of=/dev/console bs=4096 count=10
@@ -74,7 +74,7 @@ starry:/# dd if=/dev/zero of=/dev/console bs=4096 count=10
 > accept fewer bytes than requested in a single call. Data integrity is
 > confirmed by total byte count (20,480).
 
-### T5 – RX Echo Integrity
+### T5 — RX 回显完整性
 
 ```
 starry:/# cat /etc/passwd
@@ -97,7 +97,7 @@ guest:x:405:100:guest:/dev/null:/sbin/nologin
 nobody:x:65534:65534:nobody:/:/sbin/nologin
 ```
 
-### T6 – Concurrency
+### T6 — 并发 TX+RX
 
 ```
 starry:/# dd if=/dev/zero of=/dev/console bs=4096 count=50 & sleep 0.5
@@ -113,14 +113,14 @@ starry:/# echo "concurrent OK"
 concurrent OK
 ```
 
-### T7 – Shell Input
+### T7 — Shell 输入
 
 ```
 starry:/# read x && echo "you typed: hi,i think its done"
 you typed: hi,i think its done
 ```
 
-### T8 – Pipe TX
+### T8 — 管道 TX
 
 ```
 starry:/# ls -laR / | cat > /dev/console
@@ -141,7 +141,7 @@ drwxr-xr-x    2 root     root          4096 Jun  1 07:26 .
 
 > Full recursive listing completed without truncation.
 
-### T9 – Stress Mixed Load
+### T9 — 混合压力
 
 ```
 starry:/# (for i in 1 2 3; do dd if=/dev/zero of=/dev/console bs=1024 count=50; done) & ls /bin && pwd && echo "stress OK"
@@ -161,7 +161,7 @@ stress OK
 [1]+  Done
 ```
 
-### T10–T12 — End-to-End Benchmark (Q7 + O45)
+### T10–T12 — 端到端性能（Q7 + O45 效果）
 
 ```
 starry:/bin# ./benchmark
@@ -194,28 +194,28 @@ Done.
 
 ---
 
-## 3. E2E Performance Summary
+## 3. 端到端性能汇总
 
-| Metric | Value (QEMU) | Projection (VisionFive2) |
-|--------|-------------|------------------------|
-| 1-byte latency (avg) | 150.7 µs | 150.7 µs |
-| — software overhead | 63.9 µs | 63.9 µs |
-| — hardware time | 0 µs (QEMU instant) | 86.8 µs |
-| 4096 B throughput efficiency | — | 97.9 % line rate |
-| FIONBIO O_NONBLOCK | PASS (EAGAIN) | PASS |
-| FIONBIO ioctl | PASS (EAGAIN) | PASS |
+| 指标 | QEMU 实测 | 真板预测 (VisionFive2) |
+|------|----------|----------------------|
+| 单字节延迟（平均） | 150.7 µs | 150.7 µs |
+| — 其中软件开销 | 63.9 µs | 63.9 µs |
+| — 其中硬件时间 | 0 µs（QEMU 瞬时） | 86.8 µs |
+| P50 延迟 | 146.2 µs | — |
+| P99 延迟 | 252.9 µs | — |
+| 4096 B 吞吐量效率 | — | **97.9 % 线速** |
+| FIONBIO O_NONBLOCK | ✅ PASS (EAGAIN) | ✅ |
+| FIONBIO ioctl | ✅ PASS (EAGAIN) | ✅ |
 
 ---
 
-## 4. Verdict
+## 4. 结论
 
-All 12 manual test scenarios pass. The async UART stack (Q0–Q7 with O45) demonstrates:
+全部 12 项手动测试通过。Async UART 栈（Q0–Q7，含 O45）表现如下：
 
-- **Stability**: zero crashes, zero panics under concurrent and stress loads.
-- **Correctness**: data integrity preserved across all sizes, pipe and shell input.
-- **Performance**: 63.9 µs software overhead per write+tcdrain; 97.9 % line-rate
-  efficiency projected for real hardware at 115200 bps.
-- **Functionality**: non-blocking I/O works from all three entry points (`open`,
-  `fcntl`, `ioctl`).
+- **稳定性**: 零崩溃、零 panic，并发和压力负载下无异常。
+- **正确性**: 所有数据大小下完整性保持，管道和 Shell 输入均正常。
+- **性能**: 单次 write+tcdrain 软件开销 63.9 µs；真板预测 4096 B 吞吐量达 97.9 % 线速。
+- **功能完整性**: 非阻塞 I/O 三个入口（`open`、`fcntl`、`ioctl`）全部生效。
 
-**Status**: Ready for Q6 – VisionFive2 hardware validation.
+**状态**: 准备就绪，等待 Q6 — VisionFive2 硬件验证。
