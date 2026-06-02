@@ -18,7 +18,7 @@
 | 缓冲区 | 无 | 128 KB（RX/TX 各 64 KB HeapRb） |
 | write() 行为 | 阻塞（等待 FIFO 有空位） | 非阻塞（push ring buf 即返回） |
 | 空闲 CPU | 0% | 0%（O42 External 模式，无 yield storm） |
-| tcdrain | 隐式（每字节等待 LSR） | ✅ TCSBRK 显式支持 |
+| **tcdrain** | 隐式（每字节等待 LSR） | ✅ TCSBRK + O45 async（PollSet + DRAIN_WAKER） |
 | 非阻塞读 | ❌ | ✅ `open/fcntl/ioctl` 三入口 |
 | 额外任务 | 1（tty-reader） | 2（RX copier + tty-reader） |
 
@@ -64,7 +64,7 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 | `open(O_NONBLOCK)` + `read()` → EAGAIN | ❌ | ✅ |
 | `ioctl(FIONBIO, 1)` + `read()` → EAGAIN | ❌ | ✅ |
 | `fcntl(F_SETFL, O_NONBLOCK)` + `read()` → EAGAIN | ❌ | ✅ |
-| `tcdrain()` （TCSBRK） | 隐式 | ✅ 显式 poll ring buf + LSR.TRANSMITTER_EMPTY |
+| `tcdrain()` （TCSBRK） | 隐式 | ✅ TCSBRK + O45 async（PollSet + DRAIN_WAKER） |
 | Shell 功能（`ls`/`cd`/`pwd`） | ✅ | ✅ |
 | 内核日志（`ax_println!`） | ✅ | ✅（polling TX 共存） |
 
@@ -96,12 +96,16 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 > **真板预期**：UART 传输 64 字节需 5.6 ms（64 × 86.8 µs/byte），
 > 碾压 9 µs 的任务切换开销。两者均收敛到 ~11.5 KB/s。
 
-| 数据大小 | Console `write()` only | Async `write + tcdrain` | 真板预期 |
-|----------|----------------------|------------------------|---------|
-| 64 B | ~13,600 KB/s | ~193 KB/s | ~11.5 KB/s |
-| 256 B | ~49,600 KB/s | ~250 KB/s | ~11.5 KB/s |
-| 1024 B | ~135,000 KB/s | ~282 KB/s | ~11.5 KB/s |
-| 4096 B | ~250,000 KB/s | ~270 KB/s | ~11.5 KB/s |
+| 大小 | Async 实测/次 (QEMU) | 硬件理论/次 | 真板预测总耗时 | 线速效率 |
+|------|---------------------|-----------|-------------|---------|
+| 64 B | 352.9 µs | 5.56 ms | 5.91 ms | 94% |
+| 256 B | 1134.8 µs | 22.2 ms | 23.4 ms | 95% |
+| 1024 B | 4182.6 µs | 88.9 ms | 93.1 ms | 95% |
+| 4096 B | 8191.7 µs | 355.6 ms | 363.7 ms | **97.7%** |
+
+> **解读**：Async QEMU 实测 = 纯软件开销（O45 优化后）。
+> 硬件理论 = bytes × 86.8 µs/byte。真板预测 = 硬件理论 + QEMU 实测。
+> 大数据下软件开销占比 < 2.3%，线速效率 97.7%。
 
 ---
 
@@ -131,3 +135,4 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 - **O42**：yield storm → `ProcessMode::External`，空闲 CPU 归零
 - **O43**：FIONBIO 传播到 Tty/ldisc，非阻塞读全部入口生效
 - **O44**：benchmark 修正 + TCSBRK 实现，tcdrain 正确等待硬件 drain
+- **O45**：tcdrain 真异步化（PollSet + DRAIN_WAKER），消除协作自旋，延迟 ↓53%
