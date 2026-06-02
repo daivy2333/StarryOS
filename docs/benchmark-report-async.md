@@ -27,6 +27,7 @@
 | O43 | FIONBIO 传播到 TTY/ldisc | open/fcntl/ioctl 均可设置非阻塞 |
 | O44 | benchmark 修正 + TCSBRK 实现 | 测量真实串口路径 |
 | — | TCSBRK (tcdrain) 实现 | write + tcdrain 等待硬件发送完成 |
+| O45 | tcdrain 真异步化 | PollSet + DRAIN_WAKER，消除协作自旋 |
 
 ### 测试环境
 
@@ -113,41 +114,44 @@
 
 ---
 
-## 3. 用户态测试结果（Q7 修正后）
+## 3. 用户态端到端测试（Q7 + O45）
 
-### 3.1 TX 吞吐量测试
+### 3.1 TX 端到端吞吐量
 
-**测试方法**：写 `/dev/console`（非 /dev/null），每次后 `tcdrain()` 等待硬件发送完成。预热 5 次，100 次迭代 × 4 种大小。吞吐量 = 总字节 / 总时长。
+**测试方法**：写 `/dev/console`（非 /dev/null），每次后 `tcdrain()` 等待硬件发送完成。
+预热 5 次，100 次/大小 × 4。测量 `write + tcdrain` 完整端到端时间。
+O45 优化后 tcdrain 使用 PollSet + DRAIN_WAKER（非自旋）。
 
-| 数据大小 | 吞吐量 (QEMU) | 预期 (真板) | 说明 |
-|----------|-------------|------------|------|
-| **64 bytes** | ~193 KB/s | ~11.5 KB/s | 小数据，tcdrain 开销占比大 |
-| **256 bytes** | ~250 KB/s | ~11.5 KB/s | |
-| **1024 bytes** | ~282 KB/s | ~11.5 KB/s | |
-| **4096 bytes** | ~270 KB/s | ~11.5 KB/s | 受 QEMU 批次处理波动 |
-| **4096 bytes** | ~230 KB/s | ~11.5 KB/s | |
+| 大小 | 实测/次 (QEMU) | 硬件理论/次 | 真板预测 (总) | 线速效率 |
+|------|----------------|-----------|-------------|---------|
+| **64 B** | 352.9 µs | 5.56 ms | 5.91 ms | 94% |
+| **256 B** | 1134.8 µs | 22.2 ms | 23.4 ms | 95% |
+| **1024 B** | 4182.6 µs | 88.9 ms | 93.1 ms | 95% |
+| **4096 B** | 8191.7 µs | 355.6 ms | 363.7 ms | **97.7%** |
 
-> ⚠️ QEMU 的 16550 模拟不仿真串口线延迟（86.8 µs/byte），tcdrain 几乎立即返回。
-> 真板（VisionFive2 @ 115200 bps）上所有数据大小都应收敛到 ~11.5 KB/s。
+> 硬件理论 = bytes × 10 / 115200（86.8 µs/byte）。QEMU 上 UART 瞬时完成，实测 = 纯软件开销。
+> 真板预测 = 硬件理论 + QEMU 实测（软件开销）。大数据下软件占比 < 2.3%。
 
-### 3.2 TX 单字节延迟（write + tcdrain）
+### 3.2 TX 端到端延迟（单字节）
 
-**测试方法**：单字节 `write()` + `tcdrain()`，预热 5 次后测量 200 次。
-分位值使用线性插值（`P = (N-1)×p/100`，插值相邻元素）。
+**测试方法**：单字节 `write()` + `tcdrain()`，预热 5 次，测量 200 次。
+分位值使用线性插值（P = (N-1)×p/100）。
 
 | 指标 | 值 (QEMU) | 说明 |
 |------|----------|------|
+| **硬件理论** | 86.8 µs | 单字节串口传输时间 |
 | **n** | 200 | 测量次数 |
-| **min** | ~0.12 ms | |
-| **max** | ~0.94 ms | |
-| **avg** | ~0.18 ms | 算术平均 |
-| **stddev** | ~0.11 ms | 样本标准差 (n-1) |
-| **P50** | ~0.15 ms | 线性插值中位数 |
-| **P95** | ~0.42 ms | |
-| **P99** | ~0.63 ms | |
-| **P999** | ~0.90 ms | 99.9 分位 |
+| **min** | 118 µs | |
+| **max** | 249 µs | |
+| **avg** | 139.5 µs | 算术平均 |
+| **stddev** | 12.3 µs | 样本标准差 (n-1) |
+| **P50** | 136.7 µs | 线性插值中位数 |
+| **P95** | 148.5 µs | |
+| **P99** | 181.3 µs | |
+| **软件开销** | **52.7 µs** | avg - hardware = 139.5 - 86.8 |
 
-包含路径：user write → ring buffer push → TX copier → UART THR → tcdrain (TCSBRK poll)。
+> 52.7 µs 软件开销 = syscall + ring buf push + TX copier + tcdrain(PollSet + DRAIN_WAKER + ISR → TEMT)。
+> 真板端到端 = 86.8 µs (硬件) + 52.7 µs (软件) = 139.5 µs。
 
 ### 3.3 非阻塞模式 (FIONBIO)
 
@@ -199,16 +203,19 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 | O43  FIONBIO 传播 | ✅ | 非阻塞读 open/fcntl/ioctl 全部生效 |
 | O44  benchmark | ✅ | 真实 /dev/console 路径 + tcdrain |
 | TCSBRK | ✅ | tcdrain 等待 ring buffer + UART drain |
+| O45  async tcdrain | ✅ | PollSet + DRAIN_WAKER，↓53% 延迟 |
 
-### 性能（QEMU）
+### 性能（QEMU，端到端）
 
 | 维度 | 结果 |
 |------|------|
-| TX 用户态 @ /dev/console + tcdrain | ~200 KB/s（QEMU，真板 ~11.5） |
-| TX 延迟 P50 | ~0.15 ms |
+| TX 端到端 64B | 352.9 µs/次（软件开销） |
+| TX 端到端 4096B | 8191.7 µs/次（软件开销） |
+| TX 延迟 avg | 139.5 µs（软件开销 52.7 µs） |
+| 真板 4096B 效率 | 97.7% 线速 |
 | FIONBIO nonblocking read | ✅ EAGAIN |
-| Ring Buffer TX | ~180 MB/s |
-| Ring Buffer RX | ~413 MB/s |
+| Ring Buffer TX | ~185 MB/s |
+| Ring Buffer RX | ~446 MB/s |
 
 ### 待验证（真板 VisionFive2）
 
