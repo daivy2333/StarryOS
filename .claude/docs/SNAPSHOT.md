@@ -112,7 +112,7 @@ StarryOS/
 │   │       └── tty/      # TTY/Console/ldisc
 │   ├── syscall/          # 系统调用
 │   └── task/             # 任务管理
-├── docs/analysis/        # 设计分析文档（~16 份）
+├── docs/analysis/        # 设计分析文档（9 份）
 ├── .claude/docs/         # 开发文档体系（本文件所在）
 │   ├── SNAPSHOT.md       # 本文件
 │   ├── architecture.md   # 架构决策记录（ADR-001~029，19 条有效）

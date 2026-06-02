@@ -92,7 +92,7 @@
 
 ### Console UART 研究文档
 
-<!-- R41 --> | docs/analysis/console-uart-mechanism.md | Console UART 工作机制：硬件配置、TX 阻塞机制、RX 中断驱动、数据竞争风险分析 ✅ |
+<!-- tombstone: R41 --> Archived 2026-06-02 — Console 已删除，文档移除
 <!-- tombstone: R42,R48,R50 --> Archived 3 outdated analysis refs 2026-06-02 — 前提已变更或已归档
 
 ### UART 初始化与 IRQ 设计文档
