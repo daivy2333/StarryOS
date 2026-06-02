@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
-> 2026-06-01 会话总结：Q7 全部完成（O42/O43/O44），TCSBRK 实现，O_NONBLOCK 全入口传播。
+> 2026-06-02 O45 完成，tcdrain 真异步化，e2e benchmark 就绪。
 > 条目格式: <!-- Q{编号} --> 标记开头，支持 grep 精确定位。
 > 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
@@ -133,7 +133,12 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件
 
 <!-- Q7.2 --> - [x] O43 传播 FIONBIO nonblocking — Tty/ldisc 层感知 nonblocking 标志 ✅
 <!-- Q7.3 --> - [x] O44 修正 benchmark — TX /dev/console + tcdrain + FIONBIO 测试 ✅
-<!-- Q7.4 --> - [x] Gate Q7: 全部通过 ✅
+<!-- Q7.4 --> - [x] O45 tcdrain 真异步化 — PollSet + DRAIN_WAKER ✅
+  - `isr.rs`: 新增 DRAIN_WAKER，TX 中断时一同唤醒
+  - `ctl.rs`: TCSBRK 三段式等待（PollSet 等 copier → DRAIN_WAKER 等 UART → 返回）
+  - 64B tcdrain 从 9 次切换降至 ~6 次，延迟从 ~300 µs 降至 ~200 µs
+  - Gate: benchmark 端到端数据正常，e2e 报告完成
+<!-- Q7.5 --> - [x] Gate Q7: 全部通过 ✅
 
 ### Q6: 真板验证 ⏳ 等待硬件
 
