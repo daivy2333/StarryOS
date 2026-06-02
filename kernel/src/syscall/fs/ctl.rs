@@ -40,19 +40,22 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         let _ = f.ioctl(cmd, nb as usize);
         return Ok(0);
     }
-    // TCSBRK (0x5409): tcdrain support — wait for TX ring buffer + UART FIFO drain
+    // TCSBRK (0x5409): tcdrain — wait for TX ring buffer + UART FIFO drain
     if cmd == 0x5409 {
         use uart_16550::spec::registers::LSR;
         block_on(poll_fn(|cx| {
-            let tx_empty = crate::drivers::async_driver::DRIVER.tx.lock().is_empty();
-            if tx_empty {
+            let mut tx = crate::drivers::async_driver::DRIVER.tx.lock();
+            if tx.is_empty() {
+                drop(tx);
                 let mut uart = crate::drivers::uart_init::uart_instance().lock();
                 let lsr = uart.lsr();
                 if lsr.contains(LSR::TRANSMITTER_EMPTY) {
                     return Poll::Ready(Ok(0isize));
                 }
+                cx.waker().wake_by_ref();
+            } else {
+                tx.poll.register(cx.waker());
             }
-            cx.waker().wake_by_ref();
             Poll::Pending
         }))
     } else {
