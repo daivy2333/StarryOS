@@ -4,6 +4,7 @@ use crate::drivers::uart_init::{uart_instance, disable_rx_intr, disable_tx_intr}
 
 pub static RX_WAKER: AtomicWaker = AtomicWaker::new();
 pub static TX_WAKER: AtomicWaker = AtomicWaker::new();
+pub static DRAIN_WAKER: AtomicWaker = AtomicWaker::new();
 
 pub fn uart_isr_handler(_irq: usize) {
     let mut uart = uart_instance().lock();
@@ -16,6 +17,7 @@ pub fn uart_isr_handler(_irq: usize) {
         Some(InterruptType::TransmitterHoldingRegisterEmpty) => {
             disable_tx_intr();
             TX_WAKER.wake();
+            DRAIN_WAKER.wake();
         }
         _ => {}
     }
