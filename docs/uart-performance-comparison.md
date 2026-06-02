@@ -73,13 +73,28 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 ## 5. 用户态吞吐量（⚠️ QEMU 不可比）
 
 > **本节数据在 QEMU 上无比较意义。** 原因：
-> - Console 测试为 `write(/dev/console)` 逐字节轮询，QEMU 瞬时完成 → 测得纯 VFS+syscall 速度。
-> - Async 测试为 `write(/dev/console) + tcdrain()`，tcdrain 调用 TCSBRK 做 poll 循环 → 多了一层 task yield 开销。
-> - 两者测的是**不同的东西**——Console 测 VFS 速度，Async 测 VFS + tcdrain 速度。
 >
-> **真板预期**：VisionFive2 @ 115200 bps，两者均受波特率限制，吞吐量收敛到 ~11.5 KB/s。
-> 区别是：Async 的 `write()` **立即返回**（pipeline 友好），Console 的 `write()` **阻塞到发送完成**。
-> 测试方法：预热 5 次 → 100 次/大小。吞吐量 = 总字节 / 总时长。
+> Console `write(64)` 在 QEMU 上的执行路径：
+> ```
+> syscall → 64× (check LSR.THR_EMPTY → write THR) → return
+> ```
+> QEMU 的 LSR 永远 THR_EMPTY → 64 次 MMIO 写全部瞬时 → 总耗时 ~5 µs。
+> **测的是纯 VFS + MMIO 速度，不是吞吐量。**
+>
+> Async `write(64) + tcdrain` 在 QEMU 上的执行路径：
+> ```
+> write() → push ring buf
+> tcdrain → poll(ring buf not empty) → yield
+>        → copier(send 16B) → yield
+>        → poll(ring buf not empty) → yield    ← 64B 需要 4 轮 copier
+>        → ... (重复 4 次，每次 3 个任务切换)
+>        → poll(buf empty + LSR.TEMT) → return
+> ```
+> 64 字节涉及 **9 次任务上下文切换**（~30 µs/次），总 ~300 µs。
+> **测的是 VFS + 任务切换速度，在 QEMU 上切换比 MMIO 贵 100 倍。**
+>
+> **真板预期**：UART 传输 64 字节需 5.6 ms（64 × 86.8 µs/byte），
+> 碾压 9 µs 的任务切换开销。两者均收敛到 ~11.5 KB/s。
 
 | 数据大小 | Console `write()` only | Async `write + tcdrain` | 真板预期 |
 |----------|----------------------|------------------------|---------|
