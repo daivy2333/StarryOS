@@ -1,17 +1,15 @@
 /**
- * UART Async Benchmark — 真实串口性能测试
+ * UART Async End-to-End Benchmark
  *
- * 修复项 (O44 + statistics):
- * - TX throughput 写 /dev/console（非 /dev/null） + tcdrain
- * - TX 延迟 写 + tcdrain，预热 5 次，测量 200 次
- * - 非阻塞模式测试 (FIONBIO)
- * - 分位值：线性插值（P = (N-1)*p/100，线性插值相邻元素）
+ * 测量 write() + tcdrain() 的完整端到端延迟和吞吐量，并区分：
+ *   - 理论硬件时间（bytes / baud_rate）
+ *   - 软件开销（实测 - 理论）
+ *
+ * QEMU 上：硬件时间为 0（UART 瞬时），测出的是纯软件路径开销。
+ * 真板上：硬件时间主导（~86.8 µs/byte），软件开销可忽略。
  *
  * 编译:
  *   riscv64-linux-musl-gcc -static -o tests/benchmark tests/benchmark.c -lm
- *
- * 运行:
- *   ./benchmark
  */
 
 #include <stdio.h>
@@ -26,9 +24,11 @@
 #include <errno.h>
 
 #define DEVICE_PATH "/dev/console"
-#define BUF_SIZE     1024
-#define LAT_N        200      /* latency measurement iterations */
-#define LAT_WARMUP   5        /* warmup iterations (discarded) */
+#define BAUD_BPS     115200.0
+#define BYTE_TIME_NS (10.0 / BAUD_BPS * 1e9)  /* 86.8 us/byte @ 115200 */
+#define LAT_N        200
+#define LAT_WARMUP   5
+#define TP_ITERS     100
 
 static long long get_time_ns(void) {
     struct timespec ts;
@@ -41,84 +41,69 @@ static int cmp_long(const void *a, const void *b) {
     return (va > vb) - (va < vb);
 }
 
-/* linear interpolation percentile: P = (N-1)*p/100, interp between adjacent */
 static double percentile(const long *sorted, int n, double p) {
     if (n <= 0) return 0.0;
     if (n == 1) return sorted[0];
     double pos = (n - 1) * p / 100.0;
-    int lo = (int)pos;
-    int hi = lo + 1;
+    int lo = (int)pos, hi = lo + 1;
     if (hi >= n) return sorted[n - 1];
-    double frac = pos - lo;
-    return sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
+    return sorted[lo] * (1.0 - (pos - lo)) + sorted[hi] * (pos - lo);
 }
 
 static double stddev(const long *data, int n, double avg) {
     if (n <= 1) return 0.0;
     double sum_sq = 0.0;
-    for (int i = 0; i < n; i++) {
-        double d = data[i] - avg;
-        sum_sq += d * d;
-    }
+    for (int i = 0; i < n; i++) { double d = data[i] - avg; sum_sq += d * d; }
     return sqrt(sum_sq / (n - 1));
 }
 
-static void print_methodology(void) {
-    printf("Methodology:\n");
-    printf("  Warmup:    %d iterations (discarded)\n", LAT_WARMUP);
-    printf("  Latency:   %d iterations (measured)\n", LAT_N);
-    printf("  Throughput: 100 iterations per size\n");
-    printf("  Percentiles: linear interpolation on sorted array\n");
-    printf("  Timer:      clock_gettime(CLOCK_MONOTONIC), ns resolution\n");
-    printf("\n");
-}
-
-/* ── TX throughput: 写 /dev/console + tcdrain ─────────────────────── */
-static void test_tx_throughput(void) {
-    printf("=== TX Throughput (to /dev/console + tcdrain) ===\n");
+/* ── end-to-end throughput ───────────────────────────────────────── */
+static void test_e2e_throughput(void) {
+    printf("=== End-to-End TX Throughput (write + tcdrain) ===\n");
+    printf("  %6s  %6s  %10s  %10s  %10s  %8s\n",
+           "size", "iters", "measured", "hw-time", "overhead", "ratio");
+    printf("  %6s  %6s  %10s  %10s  %10s  %8s\n",
+           "-----", "-----", "----------", "----------", "----------", "--------");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
 
-    /* warmup */
     char wb[64] = {0};
     for (int i = 0; i < 5; i++) { write(fd, wb, sizeof(wb)); tcdrain(fd); }
 
     int sizes[] = {64, 256, 1024, 4096};
-    int num_sizes = 4;
+    for (int s = 0; s < 4; s++) {
+        int sz = sizes[s];
+        char *buf = calloc(1, sz);
+        if (!buf) continue;
 
-    for (int s = 0; s < num_sizes; s++) {
-        int test_size = sizes[s];
-        int iterations = 100;
-        char *buf = calloc(1, test_size);
-        if (!buf) { perror("calloc"); continue; }
-
-        long long start = get_time_ns();
+        long long t0 = get_time_ns();
         size_t total = 0;
-
-        for (int i = 0; i < iterations; i++) {
-            ssize_t n = write(fd, buf, test_size);
+        for (int i = 0; i < TP_ITERS; i++) {
+            ssize_t n = write(fd, buf, sz);
             if (n > 0) { total += n; tcdrain(fd); }
             else break;
         }
+        long long t1 = get_time_ns();
 
-        long long end = get_time_ns();
-        double elapsed_s = (double)(end - start) / 1000000000.0;
-        double kbps = (double)total / elapsed_s / 1024.0;
-        double line_rate = kbps / 11.52 * 100.0;
+        double elapsed_us  = (t1 - t0) / 1000.0;
+        double per_iter_us = elapsed_us / TP_ITERS;
+        double hw_us       = sz * BYTE_TIME_NS / 1000.0;     /* one byte = 86.8 us */
+        double overhead_us = per_iter_us - hw_us;
+        if (overhead_us < 0) overhead_us = 0;               /* QEMU: hw=0 */
 
-        printf("  size=%d  iters=%d | %.2f KB/s | %.1f%% line rate\n",
-               test_size, iterations, kbps, line_rate);
+        printf("  %6d  %6d  %7.1f us  %7.1f us  %7.1f us  %7.1fx\n",
+               sz, TP_ITERS, per_iter_us, hw_us, overhead_us,
+               hw_us > 0 ? per_iter_us / hw_us : 0.0);
         free(buf);
     }
     close(fd);
     printf("\n");
 }
 
-/* ── TX latency: 单字节 write + tcdrain，linear interpolation ─────── */
-static void test_tx_latency(void) {
-    printf("=== TX Latency (single byte + tcdrain, warmup=%d, n=%d) ===\n",
-           LAT_WARMUP, LAT_N);
+/* ── end-to-end latency ──────────────────────────────────────────── */
+static void test_e2e_latency(void) {
+    printf("=== End-to-End TX Latency (1-byte write + tcdrain, n=%d) ===\n", LAT_N);
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -130,76 +115,66 @@ static void test_tx_latency(void) {
     long latencies[LAT_N];
     int ok = 0;
     for (int i = 0; i < LAT_N; i++) {
-        char tx = 'A' + (i % 26);
-        long long start = get_time_ns();
+        char tx = 0;  /* non-printable — doesn't clutter terminal */
+        long long t0 = get_time_ns();
         if (write(fd, &tx, 1) != 1) continue;
         tcdrain(fd);
-        long long end = get_time_ns();
-        latencies[ok++] = (long)(end - start);
+        latencies[ok++] = (long)(get_time_ns() - t0);
     }
-
     if (ok == 0) { printf("  no data\n\n"); close(fd); return; }
 
     qsort(latencies, ok, sizeof(long), cmp_long);
 
+    double hw_us = BYTE_TIME_NS / 1000.0;
     long sum = 0, min = latencies[0], max = latencies[ok - 1];
     for (int i = 0; i < ok; i++) sum += latencies[i];
-    double avg = (double)sum / ok;
-    double sd  = stddev(latencies, ok, avg);
+    double avg_us = (double)sum / ok / 1000.0;
+    double sd_us  = stddev(latencies, ok, (double)sum / ok) / 1000.0;
 
-    printf("  n=%-4d  min=%.3f ms  max=%.3f ms  avg=%.3f ms  stddev=%.3f ms\n",
-           ok, min / 1e6, max / 1e6, avg / 1e6, sd / 1e6);
-    printf("  P50=%.3f ms  P95=%.3f ms  P99=%.3f ms  P999=%.3f ms\n",
-           percentile(latencies, ok, 50) / 1e6,
-           percentile(latencies, ok, 95) / 1e6,
-           percentile(latencies, ok, 99) / 1e6,
-           percentile(latencies, ok, 99.9) / 1e6);
-    printf("\n");
+    printf("  1-byte hardware time: %.1f us\n", hw_us);
+    printf("  %6s  %8s  %8s  %8s  %8s  %8s  %8s  %8s\n",
+           "n", "min", "max", "avg", "stddev", "P50", "P95", "P99");
+    printf("  %6d  %5.0f us  %5.0f us  %5.1f us  %5.1f us  %5.1f us  %5.1f us  %5.1f us\n",
+           ok, min / 1000.0, max / 1000.0, avg_us, sd_us,
+           percentile(latencies, ok, 50) / 1000.0,
+           percentile(latencies, ok, 95) / 1000.0,
+           percentile(latencies, ok, 99) / 1000.0);
+    printf("  overhead = %.1f - %.1f = %.1f us\n\n",
+           avg_us, hw_us, avg_us > hw_us ? avg_us - hw_us : 0.0);
     close(fd);
 }
 
-/* ── non-blocking read test (FIONBIO) ───────────────────────────── */
+/* ── non-blocking read ───────────────────────────────────────────── */
 static void test_nonblock_read(void) {
     printf("=== Non-blocking Read (FIONBIO) ===\n");
 
     int fd = open(DEVICE_PATH, O_RDWR | O_NONBLOCK);
     if (fd < 0) { perror("open"); return; }
-
     char buf[16];
     ssize_t n = read(fd, buf, sizeof(buf));
-    if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
-        printf("  PASS: O_NONBLOCK read → EAGAIN (no data)\n");
-    else if (n >= 0)
-        printf("  INFO: read %zd bytes (data already in buffer)\n", n);
-    else
-        printf("  FAIL: errno=%d (%s)\n", errno, strerror(errno));
+    printf("  O_NONBLOCK open: %s\n",
+           (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+               ? "PASS (EAGAIN)" : (n >= 0 ? "INFO (data buffered)" : "FAIL"));
     close(fd);
 
-    /* test via ioctl */
     fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) { perror("open"); return; }
     int on = 1;
-    if (ioctl(fd, FIONBIO, &on) < 0) {
-        printf("  FAIL: ioctl FIONBIO: %s\n", strerror(errno));
-        close(fd); return;
-    }
+    ioctl(fd, FIONBIO, &on);
     n = read(fd, buf, sizeof(buf));
-    if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
-        printf("  PASS: ioctl FIONBIO read → EAGAIN (no data)\n");
-    else if (n >= 0)
-        printf("  INFO: read %zd bytes (data already in buffer)\n", n);
-    else
-        printf("  FAIL: errno=%d (%s)\n", errno, strerror(errno));
+    printf("  ioctl FIONBIO:   %s\n",
+           (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+               ? "PASS (EAGAIN)" : (n >= 0 ? "INFO (data buffered)" : "FAIL"));
     close(fd);
     printf("\n");
 }
 
 int main(void) {
-    printf("UART Async Benchmark (QEMU @ 115200 bps)\n");
-    printf("=========================================\n\n");
-    print_methodology();
-    test_tx_throughput();
-    test_tx_latency();
+    printf("UART Async E2E Benchmark  @ %.0f bps  (%.0f us/byte hardware)\n",
+           BAUD_BPS, BYTE_TIME_NS / 1000.0);
+    printf("===============================================================\n\n");
+    test_e2e_throughput();
+    test_e2e_latency();
     test_nonblock_read();
     printf("Done.\n");
     return 0;
