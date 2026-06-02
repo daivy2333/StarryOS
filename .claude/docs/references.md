@@ -93,7 +93,7 @@
 ### Console UART 研究文档
 
 <!-- R41 --> | docs/analysis/console-uart-mechanism.md | Console UART 工作机制：硬件配置、TX 阻塞机制、RX 中断驱动、数据竞争风险分析 ✅ |
-<!-- R42 --> | docs/analysis/console-removal-scope-analysis.md | ⚠️ 前提已变更：方向 C 用 Tty 泛型替换而非物理剔除 Console |
+<!-- tombstone: R42,R48,R50 --> Archived 3 outdated analysis refs 2026-06-02 — 前提已变更或已归档
 
 ### UART 初始化与 IRQ 设计文档
 
@@ -105,9 +105,9 @@
 ### 实施历程与可行性评估
 
 <!-- R47 --> | docs/analysis/async-uart-implementation-history.md | AsyncUart 异步串口实现历程：两分支探索历程、渐进式集成失败、完全剔除 Console 方案 ✅ |
-<!-- R48 --> | docs/analysis/bypass-axplat-feasibility.md | ⚠️ 部分过时：MMIO 页表分析已被 stride=4 纠正，其余仍有参考价值 ✅ |
+<!-- tombstone: R48 --> Archived 2026-06-02 — 部分过时，stride=4 已纠正
 <!-- R49 --> | docs/analysis/project-knowledge-map.md | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 ✅ |
-<!-- R50 --> | docs/analysis/weekly-summary-2026-05-29.md | 📦 已归档，当前状态见 SNAPSHOT.md 和 tasks.md |
+<!-- tombstone: R50 --> Archived 2026-06-02 — 已归档周报
 <!-- R51 --> | docs/benchmark-report-async.md | Async 异步串口性能测试报告：内核态和用户态测试结果、与 Console 对比 |
 <!-- R52 --> | docs/analysis/user-async-perf-analysis.md | 用户态异步串口性能分析：三嵌套 block_on/poll_io、yield storm、Manual 模式问题、benchmark 缺陷、对比阻塞 Console |
 <!-- R53 --> | docs/analysis/nonblocking-mode-analysis.md | 非阻塞模式 FIONBIO 分析：当前实现、nonblocking 标志未传播到 TTY 层、实现方案、测试用例 |

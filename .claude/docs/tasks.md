@@ -43,53 +43,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件
 - 性能测试: Console vs Async 统一数据量对比，Async CPU 效率高 14.3 倍
 - 性能分析: 完成用户态异步效率低下的根因分析（5 层瓶颈），FIONBIO 未传播的详细诊断
 
-### Q0: Spike 验证 ✅
-
-<!-- Q0.1 --> - [x] 修复 UART_STRIDE=4→1（LoadFault 根因）✅
-<!-- Q0.2 --> - [x] raw pointer 读 LSR 验证 MMIO 可访问 ✅
-<!-- Q0.3 --> - [x] uart_16550 crate 读写 IER/ISR/LSR 验证 ✅
-<!-- Q0.4 --> - [x] ISR handler 执行 + drain RX FIFO 验证 ✅
-<!-- Q0.5 --> - [x] Gate Q0: 无 LoadFault/StoreFault，Shell 正常 ✅
-
-### Q1: 驱动架构实现 ✅
-
-<!-- Q1.1 --> - [x] 实现 AsyncBuffer（HeapRb + PollSet）✅
-<!-- Q1.2 --> - [x] 实现 ISR AtomicWaker 分发 ✅
-<!-- Q1.3 --> - [x] 实现 RX copier（ISR 唤醒 → 读 UART FIFO → 写 ringbuf）✅
-<!-- Q1.4 --> - [x] 实现 TX copier（buf pop → 写 UART THR）✅
-<!-- Q1.5 --> - [x] 实现 AsyncUartDriver + critical-section 适配 ✅
-<!-- Q1.6 --> - [x] Gate Q1: copier 启动，Shell 正常，无 crash ✅
-
-### Q2: VFS 集成 + Console 共存 ✅
-
-<!-- Q2.1 --> - [x] DeviceOps trait for AsyncUartDriver ✅
-<!-- Q2.2 --> - [x] Pollable trait ✅
-<!-- Q2.3 --> - [x] 注册 /dev/async_uart 到 devfs ✅
-<!-- Q2.4 --> - [x] copier OFF 时 Console 正常（避免 FIFO 竞争）✅
-
-### Q3: AsyncUart RX 接管 ✅
-
-<!-- Q3.1 --> - [x] AsyncUartReader/Writer + ConsoleWriter（TtyRead/TtyWrite）✅
-<!-- Q3.2 --> - [x] RX copier 启用 + ISR AtomicWaker ✅
-<!-- Q3.3 --> - [x] Tty<AsyncUartReader, ConsoleWriter> 绑定 Shell ✅
-<!-- Q3.4 --> - [x] Gate Q3: Shell stdin 走异步，stdout 走 Console，输入输出正常 ✅
-
-### Q4: 全异步 RX+TX ✅
-
-<!-- Q4.1 --> - [x] 启用 TX copier + ISR TX 中断流程 ✅
-<!-- Q4.2 --> - [x] 切换 AsyncUartWriter → ring buffer TX ✅
-<!-- Q4.3 --> - [x] TX copier: enable_tx_intr on partial send ✅
-<!-- Q4.4 --> - [x] Gate Q4: Shell stdin/stdout 双向异步，内核日志共存 ✅
-
-### Q5.1: 性能优化续 ✅
-
-<!-- Q5.1.1 --> - [x] O2/O34 NAPI 中断合并 — 连续成功 ≥16 次后切轮询模式，batch=64 ✅
-<!-- Q5.1.2 --> - [x] O4/O35 FCR 阈值日志 — ISR bits 6-7 检查 FIFO 状态 ✅
-<!-- Q5.1.3 --> - [x] O7 uart_16550 批量读写 API — receive_bytes/send_bytes 替代逐字节操作 ✅
-<!-- Q5.1.4 --> - [x] TX interleave 修复 — TX copier 用本地 cursor 追踪已发位置 ✅
-<!-- Q5.1.5 --> - [x] Gate Q5.1: 核心优化已完成
-
-**注意**: O17（中断分发效率）不需要实现 — ISR 使用 AtomicWaker 直接唤醒（O(1)），无需 BTreeMap 分发
+<!-- tombstone: Q0-Q5.1 details --> Archived §completed sub-tasks 2026-06-02 — 22 completed items, summary in Milestone table above
 
 ### Q5.2: 测试补全（分析完成，O22 待实现）
 

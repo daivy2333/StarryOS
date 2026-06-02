@@ -1,8 +1,7 @@
 # learned.md — 项目学习记忆（汇总）
 
-> 由 project-docs-assistant 维护，汇总分支整合。
-> 条目格式: <!-- L{编号} --> 标记开头，支持 grep 精确定位。
-> 汇总两个方向（渐进式集成 + 完全剔除 Console）的全部经验。
+> 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
+> 2026-06-02 归档 Console 集成期残留，精简为当前架构相关条目。
 
 ---
 
@@ -12,7 +11,7 @@
 <!-- L2 --> | axtask::future::poll_io | WouldBlock → register → await 标准模式 | 2026-05-24 |
 <!-- L3 --> | axtask::future::register_irq_waker | 连接中断到异步任务唤醒 | 2026-05-24 |
 <!-- L4 --> | embassy_sync::AtomicWaker::wake | ISR 中安全唤醒 Waker，无锁中断安全 | 2026-05-24 |
-<!-- L63 --> | register_irq_waker 共存机制 | BTreeMap<usize, PollSet> 支持同一 IRQ 注册多个 waker | 2026-05-27 |
+<!-- tombstone: L63-L64 --> Archived §register_irq_waker coexistence 2026-06-02 — 已改用 AtomicWaker 直接唤醒
 <!-- L65 --> | RISC-V musl 工具链路径 | /opt/musl/riscv64-linux-musl-cross/bin | 编译 lwext4_rust C 代码 | 2026-05-27 |
 <!-- L66 --> | rootfs 下载地址 | https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz | 1GB 磁盘镜像 | 2026-05-27 |
 <!-- L67 --> | disk.img 位置 | 项目根目录 + make/disk.img | make run 需要后者 | 2026-05-27 |
@@ -21,16 +20,13 @@
 <!-- L94 --> | uart_16550 init API | uart_16550/src/lib.rs:406-523 | SerialPort::new_mmio + Config + init，完整初始化流程 | 2026-05-28 |
 <!-- L95 --> | uart_16550 Config 字段 | uart_16550/src/config.rs:114-154 | baud_rate/data_bits/interrupts/fifo_trigger_level | 2026-05-28 |
 <!-- L96 --> | UART 中断类型枚举 | uart_16550/src/spec.rs:315-414 | InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout/LineStatus） | 2026-05-28 |
-<!-- L97 --> | register_irq_waker 实现 | axtask/src/future/poll.rs:43-66 | BTreeMap<usize, PollSet>，支持同一 IRQ 注册多个 waker | 2026-05-28 |
-<!-- L98 --> | register_irq_hook 全局唯一 | axhal/src/irq.rs:12-28 | AtomicUsize compare_exchange，只能注册一次 | 2026-05-28 |
-<!-- L99 --> | AtomicWaker ISR 安全 | embassy-sync/src/waitqueue/atomic_waker.rs:42-63 | CriticalSectionRawMutex + wake_by_ref，ISR 中无阻塞 | 2026-05-28 |
-<!-- L100 --> | PollSet 容量上限 | axpoll/src/lib.rs:66-150 | 容量 64，超过唤醒旧 waker（环形缓冲） | 2026-05-28 |
+<!-- tombstone: L97-L100,L104,L106 --> Archived §register_irq_waker/axlog/retry_until_ok 2026-06-02 — 不再使用 register_irq_waker 机制
 <!-- L101 --> | DeviceOps trait 核心方法 | kernel/src/pseudofs/device.rs:28-55 | read_at/write_at/ioctl/as_pollable/flags | 2026-05-28 |
 <!-- L102 --> | Pollable trait 定义 | axpoll/src/lib.rs | poll() + register()，支持 poll/select/epoll | 2026-05-28 |
 <!-- L103 --> | IoEvents 标志 | axpoll/src/lib.rs | IN/OUT/HUP/ERR/RDNORM/WRNORM | 2026-05-28 |
-<!-- L104 --> | axlog LogIf trait | axlog-0.3.0-preview.2/src/lib.rs | console_write_str() → axhal::console::write_bytes() | 2026-05-28 |
+<!-- tombstone: L104,L106 --> Archived §axlog / retry_until_ok 2026-06-02
 <!-- L105 --> | panic handler 实现 | axruntime-0.3.0-preview.2/src/lang_items.rs | panic() → ax_println! → polling TX | 2026-05-28 |
-<!-- L106 --> | uart_16550 retry_until_ok macro | uart_16550-0.4.0/src/lib.rs | loop { if let Ok(ok) = $cond { break ok; } } | 2026-05-28 |
+<!-- tombstone: L106 --> Archived §retry_until_ok 2026-06-02
 <!-- L116 --> | axhal::mem::phys_to_virt | 物理地址到虚拟地址转换（返回 VirtAddr） | 2026-05-28 |
 
 ---
@@ -42,13 +38,7 @@
 <!-- L7 --> | DeviceOps 设备注册 | kernel/src/pseudofs/device.rs | DeviceOps trait + Device 包装 | 2026-05-24 |
 <!-- L8 --> | UART 硬件操作 | axhal/src/platform/riscv64_qemu_virt/uart.rs | MMIO 寄存器定义 | 2026-05-24 |
 <!-- L9 --> | PLIC 中断映射 | axhal/src/platform/riscv64_qemu_virt/mod.rs | PLIC 中断号 | 2026-05-24 |
-<!-- L83 --> | Console 驱动 | kernel/src/pseudofs/dev/tty/ntty.rs | Console struct + TtyRead/TtyWrite trait | 2026-05-28 |
-<!-- L84 --> | tty-reader copier | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs | InputReader + poll_fn + register_irq_waker | 2026-05-28 |
-<!-- L85 --> | ConsoleDriver | kernel/src/drivers/serial/console_driver.rs | RX copier + TX sync flush + AsyncBuffer | 2026-05-28 |
-<!-- L90 --> | Console 设备注册 | kernel/src/pseudofs/dev/mod.rs:222-230 | /dev/console → DeviceId(5, 1) → N_TTY | 2026-05-28 |
-<!-- L91 --> | Console 初始化流程 | kernel/src/pseudofs/dev/tty/ntty.rs:31-44 | new_n_tty() → bind_to(&proc) → session terminal | 2026-05-28 |
-<!-- L92 --> | tty-reader 任务名 | kernel/src/pseudofs/dev/tty/terminal/ldisc.rs:276 | spawn_with_name("tty-reader") | 2026-05-28 |
-<!-- L93 --> | PTY 与 Console 分离 | kernel/src/pseudofs/dev/tty/pty.rs | PTY 不依赖 Console 硬件，可保留 | 2026-05-28 |
+<!-- tombstone: L83-L85,L90-L93 --> Archived §Console-era file paths 2026-06-02 — Console 已删除，AsyncTty 替代
 
 ---
 
@@ -64,19 +54,7 @@
 - 根因: HeapRb 的 Producer/Consumer 不是中断安全的
 - 解: 硬件 FIFO 和内核 ringbuf 之间的搬运由单一后台协程完成
 
-<!-- L64 --> ### register_irq_waker 共存机制详解
-- 场景: Console tty-reader 已使用 IRQ 10，AsyncUart 是否能共用？
-- 分析路径: axtask::future::poll.rs → axhal::irq.rs → kernel/pseudofs/dev/tty/ntty.rs
-- 结论:
-  1. register_irq_waker 内部使用 BTreeMap<usize, PollSet> 存储每个 IRQ 的唤醒器集合
-  2. PollSet 支持注册多个 Waker，同一 IRQ 号可共存
-  3. register_irq_hook 全局唯一，但 hook 函数根据 IRQ 号查找对应 PollSet
-  4. Console 和 AsyncUart 共用 IRQ 10，共存支持
-- 源码关键点:
-  - Entry::Vacant → register_irq_hook + set_enable + PollSet::new()
-  - Entry::Occupied → 获取已有 PollSet
-  - PollSet.register(waker) 总是执行（支持多个 waker）
-- 验证: 2026-05-27 (T0.3)
+<!-- tombstone: L64 --> Archived §register_irq_waker 共存详解 2026-06-02 — 已不再使用此机制 (Q0-Q7 用 AtomicWaker)
 
 <!-- L68 --> ### 构建环境配置踩坑
 - 症状: make build 失败，`riscv64-linux-musl-cc: command not found`
@@ -102,11 +80,8 @@
 - 影响: 不影响功能，编译成功
 - 建议: 不清理（遵循"只改必须改的代码"原则）
 
-<!-- L78 --> ### M3 替换失败 — IRQ 风暴 + TX busy-loop（方向 A）
-- **症状**: IRQ 风暴 + TX FIFO 满 LSR=0x00
-- **根因**: Console UART 状态不兼容 AsyncUart + stride=4 + 未验证 IIR/MCR/LSR
-- **教训**: 硬件集成前必须 dump 全部寄存器状态；不要假设外设初始化后状态正常
-- **解决**: 回滚，后续 Q0-Q4 独立实现替代
+<!-- L78 --> ### M3 替换失败（方向 A 教训）
+- **教训**: stride=4 导致 LoadFault + Console UART 状态不兼容。后 Q0-Q7 独立实现替代。核心原则：硬件集成前 dump 全部寄存器。
 
 <!-- L79 --> ### 硬件调试铁律：集成前 dump 全部寄存器
 - **教训**: 集成前必须 `info!(IIR={:02x} MCR={:02x} LSR={:02x})`，否则无法诊断硬件异常
@@ -119,19 +94,7 @@
 - **纠正**: THR_EMPTY=1 表示 FIFO 有空位，THR_EMPTY=0 表示 FIFO 满
 - **教训**: 需仔细阅读 UART 规范，不要依赖库的注释（可能有错误）
 
-<!-- L88 --> ### Console 与 AsyncUart 共享 UART 的数据竞争风险
-- **风险类型**:
-  1. **TX 数据竞争**: Console TX（同步阻塞）与 AsyncUart TX copier 同时写 THR 寄存器
-  2. **IRQ waker 冲突**: Console tty-reader 与 AsyncUart copier 竞争 IRQ 10 waker
-  3. **UART 重初始化冲突**: AsyncUart 重初始化可能破坏 Console 配置
-- **根因**: Console 是外部 crate (axplat)，无法完全控制其 UART 操作
-- **解决**: 完全剔除 Console，使用本地 uart_16550 crate（方向 B 策略）
-
-<!-- L89 --> ### 分支策略变更：完全剔除 Console（方向 B 策略）
-- **背景**: feat/uart-async 分支的渐进式集成方案失败（M3 替换失败）
-- **决策**: 创建 feat/uart-async-dev2 分支，完全剔除 Console，从零开始
-- **原因**: 避免 Console 与 AsyncUart 的数据竞争、IRQ waker 冲突、UART 重初始化冲突
-- **新方案**: 使用本地 uart_16550 crate + 自实现 UART 初始化
+<!-- tombstone: L88-L89 --> Archived §Console 竞争风险 + 分支策略 2026-06-02 — 方向 B/C 已完成，历史决策无需保留
 
 <!-- L107 --> ### ISR 分发机制设计要点
 - **ISR 中读 ISR 寄存器**：判断 InterruptType（ReceivedDataReady/THR_EMPTY/ReceptionTimeout）

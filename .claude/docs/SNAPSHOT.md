@@ -81,12 +81,9 @@ Tty<AsyncUartReader, AsyncUartWriter> → /dev/console
 内核日志: ax_println! → Console polling TX（共存）
 ```
 
-### 两个历史探索方向总结
+### 历史
 
-| 方向 | 分支 | 策略 | 结果 | 真实根因 |
-|------|------|------|------|----------|
-| **A: 渐进式集成** | feat/uart-async | 复用 Console，逐步替换 | M0-M2 ✅, M3 ❌ | IRQ 风暴 + TX busy-loop + stride=4 |
-| **B: 完全剔除 Console** | feat/uart-async-dev2 | 从零开始独立初始化 | P0 ✅, P1-P2 阻塞 | **stride=4 导致 LoadFault** |
+> 方向 A（渐进式集成 Console）和方向 B（完全剔除）因 stride=4 + IRQ 风暴在 2026-05 中期放弃，最终采用方向 C（kernel 层独立实现，Q0-Q7 全部完成）。详见 `architecture.md` 和 `docs/analysis/async-uart-implementation-history.md`。
 
 ---
 
