@@ -60,10 +60,10 @@ static double stddev(const long *data, int n, double avg) {
 /* ── end-to-end throughput ───────────────────────────────────────── */
 static void test_e2e_throughput(void) {
     printf("=== End-to-End TX Throughput (write + tcdrain) ===\n");
-    printf("  %6s  %6s  %10s  %10s  %10s  %8s\n",
-           "size", "iters", "measured", "hw-time", "overhead", "ratio");
-    printf("  %6s  %6s  %10s  %10s  %10s  %8s\n",
-           "-----", "-----", "----------", "----------", "----------", "--------");
+    printf("  %6s  %6s  %10s  %10s\n",
+           "size", "iters", "measured/iter", "hw-theory/iter");
+    printf("  %6s  %6s  %10s  %10s\n",
+           "-----", "-----", "----------", "-----------");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -86,18 +86,17 @@ static void test_e2e_throughput(void) {
         }
         long long t1 = get_time_ns();
 
-        double elapsed_us  = (t1 - t0) / 1000.0;
-        double per_iter_us = elapsed_us / TP_ITERS;
-        double hw_us       = sz * BYTE_TIME_NS / 1000.0;     /* one byte = 86.8 us */
-        double overhead_us = per_iter_us - hw_us;
-        if (overhead_us < 0) overhead_us = 0;               /* QEMU: hw=0 */
+        double per_us = (t1 - t0) / 1000.0 / TP_ITERS;
+        double hw_us = sz * BYTE_TIME_NS / 1000.0;
 
-        printf("  %6d  %6d  %7.1f us  %7.1f us  %7.1f us  %7.1fx\n",
-               sz, TP_ITERS, per_iter_us, hw_us, overhead_us,
-               hw_us > 0 ? per_iter_us / hw_us : 0.0);
+        printf("  %6d  %6d  %7.1f us  %7.1f us\n",
+               sz, TP_ITERS, per_us, hw_us);
         free(buf);
     }
     close(fd);
+    printf("  hw-theory = bytes * 10 / baud (86.8 us/byte @ 115200)\n");
+    printf("  On QEMU: measured ≈ software overhead (HW is instant)\n");
+    printf("  On real HW: end-to-end = hw-theory + software overhead\n");
     printf("\n");
 }
 
