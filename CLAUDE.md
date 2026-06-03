@@ -20,12 +20,12 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 
 | 目录 | 用途 | 查询方式 |
 |------|------|----------|
-| `openspec/specs/rules/` | 三大规则（Karpathy + 务实编码 + Workflow Designer） | `grep "关键词" openspec/specs/rules/spec.md` |
+| **规则**（本文档） | Karpathy + 务实编码 + Workflow Designer + 项目特定 | 本文件下方"规则"章节 |
 | `openspec/specs/architecture/` | 架构决策 ADR-001~031（按主题分组） | `grep "关键词" openspec/specs/architecture/spec.md` |
 | `openspec/specs/learned/` | 学习记忆（API 路径、踩坑、技巧模式） | `grep "关键词" openspec/specs/learned/spec.md` |
 | `openspec/specs/references/` | 外部参考与依赖索引 | `grep "关键词" openspec/specs/references/spec.md` |
 | `openspec/specs/optimization/` | 优化记录（Q5 / Q7 已完成 + Q6 / 远期待做） | `grep "关键词" openspec/specs/optimization/spec.md` |
-| `openspec/changes/` | 变更提案 | `openspec list` |
+| `openspec/changes/` | 变更提案（含 rules domain 归档墓碑） | `openspec list` |
 | `openspec/project.md` | 项目上下文（技术栈 / 约束 / 目录） | `cat openspec/project.md` |
 
 ### 项目状态（日常维护）
@@ -38,6 +38,27 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 | `.claude/analysis/` | 深度分析文档（如生成） | `ls .claude/analysis/` |
 | `.claude/docs/*.md.bak` | 5 个 OpenSpec 迁移前的源文件备份 | `ls .claude/docs/*.bak` |
 
+### 代码智能（CodeGraph，推荐）
+
+> 索引已建立（2026-06-03，119 文件 / 2,174 节点 / 5,781 边 / 4.98 MB SQLite）。MCP 已连接。
+> 信任 CodeGraph 结果，不要用 grep 反向验证（违反 house rule）。
+
+| 工具 | 用途 | 何时用 |
+|------|------|--------|
+| `codegraph_explore` | 理解模块工作原理（自然语言提问 / 符号名 bag） | 探究项目时**首选**，常一次顶一组 search+node |
+| `codegraph_search` | 按符号名定位 | 已知符号名查位置时 |
+| `codegraph_callers` / `codegraph_callees` | 调用链 / 被调用链 | 重构前评估影响 |
+| `codegraph_impact` | 改动影响范围（跨文件/跨层） | 重构前**必做** |
+| `codegraph_status` | 索引健康 | 排查问题 / 验证 init 成功 |
+| `codegraph_files` | 项目文件结构 | 找文件时 |
+
+**不可用时处理**（不降级到 Read+Grep）：
+
+1. `codegraph_status` 查看索引健康
+2. MCP 连接异常 → 重连
+3. 索引损坏 → `codegraph init` 重建
+4. 恢复前停止代码探索任务，提示用户修复
+
 ### 父项目文档
 
 - `../CLAUDE.md` — 跨子项目文档索引（StarryOS + uart_16550 双子项目）
@@ -47,10 +68,10 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 
 | 场景 | 读取 | 写入 |
 |------|------|------|
-| 开始新会话 | 本文件 → `openspec/project.md` → `.claude/docs/SNAPSHOT.md` → `.claude/docs/tasks.md` | — |
-| 写新功能 | `specs/rules/` + `specs/architecture/` + `specs/learned/` | `specs/architecture/`（决策）/ `specs/learned/`（新发现）|
-| 修复 Bug | `specs/rules/` + `.claude/docs/SNAPSHOT.md` + `specs/learned/` | `specs/learned/`（踩坑）|
-| 重构 | `specs/rules/` + `specs/architecture/` + `specs/optimization/` | `specs/architecture/`（新决策）|
+| 开始新会话 | 本文件（**规则章节必读**）→ `openspec/project.md` → `.claude/docs/SNAPSHOT.md` → `.claude/docs/tasks.md` | — |
+| 写新功能 | **规则** + `specs/architecture/` + `specs/learned/` | `specs/architecture/`（决策）/ `specs/learned/`（新发现）|
+| 修复 Bug | **规则** + `.claude/docs/SNAPSHOT.md` + `specs/learned/` | `specs/learned/`（踩坑）|
+| 重构 | **规则** + `specs/architecture/` + `specs/optimization/` | `specs/architecture/`（新决策）|
 | 更新进度 | `.claude/docs/tasks.md` | `.claude/docs/tasks.md` + `.claude/docs/SNAPSHOT.md` |
 | 查阅 API | `specs/learned/` → `specs/references/` | — |
 | 记录决策 | `specs/architecture/` | `specs/architecture/` |
@@ -76,7 +97,7 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 
 **技术栈**：Rust nightly-2026-02-25 / RISC-V 64-bit / ArceOS 0.3.0-preview.2 / `axtask::future` + `embassy_sync::AtomicWaker` / `uart_16550` v0.6.0 本地 crate
 
-**关键约束**：
+**关键约束**（详见下方"规则"章节）：
 
 - 所有产出物 MUST 用简体中文撰写（技术术语保持英文）
 - 不修改任何外部 crate
@@ -85,9 +106,269 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 - 提交信息 MUST 遵循 `feat(uart-async): / fix(...):` 格式
 - **禁止把 Claude 列为 co-author**
 
-完整规范见 `openspec/specs/rules/spec.md`（**唯一事实来源**，本文件不重复）。
+完整规范见本文件下方"规则"章节（**唯一事实来源**）。历史 `openspec/specs/rules/spec.md` 已归档至 `openspec/changes/archive/rules-domain-2026-06-03/`。
 
-## 检查清单（提交前确认）
+# 规则（唯一事实来源）
+
+> 本节是项目规则的唯一来源。所有 agent 必须遵守。
+> 之前位于 `openspec/specs/rules/spec.md` 的 17 Requirements 已整合至本章节；原文归档于 `openspec/changes/archive/rules-domain-2026-06-03/` 留墓碑。
+
+---
+
+## 一、Karpathy Guidelines（行为约束）
+
+### 1. Think Before Coding — 不假设、不隐藏困惑、暴露权衡
+
+- 假设不明确时**停下来命名困惑点、向用户提问或并列呈现所有解读**，禁止 silently 选一种推进
+- 发现更简单的方案（更少代码 / 复用现有原语 / 避免新依赖）时**主动 push back**，由用户决定
+- 不确定时 STOP，问。不假装确定
+
+### 2. Simplicity First — 最小代码解决问题
+
+- **不添加未被要求的功能**；不为"未来可能用到"加抽象；不为单次使用代码做泛化
+- 不为不可能场景添加错误处理
+- 200 行能减到 50 行，重写。问自己："资深工程师会说这过度复杂吗？" 是 → 简化
+
+### 3. Surgical Changes — 只改必须改，只清理自己的烂摊子
+
+- 编辑现有代码时不"改进"相邻代码、注释、格式；不重构没坏的东西
+- 匹配现有风格，即使你做法不同
+- 改动引入孤儿（import / 变量 / 函数不再被用）→ 删除自己的改动导致的孤儿；**不删除**先前已存在的死代码
+- 每行改动应直接追溯到用户请求
+
+### 4. Goal-Driven Execution — 定义成功标准，循环直到验证
+
+- 把任务翻译成可验证目标：
+  - "添加验证" → 写无效输入测试 → 让它们通过
+  - "修复 bug" → 写复现测试 → 让它通过
+  - "重构 X" → 确保前后测试都通过
+- 多步任务先列计划：1. [步骤] → verify: [检查] 2. [步骤] → verify: [检查] …
+
+### 5. Requirements Integrity — 不裁剪用户需求
+
+- 用户明确要求的所有功能 MUST 实现；简化实现 ≠ 裁剪功能
+- 任何裁剪 MUST 先报告，获 approval 后才执行
+- 缺依赖、缺时间不是裁剪理由
+
+---
+
+## 二、务实编码原则（代码质量）
+
+> 整合 Karpathy + 务实编码 10 大铁律 + 本项目 ISR/MMIO/Git 项目特定。
+
+### 命名即文档
+
+- 标识符精准、可读、可搜索；符合 Rust 惯用
+- 构造函数用 `new` / `from_*`；无损借用转换用 `as_*`；有损/消耗转换用 `into_*`
+- 布尔值用 `is_` / `has_` / `can_` / `should_` 开头；集合用复数形式（`bytes`、`wakers`）
+
+### 函数单一职责
+
+- 函数 MUST < 20 行，只做一件事，无副作用，抽象层级一致
+- 超过 20 行或混合多个抽象层级时拆分为多个小函数
+
+### DRY 与正交性
+
+- 同一逻辑第三次出现 MUST 抽象为共同接口
+- 驱动层与内核层、硬件抽象与业务逻辑保持相互独立
+
+### 显式胜于隐式
+
+- 依赖 MUST 通过参数或构造函数显式传入；禁止全局状态
+- 魔法数字 MUST 提取为命名常量（如 `UART_FIFO_DEPTH`、`UART_MMIO_BASE`）
+- `#[inline]` 仅在性能关键路径（ISR、热循环）使用，不在通用函数上滥用
+
+### 健壮边界
+
+- 业务核心 MUST 通过接口隔离硬件
+- 临界区只做最小必要操作，**禁止**在锁内做 I/O、await、长循环
+- DMA 缓冲区所有权 MUST 清晰
+
+### 可测试设计
+
+- 每个单元 MUST 可独立测试；纯逻辑与硬件操作分离
+- 实现影响功能正确性的核心逻辑时 MUST 用 `#[cfg(test)]` 模块组织测试，通过后才能合并
+
+### 尽早重构
+
+- 看到代码坏味道（重复、过长函数、命名不清）且在改动范围内时 MUST 立即小步重构
+- 每次重构后保证测试仍通过
+
+### 务实破窗
+
+- 看到 broken window（破注释、TODO 堆积、明显 bug）MUST 立即修复或开 ticket
+- **不可**"以后再说"
+
+### 自动化检查
+
+- 提交前 MUST 依次运行 `cargo fmt` → `cargo clippy` → `make run` 验证内核启动
+- 全部通过才能提交
+
+### 注释解释意图
+
+- 注释 MUST 解释"为什么"，不注释"做什么"；过时注释比无注释更糟
+- 写 `unsafe { ... }` 块 MUST 紧邻 `// SAFETY:` 注释解释 unsafe 契约
+- 改代码后发现旧注释失效 MUST 同步更新或删除
+
+---
+
+## 三、Workflow Designer（流程框架）
+
+### 核心概念
+
+| 概念 | 定义 |
+|------|------|
+| **Phase** | 逻辑分组的工作容器（进入/退出条件明确） |
+| **Gate** | 检查点（PASS 或 BLOCK，BLOCK 必须记录原因） |
+| **Task** | 最小执行单元（可独立验证，完成 MUST 展示证据） |
+| **Loop** | 重复处理（clarification / review-fix / iteration / retry） |
+
+### 执行铁律
+
+```
+1. Phase 进入前必须 Gate PASS
+2. Task 开始前必须 Gate PASS
+3. Task 完成必须展示证据（命令输出、测试结果、文件内容）
+4. Loop 退出必须条件 PASS
+5. Gate BLOCK 必须记录原因（写入 tasks.md 或 change proposal）
+6. 声明完成必须验证证据，禁止仅口头声明
+```
+
+### 工具映射
+
+| 概念 | 工具 |
+|------|------|
+| Phase / Task 状态 | TaskCreate / TaskUpdate |
+| Gate 检查 | AskUserQuestion + 逐项验证 |
+| Loop 控制 | 条件判断 |
+| 并行执行 | Agent (subagent) |
+| 验证证据 | Bash + 输出展示 |
+
+---
+
+## 四、核心执行约束（8 条）
+
+```
+1. 不探索清楚不实现（Gate 1 / BDD）
+2. 不计划清楚不实现（Gate 2）
+3. 不完整覆盖需求不实现（Gate 2 / Requirements Integrity）
+4. 不测试通过不提交（Gate 5）
+5. 不验证成功不声明（Gate 5）
+6. 三次失败必须反思（Gate 6）
+7. 不见见证不变更（TDD Iron Law / Gate 3）
+8. 不见场景缺口不进设计（BDD 智能缺口 / Gate 1）
+```
+
+---
+
+## 五、技能执行规则（强制）
+
+> 防止"步骤可跳过"和"完成无证据"类失误。
+
+### 1. 强制任务化（TaskCreate）
+
+调用任何 skill 时第一步 MUST 是 TaskCreate 任务化所有 Phase 步骤：
+
+- 读取 skill 文档所有 Phase/Step 标题
+- 每个 Phase/Step 创建一条 TaskCreate
+- 开始 Phase X 前 → TaskUpdate mark `in_progress`
+- 完成 Phase X 后 → TaskUpdate mark `completed`（带证据）
+- 跳过任何步骤 → TaskUpdate 状态 `SKIPPED: {原因}`（**禁止静默跳过**）
+- 最终报告前 → TaskList 检查所有任务有 `completed` 或 `SKIPPED` 状态
+
+### 2. 显式记录跳过（无静默跳过）
+
+- ❌ 禁止：跳过步骤不在报告里说明
+- ✅ 必须：跳过任何 step 必须在最终报告里显式列出（含 N/A 原因）
+- ✅ 必须：用户询问"完成了？"时，主动列出未做的步骤
+
+### 3. 完成后自审（5 问）
+
+声明完成前 MUST 回答：
+
+1. 我执行了技能里的每一步吗？
+2. 跳过的步骤有显式记录原因吗？
+3. 关键 Gate/Loop 都通过了吗？
+4. 有输出证据（命令、文件、片段）吗？
+5. 报告前我读过 TaskList 确认状态吗？
+
+任一为 NO → **不允许声明完成**
+
+### 4. 禁止强假设推断
+
+- ❌ 看到部分证据就推断整体完成（如：看到目录存在就推断整个初始化做完）
+- ✅ 必须逐项打勾，每条 step 有输出或显式记录 "N/A（原因）"
+- 不确定时 STOP 问，不确定时倾向于"漏做"而非"早收尾"
+
+### 5. CodeGraph 集成（如有）
+
+- 项目有 CodeGraph 索引时**优先使用**：
+  - `codegraph_explore` 替代 Read + Grep（一次顶一组 search + node）
+  - 看到 ⚠️ stale banner 时，对那一个文件直接 Read，其它继续信任
+  - **信任 CodeGraph 结果**，不要用 grep 反向验证（违反 house rule）
+- CodeGraph 不可用时**不降级**到 Read + Grep：
+  1. 检查 MCP 连接是否正常
+  2. 用 `codegraph_status` 查看索引健康
+  3. 用 `codegraph init` 重建索引（如需要）
+  4. 在 CodeGraph 恢复前停止代码探索任务，提示用户修复
+
+### 6. OpenSpec 集成
+
+- 变更 MUST 用 `/opsx:propose` 创建，不用手动操作 `changes/`
+- 验证用 `openspec validate --specs`
+- 归档用 `/opsx:archive`
+- 与 openspec-assistant 双向同步：`changes/` ↔ `.claude/docs/tasks.md`
+
+### 7. 文件编辑铁律
+
+- 更新已有文档用 **Edit**（精准替换），不用 Write（全量覆盖）
+- 创建全新文件才用 Write
+- **禁止**全量覆盖导致内容丢失
+
+---
+
+## 六、项目特定规则（不可妥协）
+
+### ISR 极简原则
+
+- 中断处理函数 MUST 只做：(1) 读 ISR 寄存器判断中断类型，(2) 禁用对应中断，(3) `AtomicWaker::wake()`，(4) 立即返回
+- **禁止**数据搬运（硬件 FIFO → ring buffer）和锁操作
+- 数据从 FIFO 到 ring buffer 的搬运 MUST 在 copier 任务中完成
+
+### MMIO 封装
+
+- 所有 MMIO 寄存器操作 MUST 封装在 `uart_16550::Uart16550<MmioBackend>` 的安全 API 后
+- **禁止**裸写硬件地址（`*(0x10000000 as *mut u8) = x`）
+- **禁止** `read_volatile` / `write_volatile` 裸地址
+
+### NS16550 stride
+
+- `Uart16550<MmioBackend>::new_mmio(NonNull<u8>, stride)` 的 stride MUST 传 **1**（NS16550 寄存器仅 8 字节）
+- **禁止**传 4 或其他值（→ LoadFault 复发，参见 `learned` L122）
+
+### Git 提交规范
+
+- 提交信息 MUST 遵循 conventional commits 子集：
+  - `feat(uart-async): ...` / `fix(uart-async): ...` / `refactor(uart-async): ...` / `docs(uart-async): ...`
+- **禁止**在 commit message footer 添加 `Co-Authored-By: Claude` 或任何形式标记 Claude 为共同作者
+- 新功能开发 MUST 基于 `main` 或当前 dev 分支创建 `feat/uart-async-*`，最终通过 PR 合入 main
+
+### 跨层状态传播
+
+- 任何跨层状态（如 O_NONBLOCK）MUST 穷举所有入口（open / fcntl / ioctl）并逐个验证
+- 一个入口遗漏 = 功能不完整（FIONBIO 教训，参见 `learned` L140）
+
+### 构建与部署
+
+- musl 工具链路径：`/opt/musl/riscv64-linux-musl-cross`（构建前 `export PATH=...:$PATH`）
+- rootfs 部署：手动下载 → xz 解压 → 双份 `disk.img`（项目根 + `make/disk.img`）
+- 构建前 MUST 验证环境，禁止直接 `make build` 期待成功
+
+---
+
+## 七、检查清单（提交前确认）
+
+### 代码质量
 
 - [ ] 命名清晰，揭示意图
 - [ ] 函数 < 20 行，单一职责
@@ -97,12 +378,25 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 - [ ] 依赖显式注入
 - [ ] 核心逻辑有测试覆盖
 - [ ] 注释解释"为什么"
+
+### 项目特定
+
+- [ ] ISR 极简（只读 ISR / 禁中断 / wake / 返回）
+- [ ] MMIO 走 `uart_16550` crate API，无裸地址
+- [ ] NS16550 stride = 1
+- [ ] 跨层状态传播已穷举所有入口
+
+### 工具与流程
+
 - [ ] 已运行 `cargo fmt` 和 `cargo clippy`
 - [ ] `make run` 验证内核启动
 - [ ] 代码比来时更干净
 - [ ] 只改必须改的代码
 - [ ] 不添加未要求的功能
 - [ ] 提交信息无 `Co-Authored-By: Claude`
+- [ ] 提交信息遵循 `feat(uart-async): / fix(...):` 格式
+
+---
 
 ## Red Flags
 
@@ -113,10 +407,12 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 ❌ unsafe 无 SAFETY 注释 → Iron Law 违规
 ❌ 顺手添加功能 → Karpathy 违规
 ❌ Gate BLOCK 不记录 → Workflow 违规
+❌ 强假设推断（看到部分就推断完成）→ 自审违规
+❌ 静默跳过 skill 步骤 → 技能执行违规
+❌ "Should/probably" → 验证违规
 ❌ 硬件地址裸写 → 安全违规
 ❌ ISR 中有阻塞操作 → 性能违规
 ❌ stride 传 4（NS16550）→ LoadFault 复发
 ❌ 跨层状态未穷举入口 → FIONBIO 教训
+❌ 提交信息包含 Co-Authored-By: Claude → Git 规范违规
 ```
-
-完整规则见 `openspec/specs/rules/spec.md`。

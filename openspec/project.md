@@ -44,13 +44,13 @@ StarryOS/
 ├── openspec/               # OpenSpec 规范（本次初始化新增）
 │   ├── config.yaml
 │   ├── project.md          # 本文件
-│   ├── specs/              # 5 个 domain
-│   │   ├── rules/
+│   ├── specs/              # 4 个 domain
 │   │   ├── architecture/
 │   │   ├── learned/
 │   │   ├── references/
 │   │   └── optimization/
-│   └── changes/            # 变更提案
+│   │   # ~~rules/~~ — 2026-06-03 归档至 changes/archive/，规则全文整合到 ../CLAUDE.md
+│   └── changes/            # 变更提案（含 rules domain 墓碑）
 ├── .claude/                # Claude Code 配置
 │   ├── docs/               # 状态文档（SNAPSHOT / tasks / archive）
 │   ├── skills/             # OpenSpec skills

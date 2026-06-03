@@ -10,7 +10,7 @@
 **分支**: asyncuart-dev（基于 `feat/uart-async-dev2`，Q0~Q7 完成，OpenSpec 文档体系建立）
 **成果**:
 - kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
-- **OpenSpec 文档体系建立**（2026-06-03）：5 个 spec 域（rules / architecture / learned / references / optimization），全部通过 `openspec validate --specs`
+- **OpenSpec 文档体系建立**（2026-06-03）：4 个 spec 域（architecture / learned / references / optimization），全部通过 `openspec validate --specs`；rules 已整合到 CLAUDE.md（迁移墓碑见 `openspec/changes/archive/rules-domain-2026-06-03/`）
 - 原 `.claude/docs/{architecture,learned,references,optimization,rules}.md` 已迁移至 `openspec/specs/`，源文件以 `.bak` 保留
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
 **Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正 + TCSBRK 实现（O44）
@@ -165,15 +165,16 @@ StarryOS/
 
 | 文档 | 内容 | 条目数 |
 |------|------|--------|
-| `openspec/specs/rules/spec.md` | 三大规则（Karpathy + 务实编码 + Workflow Designer） + ISR/MMIO/Git 项目特定 | 17 Requirements |
+| `CLAUDE.md` 规则章节 | 三大规则（Karpathy + 务实编码 + Workflow Designer）+ 核心约束 + 技能执行 + 项目特定 + 检查清单 + Red Flags | 7 大节（2026-06-03 整合） |
 | `openspec/specs/architecture/spec.md` | ADR-001~031（按主题分组） | 13 Requirements |
 | `openspec/specs/learned/spec.md` | API 路径、文件速查、踩坑档案、技巧模式、性能/测试 | 10 Requirements |
 | `openspec/specs/references/spec.md` | 依赖、子项目索引、规范、Embassy、Linux serial、项目分析 | 8 Requirements |
 | `openspec/specs/optimization/spec.md` | Q5/Q7 已完成 + Q6/远期 + 已排除 + 性能基线 | 6 Requirements |
 | `openspec/project.md` | 项目上下文（技术栈、约束、目录、Git 规范） | — |
-| `CLAUDE.md` | OpenSpec + .claude/docs/ 双索引入口 | 5.7 KB |
+| `CLAUDE.md`（索引部分） | OpenSpec + .claude/docs/ 双索引入口 | 9.7 KB（含规则） |
+| `openspec/changes/archive/rules-domain-2026-06-03/` | rules spec 墓碑（17 Requirements） | 🪦 |
 | `.claude/docs/tasks.md` | 任务追踪（含 P0 OpenSpec milestone） | Q0~Q7 + P0 |
-| `.claude/docs/archive.md` | 已归档内容（含 2026-06-03 OpenSpec 迁移） | 持续累积 |
+| `.claude/docs/archive.md` | 已归档内容（含 2026-06-03 OpenSpec 迁移 + rules domain 二次迁移） | 持续累积 |
 | `.claude/docs/*.md.bak` (×5) | OpenSpec 迁移前源文件备份 | 70 KB |
 | `docs/uart-performance-comparison.md` | Console vs Async 对比报告 | ✅ Q7 更新 |
 | `docs/benchmark-report-async.md` | Async 详细测试报告 | ✅ Q7 更新 |
