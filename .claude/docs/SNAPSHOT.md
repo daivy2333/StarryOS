@@ -1,14 +1,17 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-02
-> 分支：feat/uart-async-dev2 — Q0~Q7 ✅，O45 ✅，Q6 等待硬件
+> Last updated: 2026-06-03
+> 分支：asyncuart-dev — Q0~Q7 ✅，OpenSpec 体系建立（2026-06-03），Q6 等待硬件
 
 ---
 
 ## 当前状态
 
-**分支**: feat/uart-async-dev2（Q7 完成，准备 Q6 真板验证）
-**成果**: 在 kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
+**分支**: asyncuart-dev（基于 `feat/uart-async-dev2`，Q0~Q7 完成，OpenSpec 文档体系建立）
+**成果**:
+- kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
+- **OpenSpec 文档体系建立**（2026-06-03）：5 个 spec 域（rules / architecture / learned / references / optimization），全部通过 `openspec validate --specs`
+- 原 `.claude/docs/{architecture,learned,references,optimization,rules}.md` 已迁移至 `openspec/specs/`，源文件以 `.bak` 保留
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
 **Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正 + TCSBRK 实现（O44）
 **O45 已完成**: tcdrain 真异步化（PollSet + DRAIN_WAKER，消除协作自旋）
@@ -112,20 +115,28 @@ StarryOS/
 │   │       └── tty/      # TTY/Console/ldisc
 │   ├── syscall/          # 系统调用
 │   └── task/             # 任务管理
-├── docs/analysis/        # 设计分析文档（9 份）
-├── .claude/docs/         # 开发文档体系（本文件所在）
-│   ├── SNAPSHOT.md       # 本文件
-│   ├── architecture.md   # 架构决策记录（ADR-001~029，19 条有效）
-│   ├── tasks.md          # 任务追踪（M0~M6 + P0~P6）
-│   ├── learned.md        # 学习记忆（81 条目）
-│   ├── references.md     # 外部参考（53 条目）
-│   ├── optimization.md   # 优化记录（23 条目）
-│   ├── rules.md          # 编码规范
-│   ├── archive.md        # 归档内容
-│   └── superpowers/      # 设计文档和实现计划
-│       ├── specs/        # Spec 文档
-│       └── plans/        # Plan 文档
-└── CLAUDE.md             # 项目约束规则
+├── docs/analysis/        # 设计分析文档（13 份）
+├── openspec/             # OpenSpec 规范（2026-06-03 初始化）
+│   ├── project.md        # 项目上下文（技术栈、约束、约定）
+│   ├── config.yaml       # schema: spec-driven
+│   ├── specs/            # 5 个 domain spec
+│   │   ├── rules/spec.md         # 三大规则 + ISR/MMIO/Git 项目特定
+│   │   ├── architecture/spec.md  # ADR-001~031（按主题分组）
+│   │   ├── learned/spec.md       # API/文件/踩坑/技巧/性能/测试
+│   │   ├── references/spec.md    # 依赖/子项目/规范/Embassy/Linux/分析
+│   │   └── optimization/spec.md  # Q5/Q7 完成 + Q6/远期/排除
+│   └── changes/          # 变更提案
+├── .claude/              # Claude Code / OpenSpec 工具链
+│   ├── commands/opsx/    # OpenSpec slash commands（5）
+│   ├── skills/openspec-*/# OpenSpec skills（5）
+│   ├── docs/             # 状态文档（本文件所在）
+│   │   ├── SNAPSHOT.md   # 本文件
+│   │   ├── tasks.md      # 任务追踪（含 P0 OpenSpec milestone）
+│   │   ├── archive.md    # 归档内容（含 2026-06-03 OpenSpec 迁移）
+│   │   ├── *.md.bak (×5) # 迁移源备份
+│   │   └── superpowers/  # 设计文档和实现计划
+│   └── settings.local.json
+└── CLAUDE.md             # 项目入口（OpenSpec + .claude/docs/ 双索引）
 ```
 
 ---
@@ -150,18 +161,23 @@ StarryOS/
 
 ## 文档体系索引
 
+> **2026-06-03 重大变更**：原 `.claude/docs/{architecture,learned,references,optimization,rules}.md` 已迁移至 `openspec/specs/`，本节索引同步更新。
+
 | 文档 | 内容 | 条目数 |
 |------|------|--------|
-| architecture.md | ADR-001~029，两个方向的全部决策历史 | 19 |
-| tasks.md | Q0~Q6 任务追踪（方向 C） | 37 |
-| learned.md | API 路径、文件速查、踩坑档案、技巧模式 | 81 |
-| references.md | 依赖文档、规范、设计文档索引 | 53 |
-| optimization.md | 性能洞察、优化方向、基准目标 | 20 |
-| rules.md | Karpathy Guidelines + 十大铁律 + Workflow | 唯一事实来源 |
-| docs/uart-performance-comparison.md | Console vs Async 对比报告 | ✅ Q7 更新 |
-| docs/benchmark-report-async.md | Async 详细测试报告 | ✅ Q7 更新 |
-| docs/benchmark-report-console.md | Console 详细测试报告 | - |
-| archive.md | 已归档的过时内容 | ~15 |
+| `openspec/specs/rules/spec.md` | 三大规则（Karpathy + 务实编码 + Workflow Designer） + ISR/MMIO/Git 项目特定 | 17 Requirements |
+| `openspec/specs/architecture/spec.md` | ADR-001~031（按主题分组） | 13 Requirements |
+| `openspec/specs/learned/spec.md` | API 路径、文件速查、踩坑档案、技巧模式、性能/测试 | 10 Requirements |
+| `openspec/specs/references/spec.md` | 依赖、子项目索引、规范、Embassy、Linux serial、项目分析 | 8 Requirements |
+| `openspec/specs/optimization/spec.md` | Q5/Q7 已完成 + Q6/远期 + 已排除 + 性能基线 | 6 Requirements |
+| `openspec/project.md` | 项目上下文（技术栈、约束、目录、Git 规范） | — |
+| `CLAUDE.md` | OpenSpec + .claude/docs/ 双索引入口 | 5.7 KB |
+| `.claude/docs/tasks.md` | 任务追踪（含 P0 OpenSpec milestone） | Q0~Q7 + P0 |
+| `.claude/docs/archive.md` | 已归档内容（含 2026-06-03 OpenSpec 迁移） | 持续累积 |
+| `.claude/docs/*.md.bak` (×5) | OpenSpec 迁移前源文件备份 | 70 KB |
+| `docs/uart-performance-comparison.md` | Console vs Async 对比报告 | ✅ Q7 更新 |
+| `docs/benchmark-report-async.md` | Async 详细测试报告 | ✅ Q7 更新 |
+| `docs/benchmark-report-console.md` | Console 详细测试报告 | - |
 
 ---
 

@@ -1,14 +1,16 @@
 # tasks.md — 任务追踪
 
-> 由 project-docs-assistant 维护，feat/uart-async-dev2 分支。
+> 由 assistant 维护，asyncuart-dev 分支。
+> 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
 > 2026-06-02 O45 完成，tcdrain 真异步化，e2e benchmark 就绪。
-> 条目格式: <!-- Q{编号} --> 标记开头，支持 grep 精确定位。
+> 条目格式: <!-- Q{编号} --> 或 <!-- P{编号} --> 标记开头，支持 grep 精确定位。
 > 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
 ---
 
-## 当前: 方向 C — kernel 层独立实现（feat/uart-async-dev2）
+## 当前: 方向 C — kernel 层独立实现（asyncuart-dev）
 
+> 2026-06-03 完成文档体系迁移：`.claude/docs/{architecture,learned,references,optimization,rules}.md` → `openspec/specs/`，5 个 spec 域全部通过 `openspec validate --specs`。
 > 2026-06-01 完成性能分析：发现 3 层 yield storm、Manual 模式缺陷、benchmark 不测 UART、FIONBIO 不传播。
 
 ### Milestone 概览
@@ -22,8 +24,9 @@
 | **Q4** | 全异步 RX+TX | TX copier + ISR，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
-| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成，待实现 |
+| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ✅ (O43 已落地) |
 | **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ✅ |
+| **P0** | OpenSpec 文档体系 | 5 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -31,7 +34,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q6 ⏳(硬件)
 ```
 
 **已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
@@ -45,11 +48,11 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ⏳ Q7 ✅ Q6 ⏳(硬件
 
 <!-- tombstone: Q0-Q5.1 details --> Archived §completed sub-tasks 2026-06-02 — 22 completed items, summary in Milestone table above
 
-### Q5.2: 测试补全（分析完成，O22 待实现）
+### Q5.2: 测试补全 ✅
 
 <!-- Q5.2.1 --> - [x] O21 用户态自动化测试 — 内核态统计 + 启动时自动测试 ✅
-<!-- Q5.2.2 --> - [ ] O22 非阻塞模式测试 — ioctl(FIONBIO)（✅ 分析完成，见 docs/analysis/nonblocking-mode-analysis.md）
-<!-- Q5.2.3 --> - [ ] Gate Q5.2: 自动化测试覆盖核心路径
+<!-- Q5.2.2 --> - [x] O22 非阻塞模式测试 — ioctl(FIONBIO) ✅（Q7 O43 已落地：传播 FIONBIO 到 Tty/ldisc）
+<!-- Q5.2.3 --> - [x] Gate Q5.2: 自动化测试覆盖核心路径 ✅
 
 **已实现**:
 - `kernel/src/drivers/benchmark.rs` - 内核态统计模块（CPU 占用、NAPI 效果）

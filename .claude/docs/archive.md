@@ -1,9 +1,56 @@
 # archive.md — 文档归档（汇总）
 
-> 自动归档记录，由 project-archivist 维护。
+> 自动归档记录，由 assistant 维护。
 > 按源文档分节，每条含日期、编号、置信度、理由、恢复条件。
 > 恢复方式: 用户说"恢复 §{文档名} #{编号}"。
 > 搜索方式: grep "关键词" archive.md 或 grep "编号" archive.md
+
+---
+
+## 文档体系迁移归档
+
+<!-- archive: docs-to-openspec-2026-06-03 -->
+**日期**: 2026-06-03
+**事件**: 文档体系从 `.claude/docs/{5 个文件}` 迁移到 `openspec/specs/`
+**触发**: `openspec-init` skill 执行（commit `922e8fd` + `b65021f`）
+**置信度**: HIGH
+**理由**: 5 个传统 .claude/docs 文档（70 KB）已重新组织为 OpenSpec spec-driven 格式（84 KB，新增规范字段 + 验证器合规），`openspec validate --specs` 5/5 通过
+**迁移映射**:
+
+| 原文件 | 新位置 | 关键变化 |
+|--------|--------|----------|
+| `.claude/docs/rules.md` | `openspec/specs/rules/spec.md` | 17 个 Requirement（Karpathy + 务实编码 + Workflow Designer + 项目特定） |
+| `.claude/docs/architecture.md` | `openspec/specs/architecture/spec.md` | 13 个 Requirement（按主题分组 ADR-001~031，tombstone 仅在 .bak 保留） |
+| `.claude/docs/learned.md` | `openspec/specs/learned/spec.md` | 10 个 Requirement（API/文件/踩坑/技巧/性能/测试） |
+| `.claude/docs/references.md` | `openspec/specs/references/spec.md` | 8 个 Requirement（依赖/子项目/规范/Embassy/Linux/分析） |
+| `.claude/docs/optimization.md` | `openspec/specs/optimization/spec.md` | 6 个 Requirement（Q5/Q7 + Q6/远期/排除 + 性能基线） |
+| `CLAUDE.md` | `CLAUDE.md` | 重写为 OpenSpec + .claude/docs/ 双索引（5.7 KB，规则全文只在 spec） |
+
+**保留不迁移**:
+
+- `SNAPSHOT.md` — 状态快照（OpenSpec 不替代）
+- `tasks.md` — 任务追踪（OpenSpec 不替代，但已加入 P0 milestone）
+- `archive.md` — 本文件
+
+**新增加**：
+
+- `openspec/project.md` — 项目上下文
+- `openspec/config.yaml` — schema: spec-driven
+- `openspec/changes/` — 变更提案目录
+- `.claude/commands/opsx/` — 5 个 slash commands
+- `.claude/skills/openspec-*` — 5 个 skills
+
+**备份保留**：
+
+- `.claude/docs/*.md.bak` (×5) — 5 个迁移源文件完整备份
+- `CLAUDE.md.bak` — 迁移前 CLAUDE.md 备份
+
+**恢复条件**:
+
+- 如需查看原始 .md 风格（非 OpenSpec 格式），查阅对应 `*.md.bak` 文件
+- 如需 git 历史回滚，运行 `git revert 922e8fd b65021f`
+
+**更正参考**: `openspec/project.md`、`CLAUDE.md`（新版）
 
 ---
 
