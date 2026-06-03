@@ -37,34 +37,6 @@
 - **WHEN** `make build` 报 `riscv64-linux-musl-cc: command not found`
 - **THEN** MUST 按 `learned` spec 中的"构建与部署环境踩坑"操作，禁止修改项目代码绕过
 
-### Requirement: uart_16550 子项目文档索引
-
-`uart_16550` 是 StarryOS 串口子系统的底层驱动模块；其文档体系 MUST 按子项目独立维护，本规范 MUST 保持单一入口的指针。
-
-**子项目文档体系路径**：
-
-| 文档 | 路径 | 内容概要 |
-|------|------|----------|
-| 项目入口 | `../uart_16550/CLAUDE.md` | 项目概览、no_std 驱动库规范 |
-| 状态快照 | `../uart_16550/.claude/docs/SNAPSHOT.md` | v0.6.0 状态、核心 API 速查 |
-| 学习记忆 | `../uart_16550/.claude/docs/learned.md` | API 路径、寄存器速查、中断速查 |
-| 架构决策 | `../uart_16550/.claude/docs/architecture.md` | Backend trait 设计、寄存器分层 |
-| 编码规范 | `../uart_16550/.claude/docs/rules.md` | 三大规则 + Rust embedded 规范 |
-| 外部参考 | `../uart_16550/.claude/docs/references.md` | 16550 规范、依赖文档 |
-| 优化记录 | `../uart_16550/.claude/docs/optimization.md` | 自旋阻塞、批量 API、DMA API |
-
-**关键定位**：
-
-- **寄存器定义**：`../uart_16550/src/spec.rs` — 所有 bitflags + 常量 + InterruptType
-- **后端抽象**：`../uart_16550/src/backend/mod.rs` — Backend trait (sealed)
-- **RISC-V 使用**：`Uart16550<MmioBackend>` + `new_mmio(NonNull<u8>, stride)`
-- **中断处理**：`isr().interrupt_type()` → `InterruptType` 枚举分发
-
-#### Scenario: 查找 16550 寄存器或 API
-
-- **WHEN** 开发者要查 16550 寄存器定义或 API 行为
-- **THEN** MUST 按"本索引"先定位文档，再去 `../uart_16550/src/spec.rs` 确认源码
-
 ### Requirement: 硬件与平台规范
 
 UART / 中断控制器 / 虚拟化控制器的官方规范 MUST 在本规范登记链接，调试或新增平台支持时 MUST 先查阅对应规范。
@@ -196,3 +168,12 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 
 - **WHEN** `openspec-explorer` 生成新的项目分析文档
 - **THEN** MUST 在本规范中注册：主题 / 路径 / 内容概要
+
+---
+
+## 子项目索引
+
+<!-- 由 openspec-liaison 写入，由 openspec-assistant 日常维护，由 openspec-archivist 周期清理。 -->
+<!-- 添加时格式: <!-- R{编号} --> | 子项目 | 路径 | 文档体系 | 摘要 | 最近更新 | -->
+
+<!-- R1 --> | `uart_16550` | `../uart_16550` | OpenSpec✓ config✓ specs✓ changes✗ cg✓ | 16550 UART 驱动库 v0.6.0，StarryOS 串口底层模块（path 依赖）。OpenSpec 4-domain 已建立（architecture / learned / optimization / references），`openspec/changes/` 仅 archive 无活跃变更，CodeGraph 索引 729KB 已建；旧 `.claude/docs/` 仍含 SNAPSHOT/tasks 与 4 份 `.bak` 备份。 | 2026-06-03 |

@@ -25,11 +25,14 @@
 
 | 路径 | 用途 |
 |------|------|
-| `uart_16550/src/spec.rs` | IER/ISR/LSR bitflags + InterruptType 枚举 |
+| `uart_16550/src/spec.rs` | IER/ISR/LSR bitflags + InterruptType 枚举（寄存器定义汇总） |
+| `uart_16550/src/backend/mod.rs` | Backend trait 定义（sealed 模式，分发 Mmio/Port I/O 后端） |
 | `uart_16550/src/backend/mmio.rs` | read_volatile/write_volatile + 地址计算 |
 | `uart_16550/src/lib.rs:406-523` | SerialPort::new_mmio + Config + init |
 | `uart_16550/src/config.rs:114-154` | baud_rate/data_bits/interrupts/fifo_trigger_level |
 | `uart_16550/src/spec.rs:315-414` | InterruptType 枚举（ReceivedDataReady/THR_EMPTY/ReceptionTimeout/LineStatus） |
+| `Uart16550<MmioBackend>::new_mmio(NonNull<u8>, stride)` | RISC-V MMIO 初始化入口；stride MUST 传 1（NS16550 寄存器仅 8 字节） |
+| `uart.isr().interrupt_type()` | ISR 中读取 InterruptType 枚举分发：ReceivedDataReady/ReceptionTimeout → RX，THR_EMPTY → TX |
 
 **内核模块关键路径**
 
