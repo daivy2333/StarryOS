@@ -212,6 +212,76 @@ ISR MUST 最小化（读 ISR → 禁用中断 → 唤醒 Waker → 返回），�
 - **WHEN** 开发者要设计新的 ISR 唤醒路径
 - **THEN** MUST 评估 waker 数量与动态性：固定少数 → AtomicWaker；通用动态 → register_irq_waker
 
+### Requirement: Embassy 选型边界与反模式
+
+embassy-sync 子集使用 MUST 严格限定在 `AtomicWaker`（ISR 安全唤醒）。任何 embassy 其它原语（Channel / Mutex / Watch / Semaphore / Signal）替换现有 Rust 标准库或项目原语的提案 MUST 视为反模式。
+
+**项目采用 embassy 的实际范围**（2026-06-05 评估）：
+
+| 类型 | 是否使用 | 用途 |
+|------|----------|------|
+| `embassy_sync::waitqueue::AtomicWaker` | ✅ 核心 | 3 个静态 waker（RX/TX/DRAIN）|
+| `embassy_sync::mutex::Mutex` | ❌ 不用 | — |
+| `embassy_sync::semaphore::Semaphore` | ❌ 不用 | — |
+| `embassy_sync::channel::Channel` | ❌ 不用 | — |
+| `embassy_sync::signal::Signal` | ❌ 不用 | — |
+| `embassy_sync::watch::Watch` | ❌ 不用 | — |
+| `embassy_sync::pipe::Pipe` | ❌ 不用 | — |
+| `embassy_time::Timer` | ❌ 不用 | 待 O47 评估 |
+| `embassy_futures::select!` | ❌ 不用 | 架构冲突 |
+| `embassy-executor` | ❌ 不用 | 与 axtask 冲突（L10 已记录）|
+
+**踩坑 1：Channel 替换 HeapRb 的反优化**（L81，2026-06-05）
+
+- **反优化**：`embassy_sync::Channel<u8, 65536>` 替换 `ringbuf::HeapRb<u8>`
+- **现状**：UART RX/TX 用 `ringbuf::HeapRb<u8>`，SPSC 无锁
+- **不要做的原因**：
+  1. `HeapRb` 是 lock-free SPSC（生产/消费各 1 个），单次 push/pop 约 1-2 ns
+  2. `embassy_sync::Channel` 是 MPMC 通用通道，泛型 + critical-section 包装，比 SPSC 多一层间接
+  3. 失去 heap 分配灵活性（Channel 编译期 N，HeapRb 运行时 64 KiB）
+  4. 项目中只有一个生产者（copier）和一个消费者（reader/writer），**根本不需要 MPMC**
+- **教训**：选 embassy 原语前先评估是否真的需要其通用能力。单生产者单消费者场景 MUST 优先 ringbuf
+
+**踩坑 2：Mutex 替换 SpinNoPreempt 的反优化**（L82，2026-06-05）
+
+- **反优化**：`embassy_sync::Mutex<T>` 替换 `Arc<SpinNoPreempt<T>>`
+- **现状**：Tty / RingBufRx / RingBufTx 用 `SpinNoPreempt`（自旋锁 + 中断禁用）
+- **不要做的原因**：
+  1. 现有临界区都是**同步**的（不进 `.await`），`SpinNoPreempt` 几十 ns 加锁
+  2. `embassy_sync::Mutex` 是异步 Mutex，**强制**走 embassy executor 的调度器，与 axtask 冲突
+  3. 即便不跨 `.await`，异步 Mutex 也有调度开销（~500 ns+）
+  4. 改用 async Mutex 会引入 embassy-executor（与 L10 教训冲突）
+- **教训**：临界区不进 `.await` MUST 用同步锁（SpinNoPreempt / kspin），禁止用异步 Mutex
+
+**踩坑 3：Watch / Signal 包装 AtomicBool 的反优化**（L83，2026-06-05）
+
+- **反优化**：`embassy_sync::Watch<bool>` 替换 FIONBIO 标志的 `AtomicBool`
+- **不要做的原因**：
+  1. FIONBIO 标志是单 bool，AtomicBool 的 load/store + Acquire/Release 语义完全够用
+  2. `Watch` 是为"最新值广播"设计（如配置变更），多消费者场景才有价值
+  3. `Signal` 是一次性唤醒，AtomicWaker + skip 机制（O31）已实现等价功能
+- **教训**：单 bool / 单计数器场景用 `Atomic*`，多消费者"最新值"才考虑 `Watch`
+
+**踩坑 4：Semaphore 计数 NAPI 阈值的反优化**（L84，2026-06-05）
+
+- **反优化**：`embassy_sync::Semaphore` 跟踪"连续成功读取字节数"
+- **不要做的原因**：
+  1. `Semaphore` 是**资源计数**抽象（最多 N 个资源），不是事件计数器
+  2. NAPI 阈值逻辑是"成功 ≥16 后切模式"，语义是阈值触发，不是资源获取
+  3. 强行用 Semaphore 需要 acquire/release 配对，破坏状态机结构
+  4. 当前实现是 4 行状态机（`u32 consecutive_success` + `if >= NAPI_THRESHOLD`），无抽象必要
+- **教训**：用工具前先读文档确认语义，错误工具增加代码量
+
+#### Scenario: 评估 embassy 同步原语替换
+
+- **WHEN** 开发者提议用 embassy 同步原语替换现有 Rust 标准 / 项目原语
+- **THEN** MUST 先回答三个问题：(1) 当前实现有可测问题吗？(2) embassy 方案在该场景下更快/更简洁吗？(3) 不与 axtask 架构冲突吗？三个都"是"才考虑，否则保持原状
+
+#### Scenario: 选型 embassy 子集
+
+- **WHEN** 开发者要添加 embassy 依赖
+- **THEN** MUST 限定为 `embassy_sync::waitqueue::AtomicWaker`，禁止引入 executor / time / futures，遵循 L10 与 L128 已记录的原则
+
 ### Requirement: MMIO 权限诊断误判与纠正
 
 UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`），LoadFault 等错误 MUST 先排查 stride / 地址等代码 bug，再考虑页表权限。

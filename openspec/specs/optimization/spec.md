@@ -95,6 +95,8 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
 | **O45** | tcdrain 真异步化 | 🟡 中 | ✅ PollSet + DRAIN_WAKER，消除 `wake_by_ref` 自旋 |
+| **O46** | AtomicWaker 模式推广 | 🟡 中 | pipe / signalfd / pidfd 统一为 AtomicWaker 模式（沿用 UART 已验证设计） |
+| **O47** | embassy-time 超时机制 | 🟡 中 | `block_on(poll_io(...))` 当前永久阻塞，引入 Timer 修复 DMA/select 场景 |
 | **O1 / O36** | 零拷贝 RX | — | mmap ring buffer 到用户空间 |
 | **O5** | 协程优先级调度 | — | 取决于 axtask 支持 |
 | **O37** | kernel log TX 合并 | — | `ax_println!` 走 ring buffer |
@@ -142,19 +144,124 @@ block_on(poll_fn(|cx| {
 
 **注意**：TX_WAKER 是 AtomicWaker（单槽），TX copier 也注册在上面。tcdrain 注册会覆盖 copier。需添加独立的 drain PollSet 或改用定时器补偿。
 
+**O46 — AtomicWaker 模式推广 详细方案**：
+
+**现状**（2026-06-05 评估）：
+
+| 驱动 | 当前唤醒机制 | ISR 复杂度 | 唤醒延迟 |
+|------|------------|-----------|----------|
+| `kernel/src/drivers/isr.rs` (UART) | `static AtomicWaker` × 3（RX/TX/DRAIN） | O(1)，~1.5 µs | ~50 ns |
+| `kernel/src/file/pipe.rs:34-56` | `Arc<PollSet>` × 3（rx/tx/close） | 通用 API | ~200 ns |
+| `kernel/src/file/signalfd.rs:85-93` | `Arc<PollSet>` | 通用 API | ~200 ns |
+| `kernel/src/file/pidfd.rs:20` | `Arc<PollSet>` | 通用 API | ~200 ns |
+
+**优化方案**：将 pipe / signalfd / pidfd 改造成与 UART 一致的 AtomicWaker 静态分发模式。
+
+- `pipe.rs`：在 ISR 端（写者唤醒 rx、读者唤醒 tx、close 唤醒 close）增加 `static ATOMIC_WAKER_PIPE_{RX,TX,CLOSE}`，删除 `PollSet` 字段
+- `signalfd.rs`：增加 `static SIGNAL_WAKER`，信号到达时 `wake()`
+- `pidfd.rs`：增加 `static EXIT_WAKER`，进程退出时 `wake()`
+
+**预期收益**：
+
+- 唤醒延迟：~200 ns → ~50 ns（×3 文件 = 6 个唤醒点）
+- 内存：~1 KB PollSet → 24 B × N（按 waker 数）
+- 代码量：减少 ~30 行（PollSet 注册样板）
+- 一致性：所有驱动统一 ISR 唤醒模式，code review 更简单
+
+**风险评估**：
+
+- ⚠️ 唤醒方变静态，需在 spawn 时绑定（pipe.rs 已是 spawn 模型，零影响）
+- ⚠️ pipe 的 close 路径需要信号源在 file drop 时唤醒（无 ISR），但可用 `static` 即可
+
+**优先级**：🟡 中，量化收益明确（~150ns × 6 唤醒点 + 一致性提升），但需逐文件验证
+
+**O47 — embassy-time 超时机制 详细方案**：
+
+**现状问题**：
+
+`axtask::future::block_on(poll_io(...))` 是**永久阻塞**的，调用者无 timeout 能力：
+
+```rust
+// kernel/src/file/pipe.rs:123
+block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
+    self.poll_rx.poll_io(cx, ...);
+    // 无 timeout 选项，无数据时永远 Pending
+}))
+```
+
+**潜在影响**：
+
+- 用户态 read() 卡死后只能 SIGKILL，无法 SIGALRM 解除（无 setitimer 集成）
+- DMA 失败时硬件可能永不唤醒（Q6 真板 O3/O40 风险）
+- 用户态 poll() + SO_RCVTIMEO 需要内核支持 time 抽象
+
+**优化方案**：
+
+1. 引入 `embassy-time = "0.3"`（仅 Timer，不引入 Executor）
+2. 在 axhal 实现 time driver 桩（依赖 axhal::time::current_ticks）
+3. 改造 `poll_io` 接受 `Option<Duration>` 超时参数
+4. 用 `embassy_futures::select!` 组合 poll_io + Timer
+
+**实施示例**：
+
+```rust
+use embassy_time::{Timer, Duration};
+
+block_on(async {
+    let res = embassy_futures::select::select(
+        poll_io_future,
+        Timer::after(Duration::from_millis(100)),
+    ).await;
+    match res {
+        embassy_futures::select::Either::First(r) => r,
+        embassy_futures::select::Either::Second(_) => Err(EAGAIN),
+    }
+})
+```
+
+**风险评估**：
+
+- 🔴 高：embassy-time 需要 time driver，必须在 axhal 适配 axtask 时钟
+- 🟡 中：与现有 `axtask::future::block_on` 并存，引入两套 future 抽象
+- 🟢 低：仅在用户态显式传递 timeout 时启用，向后兼容
+
+**前置依赖**：
+
+- Q6 真板验证完成（确认 DMA 失败路径是否真需要 timeout）
+- axhal time driver 评估
+
+**优先级**：🟡 中，Q6 触发条件性实现
+
 #### Scenario: 评估远期优化 ROI
 
-- **WHEN** 开发者考虑实现 O45 / O1 / O5 / O37 / O32 之一
+- **WHEN** 开发者考虑实现 O45 / O46 / O47 / O1 / O5 / O37 / O32 之一
 - **THEN** MUST 评估实施成本 vs 性能收益（O1 / O37 高成本低收益需充分论证）
 
 ### Requirement: 已排除优化 — 不实施
 
 通用分发结构类优化 MUST 在专用驱动场景下禁止实施。`O17`（中断分发效率）已明确排除：ISR 使用 AtomicWaker 直接唤醒（O(1)），无需 BTreeMap 分发机制。详见 `learned` L128。
 
+**Embassy 误用场景**（2026-06-05 评估，详见 `learned` L81~L84）：
+
+| 反优化 | 当前实现 | Embassy 替代 | 排除原因 |
+|--------|----------|--------------|----------|
+| **OE1** Channel 替换 HeapRb | `ringbuf::HeapRb<u8>` (SPSC) | `embassy_sync::Channel<u8, N>` (MPMC) | 失去 lock-free SPSC，多一层间接，heap 灵活性丧失 |
+| **OE2** Mutex 替换 SpinNoPreempt | `Arc<SpinNoPreempt<...>>` | `embassy_sync::Mutex` | 同步临界区加异步 Mutex 反而更慢，且无法跨 `.await` 持有 |
+| **OE3** Watch 替换 AtomicBool | `AtomicBool` (FIONBIO) | `embassy_sync::Watch<bool>` | 单 bool 用 Watch 是杀鸡用牛刀，AtomicBool 更直接 |
+| **OE4** Semaphore 计数 NAPI | 状态机 + 计数器 | `embassy_sync::Semaphore` | 错误工具（Semaphore 是资源计数，不是事件计数）|
+| **OE5** select! 替换手动 poll | 手动 `block_on(poll_io(...))` | `embassy_futures::select!` | axtask::future 不可与 select! 宏组合，需切换 executor |
+
+**判定原则**：项目采用极简 embassy-sync 子集（仅 `AtomicWaker`），任何"用 embassy 包装替换简单 Rust 原语"的提案 MUST 先用 `codegraph_impact` 评估改动范围 + 性能基准，否则禁止实施。
+
 #### Scenario: 评估 O17 类"通用分发"优化
 
 - **WHEN** 开发者考虑引入 BTreeMap / HashMap 等通用分发结构
 - **THEN** MUST 评估 waker 数量：固定少数 → AtomicWaker；通用动态 → register_irq_waker。专用驱动场景下禁止过度设计
+
+#### Scenario: 评估 embassy 包装替换
+
+- **WHEN** 开发者提议用 embassy 同步原语（Channel / Mutex / Watch / Semaphore）替换现有实现
+- **THEN** MUST 先证明：(1) 当前实现有可测性能问题，(2) embassy 方案在该场景下更快/更简洁，(3) 不与 axtask 架构冲突。**禁止**为"用 embassy"而替换
 
 ### Requirement: 性能指标基线与硬件理论极限
 

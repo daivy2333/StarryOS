@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-03
-> 分支：asyncuart-dev — Q0~Q7 ✅，OpenSpec 体系建立（2026-06-03），Q6 等待硬件
+> Last updated: 2026-06-05
+> 分支：asyncuart-dev — Q0~Q7 ✅，OpenSpec 体系建立（2026-06-03），Q6 等待硬件，Q8/Q9 计划中
 
 ---
 
@@ -13,9 +13,13 @@
 - **OpenSpec 文档体系建立**（2026-06-03）：4 个 spec 域（architecture / learned / references / optimization），全部通过 `openspec validate --specs`；rules 已整合到 CLAUDE.md（迁移墓碑见 `openspec/changes/archive/rules-domain-2026-06-03/`）
 - 原 `.claude/docs/{architecture,learned,references,optimization,rules}.md` 已迁移至 `openspec/specs/`，源文件以 `.bak` 保留
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
-**Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正 + TCSBRK 实现（O44）
-**O45 已完成**: tcdrain 真异步化（PollSet + DRAIN_WAKER，消除协作自旋）
-**下一步**: Q6 VisionFive2 真板验证（等待硬件到位）
+**Q5.2 已完成**: 用户态自动化测试（O21）+ 非阻塞模式（O43 via Q7）
+**Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正（O44）、tcdrain 真异步化（O45）
+**2026-06-05 文档补充**:
+- O46 / O47 记录到 `optimization/spec.md`（Q8/Q9 远期优化）
+- OE1~OE5 反模式（embassy Channel/Mutex/Watch/Semaphore/select!）记录到 `optimization/spec.md` "已排除优化"
+- L81~L84 learned 踩坑档案（embassy 选型边界）记录到 `learned/spec.md` 新 Requirement
+**下一步**: Q6 VisionFive2 真板验证（等待硬件到位），Q8 AtomicWaker 模式统一可立即启动
 
 ### 关键发现
 
@@ -48,6 +52,10 @@
 | **tcdrain 性能** | QEMU 上 64B 从 9 次切换降到 6 次，延迟 ~300→~200 µs（真板上可忽略） |
 | **e2e 吞吐量** | 4096B 真板预测效率 97.7% 线速（软件开销 < 2.3%） |
 | **e2e 延迟** | 单字节 139.5 µs avg（硬件理论 86.8 µs，软件开销 52.7 µs） |
+| **O46 机会** | pipe/signalfd/pidfd 当前用 PollSet 通用 API（~200ns 唤醒），可统一为 AtomicWaker 静态分发（~50ns） |
+| **O47 机会** | `block_on(poll_io(...))` 永久阻塞，Q6 DMA 失败路径可能需要 embassy-time 超时（前置 Q6） |
+| **Embassy 选型边界** | 项目仅用 `embassy_sync::AtomicWaker`，禁用 executor/time/futures 其它子集（L81~L84 教训） |
+| **OE1~OE5 反优化** | Channel/Mutex/Watch/Semaphore/select! 替换项目原语全部为反优化，记录在 optimization 已排除区 |
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
@@ -58,8 +66,11 @@
 | **Q4** | 全异步 RX+TX | TX copier 接管，Shell 双向异步 | ✅ |
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip + rx/tx 独立锁 | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
-| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | 📋 分析完成 |
-| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ✅ |
+| **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ✅ (O43 via Q7) |
+| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
+| **P0** | OpenSpec 文档体系 | 4 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
+| **Q8** | AtomicWaker 模式统一 | pipe/signalfd/pidfd 改用 AtomicWaker 静态分发（O46） | 📋 计划中 |
+| **Q9** | 超时机制 | embassy-time 集成（O47，Q6 触发） | 📋 计划中 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
@@ -67,7 +78,7 @@
 ```
 IRQ 10 → uart_isr_handler
            ├─ RX: disable_rx_intr → RX_WAKER.wake
-           └─ TX: disable_tx_intr → TX_WAKER.wake
+           └─ TX: disable_tx_intr → TX_WAKER.wake + DRAIN_WAKER.wake
 
 RX copier                     TX copier
   poll_fn:                     poll_fn:
@@ -76,6 +87,9 @@ RX copier                     TX copier
     enable_rx_intr               enable_tx_intr (if partial)
     RX_WAKER.register            TX_WAKER.register
     → Shell stdin ✅             ← Shell stdout ✅
+
+tcdrain (O45): PollSet 等 copier → DRAIN_WAKER 等 UART → 返回
+  64B tcdrain 切换 9→6 次，~300µs → ~200µs (QEMU)
 
 AsyncUartReader::read → ring_buffer pop
 AsyncUartWriter::write → ring_buffer push
@@ -166,14 +180,14 @@ StarryOS/
 | 文档 | 内容 | 条目数 |
 |------|------|--------|
 | `CLAUDE.md` 规则章节 | 三大规则（Karpathy + 务实编码 + Workflow Designer）+ 核心约束 + 技能执行 + 项目特定 + 检查清单 + Red Flags | 7 大节（2026-06-03 整合） |
-| `openspec/specs/architecture/spec.md` | ADR-001~031（按主题分组） | 13 Requirements |
-| `openspec/specs/learned/spec.md` | API 路径、文件速查、踩坑档案、技巧模式、性能/测试 | 10 Requirements |
-| `openspec/specs/references/spec.md` | 依赖、子项目索引、规范、Embassy、Linux serial、项目分析 | 8 Requirements |
-| `openspec/specs/optimization/spec.md` | Q5/Q7 已完成 + Q6/远期 + 已排除 + 性能基线 | 6 Requirements |
+| `openspec/specs/architecture/spec.md` | ADR-001~031（按主题分组） | 17 Requirements |
+| `openspec/specs/learned/spec.md` | API 路径、文件速查、踩坑档案、技巧模式、性能/测试、embassy 选型边界 | 12 Requirements |
+| `openspec/specs/references/spec.md` | 依赖、子项目索引、规范、Embassy、Linux serial、项目分析 | 7 Requirements |
+| `openspec/specs/optimization/spec.md` | Q5/Q7 已完成 + Q6/远期（含 O46/O47）+ 已排除（含 OE1~OE5）+ 性能基线 | 6 Requirements |
 | `openspec/project.md` | 项目上下文（技术栈、约束、目录、Git 规范） | — |
 | `CLAUDE.md`（索引部分） | OpenSpec + .claude/docs/ 双索引入口 | 9.7 KB（含规则） |
 | `openspec/changes/archive/rules-domain-2026-06-03/` | rules spec 墓碑（17 Requirements） | 🪦 |
-| `.claude/docs/tasks.md` | 任务追踪（含 P0 OpenSpec milestone） | Q0~Q7 + P0 |
+| `.claude/docs/tasks.md` | 任务追踪（含 P0 OpenSpec + Q8/Q9 计划） | Q0~Q7 + P0 + Q8/Q9 |
 | `.claude/docs/archive.md` | 已归档内容（含 2026-06-03 OpenSpec 迁移 + rules domain 二次迁移） | 持续累积 |
 | `.claude/docs/*.md.bak` (×5) | OpenSpec 迁移前源文件备份 | 70 KB |
 | `docs/uart-performance-comparison.md` | Console vs Async 对比报告 | ✅ Q7 更新 |

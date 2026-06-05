@@ -3,6 +3,7 @@
 > 由 assistant 维护，asyncuart-dev 分支。
 > 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
 > 2026-06-02 O45 完成，tcdrain 真异步化，e2e benchmark 就绪。
+> 2026-06-05 O46/O47 记录到 optimization/spec.md，OE1~OE5 反模式 + L81~L84 记录到 learned/spec.md。
 > 条目格式: <!-- Q{编号} --> 或 <!-- P{编号} --> 标记开头，支持 grep 精确定位。
 > 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
@@ -25,8 +26,10 @@
 | **Q5** | 性能优化 | IER 缓存 + ISR 合并 + batch I/O + waker skip | ✅ |
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ✅ (O43 已落地) |
-| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 | ✅ |
+| **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
 | **P0** | OpenSpec 文档体系 | 5 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
+| **Q8** | AtomicWaker 模式统一 | pipe/signalfd/pidfd 改用 AtomicWaker 静态分发（O46） | 📋 计划中 |
+| **Q9** | 超时机制 | embassy-time 集成（O47，Q6 触发） | 📋 计划中 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -104,6 +107,41 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q6 ⏳
 <!-- Q6.3 --> - [ ] O3/O40 DMA 通道发现与配置
 <!-- Q6.4 --> - [ ] O41 高速波特率支持（>115200）
 <!-- Q6.5 --> - [ ] Gate Q6: 真板正常运行
+
+### Q8: AtomicWaker 模式统一 📋 计划中
+
+> 基于 O46（2026-06-05 记录于 `optimization/spec.md`），将 pipe / signalfd / pidfd 改造成与 UART 一致的 AtomicWaker 静态分发模式。
+
+| 子任务 | 描述 | 关键文件 | 预期收益 |
+|--------|------|----------|----------|
+| **O46.1** | pipe 改造 | `kernel/src/file/pipe.rs` | 唤醒延迟 ~200ns → ~50ns（rx/tx/close 三个唤醒点）|
+| **O46.2** | signalfd 改造 | `kernel/src/file/signalfd.rs` | 唤醒延迟 ~200ns → ~50ns |
+| **O46.3** | pidfd 改造 | `kernel/src/file/pidfd.rs` | 唤醒延迟 ~200ns → ~50ns |
+| **O46.4** | 性能基准 | 新增 benchmark | 量化收益：每文件 6 个唤醒点 × ~150ns |
+| **O46.5** | Gate Q8 | — | cargo test + benchmark 对比 Q5.1 数据 |
+
+**实施风险**：
+- 🟢 pipe 已用 spawn 模型，零架构影响
+- 🟡 signalfd 唤醒源是 signal handler，需确认在非 ISR 上下文 `wake()` 安全
+- 🟡 pidfd 唤醒源是进程退出（exit hook），同样非 ISR
+
+**预查**：`AtomicWaker::wake` 在非 ISR 上下文安全（官方保证：可在任意线程调用）。
+
+### Q9: 超时机制 📋 计划中
+
+> 基于 O47（2026-06-05 记录于 `optimization/spec.md`），引入 embassy-time 修复 `block_on(poll_io(...))` 永久阻塞问题。**前置条件**：Q6 真板验证完成且 DMA 失败路径确认需要 timeout。
+
+| 子任务 | 描述 | 前置 |
+|--------|------|------|
+| **O47.1** | axhal time driver 评估 | Q6.3（DMA 失败路径）|
+| **O47.2** | 引入 embassy-time 依赖 | O47.1 |
+| **O47.3** | poll_io 接受 `Option<Duration>` | O47.2 |
+| **O47.4** | 用户态 SO_RCVTIMEO 支持 | O47.3 |
+| **O47.5** | Gate Q9 | cargo test + 真板超时测试 |
+
+**触发条件**：Q6.3（DMA 通道发现与配置）完成后评估是否真的需要 timeout。如果 DMA 在真板有失败保护（如硬件 timeout），O47 可能不需要实现。
+
+**反优化提示**：如果 O47 ROI 评估为负（实施成本 > 性能收益），归档到 `optimization/spec.md` "已排除优化" 区，遵循 OE1~OE5 教训（`learned/spec.md` L81~L84）。
 
 ---
 
