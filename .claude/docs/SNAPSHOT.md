@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-11
-> 分支：asyncuart-dev — Q0~Q7 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅，Q6 ⏳ 等待硬件
+> 分支：asyncuart-dev — Q0~Q7 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅，警告清零，死代码清理，Q6 ⏳ 等待硬件
 
 ---
 
@@ -51,7 +51,12 @@
 - `cargo check` 0 错误 / `cargo clippy` 0 错误
 **最终进度**: 全部可无硬件完成的优化已做完，仅剩 Q6 等待 VisionFive2 真板验证
 - 性能趋势：1B avg latency Q8(145)→Q10(122)→Q11(118)µs，累计 ↓18.3%
-- 代码量：14 文件变更（StarryOS）+ 1 文件（uart_16550），净增 ~450 行
+- 代码量：14 文件变更（StarryOS） + 1 文件（uart_16550），净增 ~450 行
+**2026-06-11 代码质量收尾**:
+- cargo 警告清零（21→0）：自动修复 6 项 + 死方法移除 5 项 + dead_code 标注 11 项
+- 真死代码移除（8 方法，-76 行）：access.rs(3) + io.rs(2) + shm.rs(1) + ops.rs(1) + ring_buffer(5)
+- 后续优化记录：O48(memtrack) + O49(Manual移除) + O50(预留接口) 写入 optimization/spec.md
+**下一步**: Q6 VisionFive2 真板验证
 
 ### 关键发现
 
