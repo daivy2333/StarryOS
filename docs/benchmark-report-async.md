@@ -1,8 +1,8 @@
 # Async 异步串口性能测试报告
 
 > 项目：StarryOS
-> 分支：asyncuart-dev（Q8~Q11 完成） / feat/uart-async-bench（测试）
-> 日期：2026-06-11（Q11 完成后更新）
+> 分支：asyncuart-dev（Q8~Q12 完成） / feat/uart-async-bench（测试）
+> 日期：2026-06-11（Q12 完成后更新）
 > 测试环境：QEMU riscv64-virt
 > **注意**：QEMU 不仿真真实串口时序（86.8 µs/byte @115200），吞吐量数值偏高。真板将接近 ~11.5 KB/s。
 
@@ -12,7 +12,7 @@
 
 ### 测试目标
 
-测量 Async 异步串口在 Q8~Q11 优化后的完整性能指标：
+测量 Async 异步串口在 Q8~Q12 优化后的完整性能指标：
 - 用户态 TX 吞吐量（/dev/console + tcdrain）
 - TX 单字节延迟（write + tcdrain）
 - 非阻塞模式（FIONBIO）
@@ -28,6 +28,7 @@
 | **Q9** | 06-11 | VTIME 读超时（axtask::future::timeout） |
 | **Q10** | 06-11 | BUF_SIZE 80→256 / SimpleReader push_slice / read(&self) |
 | **Q11** | 06-11 | tty unwrap / mm/access 批页 / sendfile / close_range / ws_col |
+| **Q12** | 06-11 | Embassy 路径 A：atomic_ring_buffer (O51) / embedded_io_async (O52) / TC tcdrain (O53) |
 
 ### 测试环境
 
@@ -101,7 +102,7 @@
 
 ---
 
-## 3. 用户态测试结果（Q11 最新）
+## 3. 用户态测试结果（Q12 最新）
 
 ### 3.1 TX 吞吐量测试
 
@@ -109,20 +110,20 @@
 
 | 数据大小 | 实测/次(QEMU) | 硬件理论/次 | 真板预测 |
 |----------|-------------|------------|----------|
-| **64 bytes** | 427.1 µs | 5555.6 µs | 5.98 ms |
-| **256 bytes** | 1175.0 µs | 22222.2 µs | 23.4 ms |
-| **1024 bytes** | 4704.0 µs | 88888.9 µs | 93.6 ms |
-| **4096 bytes** | 9052.6 µs | 355555.6 µs | 364.6 ms |
+| **64 bytes** | 325.4 µs | 5555.6 µs | 5.88 ms |
+| **256 bytes** | 1171.8 µs | 22222.2 µs | 23.4 ms |
+| **1024 bytes** | 4684.2 µs | 88888.9 µs | 93.6 ms |
+| **4096 bytes** | 8812.4 µs | 355555.6 µs | 364.4 ms |
 
 ### 3.2 TX 单字节延迟（write + tcdrain, n=200）
 
 | 指标 | 值 (QEMU) |
 |------|----------|
-| **P50** | 129.2 µs |
-| **P95** | 187.8 µs |
-| **P99** | 320.4 µs |
-| **平均** | 140.7 µs |
-| **软件 overhead** | 53.9 µs |
+| **P50** | 115.7 µs |
+| **P95** | 169.8 µs |
+| **P99** | 294.0 µs |
+| **平均** | 123.9 µs |
+| **软件 overhead** | 37.1 µs |
 
 ### 3.3 非阻塞模式 (FIONBIO)
 
@@ -175,6 +176,7 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 | **Q9** | VTIME 读超时 | `todo!()` → `timeout()` |
 | **Q10** | BUF_SIZE 80→256 / SimpleReader push_slice / read(&self) | 1B 延迟 ↓16%，256B TX ↓6% |
 | **Q11** | tty unwrap / mm/access 批页 / sendfile / close_range / ws_col | 整体稳定优化 |
+| **Q12** | Embassy 路径 A：lock-free RingBuffer (O51) / embedded_io_async (O52) / TC tcdrain (O53) | software overhead ↓31%（53.9→37.1µs），64B 吞吐 ↑24% |
 
 ### 性能趋势（QEMU 1B 延迟）
 
@@ -182,14 +184,15 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 |------|-----|-----|-----|-------------------|
 | Q8 | 144.7 µs | 139.5 µs | 230.4 µs | 57.9 µs |
 | Q10 | 121.6 µs | 115.8 µs | 244.1 µs | 34.8 µs |
-| **Q11** | **140.7 µs** | **129.2 µs** | **320.4 µs** | **53.9 µs** |
+| Q11 | 140.7 µs | 129.2 µs | 320.4 µs | 53.9 µs |
+| **Q12** | **123.9 µs** | **115.7 µs** | **294.0 µs** | **37.1 µs** |
 
 ### 性能（QEMU）
 
 | 维度 | 结果 |
 |------|------|
-| TX 用户态 @ /dev/console + tcdrain | 427µs(64B) ~ 9053µs(4096B) |
-| TX 延迟 P50 | 129.2 µs |
+| TX 用户态 @ /dev/console + tcdrain | 325µs(64B) ~ 8812µs(4096B) |
+| TX 延迟 P50 | 115.7 µs |
 | FIONBIO nonblocking read | ✅ EAGAIN |
 | Ring Buffer TX | ~197 MB/s |
 | Ring Buffer RX | ~393 MB/s |
@@ -202,5 +205,5 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 
 ---
 
-**报告版本**：3.0
-**最后更新**：2026-06-11（Q8~Q11 完成）
+**报告版本**：4.0
+**最后更新**：2026-06-11（Q12 完成）

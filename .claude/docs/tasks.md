@@ -122,7 +122,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 **验收标准**：
 - [ ] `cargo check` 0 错误 / `cargo clippy` 0 新增 warning
 - [ ] QEMU `make run` 内核正常启动，Shell 交互正常
-- [ ] benchmark 性能不低于 Q11 基线（1B avg latency ≤ 118µs）
+- [ ] benchmark 性能不低于 Q11 基线（1B avg latency ≤ 118µs，实测 Q12=123.9µs avg / 115.7µs P50 / overhead 37.1µs ↓31%）
 - [ ] `atomic_ring_buffer` 有单元测试覆盖
 
 **实施顺序**：Q12.2（纯 trait impl，零风险）→ Q12.3（小改动）→ Q12.1（核心改动，需测试）→ Q12.4 → Q12.5

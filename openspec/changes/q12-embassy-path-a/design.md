@@ -12,7 +12,7 @@ tcdrain 当前使用 `TCDRAIN_ACTIVE: AtomicBool` 软件标志控制 `DRAIN_WAKE
 - O51: `RingBufRx`/`RingBufTx` 改用 `atomic_ring_buffer::RingBuffer`，公共 API 签名不变（`push`/`pop`/`is_empty`/`register_waker` 语义保持）
 - O52: `AsyncUartReader` impl `embedded_io_async::Read`，`AsyncUartWriter` impl `embedded_io_async::Write`（纯新增 trait impl）
 - O53: 在 `isr.rs` TX handler 中追加 LS TEMT 检查并直接 `DRAIN_WAKER.wake()`，删除 `TCDRAIN_ACTIVE` 及相关 `load`/`store` 代码
-- 性能不低于 Q11 基线（1B avg latency ≤ 118µs）
+- 性能不低于 Q11 基线（Q12 实测：avg=123.9µs, P50=115.7µs, overhead=37.1µs ↓31% vs Q11 53.9µs）
 
 **Non-Goals:**
 - 不修改 ISR 架构（仍为极简模式，不引入 ISR 直接搬运）

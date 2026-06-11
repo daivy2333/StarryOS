@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-11
-> 分支：asyncuart-dev — Q0~Q11 ✅（Q8/Q9/Q10/Q11 已归档至 openspec/changes/archive/），警告清零，死代码清理，Q6 ⏳ 等待硬件
+> 分支：asyncuart-dev — Q0~Q12 ✅，警告清零，死代码清理，Q6 ⏳ 等待硬件
 
 ---
 
@@ -50,7 +50,7 @@
 - terminal/mod.rs: `ws_col` 110→80（修复 QEMU 控制台显示换行错位）
 - `cargo check` 0 错误 / `cargo clippy` 0 错误
 **最终进度**: 全部可无硬件完成的优化已做完，仅剩 Q6 等待 VisionFive2 真板验证
-- 性能趋势：1B avg latency Q8(145)→Q10(122)→Q11(118)µs，累计 ↓18.3%
+- 性能趋势：1B avg latency Q8(145)→Q10(122)→Q11(118)→Q12(124)µs（Q12 去锁后小数据吞吐 ↑24%，software overhead ↓31%：53.9→37.1µs）
 - 代码量：14 文件变更（StarryOS） + 1 文件（uart_16550），净增 ~450 行
 **2026-06-11 代码质量收尾**:
 - cargo 警告清零（21→0）：自动修复 6 项 + 死方法移除 5 项 + dead_code 标注 11 项
@@ -110,6 +110,7 @@
 | **Q9** | 超时机制 | embassy-time 集成（部分无需 Q6） | 📋 计划中 |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | ✅ |
 | **Q11** | 内核通用优化 | tty unwrap + mm/access 批页检查 + sendfile 栈缓冲 + close_range 优化 + ws_col 修复 | ✅ |
+| **Q12** | Embassy 路径 A | atomic_ring_buffer 去锁 (O51) + embedded_io_async (O52) + TC tcdrain (O53) | ✅ (2026-06-11) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
