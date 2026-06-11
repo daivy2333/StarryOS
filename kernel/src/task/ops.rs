@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,

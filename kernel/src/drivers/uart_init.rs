@@ -16,12 +16,9 @@ use kspin::SpinNoIrq;
 use lazy_static::lazy_static;
 use memory_addr::{PhysAddr, VirtAddr};
 use uart_16550::{
-    BaudRate, Config, Uart16550,
+    Uart16550,
     backend::MmioBackend,
-    spec::{
-        CLK_FREQUENCY_HZ,
-        registers::{FifoTriggerLevel, IER, ISR, LSR, Parity, WordLength, offsets},
-    },
+    spec::registers::{IER, ISR, LSR, offsets},
 };
 
 /// UART MMIO 物理地址（RISC-V QEMU virt 平台）
@@ -42,7 +39,7 @@ fn get_uart_mmio_virt() -> VirtAddr {
     phys_to_virt(PhysAddr::from(UART_MMIO_BASE_PHYS))
 }
 
-/// 全局 UART 实例（AsyncUart 独占访问）
+// 全局 UART 实例（AsyncUart 独占访问）
 lazy_static! {
     static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
         // SAFETY: get_uart_mmio_virt() returns the virtual address mapped from physical

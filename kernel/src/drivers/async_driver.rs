@@ -39,7 +39,7 @@ impl AsyncUartDriver {
 
     async fn rx_copier_loop(&self) {
         let mut read_buf = vec![0u8; COPIER_BUF_SIZE];
-        let mut last_waker: Cell<Option<Waker>> = Cell::new(None);
+        let last_waker: Cell<Option<Waker>> = Cell::new(None);
         let mut consecutive = 0u32;
         loop {
             poll_fn(|cx| {
@@ -73,7 +73,7 @@ impl AsyncUartDriver {
         let mut write_buf = vec![0u8; COPIER_BUF_SIZE];
         let mut pending = 0usize;
         let mut cursor = 0usize;
-        let mut last_waker: Cell<Option<Waker>> = Cell::new(None);
+        let last_waker: Cell<Option<Waker>> = Cell::new(None);
         loop {
             poll_fn(|cx| {
                 if cursor >= pending {

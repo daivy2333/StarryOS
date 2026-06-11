@@ -49,7 +49,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         use crate::drivers::uart_init::uart_instance;
         TCDRAIN_ACTIVE.store(true, Ordering::Release);
         let result = block_on(poll_fn(|cx| {
-            let mut tx = DRIVER.tx.lock();
+            let tx = DRIVER.tx.lock();
             if tx.is_empty() {
                 drop(tx);
                 let mut uart = uart_instance().lock();

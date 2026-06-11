@@ -27,6 +27,7 @@ const BUF_SIZE: usize = 256;
 type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
 /// How should we process inputs?
+#[allow(dead_code)]
 pub enum ProcessMode {
     /// Process inputs only on call to `read`
     ///

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use core::mem::{self, MaybeUninit};
 
 use axerrno::{AxError, AxResult};

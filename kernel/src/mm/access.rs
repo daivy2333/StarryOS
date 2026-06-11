@@ -214,6 +214,7 @@ impl<T> UserPtr<T> {
         Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
     }
 
+    #[allow(dead_code)]
     pub fn get_as_mut_null_terminated(self) -> AxResult<&'static mut [T]>
     where
         T: PartialEq + Default,
@@ -395,6 +396,7 @@ impl VmBytes {
     }
 
     /// Casts the `VmBytes` to a mutable `VmBytesMut`.
+    #[allow(dead_code)]
     pub fn cast_mut(&self) -> VmBytesMut {
         VmBytesMut::new(self.ptr as *mut u8, self.len)
     }
@@ -437,6 +439,7 @@ impl VmBytesMut {
     }
 
     /// Casts the `VmBytesMut` to a read-only `VmBytes`.
+    #[allow(dead_code)]
     pub fn cast_const(&self) -> VmBytes {
         VmBytes::new(self.ptr, self.len)
     }

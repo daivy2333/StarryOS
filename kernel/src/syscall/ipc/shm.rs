@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use axerrno::{AxError, AxResult};

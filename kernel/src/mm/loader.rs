@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! User address space management.
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
