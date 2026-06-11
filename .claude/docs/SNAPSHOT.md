@@ -35,8 +35,9 @@
 - BUF_SIZE 80→256（ldisc 缓冲扩容 3.2×）
 - SimpleReader::poll 改用 push_slice 批量写入（减少 N 次 try_push 调用）
 - LineDiscipline::read() / drain_input() 改为 &self（UnsafeCell 包装 buf_rx）
+- QEMU 实机验证通过：Shell 正常、benchmark 性能提升
 - `cargo check` 0 错误 / `cargo clippy` 0 错误
-**下一步**: Q9 超时机制（time driver 基础设施无需 Q6）或 Q11 内核通用优化
+- **性能对比（Q8→Q10）**：256B TX 1332→1252 µs（↓6%），1024B TX 5170→4880 µs（↓5.6%），1B avg latency 145→122 µs（↓16%），overhead 58→35 µs（↓40%）
 
 ### 关键发现
 
@@ -88,7 +89,7 @@
 | **P0** | OpenSpec 文档体系 | 4 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
 | **Q8** | 驱动引擎打磨 | NAPI 退出修复 + ISR 去锁化 + IER 规范化 + 热路径优化 + O46 AtomicWaker 推广 | ✅ |
 | **Q9** | 超时机制 | embassy-time 集成（部分无需 Q6） | 📋 计划中 |
-| **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | 📋 计划中 |
+| **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | ✅ |
 | **Q11** | 内核通用优化 | mm/access + clone/fd 优化 + unwrap 消除 | 📋 计划中（可选） |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
