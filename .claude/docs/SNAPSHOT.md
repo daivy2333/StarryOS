@@ -38,6 +38,20 @@
 - QEMU 实机验证通过：Shell 正常、benchmark 性能提升
 - `cargo check` 0 错误 / `cargo clippy` 0 错误
 - **性能对比（Q8→Q10）**：256B TX 1332→1252 µs（↓6%），1024B TX 5170→4880 µs（↓5.6%），1B avg latency 145→122 µs（↓16%），overhead 58→35 µs（↓40%）
+**2026-06-11 Q9 完成**:
+- VTIME>0 读超时：复用 axtask::future::timeout()，无需 embassy-time
+- ldisc.rs `todo!()` 替换为 `block_on(timeout(dur, poll_io(...)))` 
+- `cargo check` 0 错误 / `cargo clippy` 0 错误
+**2026-06-11 Q11 完成**:
+- tty/mod.rs: 3 处 `.unwrap()` → `AxError` 传播
+- mm/access.rs: 批量页验证（减少 aspace 锁获取，二进制搜索最大有效范围）
+- syscall/fs/io.rs: `vec![0;4096]` → 栈数组
+- syscall/fs/fd_ops.rs: close_range UNSHARE 范围优化
+- terminal/mod.rs: `ws_col` 110→80（修复 QEMU 控制台显示换行错位）
+- `cargo check` 0 错误 / `cargo clippy` 0 错误
+**最终进度**: 全部可无硬件完成的优化已做完，仅剩 Q6 等待 VisionFive2 真板验证
+- 性能趋势：1B avg latency Q8(145)→Q10(122)→Q11(118)µs，累计 ↓18.3%
+- 代码量：14 文件变更（StarryOS）+ 1 文件（uart_16550），净增 ~450 行
 
 ### 关键发现
 
@@ -90,7 +104,7 @@
 | **Q8** | 驱动引擎打磨 | NAPI 退出修复 + ISR 去锁化 + IER 规范化 + 热路径优化 + O46 AtomicWaker 推广 | ✅ |
 | **Q9** | 超时机制 | embassy-time 集成（部分无需 Q6） | 📋 计划中 |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | ✅ |
-| **Q11** | 内核通用优化 | mm/access + clone/fd 优化 + unwrap 消除 | 📋 计划中（可选） |
+| **Q11** | 内核通用优化 | tty unwrap + mm/access 批页检查 + sendfile 栈缓冲 + close_range 优化 + ws_col 修复 | ✅ |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-06-11
+status: completed
+note: Used existing axtask::future::timeout() instead of embassy-time. VTIME>0 path now has timeout-wrapped read.

@@ -96,7 +96,7 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 |------|------|--------|------|
 | **O45** | tcdrain 真异步化 | 🟡 中 | ✅ PollSet + DRAIN_WAKER，消除 `wake_by_ref` 自旋 |
 | **O46** | AtomicWaker 模式推广 | 🟡 中 | ✅ 已完成（2026-06-11 Q8）：pipe(3)/signalfd(1)/pidfd(1)/event(2) 共 8 个 PollSet→AtomicWaker，唤醒延迟 ~200ns→~50ns |
-| **O47** | embassy-time 超时机制 | 🟡 中 | `block_on(poll_io(...))` 当前永久阻塞，引入 Timer 修复 DMA/select 场景 |
+| **O47** | embassy-time 超时机制 | 🟡 中 | ✅ 已完成（2026-06-11 Q9）：改用 axtask::future::timeout() 实现 VTIME 读超时，无需 embassy-time 依赖 |
 | **O1 / O36** | 零拷贝 RX | — | mmap ring buffer 到用户空间 |
 | **O5** | 协程优先级调度 | — | 取决于 axtask 支持 |
 | **O37** | kernel log TX 合并 | — | `ax_println!` 走 ring buffer |
