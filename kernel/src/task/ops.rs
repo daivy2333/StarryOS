@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
@@ -32,6 +31,7 @@ static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap:
 ///
 /// This function is intended to be used during memory leak analysis to remove
 /// possible noise caused by expired entries in the [`WeakMap`].
+#[allow(dead_code)]
 pub fn cleanup_task_tables() {
     TASK_TABLE.write().cleanup();
     PROCESS_TABLE.write().cleanup();
@@ -103,11 +103,6 @@ pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
         .read()
         .get(&pgid)
         .ok_or(AxError::NoSuchProcess)
-}
-
-/// Finds the session with the given SID.
-pub fn get_session(sid: Pid) -> AxResult<Arc<Session>> {
-    SESSION_TABLE.read().get(&sid).ok_or(AxError::NoSuchProcess)
 }
 
 /// Poll the timer
