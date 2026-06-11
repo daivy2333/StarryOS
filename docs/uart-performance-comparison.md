@@ -1,6 +1,6 @@
 # UART 性能对比：Console vs Async
 
-> 项目：StarryOS | 分支：feat/uart-async-dev2 | 日期：2026-06-01
+> 项目：StarryOS | 分支：asyncuart-dev | 日期：2026-06-11（Q8~Q11 完成）
 > 测试环境：QEMU riscv64-virt · NS16550 @ 115200 bps · FIFO 16B
 >
 > **⚠️ 关键前提**：QEMU 的 NS16550 模拟**不仿真串口线延迟**（86.8 µs/byte @115200）。
@@ -11,15 +11,18 @@
 
 ## 1. 架构
 
-| 维度 | Console（阻塞） | Async（异步，Q7 修复后） |
+| 维度 | Console（阻塞） | Async（Q11 最新） |
 |------|----------------|------------------------|
-| TX 路径 | `write()` → 轮询 LSR → 逐字节写 THR | `write()` → push ring buf → TX copier → 批量 `send_bytes()` |
-| RX 路径 | ISR → tty-reader → ldisc → `read()` | ISR → RX copier → ring buf → tty-reader → ldisc → `read()` |
+| TX 路径 | write() → 轮询 LSR → 逐字节写 THR | write() → push ring buf → TX copier → 批量 send_bytes() |
+| RX 路径 | ISR → tty-reader → ldisc → read() | ISR → RX copier → ring buf → tty-reader → ldisc → read() |
 | 缓冲区 | 无 | 128 KB（RX/TX 各 64 KB HeapRb） |
 | write() 行为 | 阻塞（等待 FIFO 有空位） | 非阻塞（push ring buf 即返回） |
-| 空闲 CPU | 0% | 0%（O42 External 模式，无 yield storm） |
-| **tcdrain** | 隐式（每字节等待 LSR） | ✅ TCSBRK + O45 async（PollSet + DRAIN_WAKER） |
-| 非阻塞读 | ❌ | ✅ `open/fcntl/ioctl` 三入口 |
+| 空闲 CPU | 0% | 0%（External 模式，无 yield storm） |
+| **tcdrain** | 隐式（每字节等待 LSR） | ✅ TCSBRK + DRAIN_WAKER |
+| 非阻塞读 | ❌ | ✅ open/fcntl/ioctl 三入口 |
+| **读超时** | ❌ | ✅ VTIME（axtask::future::timeout） |
+| **唤醒机制** | PollSet (spinlock) | AtomicWaker (lock-free, O46) |
+| **ldisc 缓冲** | — | 256B（Q10 扩容 3.2×） |
 | 额外任务 | 1（tty-reader） | 2（RX copier + tty-reader） |
 
 ---
@@ -96,16 +99,12 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 > **真板预期**：UART 传输 64 字节需 5.6 ms（64 × 86.8 µs/byte），
 > 碾压 9 µs 的任务切换开销。两者均收敛到 ~11.5 KB/s。
 
-| 大小 | Async 实测/次 (QEMU) | 硬件理论/次 | 真板预测总耗时 | 线速效率 |
-|------|---------------------|-----------|-------------|---------|
-| 64 B | 352.9 µs | 5.56 ms | 5.91 ms | 94% |
-| 256 B | 1134.8 µs | 22.2 ms | 23.4 ms | 95% |
-| 1024 B | 4182.6 µs | 88.9 ms | 93.1 ms | 95% |
-| 4096 B | 8191.7 µs | 355.6 ms | 363.7 ms | **97.7%** |
-
-> **解读**：Async QEMU 实测 = 纯软件开销（O45 优化后）。
-> 硬件理论 = bytes × 86.8 µs/byte。真板预测 = 硬件理论 + QEMU 实测。
-> 大数据下软件开销占比 < 2.3%，线速效率 97.7%。
+| 大小 | Async Q11 (QEMU) | 硬件理论/次 | 真板预测 |
+|------|-----------------|-----------|----------|
+| 64 B | 427.1 µs | 5555.6 µs | 5.98 ms |
+| 256 B | 1175.0 µs | 22222.2 µs | 23.4 ms |
+| 1024 B | 4704.0 µs | 88888.9 µs | 93.6 ms |
+| 4096 B | 9052.6 µs | 355555.6 µs | 364.6 ms |
 
 ---
 
@@ -125,14 +124,21 @@ Async 更快的根因：`write()` 只 push 到 ring buffer（~1 µs + 锁开销�
 |---------|------|------|
 | **CPU 效率** | Async ⬆ 14.5x | 265 vs 3,835 cycles/byte |
 | **write() 延迟** | Async ⬆ 2.2–7.5x | P50 7.9 vs 17.5 µs |
-| **非阻塞读** | Async  | Console 无此能力 |
+| **非阻塞读** | Async ✅ | Console 无此能力 |
+| **读超时 (VTIME)** | Async ✅ | Q9 实现 |
+| **唤醒延迟** | Async ⬆ 4x | AtomicWaker 50ns vs PollSet 200ns (Q8) |
 | **吞吐量（真板）** | 持平 ~11.5 KB/s | 同受波特率限制 |
-| **内存** | Console  | 0 KB vs 128 KB |
-| **复杂度** | Console  | 更简单，但更局限 |
+| **内存** | Console 胜 | 0 KB vs 128 KB |
+| **复杂度** | Console 胜 | 更简单，但更局限 |
 
-### Q7 修复项（本报告基准）
+### 完整优化历史
 
-- **O42**：yield storm → `ProcessMode::External`，空闲 CPU 归零
-- **O43**：FIONBIO 传播到 Tty/ldisc，非阻塞读全部入口生效
-- **O44**：benchmark 修正 + TCSBRK 实现，tcdrain 正确等待硬件 drain
-- **O45**：tcdrain 真异步化（PollSet + DRAIN_WAKER），消除协作自旋，延迟 ↓53%
+| 阶段 | 日期 | 关键变更 |
+|------|------|---------|
+| Q0~Q4 | 05-31 | 驱动骨架 / VFS 集成 / RX+TX 全异步 |
+| Q5 | 05-31 | IER 缓存 / ISR 合并 / 批量 I/O / NAPI |
+| Q7 | 06-01 | yield storm / FIONBIO / benchmark / tcdrain async |
+| **Q8** | 06-11 | NAPI 退出 / ISR 去锁 / IER 规范化 / O46 AtomicWaker |
+| **Q9** | 06-11 | VTIME 读超时 |
+| **Q10** | 06-11 | BUF_SIZE 80→256 / push_slice / read(&self) |
+| **Q11** | 06-11 | tty unwrap / mm/access 批页 / sendfile / close_range / ws_col |

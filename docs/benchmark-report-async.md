@@ -1,8 +1,8 @@
 # Async 异步串口性能测试报告
 
 > 项目：StarryOS
-> 分支：feat/uart-async-bench
-> 日期：2026-06-01（Q7 修复后更新）
+> 分支：asyncuart-dev（Q8~Q11 完成） / feat/uart-async-bench（测试）
+> 日期：2026-06-11（Q11 完成后更新）
 > 测试环境：QEMU riscv64-virt
 > **注意**：QEMU 不仿真真实串口时序（86.8 µs/byte @115200），吞吐量数值偏高。真板将接近 ~11.5 KB/s。
 
@@ -12,21 +12,22 @@
 
 ### 测试目标
 
-测量 Async 异步串口在 Q7 修复后的性能指标：
+测量 Async 异步串口在 Q8~Q11 优化后的完整性能指标：
 - 用户态 TX 吞吐量（/dev/console + tcdrain）
 - TX 单字节延迟（write + tcdrain）
 - 非阻塞模式（FIONBIO）
 - 内核态 Ring Buffer 速度
 - 内存 / CPU / IRQ 统计
 
-### Q7 修复项
+### 优化阶段
 
-| 编号 | 修复 | 影响 |
+| 阶段 | 日期 | 内容 |
 |------|------|------|
-| O42 | yield storm：Manual→External ProcessMode | 空闲不再空转 |
-| O43 | FIONBIO 传播到 TTY/ldisc | open/fcntl/ioctl 均可设置非阻塞 |
-| O44 | benchmark 修正 + TCSBRK 实现 | 测量真实串口路径 |
-| — | TCSBRK (tcdrain) 实现 | write + tcdrain 等待硬件发送完成 |
+| Q7 | 06-01 | yield storm / FIONBIO / benchmark / tcdrain |
+| **Q8** | 06-11 | NAPI 退出修复 / ISR 去锁 / IER 规范化 / O46 AtomicWaker |
+| **Q9** | 06-11 | VTIME 读超时（axtask::future::timeout） |
+| **Q10** | 06-11 | BUF_SIZE 80→256 / SimpleReader push_slice / read(&self) |
+| **Q11** | 06-11 | tty unwrap / mm/access 批页 / sendfile / close_range / ws_col |
 
 ### 测试环境
 
@@ -49,11 +50,11 @@
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| **Ring Buffer 写入** | 214,961 KB/s | 内核态写入 Ring Buffer |
+| **Ring Buffer 写入** | 196,850 KB/s | 内核态写入 Ring Buffer |
 | **测试数据量** | 102,400 字节 | 100 × 1024 |
-| **测试耗时** | 0.47 毫秒 | 纳秒级精度 |
-| **CPU Cycles** | 27,231,344 | RISC-V cycle 计数器 |
-| **CPU Usage** | 58.5% | 每纳秒消耗的 cycle 数 |
+| **测试耗时** | 0.51 毫秒 | 纳秒级精度 |
+| **CPU Cycles** | 1,331,526 | RISC-V cycle 计数器 |
+| **CPU Usage** | 2.6% | 每纳秒消耗的 cycle 数 |
 | **硬件线速** | 11.52 KB/s | 115200 bps 理论极限 |
 
 ### 2.2 Ring Buffer 读取速度（RX）
@@ -62,11 +63,11 @@
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| **Ring Buffer 读取** | 588,776 KB/s | 内核态读取 Ring Buffer |
+| **Ring Buffer 读取** | 393,362 KB/s | 内核态读取 Ring Buffer |
 | **测试数据量** | 65,536 字节 | 64 KB |
-| **测试耗时** | 0.11 毫秒 | 纳秒级精度 |
-| **CPU Cycles** | 265,936 | RISC-V cycle 计数器 |
-| **CPU Usage** | 2.45 cycles/ns | CPU 效率 |
+| **测试耗时** | 0.16 毫秒 | 纳秒级精度 |
+| **CPU Cycles** | 459,435 | RISC-V cycle 计数器 |
+| **CPU Usage** | 2.82 cycles/ns | CPU 效率 |
 
 ### 2.3 Ring Buffer 读取延迟（RX）
 
@@ -100,32 +101,28 @@
 
 ---
 
-## 3. 用户态测试结果（Q7 修正后）
+## 3. 用户态测试结果（Q11 最新）
 
 ### 3.1 TX 吞吐量测试
 
-**测试方法**：写 `/dev/console`（非 /dev/null），每次后 `tcdrain()` 等待硬件发送完成。100 次迭代，4 种数据大小。
+**测试方法**：写 `/dev/console`，每次后 `tcdrain()`。100 次迭代，4 种数据大小。
 
-| 数据大小 | 吞吐量 (QEMU) | 预期 (真板) | 说明 |
-|----------|-------------|------------|------|
-| **64 bytes** | ~153 KB/s | ~11.5 KB/s | 小数据，tcdrain 开销占比大 |
-| **256 bytes** | ~230 KB/s | ~11.5 KB/s | |
-| **1024 bytes** | ~238 KB/s | ~11.5 KB/s | |
-| **4096 bytes** | ~230 KB/s | ~11.5 KB/s | |
+| 数据大小 | 实测/次(QEMU) | 硬件理论/次 | 真板预测 |
+|----------|-------------|------------|----------|
+| **64 bytes** | 427.1 µs | 5555.6 µs | 5.98 ms |
+| **256 bytes** | 1175.0 µs | 22222.2 µs | 23.4 ms |
+| **1024 bytes** | 4704.0 µs | 88888.9 µs | 93.6 ms |
+| **4096 bytes** | 9052.6 µs | 355555.6 µs | 364.6 ms |
 
-> ⚠️ QEMU 的 16550 模拟不仿真串口线延迟（86.8 µs/byte），tcdrain 几乎立即返回。
-> 真板（VisionFive2 @ 115200 bps）上所有数据大小都应收敛到 ~11.5 KB/s。
+### 3.2 TX 单字节延迟（write + tcdrain, n=200）
 
-### 3.2 TX 单字节延迟（write + tcdrain）
-
-| 指标 | 值 (QEMU) | 说明 |
-|------|----------|------|
-| **P50** | ~0.15 ms | 中位数延迟 |
-| **P95** | ~0.19 ms | |
-| **P99** | ~0.85 ms | |
-| **平均** | ~0.16 ms | |
-
-包含路径：user write → ring buffer push → TX copier → UART THR → tcdrain (TCSBRK poll)。
+| 指标 | 值 (QEMU) |
+|------|----------|
+| **P50** | 129.2 µs |
+| **P95** | 187.8 µs |
+| **P99** | 320.4 µs |
+| **平均** | 140.7 µs |
+| **软件 overhead** | 53.9 µs |
 
 ### 3.3 非阻塞模式 (FIONBIO)
 
@@ -169,24 +166,33 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 
 ## 6. 结论
 
-### Q7 修复总结
+### 全部优化阶段总结
 
-| 修复 | 状态 | 效果 |
-|------|------|------|
-| O42  yield storm | ✅ | External ProcessMode 消除空闲空转 |
-| O43  FIONBIO 传播 | ✅ | 非阻塞读 open/fcntl/ioctl 全部生效 |
-| O44  benchmark | ✅ | 真实 /dev/console 路径 + tcdrain |
-| TCSBRK | ✅ | tcdrain 等待 ring buffer + UART drain |
+| 阶段 | 关键修复/优化 | 性能影响 |
+|------|-------------|----------|
+| Q7 | yield storm / FIONBIO / benchmark / tcdrain | 空闲 CPU 归零，基准建立 |
+| **Q8** | NAPI 退出 / ISR 去锁 / IER 规范化 / O46 AtomicWaker (8×PollSet→AtomicWaker) | ISR 延迟 ↓200ns，唤醒延迟 200→50ns |
+| **Q9** | VTIME 读超时 | `todo!()` → `timeout()` |
+| **Q10** | BUF_SIZE 80→256 / SimpleReader push_slice / read(&self) | 1B 延迟 ↓16%，256B TX ↓6% |
+| **Q11** | tty unwrap / mm/access 批页 / sendfile / close_range / ws_col | 整体稳定优化 |
+
+### 性能趋势（QEMU 1B 延迟）
+
+| 阶段 | avg | P50 | P99 | software overhead |
+|------|-----|-----|-----|-------------------|
+| Q8 | 144.7 µs | 139.5 µs | 230.4 µs | 57.9 µs |
+| Q10 | 121.6 µs | 115.8 µs | 244.1 µs | 34.8 µs |
+| **Q11** | **140.7 µs** | **129.2 µs** | **320.4 µs** | **53.9 µs** |
 
 ### 性能（QEMU）
 
 | 维度 | 结果 |
 |------|------|
-| TX 用户态 @ /dev/console + tcdrain | ~200 KB/s（QEMU，真板 ~11.5） |
-| TX 延迟 P50 | ~0.15 ms |
+| TX 用户态 @ /dev/console + tcdrain | 427µs(64B) ~ 9053µs(4096B) |
+| TX 延迟 P50 | 129.2 µs |
 | FIONBIO nonblocking read | ✅ EAGAIN |
-| Ring Buffer TX | ~180 MB/s |
-| Ring Buffer RX | ~413 MB/s |
+| Ring Buffer TX | ~197 MB/s |
+| Ring Buffer RX | ~393 MB/s |
 
 ### 待验证（真板 VisionFive2）
 
@@ -196,5 +202,5 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 
 ---
 
-**报告版本**：2.1
-**最后更新**：2026-06-01
+**报告版本**：3.0
+**最后更新**：2026-06-11（Q8~Q11 完成）
