@@ -88,6 +88,7 @@ ouroboros = { version = "0.18", default-features = false }
 percpu = "0.2.3-preview.1"
 rand = { version = "0.10", default-features = false, features = ["alloc"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+embassy-hal-internal = { version = "0.2", default-features = false }
 scope-local = "0.1"
 slab = { version = "0.4.9", default-features = false }
 spin = "0.10"
@@ -104,6 +105,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 # AsyncUart dependencies
 uart_16550 = { path = "../../uart_16550" }  # Local 16550 UART driver (v0.6.0)
 embassy-sync = "0.6.2"  # AtomicWaker (ISR-safe)
+embedded-io-async = "0.6.1"  # Standard async I/O traits (Read/Write)
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

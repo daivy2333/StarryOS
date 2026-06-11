@@ -24,7 +24,7 @@ lazy_static! {
                 // unlike Manual mode, this does NOT immediately wake — the waker
                 // stays registered until the copier produces data, eliminating the
                 // yield storm.
-                DRIVER.rx.lock().poll.register(&waker);
+                DRIVER.rx.poll.register(&waker);
             })),
         },
     );

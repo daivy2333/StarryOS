@@ -4,7 +4,6 @@ use core::task::{Poll, Waker};
 use core::cell::Cell;
 
 use axtask::{future::block_on, spawn_with_name};
-use axsync::Mutex;
 use lazy_static::lazy_static;
 
 use crate::drivers::isr::{RX_WAKER, TX_WAKER};
@@ -18,13 +17,13 @@ lazy_static! {
 }
 
 pub struct AsyncUartDriver {
-    pub rx: Mutex<RingBufRx>,
-    pub tx: Mutex<RingBufTx>,
+    pub rx: RingBufRx,
+    pub tx: RingBufTx,
 }
 
 impl AsyncUartDriver {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { rx: Mutex::new(RingBufRx::new()), tx: Mutex::new(RingBufTx::new()) })
+        Arc::new(Self { rx: RingBufRx::new(), tx: RingBufTx::new() })
     }
 
     pub fn start_rx_copier(self: &Arc<Self>) {
@@ -47,7 +46,7 @@ impl AsyncUartDriver {
                 let batch = if consecutive >= NAPI_THRESHOLD { NAPI_BATCH_SIZE } else { COPIER_BUF_SIZE };
                 let total = uart.receive_bytes(&mut read_buf[..batch]);
                 drop(uart);
-                if total > 0 { self.rx.lock().push(&read_buf[..total]); }
+                if total > 0 { self.rx.push(&read_buf[..total]); }
                 if consecutive >= NAPI_THRESHOLD {
                     if total > 0 {
                         consecutive += 1;
@@ -77,10 +76,9 @@ impl AsyncUartDriver {
         loop {
             poll_fn(|cx| {
                 if cursor >= pending {
-                    let mut buf = self.tx.lock();
-                    pending = buf.pop(&mut write_buf);
+                    pending = self.tx.pop(&mut write_buf);
                     cursor = 0;
-                    if pending == 0 { buf.register_waker(cx); return Poll::Pending; }
+                    if pending == 0 { self.tx.register_waker(cx); return Poll::Pending; }
                 }
                 let mut uart = uart_instance().lock();
                 let sent = uart.send_bytes(&write_buf[cursor..pending]);

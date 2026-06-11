@@ -78,6 +78,23 @@ pub fn read_isr_unlocked() -> ISR {
     }
 }
 
+/// Lock-free LSR register read — safe in ISR context (single handler, no concurrency).
+///
+/// Reads the LSR register directly via MMIO, bypassing the `SpinNoIrq` lock.
+/// Used in ISR to check TEMT (Transmitter Empty) for tcdrain completion.
+///
+/// # Safety
+///
+/// Only call from `uart_isr_handler` in ISR context.
+pub fn read_lsr_unlocked() -> LSR {
+    let ptr = get_uart_mmio_virt().as_ptr() as *const u8;
+    unsafe {
+        // SAFETY: LSR register at offset offsets::LSR (5), stride=1.
+        // Only called from ISR context — single handler, no concurrent access.
+        LSR::from_bits_retain(ptr.add(offsets::LSR as usize).read_volatile())
+    }
+}
+
 // IER register manipulation helpers (direct MMIO, cached to reduce RMW)
 use core::sync::atomic::{AtomicU8, Ordering};
 static CACHED_IER: AtomicU8 = AtomicU8::new(0);

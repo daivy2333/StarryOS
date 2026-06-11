@@ -1547,6 +1547,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "embassy-hal-internal"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ef3bac31ec146321248a169e9c7b5799f1e0b3829c7a9b324cb4600a7438f59"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "embassy-sync"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3050,7 +3059,9 @@ dependencies = [
  "cfg-if",
  "chrono",
  "downcast-rs",
+ "embassy-hal-internal",
  "embassy-sync",
+ "embedded-io-async",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
