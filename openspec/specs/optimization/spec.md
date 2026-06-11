@@ -71,6 +71,51 @@ Q7 优化 MUST 视为已落地；任何回退 MUST 附带 commit 证明性能回
 - **WHEN** 开发者要改 nonblocking 状态传播
 - **THEN** MUST 同时检查 `tty/mod.rs` / `ldisc.rs` / `syscall/fs/ctl.rs` 三个入口（O43 + L140 教训）
 
+### Requirement: Q8 驱动引擎打磨 — 已完成
+
+Q8 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。
+
+**Wave 1 — 正确性修复**：
+
+| 编号 | 内容 | 优先级 | 说明 |
+|------|------|--------|------|
+| **Q8.1** | NAPI 退出修复 | 🔴 BugFix | `async_driver.rs` — `total==0` 时重置 `consecutive=0` + `enable_rx_intr()`，消除 NAPI 永不退出导致 CPU 空转问题 |
+| **Q8.2** | ISR 去锁化 | 🔴 BugFix | `isr.rs` — 消除 `SpinNoIrq` 锁，实现无锁 ISR 路径，符合 ISR 极简原则 |
+| **Q8.3** | IER 写路径规范化 | 🔴 BugFix | `uart_init.rs` — 用 `uart_16550::set_ier()` 替代裸 `write_volatile`，消除规则违规；`uart_16550` crate 新增 `set_ier()` 公共方法 |
+
+**Wave 2 — 热路径优化**：
+
+| 编号 | 内容 | 优先级 | 说明 |
+|------|------|--------|------|
+| **Q8.4** | copier waker 去重简化 | 🟡 优化 | `async_driver.rs` — 仅 `will_wake` 不同时才 `clone()+register`，减少 ~20-40ns/poll |
+| **Q8.5** | DRAIN_WAKER 条件唤醒 | 🟡 优化 | `isr.rs` — 仅在 tcdrain 活跃时 `DRAIN_WAKER.wake()`，减少无意义原子操作 |
+
+**Wave 3 — O46 AtomicWaker 推广**：
+
+| 编号 | 内容 | 说明 |
+|------|------|------|
+| **Q8.6** | signalfd PollSet→AtomicWaker | `signalfd.rs` — 1 PollSet → 1 AtomicWaker |
+| **Q8.7** | event PollSet→AtomicWaker | `event.rs` — 2 PollSet → 2 AtomicWaker |
+| **Q8.8** | pipe PollSet→AtomicWaker | `pipe.rs` — 3 PollSet → 3 AtomicWaker（交叉唤醒 read→TX / write→RX / close→close） |
+| **Q8.9** | pidfd PollSet→AtomicWaker | `pidfd.rs` + `task/mod.rs` + `task/ops.rs` — Arc 共享重构，进程退出时 AtomicWaker::wake() |
+
+**总收益**：唤醒延迟 ~200ns→~50ns（8 个唤醒点），ISR 延迟降低 ~200ns（去锁化），NAPI 空闲 CPU 归零，消除 2 处规则违规（IER 裸写 + ISR 锁）。
+
+#### Scenario: NAPI 模式下数据流停止
+
+- **WHEN** RX copier 在 NAPI 模式（consecutive ≥ NAPI_THRESHOLD）且 `receive_bytes()` 返回 0
+- **THEN** consecutive 重置为 0，enable_rx_intr() 被调用，下次 ISR 正常触发
+
+#### Scenario: ISR 无锁执行
+
+- **WHEN** UART 产生中断
+- **THEN** ISR 无锁读取 ISR 寄存器 → 禁用对应中断 → AtomicWaker::wake() → 返回（全流程 ~1.5 µs）
+
+#### Scenario: IER 通过安全 API 写入
+
+- **WHEN** copier 调用 enable/disable 中断函数
+- **THEN** IER 通过 `uart_16550::Uart16550::set_ier()` 写入，CACHED_IER 与硬件 IER 一致
+
 ### Requirement: Q6 真板性能优化 — 待做（VisionFive2 拿到后）
 
 VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化；其中 O38（时钟适配）为最高优先级。

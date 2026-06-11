@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-11
-> 分支：asyncuart-dev — Q0~Q7 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅，警告清零，死代码清理，Q6 ⏳ 等待硬件
+> 分支：asyncuart-dev — Q0~Q11 ✅（Q8/Q9/Q10/Q11 已归档至 openspec/changes/archive/），警告清零，死代码清理，Q6 ⏳ 等待硬件
 
 ---
 

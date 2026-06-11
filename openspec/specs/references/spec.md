@@ -133,6 +133,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | `serial-interfaces-overview.md` | 串口相关接口概览：Console/PTY/vsock 三种串口接口分析 |
 | `serial-optimization-preview.md` | 串口优化预览：从同步阻塞到异步高性能的优化分析 |
 | `project-knowledge-map.md` | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 |
+| `uart-16550-integration.md` | uart_16550 集成分析：crate API 体系、MmioBackend 适配、StarOS 内核六层封装、copier 架构、端到端数据流 | 2026-06-11 |
 
 **UART 初始化与 IRQ 设计文档**：
 
