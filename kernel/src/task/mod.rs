@@ -15,7 +15,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
 };
 
-use axpoll::PollSet;
+use embassy_sync::waitqueue::AtomicWaker;
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{TaskExt, TaskInner};
 use extern_trait::extern_trait;
@@ -79,7 +79,7 @@ pub struct Thread {
     accessing_user_memory: AtomicBool,
 
     /// Self exit event
-    pub exit_event: Arc<PollSet>,
+    pub exit_event: Arc<AtomicWaker>,
 }
 
 impl Thread {
@@ -94,7 +94,7 @@ impl Thread {
             exit: Arc::new(AtomicBool::new(false)),
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
-            exit_event: Arc::default(),
+            exit_event: Arc::new(AtomicWaker::new()),
         })
     }
 
@@ -204,9 +204,9 @@ pub struct ProcessData {
     pub rlim: RwLock<Rlimits>,
 
     /// The child exit wait event
-    pub child_exit_event: Arc<PollSet>,
+    pub child_exit_event: Arc<AtomicWaker>,
     /// Self exit event
-    pub exit_event: Arc<PollSet>,
+    pub exit_event: Arc<AtomicWaker>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
 
@@ -240,8 +240,8 @@ impl ProcessData {
 
             rlim: RwLock::default(),
 
-            child_exit_event: Arc::default(),
-            exit_event: Arc::default(),
+            child_exit_event: Arc::new(AtomicWaker::new()),
+            exit_event: Arc::new(AtomicWaker::new()),
             exit_signal,
 
             signal: Arc::new(ProcessSignalManager::new(

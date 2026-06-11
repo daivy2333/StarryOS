@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-05
-> 分支：asyncuart-dev — Q0~Q7 ✅，OpenSpec 体系建立（2026-06-03），Q6 等待硬件，Q8/Q9 计划中
+> Last updated: 2026-06-11
+> 分支：asyncuart-dev — Q0~Q7 ✅ Q8 ✅，OpenSpec 体系建立（2026-06-03），Q9~Q11 计划中，Q6 等待硬件
 
 ---
 
@@ -19,7 +19,19 @@
 - O46 / O47 记录到 `optimization/spec.md`（Q8/Q9 远期优化）
 - OE1~OE5 反模式（embassy Channel/Mutex/Watch/Semaphore/select!）记录到 `optimization/spec.md` "已排除优化"
 - L81~L84 learned 踩坑档案（embassy 选型边界）记录到 `learned/spec.md` 新 Requirement
-**下一步**: Q6 VisionFive2 真板验证（等待硬件到位），Q8 AtomicWaker 模式统一可立即启动
+**2026-06-11 优化审计与阶段重规划**:
+- 4 个并行 agent 深度扫描（UART 驱动 / ldisc 模型 / 全内核标记 / PollSet 迁移），发现 6+ 项未记录优化机会（含 3 项正确性 bug）
+- 分析文档 `.claude/analysis/optimization-opportunity-audit.md` 生成
+- L150~L155 新知识写入 `learned/spec.md`
+- 阶段重规划：原 Q8（仅 O46）→ Q8 驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46）；新增 Q10（数据路径优化）和 Q11（内核通用优化）
+- Q9 解耦：time driver 基础设施（Q9.1~Q9.3）无需 Q6 硬件，可先行完成
+**2026-06-11 Q8 完成**:
+- 3 个并行 Agent 完成 Wave 1+2（正确性修复 + 热路径优化）：NAPI 退出、ISR 去锁、IER 规范化、waker 去重、DRAIN_WAKER 条件化
+- 4 个并行 Agent 完成 Wave 3（O46 AtomicWaker 迁移）：signalfd/event/pipe/pidfd 共 8 个 PollSet→AtomicWaker
+- uart_16550 添加 `set_ier()` 公共方法
+- QEMU 实机验证通过：启动正常、Shell 交互正常、benchmark 无退化、FIONBIO PASS
+- `cargo check` 0 错误 / `cargo clippy` 0 错误
+**下一步**: Q10 数据路径优化（减少拷贝 + ldisc 优化）或 Q9 超时机制
 
 ### 关键发现
 
@@ -69,8 +81,10 @@
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ✅ (O43 via Q7) |
 | **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
 | **P0** | OpenSpec 文档体系 | 4 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
-| **Q8** | AtomicWaker 模式统一 | pipe/signalfd/pidfd 改用 AtomicWaker 静态分发（O46） | 📋 计划中 |
-| **Q9** | 超时机制 | embassy-time 集成（O47，Q6 触发） | 📋 计划中 |
+| **Q8** | 驱动引擎打磨 | NAPI 退出修复 + ISR 去锁化 + IER 规范化 + 热路径优化 + O46 AtomicWaker 推广 | ✅ |
+| **Q9** | 超时机制 | embassy-time 集成（部分无需 Q6） | 📋 计划中 |
+| **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | 📋 计划中 |
+| **Q11** | 内核通用优化 | mm/access + clone/fd 优化 + unwrap 消除 | 📋 计划中（可选） |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构

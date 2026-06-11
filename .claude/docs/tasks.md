@@ -28,8 +28,10 @@
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ✅ (O43 已落地) |
 | **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
 | **P0** | OpenSpec 文档体系 | 5 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
-| **Q8** | AtomicWaker 模式统一 | pipe/signalfd/pidfd 改用 AtomicWaker 静态分发（O46） | 📋 计划中 |
-| **Q9** | 超时机制 | embassy-time 集成（O47，Q6 触发） | 📋 计划中 |
+| **Q8** | 驱动引擎打磨 | 正确性修复（NAPI/ISR/IER）+ 热路径优化 + O46 AtomicWaker 推广 | ✅ (2026-06-11) |
+| **Q9** | 超时机制 | embassy-time 集成（O47，部分无需 Q6） | 📋 计划中 |
+| **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 优化 | 📋 计划中 |
+| **Q11** | 内核通用优化 | mm/access + clone/fd 优化 + unwrap 消除 | 📋 计划中（可选） |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -37,8 +39,10 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q9 📋 Q10 📋 Q11 📋 Q6 ⏳(硬件)
 ```
+
+**2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
 
 **已实现**: kernel 层独立异步串口栈，不修改任何外部 crate（axplat/axhal/axtask）。
 - Shell stdin: ISR → RX copier → ring buffer → AsyncUartReader → Tty → Shell
@@ -108,40 +112,92 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q6 ⏳
 <!-- Q6.4 --> - [ ] O41 高速波特率支持（>115200）
 <!-- Q6.5 --> - [ ] Gate Q6: 真板正常运行
 
-### Q8: AtomicWaker 模式统一 📋 计划中
+### Q8: 驱动引擎打磨 ✅ (2026-06-11)
 
-> 基于 O46（2026-06-05 记录于 `optimization/spec.md`），将 pipe / signalfd / pidfd 改造成与 UART 一致的 AtomicWaker 静态分发模式。
+> 2026-06-11 完成。7 个并行 Agent 分 2 个 Wave 执行，QEMU 实机验证通过。13 文件变更（+235/-70）+ uart_16550（+12 行）。
+
+**Wave 1 — 正确性修复（必须先做）**：
+
+| 子任务 | 描述 | 关键文件 | 类型 |
+|--------|------|----------|------|
+| **Q8.1** | NAPI 退出修复 | `async_driver.rs:51` — total==0 时重置 consecutive+enable_rx_intr | 🔴 BugFix |
+| **Q8.2** | ISR 去锁化 | `isr.rs:10` — 消除 SpinNoIrq 锁，实现无锁 ISR 路径 | 🔴 BugFix |
+| **Q8.3** | IER 写路径规范化 | `uart_init.rs:72` — 用 uart_16550 API 替代裸 write_volatile | 🔴 BugFix |
+| **Q8.3a** | uart_16550 添加 set_ier() | `uart_16550/src/lib.rs` — 暴露 IER 写入 API | 🔴 依赖 Q8.3 |
+
+**Wave 2 — 热路径优化**：
 
 | 子任务 | 描述 | 关键文件 | 预期收益 |
 |--------|------|----------|----------|
-| **O46.1** | pipe 改造 | `kernel/src/file/pipe.rs` | 唤醒延迟 ~200ns → ~50ns（rx/tx/close 三个唤醒点）|
-| **O46.2** | signalfd 改造 | `kernel/src/file/signalfd.rs` | 唤醒延迟 ~200ns → ~50ns |
-| **O46.3** | pidfd 改造 | `kernel/src/file/pidfd.rs` | 唤醒延迟 ~200ns → ~50ns |
-| **O46.4** | 性能基准 | 新增 benchmark | 量化收益：每文件 6 个唤醒点 × ~150ns |
-| **O46.5** | Gate Q8 | — | cargo test + benchmark 对比 Q5.1 数据 |
+| **Q8.4** | copier waker 去重简化 | `async_driver.rs:53-55` — 仅 will_wake 不同时才 clone+register | ~20-40ns/poll |
+| **Q8.5** | DRAIN_WAKER 条件唤醒 | `isr.rs:20` — 仅在 tcdrain 活跃时 wake | 减少无意义原子操作 |
+
+**Wave 3 — O46 AtomicWaker 推广（按风险从低到高）**：
+
+| 子任务 | 描述 | 关键文件 | 风险 |
+|--------|------|----------|------|
+| **Q8.6** | signalfd PollSet→AtomicWaker | `signalfd.rs` — 1 PollSet → 1 AtomicWaker | 🟢 低 |
+| **Q8.7** | event PollSet→AtomicWaker | `event.rs` — 2 PollSet → 2 AtomicWaker | 🟡 中 |
+| **Q8.8** | pipe PollSet→AtomicWaker | `pipe.rs` — 3 PollSet → 3 AtomicWaker（交叉唤醒） | 🟡 中 |
+| **Q8.9** | pidfd PollSet→AtomicWaker | `pidfd.rs` + `task/mod.rs` + `task/ops.rs` — Arc 共享重构 | 🔴 高 |
+| **Q8.10** | 性能回归测试 | 新增/更新 benchmark，对比 Q5.1 基线 | — |
+| **Q8.11** | Gate Q8 | cargo test + clippy + benchmark 全部通过 | — |
 
 **实施风险**：
-- 🟢 pipe 已用 spawn 模型，零架构影响
-- 🟡 signalfd 唤醒源是 signal handler，需确认在非 ISR 上下文 `wake()` 安全
-- 🟡 pidfd 唤醒源是进程退出（exit hook），同样非 ISR
+- Q8.9 pidfd 的 exit_event 是 `Arc<PollSet>` 共享于 Thread/ProcessData 中，修改影响 3 个文件的类型定义 + 唤醒路径
+- Q8.8 pipe 的跨操作唤醒（read→wakeTX, write→wakeRX）需要 3 个独立 AtomicWaker
+- Q8.3 需要修改 `uart_16550` crate，需评估对 StarryOS 的影响
 
-**预查**：`AtomicWaker::wake` 在非 ISR 上下文安全（官方保证：可在任意线程调用）。
+**预期总收益**：
+- 唤醒延迟：~200ns → ~50ns（pipe/signalfd/pidfd/event 共 8 个唤醒点）
+- ISR 延迟降低 ~200ns（去锁化）
+- NAPI 空闲 CPU 归零
+- 消除 1 处规则违规（IER 裸写）、1 处锁违规（ISR 锁）
 
 ### Q9: 超时机制 📋 计划中
 
-> 基于 O47（2026-06-05 记录于 `optimization/spec.md`），引入 embassy-time 修复 `block_on(poll_io(...))` 永久阻塞问题。**前置条件**：Q6 真板验证完成且 DMA 失败路径确认需要 timeout。
+> 基于 O47（2026-06-05 记录于 `optimization/spec.md`），引入 embassy-time 修复 `block_on(poll_io(...))` 永久阻塞问题。
+> **2026-06-11 更新**：Q9.1~Q9.3（time driver 基础设施）无需 Q6 硬件，可先行完成。
 
-| 子任务 | 描述 | 前置 |
-|--------|------|------|
-| **O47.1** | axhal time driver 评估 | Q6.3（DMA 失败路径）|
-| **O47.2** | 引入 embassy-time 依赖 | O47.1 |
-| **O47.3** | poll_io 接受 `Option<Duration>` | O47.2 |
-| **O47.4** | 用户态 SO_RCVTIMEO 支持 | O47.3 |
-| **O47.5** | Gate Q9 | cargo test + 真板超时测试 |
+| 子任务 | 描述 | 前置 | 硬件依赖 |
+|--------|------|------|----------|
+| **Q9.1** | axhal time driver 评估 | — | 无 |
+| **Q9.2** | 引入 embassy-time 依赖 | Q9.1 | 无 |
+| **Q9.3** | poll_io 接受 `Option<Duration>` | Q9.2 | 无 |
+| **Q9.4** | select! 组合 poll_io + Timer | Q9.3 | Q6.3（DMA 失败路径确认） |
+| **Q9.5** | 用户态 SO_RCVTIMEO 支持 | Q9.4 | Q6 真板验证 |
+| **Q9.6** | Gate Q9 | cargo test + 真板超时测试 | — |
 
-**触发条件**：Q6.3（DMA 通道发现与配置）完成后评估是否真的需要 timeout。如果 DMA 在真板有失败保护（如硬件 timeout），O47 可能不需要实现。
+**触发条件**：Q6.3（DMA 通道发现与配置）完成后评估是否真的需要 timeout。如果 DMA 在真板有失败保护（如硬件 timeout），Q9.4+ 可能不需要实现。
 
-**反优化提示**：如果 O47 ROI 评估为负（实施成本 > 性能收益），归档到 `optimization/spec.md` "已排除优化" 区，遵循 OE1~OE5 教训（`learned/spec.md` L81~L84）。
+### Q10: 数据路径优化 📋 计划中
+
+> 2026-06-11 优化审计新发现。减少用户态串口读路径拷贝次数，优化 ldisc 层并发性能。
+> 详细分析见 `.claude/analysis/optimization-opportunity-audit.md`
+
+| 子任务 | 描述 | 关键文件 | 预期收益 |
+|--------|------|----------|----------|
+| **Q10.1** | 合并 C3/C4 拷贝 | `ldisc.rs:83-90` — InputReader::poll 中合并 buf→ringbuf 两次拷贝为一次 | 每字节减 1 次 memcpy |
+| **Q10.2** | ldisc 缓冲扩容 | `ldisc.rs` — StaticRb 80→256（或可配置） | 突发吸收能力提升 |
+| **Q10.3** | ldisc 锁拆分 | `tty/mod.rs:88` — read() 中 ldisc 锁不跨越 block_on，改用内部可变性 | poll/select 并发不阻塞 |
+| **Q10.4** | 性能基准重测 | benchmark 对比 Q5.1 数据 | 量化拷贝减少 + 锁拆分的收益 |
+| **Q10.5** | Gate Q10 | cargo test + benchmark 通过 | — |
+
+**关键依赖**：Q10.3（锁拆分）需要仔细分析 ldisc 的并发安全，可能涉及 ringbuf 内部改为 lock-free 或细粒度锁。
+
+### Q11: 内核通用优化 📋 计划中（可选，非 UART 特定）
+
+> 2026-06-11 全内核优化审计发现。非 UART 特定的通用优化，优先级低于 Q8~Q10。
+
+| 子任务 | 描述 | 关键文件 | 类型 |
+|--------|------|----------|------|
+| **Q11.1** | tty unwrap() 消除 | `tty/mod.rs:78,160,170` — Weak::upgrade().unwrap() → 错误传播 | 🟡 Safety |
+| **Q11.2** | mm/access 批量页检查 | `mm/access.rs:88` — 消除逐页 aspace 锁 | 🟡 Perf |
+| **Q11.3** | sendfile 缓冲区复用 | `syscall/fs/io.rs:264` — vec![0;4096] → 静态缓冲 | 🟡 Perf |
+| **Q11.4** | close_range UNSHARE 优化 | `syscall/fs/fd_ops.rs:167` — 避免全表 clone | 🟡 Perf |
+| **Q11.5** | Gate Q11 | cargo test + clippy 通过 | — |
+
+> Q11 可推迟到 Q6 之后或作为独立的小任务穿插执行。
 
 ---
 
@@ -159,12 +215,22 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q6 ⏳
 8. AtomicWaker 直接唤醒：ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） ✅
 9. Console 组件清理：删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 ✅
 
-### 待解决的问题
+### 已解决的问题（Q7 修复）
 
-1. **三重 yield storm** — 用户态 async read 有 3 层 block_on/poll_io（File→Tty/JobControl→Ldisc/WaitPollable），Manual 模式 waker.wake_by_ref() 导致无数据时高频 yield-re-schedule
-2. **Manual 模式缺陷** — ProcessMode::Manual 中 register_rx_waker 直接 wake_by_ref，应改为 External 模式使用 PollSet
-3. **Benchmark 不测 UART** — TX 吞吐量测试通过 /dev/null（绕过 UART）；延迟测试只测 ring buffer push。需改为 write→tcdrain() 测量真实串口吞吐量
-4. **FIONBIO 不传播到 TTY** — nonblocking 标志在 File 层存储，Tty::read_at 和 ldisc.read 硬编码 false。三处需修改：Tty struct 添加 nonblocking 字段、Tty::read_at 传播、ldisc.read 支持
+1. ~~三重 yield storm~~ → Q7 O42 修复（Manual→External）
+2. ~~Manual 模式缺陷~~ → Q7 O42 修复
+3. ~~Benchmark 不测 UART~~ → Q7 O44 修正
+4. ~~FIONBIO 不传播到 TTY~~ → Q7 O43 修复
+
+### 新发现的待解决问题（2026-06-11 审计）
+
+1. **NAPI 模式永不退出** — consecutive 在 NAPI 模式只增不减，零字节时无重置 → Q8.1
+2. **ISR 获取 SpinNoIrq 锁** — 违反 ISR 极简原则 → Q8.2
+3. **IER 裸 write_volatile** — 绕过 uart_16550 API → Q8.3
+4. **读路径 5 次拷贝** — UART FIFO→copier→driver→InputReader→ldisc→user → Q10
+5. **ldisc 锁跨 async wait 持有** — 阻塞并发 poll/select → Q10.3
+6. **copier waker 去重过度** — 每 poll 周期 2 次 Waker::clone() → Q8.4
+7. **PollSet→AtomicWaker** — pipe/signalfd/pidfd/event 共 8 个 PollSet 替换 → Q8.6~9
 
 ### 已修正的误判
 

@@ -6,8 +6,9 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
+use embassy_sync::waitqueue::AtomicWaker;
 use axtask::{
     current,
     future::{block_on, poll_io},
@@ -31,9 +32,9 @@ const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 
 struct Shared {
     buffer: Mutex<HeapRb<u8>>,
-    poll_rx: PollSet,
-    poll_tx: PollSet,
-    poll_close: PollSet,
+    poll_rx: AtomicWaker,
+    poll_tx: AtomicWaker,
+    poll_close: AtomicWaker,
 }
 
 pub struct Pipe {
@@ -51,9 +52,9 @@ impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(HeapRb::new(RING_BUFFER_INIT_SIZE)),
-            poll_rx: PollSet::new(),
-            poll_tx: PollSet::new(),
-            poll_close: PollSet::new(),
+            poll_rx: AtomicWaker::new(),
+            poll_tx: AtomicWaker::new(),
+            poll_close: AtomicWaker::new(),
         });
         let read_end = Pipe {
             read_side: true,

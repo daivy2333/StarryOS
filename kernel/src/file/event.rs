@@ -5,8 +5,9 @@ use core::{
 };
 
 use axerrno::AxError;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
 use axtask::future::{block_on, poll_io};
+use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::file::{FileLike, IoDst, IoSrc};
 
@@ -15,8 +16,8 @@ pub struct EventFd {
     semaphore: bool,
     non_blocking: AtomicBool,
 
-    poll_rx: PollSet,
-    poll_tx: PollSet,
+    poll_rx: AtomicWaker,
+    poll_tx: AtomicWaker,
 }
 
 impl EventFd {
@@ -26,8 +27,8 @@ impl EventFd {
             semaphore,
             non_blocking: AtomicBool::new(false),
 
-            poll_rx: PollSet::new(),
-            poll_tx: PollSet::new(),
+            poll_rx: AtomicWaker::new(),
+            poll_tx: AtomicWaker::new(),
         })
     }
 }

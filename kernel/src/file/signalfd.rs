@@ -6,7 +6,8 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use embassy_sync::waitqueue::AtomicWaker;
 use axtask::{
     current,
     future::{block_on, poll_io},
@@ -82,7 +83,7 @@ impl SignalfdSiginfo {
 pub struct Signalfd {
     mask: RwLock<SignalSet>,
     non_blocking: AtomicBool,
-    poll_rx: PollSet,
+    poll_rx: AtomicWaker,
 }
 
 impl Signalfd {
@@ -90,7 +91,7 @@ impl Signalfd {
         Arc::new(Self {
             mask: RwLock::new(mask),
             non_blocking: AtomicBool::new(false),
-            poll_rx: PollSet::new(),
+            poll_rx: AtomicWaker::new(),
         })
     }
 

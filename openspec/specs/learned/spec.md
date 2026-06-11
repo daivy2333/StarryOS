@@ -629,3 +629,52 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 
 - **WHEN** 开发者要测量新优化效果
 - **THEN** MUST 同时提供内核态（绕过 TTY）和用户态（完整链路）两个测试，并标明 QEMU vs 真板的可信度差异
+
+---
+
+### Requirement: 2026-06-11 优化审计新发现
+
+本次审计（openspec-explorer，4 个并行 agent）揭示的未记录优化机会与正确性问题。
+
+**踩坑 5：NAPI 模式永不退出（2026-06-11）**（L150）
+
+- **症状**：`async_driver.rs:51` 中 `consecutive` 在 NAPI 模式（≥16）下只增不减（`consecutive += 1`），零字节读取时无重置逻辑。RX 中断永久禁用，CPU 空转轮询空 FIFO。
+- **根因**：NAPI 退出逻辑缺失 — 缺少 `total == 0` 时重置 `consecutive = 0` + 调用 `enable_rx_intr()` 的分支。
+- **解决**：添加 `if total == 0 { self.consecutive = 0; enable_rx_intr(); }` 退出分支。
+- **预防**：状态机转换 MUST 穷举所有转移条件，特别是"退出"路径。
+
+**踩坑 6：ISR 中获取 SpinNoIrq 锁（2026-06-11）**（L151）
+
+- **症状**：`isr.rs:10` 中 `uart_instance().lock()` 在 ISR 上下文获取 SpinNoIrq 锁。违反 ISR 极简原则第 4 条。
+- **根因**：`uart.isr()` 和 `disable_*_intr()` 需要 `&mut self`，而 uart_16550 的 MUTEX 要求 SpinNoIrq 保护。
+- **解决方向**：实现无锁的 ISR 读取路径（`unsafe fn isr_unchecked(&self)`），或拆分锁范围。
+- **预防**：ISR 路径 MUST 逐行审计锁获取，禁止任何形式的锁操作。
+
+**踩坑 7：IER 裸 write_volatile 绕过 uart_16550 API（2026-06-11）**（L152）
+
+- **症状**：`uart_init.rs:72` 使用 `unsafe { core::ptr::write_volatile(ptr.add(offsets::IER), value) }`，违反 MMIO 封装规则。
+- **根因**：uart_16550 v0.6.0 无 `set_ier()` 公共方法，只能通过 `new_mmio()` 构造时的配置。
+- **解决方向**：向 uart_16550 添加 `pub fn set_ier(&mut self, ier: IER)` 方法，或使用 `ier_mut()` 返回引用。
+- **预防**：任何 `unsafe write_volatile` MUST 附 SAFETY 注释并证明无法通过 crate API 实现。
+
+**技巧 8：读路径数据拷贝分析（2026-06-11）**（L153）
+
+- **发现**：用户态串口读路径经过 5 次数据拷贝：UART FIFO → copier buf → driver ringbuf → InputReader buf → ldisc ringbuf → user buf
+- **可优化点**：C3/C4（InputReader buf → ldisc ringbuf）在同一个 `InputReader::poll()` 中立即完成，可合并为一次直接 push。
+- **关键文件**：`ldisc.rs:83-90`（InputReader::poll）
+- **量化**：每字节减少 1 次 memcpy，115200 bps 下节省 ~11.5 KB/s 的 CPU。
+
+**技巧 9：PollSet→AtomicWaker 迁移风险矩阵（2026-06-11）**（L154）
+
+- **pipe.rs**（3 PollSet）：HIGH — 跨操作唤醒（read→wakeTX, write→wakeRX, drop→wakeClose），需 3 个独立 AtomicWaker
+- **signalfd.rs**（1 PollSet）：LOW — 最简单的 1:1 替换，两个唤醒源（update_mask + read re-wake）
+- **pidfd.rs**（1 Arc\<PollSet\>）：HIGH — exit_event 是共享的（Arc 克隆自 Thread/ProcessData），修改影响 task/mod.rs 和 task/ops.rs 的唤醒路径
+- **event.rs**（2 PollSet）：MEDIUM — 同 pipe 的跨操作模式
+- **关键前提**：AtomicWaker 仅支持单 waker。需验证这些场景中是否最多 1 个 task 同时 poll（async 模型下通常是）。
+
+**技巧 10：copier waker 去重可简化（2026-06-11）**（L155）
+
+- **发现**：`async_driver.rs:53-55,82-84` 每个 poll_fn 迭代执行 2×Waker::clone() + will_wake() + register()
+- **原因**：单线程 copier 的 waker 几乎不变，但代码仍每次 clone+检查
+- **简化方向**：`if !last_waker.get().map_or(false, |old| old.will_wake(&cx.waker())) { RX_WAKER.register(cx.waker()); }` — 仅在变化时 clone
+- **量化**：每 poll 周期节省 ~2 次 Arc 原子操作（~20-40ns）

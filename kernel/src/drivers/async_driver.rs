@@ -48,10 +48,20 @@ impl AsyncUartDriver {
                 let total = uart.receive_bytes(&mut read_buf[..batch]);
                 drop(uart);
                 if total > 0 { self.rx.lock().push(&read_buf[..total]); }
-                if consecutive >= NAPI_THRESHOLD { consecutive += 1; } else { consecutive = if total > 0 { consecutive + 1 } else { 0 }; }
+                if consecutive >= NAPI_THRESHOLD {
+                    if total > 0 {
+                        consecutive += 1;
+                    } else {
+                        consecutive = 0;
+                        enable_rx_intr();
+                    }
+                } else {
+                    consecutive = if total > 0 { consecutive + 1 } else { 0 };
+                }
                 if consecutive < NAPI_THRESHOLD { enable_rx_intr(); }
                 let w = cx.waker().clone();
-                if last_waker.replace(Some(w.clone())).as_ref().map_or(true, |old| !old.will_wake(&w)) {
+                let old = last_waker.replace(Some(w.clone()));
+                if old.as_ref().map_or(true, |old_w| !old_w.will_wake(&w)) {
                     RX_WAKER.register(cx.waker());
                 }
                 if total > 0 { Poll::Ready(total) } else { Poll::Pending }
@@ -80,7 +90,8 @@ impl AsyncUartDriver {
                     enable_tx_intr();
                 }
                 let w = cx.waker().clone();
-                if last_waker.replace(Some(w.clone())).as_ref().map_or(true, |old| !old.will_wake(&w)) {
+                let old = last_waker.replace(Some(w.clone()));
+                if old.as_ref().map_or(true, |old_w| !old_w.will_wake(&w)) {
                     TX_WAKER.register(cx.waker());
                 }
                 Poll::Ready(())

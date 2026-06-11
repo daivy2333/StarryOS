@@ -62,14 +62,32 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
     &UART
 }
 
+/// Lock-free ISR register read — safe in ISR context (single handler, no concurrency).
+///
+/// Reads the ISR register directly via MMIO, bypassing the `SpinNoIrq` lock.
+/// This is safe because `uart_isr_handler` is the sole handler for the UART IRQ
+/// line and no other code path reads ISR without holding the lock.
+///
+/// # Safety
+///
+/// Only call from `uart_isr_handler` in ISR context. Do not use from task context
+/// — use `uart_instance().lock().isr()` instead.
+pub fn read_isr_unlocked() -> ISR {
+    let ptr = get_uart_mmio_virt().as_ptr() as *const u8;
+    unsafe {
+        // SAFETY: ISR register at offset offsets::ISR (2), stride=1.
+        // Only called from ISR context — single handler, no concurrent access.
+        ISR::from_bits_retain(ptr.add(offsets::ISR as usize).read_volatile())
+    }
+}
+
 // IER register manipulation helpers (direct MMIO, cached to reduce RMW)
 use core::sync::atomic::{AtomicU8, Ordering};
 static CACHED_IER: AtomicU8 = AtomicU8::new(0);
 
 fn write_ier(value: u8) {
     CACHED_IER.store(value, Ordering::Relaxed);
-    let ptr = get_uart_mmio_virt().as_mut_ptr();
-    unsafe { core::ptr::write_volatile(ptr.add(offsets::IER as usize), value) };
+    uart_instance().lock().set_ier(IER::from_bits_truncate(value));
 }
 pub fn enable_rx_intr()  { write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::DATA_READY.bits()); }
 pub fn disable_rx_intr() { write_ier(CACHED_IER.load(Ordering::Relaxed) & !IER::DATA_READY.bits()); }

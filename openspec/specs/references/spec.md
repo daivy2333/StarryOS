@@ -157,6 +157,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | `nonblocking-mode-analysis.md` | 非阻塞模式 FIONBIO 分析：当前实现、nonblocking 标志未传播到 TTY 层、实现方案、测试用例 |
 | `uart-benchmark-optimization.md` | 性能测试优化方案：CPU 占用测量、中断频率统计、测试方法改进 |
 | `benchmark-report-async.md` | Async 异步串口性能测试报告：内核态和用户态测试结果、与 Console 对比 |
+| `optimization-opportunity-audit.md` | 2026-06-11 优化机会全面审计：4 个并行 agent 深度扫描，发现 6+ 项未记录优化（含 3 项正确性 bug），重规划 Q8~Q11 阶段 |
 
 **Embargo**：
 
