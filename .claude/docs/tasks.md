@@ -29,7 +29,7 @@
 | **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
 | **P0** | OpenSpec 文档体系 | 5 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
 | **Q8** | 驱动引擎打磨 | 正确性修复（NAPI/ISR/IER）+ 热路径优化 + O46 AtomicWaker 推广 | ✅ (2026-06-11) |
-| **Q9** | 超时机制 | embassy-time 集成（O47，部分无需 Q6） | 📋 计划中 |
+| **Q9** | 超时机制 | VTIME 读超时（复用 axtask::future::timeout，无需 embassy-time） | ✅ (2026-06-11) |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 优化 | ✅ (2026-06-11) |
 | **Q11** | 内核通用优化 | mm/access + clone/fd 优化 + unwrap 消除 | 📋 计划中（可选） |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
@@ -39,7 +39,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 📋 Q11 📋 Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 📋 Q6 ⏳(硬件)
 ```
 
 **2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。

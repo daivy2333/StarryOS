@@ -313,6 +313,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     /// Ringbuf uses atomic indices internally for SPSC safety.
     /// Only the reader task calls pop_slice/clear on buf_rx.
     /// The writer (InputReader) only pushes to buf_tx, never touches buf_rx.
+    #[allow(clippy::mut_from_ref)]
     fn buf_rx(&self) -> &mut CachingCons<ReadBuf> {
         unsafe { &mut *self.buf_rx.get() }
     }
@@ -363,7 +364,30 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         } else {
             let vtime = term.special_char(VTIME);
             if vtime > 0 {
-                todo!();
+                let dur = core::time::Duration::from_millis(vtime as u64 * 100);
+                let vmin = term.special_char(VMIN) as usize;
+                if buf.len() < vmin as usize {
+                    return Err(AxError::WouldBlock);
+                }
+                let mut total_read = 0;
+                let set = match &self.processor {
+                    Processor::Manual(_) => None,
+                    Processor::External(set) => Some(set),
+                    _ => unreachable!(),
+                };
+                let pollable = WaitPollable(set);
+                return match block_on(axtask::future::timeout(
+                    Some(dur),
+                    poll_io(&pollable, IoEvents::IN, nonblocking, || {
+                        total_read += self.buf_rx().pop_slice(&mut buf[total_read..]);
+                        self.poll_tx.wake();
+                        if total_read > 0 { Ok(total_read) } else { Err(AxError::WouldBlock) }
+                    }),
+                )) {
+                    Ok(Ok(n)) => Ok(n),
+                    Ok(Err(e)) => Err(e),
+                    Err(_elapsed) => Err(AxError::TimedOut),
+                };
             }
             term.special_char(VMIN) as usize
         };
