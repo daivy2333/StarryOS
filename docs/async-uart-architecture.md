@@ -1,6 +1,6 @@
-# StarryOS 异步串口子系統架构报告
+# StarryOS 异步串口子系统架构报告
 
-> **分支**: `feat/uart-async-dev2` | **日期**: 2026-06-02 | **总代码**: ~500 行（7 文件）
+> **分支**: asyncuart-dev | **日期**: 2026-06-11（Q8~Q11 完成） | **总代码**: ~800 行（含 Q8~Q11 变更）
 
 ---
 
@@ -106,36 +106,48 @@ user write() → TtyWrite → ring buffer push → TX copier
 
 **注意**：stride 必须为 1。NS16550 仅 8 字节寄存器空间（0x00–0x07），stride=4 会导致 LoadFault。
 
-### 3.2 `isr.rs`（24 行）— 中断分发
+### 3.2 `isr.rs`（27 行）— 中断分发（无锁化）
 
-**任务**：在 ISR 上下文中最小化工作，仅读 ISR 寄存器 + 禁用中断 + 唤醒对应 Waker。
+**任务**：在 ISR 上下文中最小化工作，**无锁**读取 ISR 寄存器 + 禁用中断 + 唤醒对应 Waker。
 
-| 唤醒器 | 触发条件 | 使用者 |
-|--------|---------|--------|
-| `RX_WAKER` | `ReceivedDataReady` / `ReceptionTimeout` | RX copier |
-| `TX_WAKER` | `TransmitterHoldingRegisterEmpty` | TX copier |
-| `DRAIN_WAKER` | `TransmitterHoldingRegisterEmpty` | tcdrain (TCSBRK) |
+| 唤醒器 | 触发条件 | 使用者 | Q8 优化 |
+|--------|---------|--------|---------|
+| `RX_WAKER` | `ReceivedDataReady` / `ReceptionTimeout` | RX copier | — |
+| `TX_WAKER` | `TransmitterHoldingRegisterEmpty` | TX copier | — |
+| `DRAIN_WAKER` | `TransmitterHoldingRegisterEmpty`（条件唤醒） | tcdrain | ✅ TCDRAIN_ACTIVE 标志，避免无意义唤醒 |
 
-三个 `AtomicWaker`（embassy-sync 提供），ISR 安全（无锁唤醒）。
+**Q8 关键变更**：
+- ISR 不再获取 `SpinNoIrq` 锁 — 通过 `read_isr_unlocked()` 直接读取 MMIO
+- `DRAIN_WAKER` 仅在 `TCDRAIN_ACTIVE` 为 true 时唤醒
+- 三个 `AtomicWaker`（embassy-sync），ISR 安全（无锁唤醒）
 
 ### 3.3 `ring_buffer.rs`（58 行）— 环形缓冲区
 
-**任务**：提供 RX/TX 共 128 KB 的 `HeapRb<u8>` 缓冲区 + `PollSet` 唤醒机制。
+**任务**：提供 RX/TX 共 128 KB 的 `HeapRb<u8>` 缓冲区 + `AtomicWaker` 唤醒机制。
 
-| 结构 | 容量 | 角色 |
-|------|------|------|
-| `RingBufRx` | 64 KB | RX copier push，user read pop |
-| `RingBufTx` | 64 KB | user write push，TX copier pop |
+| 结构 | 容量 | 角色 | Q8 优化 |
+|------|------|------|---------|
+| `RingBufRx` | 64 KB | RX copier push，user read pop | PollSet→AtomicWaker |
+| `RingBufTx` | 64 KB | user write push，TX copier pop | PollSet→AtomicWaker |
 
-- `push()` 后调用 `poll.wake()` 通知等待者。
-- `register_waker()` 在缓冲可读写时立即唤醒，否则注册到 PollSet。
-
-### 3.4 `async_driver.rs`（90 行）— RX/TX Copier 任务
+### 3.4 `async_driver.rs`（101 行）— RX/TX Copier 任务
 
 **任务**：两个独立 axtask 协程，负责硬件 FIFO 和 ring buffer 之间的数据搬运。
 
-- **RX copier** (`uart-rx-copier`): ISR 唤醒 → 读 UART FIFO → push ring buffer → 连续 ≥16 次成功后切换轮询模式（NAPI）。
-- **TX copier** (`uart-tx-copier`): 从 ring buffer pop 数据 → 批量 `send_bytes()` 到 UART THR → 部分发送时使能 TX 中断。
+**Q8 关键变更**：
+- NAPI 退出修复：零字节时重置 `consecutive=0` + `enable_rx_intr()`
+- waker 去重简化：仅在 waker 变化时 `clone()` + `register()`
+- RX/TX copier 使用 `AtomicWaker` 替代 `PollSet`
+
+### 3.7 ldisc 层变更（Q9/Q10）
+
+**Q10 变更**（`ldisc.rs`）：
+- `BUF_SIZE` 80→256（3.2× 扩容）
+- `SimpleReader::poll()` 逐字节 `try_push` → 批量 `push_slice`
+- `LineDiscipline::read()` / `drain_input()` 改为 `&self`（UnsafeCell 包装 `buf_rx`）
+
+**Q9 变更**（`ldisc.rs`）：
+- VTIME>0 读超时：`todo!()` → `block_on(axtask::future::timeout(dur, poll_io(...)))`
 
 ### 3.5 `device_ops.rs`（25 行）— Tty 接口适配
 
@@ -183,64 +195,53 @@ if cmd == 0x5409 { block_on(poll_fn(|cx| {
 
 | 类别 | 内容 | 说明 |
 |------|------|------|
-| **驱动模块** | 7 文件 · ~500 行 | uart_init, isr, ring_buffer, async_driver, device_ops, ntty_async, benchmark |
-| **Ring Buffer** | 128 KB (RX+TX) | `ringbuf::HeapRb` + `axpoll::PollSet` |
-| **中断分发** | 3 × AtomicWaker | RX_WAKER, TX_WAKER, DRAIN_WAKER |
-| **协程任务** | 2 后台任务 | RX copier + TX copier（axtask 调度） |
-| **Tty 集成** | `AsyncTty = Tty<R,W>` | TtyRead/TtyWrite trait 实现 |
-| **tcdrain** | TCSBRK ioctl | PollSet + DRAIN_WAKER 异步等待 |
-| **非阻塞 I/O** | FIONBIO | open/fcntl/ioctl 三入口全传播 |
-| **NAPI** | 中断合并 | ≥16 次连续成功 → 轮询模式，减少 90%+ IRQ |
-| **IER 缓存** | AtomicU8 | RMW → 单次 write_volatile |
-| **测试框架** | benchmark.c + benchmark.rs | 端到端吞吐量/延迟 + FIONBIO 验证 |
-
----
+| **驱动模块** | ~800 行 | uart_init, isr, ring_buffer, async_driver, device_ops, ntty_async, benchmark |
+| **Ring Buffer** | 128 KB (RX+TX) | ringbuf::HeapRb + AtomicWaker（Q8 迁移） |
+| **中断分发** | 3 × AtomicWaker | RX_WAKER, TX_WAKER, DRAIN_WAKER（ISR 无锁化） |
+| **协程任务** | 2 后台任务 | RX copier + TX copier |
+| **Tty 集成** | Tty<R,W> | TtyRead/TtyWrite trait |
+| **tcdrain** | TCSBRK ioctl | DRAIN_WAKER 条件异步等待（Q8） |
+| **非阻塞 I/O** | FIONBIO | open/fcntl/ioctl 三入口 |
+| **读超时** | VTIME | axtask::future::timeout（Q9） |
+| **ldisc 优化** | BUF_SIZE 256 + &self | UnsafeCell 包装 + push_slice（Q10） |
+| **NAPI** | 中断合并 + 退出修复 | ≥16 次切换轮询，零字节退出（Q8） |
+| **IER** | 缓存 + uart_16550 API | AtomicU8 缓存，通过 set_ier() 写入（Q8） |
+| **唤醒统一** | PollSet→AtomicWaker | pipe/signalfd/pidfd/event 共 8 处（Q8） |
 
 ## 5. 清理的内容
 
 | 类别 | 内容 | 替代方案 |
 |------|------|----------|
-| **Console 组件** | `ntty.rs` (Console struct) | `ntty_async.rs` (AsyncTty) |
-| **Console Writer** | `ConsoleWriter` | `AsyncUartWriter` |
-| **Console Driver** | `console_driver.rs` | `async_driver.rs` |
-| **axplat UART init** | 外部 crate 初始化 | 本地 `uart_init.rs` |
-| **register_irq_waker** | BTreeMap 多 waker 分发 | 3 × AtomicWaker 精确唤醒 |
-| **Manual ProcessMode** | `wake_by_ref()` 自旋 | External + PollSet 注册 |
-| **tcdrain 自旋** | wake_by_ref 协作自旋 | PollSet + DRAIN_WAKER |
-| **独立设备节点** | `/dev/async_uart` | 直接替换 `/dev/console` |
-
----
+| Console 组件 | ntty.rs / ConsoleWriter | AsyncTty |
+| Manual ProcessMode | wake_by_ref() 自旋 | External + PollSet/AtomicWaker |
+| PollSet (spinlock) | 8 处 PollSet | AtomicWaker (lock-free, Q8) |
+| 裸 write_volatile | IER 直写 | uart_16550 set_ier() API (Q8) |
+| ISR SpinNoIrq | 锁保护 ISR 读取 | read_isr_unlocked() (Q8) |
+| todo!() | VTIME>0 panic | axtask::future::timeout (Q9) |
+| vec![] heap alloc | sendfile 4KB 堆分配 | 栈数组 (Q11) |
+| .unwrap() | tty 3 处 panic 点 | AxError 传播 (Q11) |
 
 ## 6. 关键设计决策
 
-### 6.1 External ProcessMode（O42）
+### 6.1 AtomicWaker 迁移（Q8 / O46）
 
-**问题**：Manual 模式的 `register_rx_waker` 调用 `waker.wake_by_ref()`，每次注册立即唤醒调用者，无数据时产生高频 yield-re-schedule 循环（yield storm）。
+**问题**：pipe/signalfd/pidfd/event 使用 PollSet（spinlock + 64 槽），唤醒延迟 ~200ns。
 
-**决策**：切换到 External 模式。ldisc 自动创建 tty-reader 协程，通过 ring buffer 的 PollSet 注册 waker。只在 RX copier 实际产生数据时才唤醒。
+**决策**：全部替换为 embassy_sync::AtomicWaker（lock-free，单槽）。async 模型下始终单 waiter，单槽足够。
 
-**代价**：多一个内核协程（与旧 Console 的 tty-reader 成本相同）。
+**效果**：唤醒延迟 ~200ns → ~50ns（8 个唤醒点）。pidfd 需 UnsafeCell 重构 task 结构体。
 
-### 6.2 DRAIN_WAKER（O45）
+### 6.2 ISR 无锁化（Q8）
 
-**问题**：tcdrain（TCSBRK）需要等待 ring buffer 清空 + UART FIFO 排空。原实现用 `wake_by_ref()` 协作自旋，每次 poll 失败立即重调度，产生不必要的任务切换。
+**问题**：ISR 获取 SpinNoIrq 锁调用 uart.isr()，违反 ISR 极简原则。
 
-**决策**：分两阶段等待：
-1. Ring buffer 有数据 → 注册 `tx.poll`，copier pop 时唤醒
-2. Ring buffer 空但 UART 未排空 → 注册 `DRAIN_WAKER`，TX ISR 唤醒
-3. 双检查模式：check → register → double-check → park（防 ISR 竞争）
+**决策**：实现 `read_isr_unlocked()` 直接 MMIO 读取 ISR 寄存器。单 ISR 上下文安全。
 
-**效果**：64 字节路径任务切换从 9 次降至 ~6 次。
+### 6.3 VTIME 超时（Q9）
 
-### 6.3 FIONBIO 三入口传播（O43）
+**发现**：axtask 已有完整 timeout 基础设施（timeout() + select_biased! + BTreeMap 计时器轮），无需 embassy-time。
 
-**问题**：最初只在 `sys_ioctl(FIONBIO)` 转发到 Tty，但 `open(O_NONBLOCK)` 和 `fcntl(F_SETFL, O_NONBLOCK)` 只在 File 层设 flag，未传播到 Tty/ldisc。
-
-**决策**：三个入口都加 `f.ioctl(FIONBIO, nb)` 转发。Tty struct 添加 `nonblocking: AtomicBool`，传播到 `read_at()` → `ldisc.read()`。
-
-### 6.4 stride=1（Q0）
-
-NS16550 仅 8 字节寄存器，RISC-V MMIO 标准 stride=4 会导致 LoadFault。强制 stride=1。
+**决策**：直接复用 axtask::future::timeout()，替换 `todo!()`。
 
 ---
 
@@ -248,30 +249,34 @@ NS16550 仅 8 字节寄存器，RISC-V MMIO 标准 stride=4 会导致 LoadFault�
 
 | 阶段 | 内容 | 关键产出 |
 |------|------|---------|
-| **Q0** | Spike | stride=1 · 寄存器读写 · ISR 执正 |
-| **Q1** | 驱动骨架 | ring buffer + copier + AtomicWaker |
-| **Q2** | VFS 集成 | DeviceOps + /dev/console |
-| **Q3** | RX 接管 | Tty<AsyncUartReader, ConsoleWriter> → Shell stdin |
-| **Q4** | TX 接管 | 全异步 RX+TX，Shell 双向异步 |
-| **Q5** | 性能优化 | IER 缓存 · ISR 合并 · 批量 I/O · rx/tx 独立锁 |
-| **Q5.1** | 优化续 | NAPI · 批量 API · TX interleave 修复 |
-| **Q7** | 用户态修复 | O42（yield storm）· O43（FIONBIO）· O44（TCSBRK）· O45（DRAIN_WAKER） |
-| **Q6** | 真板验证 | VisionFive2（等待硬件） |
-
----
+| Q0~Q4 | 驱动骨架 + 全异步 | stride=1 · ISR · copier · VFS |
+| Q5 | 性能优化 | IER 缓存 · ISR 合并 · NAPI |
+| Q7 | 用户态修复 | yield storm · FIONBIO · tcdrain |
+| **Q8** | 驱动引擎打磨 | NAPI 退出 · ISR 无锁 · IER 规范化 · O46 AtomicWaker (8处) |
+| **Q9** | 超时机制 | VTIME 读超时（axtask::future::timeout） |
+| **Q10** | 数据路径优化 | BUF_SIZE 256 · push_slice · read(&self) |
+| **Q11** | 内核通用优化 | tty unwrap · mm/access · sendfile · close_range · ws_col |
+| Q6 | 真板验证 | VisionFive2（等待硬件） |
 
 ## 8. 文件索引
 
-| 文件 | 行数 | 功能 |
-|------|------|------|
-| `kernel/src/drivers/uart_init.rs` | 164 | UART 初始化 + IER 缓存 + NAPI 配置 |
-| `kernel/src/drivers/async_driver.rs` | 90 | RX/TX copier 协程 |
-| `kernel/src/drivers/ring_buffer.rs` | 58 | 128 KB 环形缓冲区 + PollSet |
-| `kernel/src/drivers/ntty_async.rs` | 31 | AsyncTty 装配 (External ProcessMode) |
-| `kernel/src/drivers/device_ops.rs` | 25 | TtyRead/TtyWrite trait 实现 |
-| `kernel/src/drivers/isr.rs` | 24 | ISR + 3×AtomicWaker |
-| `kernel/src/drivers/mod.rs` | 20 | 模块声明 |
-| `kernel/src/syscall/fs/ctl.rs` | +25 | TCSBRK (tcdrain) + FIONBIO 转发 |
-| `kernel/src/syscall/fs/fd_ops.rs` | +6 | O_NONBLOCK open/fcntl 传播 |
-| `kernel/src/pseudofs/dev/tty/mod.rs` | +8 | Tty.nonblocking + read_at 感知 |
-| `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs` | +1 | read() 接受 nonblocking 参数 |
+| 文件 | 功能 | Q8~Q11 变更 |
+|------|------|------------|
+| `kernel/src/drivers/uart_init.rs` | UART 初始化 + IER | ✅ read_isr_unlocked + set_ier() |
+| `kernel/src/drivers/async_driver.rs` | RX/TX copier | ✅ NAPI 退出 + waker 去重 |
+| `kernel/src/drivers/ring_buffer.rs` | 128 KB 环形缓冲区 | ✅ PollSet→AtomicWaker |
+| `kernel/src/drivers/isr.rs` | ISR + 3×AtomicWaker | ✅ 无锁化 + TCDRAIN_ACTIVE |
+| `kernel/src/drivers/ntty_async.rs` | AsyncTty 装配 | — |
+| `kernel/src/drivers/device_ops.rs` | TtyRead/TtyWrite | — |
+| `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs` | ldisc 层 | ✅ BUF_SIZE 256, read(&self), VTIME |
+| `kernel/src/pseudofs/dev/tty/mod.rs` | Tty struct | ✅ unwrap→AxError |
+| `kernel/src/file/pipe.rs` | Pipe | ✅ PollSet→AtomicWaker |
+| `kernel/src/file/signalfd.rs` | Signalfd | ✅ PollSet→AtomicWaker |
+| `kernel/src/file/pidfd.rs` | PidFd | ✅ Arc\<PollSet\>→Arc\<AtomicWaker\> |
+| `kernel/src/file/event.rs` | EventFd | ✅ PollSet→AtomicWaker |
+| `kernel/src/task/mod.rs` | Task 结构体 | ✅ exit_event 类型变更 |
+| `kernel/src/syscall/fs/ctl.rs` | tcdrain + FIONBIO | ✅ TCDRAIN_ACTIVE |
+| `kernel/src/mm/access.rs` | 用户内存检查 | ✅ 批量页验证 |
+| `kernel/src/syscall/fs/io.rs` | sendfile | ✅ 栈数组 |
+| `kernel/src/syscall/fs/fd_ops.rs` | close_range | ✅ UNSHARE 优化 |
+| `uart_16550/src/lib.rs` | 16550 驱动 | ✅ set_ier() |
