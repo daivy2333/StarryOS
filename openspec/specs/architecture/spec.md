@@ -235,6 +235,7 @@ NS16550 寄存器空间仅 8 字节，`UART_STRIDE` MUST 配置为 1。任何 st
   5. Console 共存：earlycon polling TX 用于内核日志，AsyncUart 用于用户态 Shell
 - **不再需要**：修改 axplat、页表权限修复、方案 A/B/C 三选一
 - **Milestone**：Q0（Spike）→ Q1（driver 架构）→ Q2（VFS 集成）→ Q3（Console 共存/替换）→ Q4（性能优化）→ Q5（真板验证）
+- **2026-06-11 Q8 更新**：ISR 已无锁化（`read_isr_unlocked()` 替代 SpinNoIrq），copier 改用 `AtomicWaker` 替代 `register_irq_waker`。详见 ADR-025/027 原始决策上下文。
 
 #### Scenario: 添加新的异步串口功能
 

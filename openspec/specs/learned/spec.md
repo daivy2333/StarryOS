@@ -429,11 +429,11 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 
 **技巧 1：IER 缓存**（O27 / L125）
 
-- 用 `AtomicU8` 缓存 IER 值，enable/disable 只需一次 `write_volatile`（消除 RMW 的 `read_volatile`）
+- 用 `AtomicU8` 缓存 IER 值，enable/disable 通过 `uart_16550` 的 `set_ier()` API 写入（Q8 规范化，消除裸 `write_volatile`）
 
 **技巧 2：ISR 合并**（O28）
 
-- 在同一个 `SpinNoIrq` 临界区内完成 ISR 读 + IER 写，消除 drop+重锁
+- ISR 通过 `read_isr_unlocked()` 无锁读取 ISR 寄存器，配合 `disable_rx_intr()`/`disable_tx_intr()` 禁用中断（Q8 无锁化，消除 SpinNoIrq）
 
 **技巧 3：批量 I/O**（O25-O26）
 

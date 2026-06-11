@@ -190,7 +190,12 @@ block_on(poll_fn(|cx| {
 
 **优先级**：🟡 中，量化收益明确（~150ns × 6 唤醒点 + 一致性提升），但需逐文件验证
 
-**O47 — embassy-time 超时机制 详细方案**：
+**O47 — 超时机制 详细方案**：
+
+> ⚠️ **2026-06-11 更新**：以下方案描述的是最初计划的 embassy-time 路径，但 Q9 实际采用了更简单的方案——复用 `axtask::future::timeout()`（无需新依赖）。以下原方案归档保留供参考。
+
+<details>
+<summary>原 embassy-time 方案（未实施）</summary>
 
 **现状问题**：
 
@@ -246,6 +251,8 @@ block_on(async {
 - axhal time driver 评估
 
 **优先级**：🟡 中，Q6 触发条件性实现
+
+</details>
 
 #### Scenario: 评估远期优化 ROI
 

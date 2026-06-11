@@ -76,10 +76,10 @@
 | **AtomicWaker 直接唤醒** | ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） |
 | **Console 组件清理** | 删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 |
 | **性能测试框架** | 内核态统计 + 用户态 benchmark.c + 自动化脚本 |
-| **三重 yield storm** | 用户态 async read 路径有 3 层嵌套 block_on/poll_io，Manual 模式 waker.wake_by_ref() 导致无数据时高频 yield-re-schedule |
-| **Manual 模式缺陷** | ProcessMode::Manual 的 register_rx_waker 立即唤醒调用者，产生 yield storm；应改为 External 模式消除 |
-| **Benchmark 不测 UART** | TX 吞吐量写 /dev/null（绕过 UART），未测量真实串口吞吐量 |
-| **FIONBIO 不生效** | nonblocking 标志在 File 层存储，但 Tty::read_at 和 ldisc::read 硬编码 false，不传播到内层 |
+| **三重 yield storm** | ✅ Q7 O42 修复：Manual→External ProcessMode |
+| **Manual 模式缺陷** | ✅ Q7 O42 修复：External + PollSet 注册替代 wake_by_ref |
+| **Benchmark 不测 UART** | ✅ Q7 O44 修正：/dev/console + tcdrain() |
+| **FIONBIO 不生效** | ✅ Q7 O43 修复：三入口（open/fcntl/ioctl）全传播 |
 | **Async VS 阻塞上限** | 115200 bps = 11.52 KB/s 硬件上限，async 在吞吐量上不可能超越阻塞 Console |
 | **QEMU 时序限制** | QEMU 16550 不仿真串口线延迟，吞吐量数据偏高；真板才反映真实 ~11.5 KB/s |
 | **TCSBRK 实现** | tcdrain 通过 poll 循环检查 ring buffer + LSR.TRANSMITTER_EMPTY（bit 6, TEMT） |
@@ -89,8 +89,8 @@
 | **tcdrain 性能** | QEMU 上 64B 从 9 次切换降到 6 次，延迟 ~300→~200 µs（真板上可忽略） |
 | **e2e 吞吐量** | 4096B 真板预测效率 97.7% 线速（软件开销 < 2.3%） |
 | **e2e 延迟** | 单字节 139.5 µs avg（硬件理论 86.8 µs，软件开销 52.7 µs） |
-| **O46 机会** | pipe/signalfd/pidfd 当前用 PollSet 通用 API（~200ns 唤醒），可统一为 AtomicWaker 静态分发（~50ns） |
-| **O47 机会** | `block_on(poll_io(...))` 永久阻塞，Q6 DMA 失败路径可能需要 embassy-time 超时（前置 Q6） |
+| **O46 完成** | ✅ Q8 完成：pipe/signalfd/pidfd/event 共 8 处 PollSet→AtomicWaker（~200ns→~50ns） |
+| **O47 完成** | ✅ Q9 完成：VTIME 读超时，复用 axtask::future::timeout()（无需 embassy-time） |
 | **Embassy 选型边界** | 项目仅用 `embassy_sync::AtomicWaker`，禁用 executor/time/futures 其它子集（L81~L84 教训） |
 | **OE1~OE5 反优化** | Channel/Mutex/Watch/Semaphore/select! 替换项目原语全部为反优化，记录在 optimization 已排除区 |
 

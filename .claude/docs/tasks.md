@@ -245,10 +245,12 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 
 IRQ 风暴 + TX busy-loop — Console + AsyncUart 共享 UART 时的 IER 冲突和 stride=4 错误
 
-### 新发现的架构问题（2026-06-01 性能分析）
+### 新发现的架构问题（2026-06-01 性能分析）— 全部已解决
 
-1. **用户态性能上限是波特率**：115200 bps = 11.52 KB/s，异步在吞吐量上不可能超越阻塞 Console
-2. **Async RX 多一次拷贝**：UART FIFO → ring buffer → ldisc buf → user buf（3 次 vs Console 的 2 次）
-3. **ProcessMode::Manual 在空闲时产生 yield storm**：waker.wake_by_ref() 导致 yield-re-schedule 循环
-4. **FIONBIO 对 TTY 不生效**：nonblocking 标志未传播到 Tty/ldisc 层
-5. **benchmark.c 不测真实 UART 吞吐量**：TX 测试写 /dev/null，不经过 UART
+> 💡 以下问题已于 Q7~Q11 全部修复，保留为历史参考。
+
+1. **用户态性能上限是波特率**：115200 bps = 11.52 KB/s（硬件约束，非软件问题）
+2. ~~**Async RX 多一次拷贝**~~ → Q10 合并 C3/C4 拷贝
+3. ~~**ProcessMode::Manual yield storm**~~ → Q7 O42 External 模式修复
+4. ~~**FIONBIO 对 TTY 不生效**~~ → Q7 O43 三入口传播
+5. ~~**benchmark.c 不测真实 UART 吞吐量**~~ → Q7 O44 修正
