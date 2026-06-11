@@ -1,33 +1,20 @@
 schema: spec-driven
 
-context: |
-  Tech stack: Rust (nightly-2026-02-25), RISC-V 64-bit, ArceOS unikernel
-  异步框架: axtask::future + embassy-sync::AtomicWaker
-  构建: Make + Cargo
-  测试: QEMU 运行验证
-  格式化: rustfmt
-  静态分析: clippy
-  所有产出物必须用简体中文撰写。
-  技术术语如 UART、MMIO、VFS 保持英文原样。
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
 
-  项目目标: 为 StarryOS 实现高性能异步串口通信
-  底层驱动: uart_16550 (v0.6.0)
-  核心阻塞: MMIO 权限问题 — axplat 限制 UART MMIO 权限
-
-rules:
-  proposal:
-    - 包含回滚方案
-    - 说明为什么做、做什么、不做什么
-    - 标注影响范围
-  specs:
-    - 使用 Given/When/Then 格式描述行为
-    - 每个 spec.md 包含版本号和最后更新日期
-    - 变更时使用 Delta Specs（ADDED/MODIFIED/REMOVED）
-  design:
-    - 复杂流程需包含序列图
-    - 标注关键依赖关系
-    - 包含备选方案对比
-  tasks:
-    - 每个任务可独立验证
-    - 标注依赖关系
-    - 包含验收标准
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

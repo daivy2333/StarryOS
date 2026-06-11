@@ -7,7 +7,6 @@ use axtask::{future::block_on, spawn_with_name};
 use axsync::Mutex;
 use lazy_static::lazy_static;
 
-use crate::drivers::benchmark;
 use crate::drivers::isr::{RX_WAKER, TX_WAKER};
 use crate::drivers::ring_buffer::{RingBufRx, RingBufTx};
 use crate::drivers::uart_init::{uart_instance, enable_rx_intr, enable_tx_intr, NAPI_THRESHOLD, NAPI_BATCH_SIZE};
@@ -48,14 +47,21 @@ impl AsyncUartDriver {
                 let batch = if consecutive >= NAPI_THRESHOLD { NAPI_BATCH_SIZE } else { COPIER_BUF_SIZE };
                 let total = uart.receive_bytes(&mut read_buf[..batch]);
                 drop(uart);
-                if total > 0 {
-                    self.rx.lock().push(&read_buf[..total]);
-                    benchmark::record_rx(total as u64);
+                if total > 0 { self.rx.lock().push(&read_buf[..total]); }
+                if consecutive >= NAPI_THRESHOLD {
+                    if total > 0 {
+                        consecutive += 1;
+                    } else {
+                        consecutive = 0;
+                        enable_rx_intr();
+                    }
+                } else {
+                    consecutive = if total > 0 { consecutive + 1 } else { 0 };
                 }
-                if consecutive >= NAPI_THRESHOLD { consecutive += 1; } else { consecutive = if total > 0 { consecutive + 1 } else { 0 }; }
                 if consecutive < NAPI_THRESHOLD { enable_rx_intr(); }
                 let w = cx.waker().clone();
-                if last_waker.replace(Some(w.clone())).as_ref().map_or(true, |old| !old.will_wake(&w)) {
+                let old = last_waker.replace(Some(w.clone()));
+                if old.as_ref().map_or(true, |old_w| !old_w.will_wake(&w)) {
                     RX_WAKER.register(cx.waker());
                 }
                 if total > 0 { Poll::Ready(total) } else { Poll::Pending }
@@ -80,14 +86,12 @@ impl AsyncUartDriver {
                 let sent = uart.send_bytes(&write_buf[cursor..pending]);
                 drop(uart);
                 cursor += sent;
-                if sent > 0 {
-                    benchmark::record_tx(sent as u64);
-                }
                 if cursor < pending {
                     enable_tx_intr();
                 }
                 let w = cx.waker().clone();
-                if last_waker.replace(Some(w.clone())).as_ref().map_or(true, |old| !old.will_wake(&w)) {
+                let old = last_waker.replace(Some(w.clone()));
+                if old.as_ref().map_or(true, |old_w| !old_w.will_wake(&w)) {
                     TX_WAKER.register(cx.waker());
                 }
                 Poll::Ready(())

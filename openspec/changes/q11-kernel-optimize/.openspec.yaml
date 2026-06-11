@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-06-11
+status: completed
+note: 4 parallel tasks — tty unwrap, mm/access batch page check, sendfile buffer, close_range UNSHARE optimize. Plus terminal ws_col fix.

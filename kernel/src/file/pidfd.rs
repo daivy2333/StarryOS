@@ -8,7 +8,8 @@ use core::{
 };
 
 use axerrno::{AxError, AxResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::{
     file::FileLike,
@@ -17,7 +18,7 @@ use crate::{
 
 pub struct PidFd {
     proc_data: Weak<ProcessData>,
-    exit_event: Arc<PollSet>,
+    exit_event: Arc<AtomicWaker>,
     thread_exit: Option<Arc<AtomicBool>>,
 
     non_blocking: AtomicBool,

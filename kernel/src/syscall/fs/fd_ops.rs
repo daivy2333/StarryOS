@@ -1,27 +1,25 @@
 use alloc::{format, string::ToString, sync::Arc};
-use core::{
-    ffi::{c_char, c_int},
-    mem,
-    ops::{Deref, DerefMut},
-};
+use core::ffi::{c_char, c_int};
 
 use axerrno::{AxError, AxResult};
 use axfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Reference};
 use axtask::current;
 use bitflags::bitflags;
+use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::*;
 use linux_raw_sys::ioctl::FIONBIO;
+use spin::RwLock;
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, Pipe, add_file_like, close_file_like, get_file_like,
-        with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, Pipe, add_file_like, close_file_like,
+        get_file_like, with_fs,
     },
     mm::{UserPtr, vm_load_string},
     pseudofs::{Device, dev::tty},
     syscall::sys::{sys_getegid, sys_geteuid},
-    task::AsThread,
+    task::{AX_FILE_LIMIT, AsThread},
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -164,12 +162,38 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
-        // TODO: optimize
+        // UNSHARE: create a private FD table copy so subsequent modifications
+        // (close / CLOEXEC) don't affect processes sharing the same Arc.
         let curr = current();
         let mut scope = curr.as_thread().proc_data.scope.write();
-        let mut guard = FD_TABLE.scope_mut(&mut scope);
-        let old_files = mem::take(guard.deref_mut());
-        old_files.write().clone_from(old_files.read().deref());
+        // Only copy when the table is actually shared between processes
+        if Arc::strong_count(&*FD_TABLE.scope(&*scope)) > 1 {
+            let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
+            let mut new_table =
+                FlattenObjects::<FileDescriptor, AX_FILE_LIMIT>::new();
+            {
+                let fd_item = FD_TABLE.scope(&*scope);
+                let table = fd_item.read();
+                for id in table.ids() {
+                    let fd = id as i32;
+                    if fd < first || fd > last {
+                        // Outside close range: copy unchanged
+                        if let Some(entry) = table.get(id) {
+                            new_table.add_at(id, entry.clone()).ok();
+                        }
+                    } else if cloexec {
+                        // In range with CLOEXEC: copy with flag set
+                        if let Some(entry) = table.get(id) {
+                            let mut e = entry.clone();
+                            e.cloexec = true;
+                            new_table.add_at(id, e).ok();
+                        }
+                    }
+                    // In range without CLOEXEC: skip (will be removed below)
+                }
+            }
+            *FD_TABLE.scope_mut(&mut *scope) = Arc::new(RwLock::new(new_table));
+        }
     }
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);

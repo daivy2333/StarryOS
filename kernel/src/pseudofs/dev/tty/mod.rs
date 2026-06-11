@@ -75,7 +75,7 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
             self.clone()
         }));
 
-        self.terminal.job_control.set_foreground(&pg).unwrap();
+        self.terminal.job_control.set_foreground(&pg)?;
         Ok(())
     }
 
@@ -157,7 +157,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             TIOCSCTTY => {
                 self.this
                     .upgrade()
-                    .unwrap()
+                    .ok_or(AxError::NotFound)?
                     .bind_to(&current().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
@@ -167,7 +167,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .proc
                     .group()
                     .session()
-                    .unset_terminal(&(self.this.upgrade().unwrap() as _))
+                    .unset_terminal(&(self.this.upgrade().ok_or(AxError::NotFound)? as _))
                 {
                 } else {
                     warn!("Failed to unset terminal");

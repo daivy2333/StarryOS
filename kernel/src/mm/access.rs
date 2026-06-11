@@ -22,6 +22,7 @@ use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_wr
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
+    mm::AddrSpace,
     task::AsThread,
 };
 
@@ -59,6 +60,46 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     Ok(())
 }
 
+/// Find the maximum contiguous valid size (bytes, 4K-aligned) from `start`
+/// that satisfies `access_flags` in the given address space.
+///
+/// Uses binary search over `can_access_range`, which walks memory areas
+/// (O(areas)) rather than individual pages (O(pages)), making boundary
+/// discovery logarithmic in the address range.
+///
+/// Returns 0 if even the first page is not accessible with the requested flags.
+fn max_contiguous_valid(
+    aspace: &AddrSpace,
+    start: VirtAddr,
+    max_size: usize,
+    access_flags: MappingFlags,
+) -> usize {
+    if max_size == 0 {
+        return 0;
+    }
+    // Fast path: the entire remaining range is valid.
+    if aspace.can_access_range(start, max_size, access_flags) {
+        return max_size;
+    }
+    // At minimum the first page must be accessible.
+    let min_check = PAGE_SIZE_4K.min(max_size);
+    if !aspace.can_access_range(start, min_check, access_flags) {
+        return 0;
+    }
+    // Binary search for the maximum valid contiguous size.
+    let mut lo = min_check;
+    let mut hi = max_size;
+    while lo + PAGE_SIZE_4K <= hi {
+        let mid = ((lo + hi) / 2).align_down_4k();
+        if mid >= min_check && aspace.can_access_range(start, mid, access_flags) {
+            lo = mid;
+        } else {
+            hi = mid.saturating_sub(PAGE_SIZE_4K);
+        }
+    }
+    lo
+}
+
 fn check_null_terminated<T: PartialEq + Default>(
     start: VirtAddr,
     access_flags: MappingFlags,
@@ -69,36 +110,47 @@ fn check_null_terminated<T: PartialEq + Default>(
     }
 
     let zero = T::default();
-
-    let mut page = start.align_down_4k();
-
-    let start = start.as_ptr_of::<T>();
+    let start_ptr = start.as_ptr_of::<T>();
     let mut len = 0;
+    // The highest page-aligned address we have validated up to (exclusive).
+    // We batch-validate as many contiguous pages as possible in one lock
+    // acquisition, avoiding the per-4KB lock cycling of the original approach.
+    let mut validated_boundary = start.align_down_4k();
 
     access_user_memory(|| {
         loop {
-            // SAFETY: This won't overflow the address space since we'll check
-            // it below.
-            let ptr = unsafe { start.add(len) };
-            while ptr as usize >= page.as_ptr() as usize {
-                // We cannot prepare `aspace` outside of the loop, since holding
-                // aspace requires a mutex which would be required on page
-                // fault, and page faults can trigger inside the loop.
+            // SAFETY: This won't overflow the address space — we validate page
+            // boundaries below before crossing them.
+            let ptr = unsafe { start_ptr.add(len) };
 
-                // TODO: this is inefficient, but we have to do this instead of
-                // querying the page table since the page might has not been
-                // allocated yet.
+            // We cannot hold the aspace lock across page faults (the fault
+            // handler needs the same lock), so we pre-validate a batch of
+            // contiguous pages, release the lock, then rely on the page fault
+            // handler for any unpopulated pages within the validated range.
+            while (ptr as usize) >= validated_boundary.as_usize() {
                 let curr = current();
                 let aspace = curr.as_thread().proc_data.aspace.lock();
-                if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
+                let max_remaining = aspace
+                    .end()
+                    .as_usize()
+                    .saturating_sub(validated_boundary.as_usize());
+
+                let valid_size = max_contiguous_valid(
+                    &aspace,
+                    validated_boundary,
+                    max_remaining,
+                    access_flags,
+                );
+                if valid_size == 0 {
                     return Err(AxError::BadAddress);
                 }
-
-                page += PAGE_SIZE_4K;
+                validated_boundary += valid_size;
             }
 
-            // This might trigger a page fault
-            // SAFETY: The pointer is valid and points to a valid memory region.
+            // This might trigger a page fault (unpopulated pages within a
+            // valid mapping). The page fault handler populates the page and
+            // returns so we can safely retry the read.
+            // SAFETY: The pointer lies within memory areas validated above.
             if unsafe { ptr.read_volatile() } == zero {
                 break;
             }

@@ -1,9 +1,97 @@
 # archive.md — 文档归档（汇总）
 
-> 自动归档记录，由 project-archivist 维护。
+> 自动归档记录，由 assistant 维护。
 > 按源文档分节，每条含日期、编号、置信度、理由、恢复条件。
 > 恢复方式: 用户说"恢复 §{文档名} #{编号}"。
 > 搜索方式: grep "关键词" archive.md 或 grep "编号" archive.md
+
+---
+
+## 文档体系迁移归档
+
+<!-- archive: docs-to-openspec-2026-06-03 -->
+**日期**: 2026-06-03
+**事件**: 文档体系从 `.claude/docs/{5 个文件}` 迁移到 `openspec/specs/`
+**触发**: `openspec-init` skill 执行（commit `922e8fd` + `b65021f`）
+**置信度**: HIGH
+**理由**: 5 个传统 .claude/docs 文档（70 KB）已重新组织为 OpenSpec spec-driven 格式（84 KB，新增规范字段 + 验证器合规），`openspec validate --specs` 5/5 通过
+**迁移映射**:
+
+| 原文件 | 新位置 | 关键变化 |
+|--------|--------|----------|
+| `.claude/docs/rules.md` | `openspec/specs/rules/spec.md` | 17 个 Requirement（Karpathy + 务实编码 + Workflow Designer + 项目特定） |
+| `.claude/docs/architecture.md` | `openspec/specs/architecture/spec.md` | 13 个 Requirement（按主题分组 ADR-001~031，tombstone 仅在 .bak 保留） |
+| `.claude/docs/learned.md` | `openspec/specs/learned/spec.md` | 10 个 Requirement（API/文件/踩坑/技巧/性能/测试） |
+| `.claude/docs/references.md` | `openspec/specs/references/spec.md` | 8 个 Requirement（依赖/子项目/规范/Embassy/Linux/分析） |
+| `.claude/docs/optimization.md` | `openspec/specs/optimization/spec.md` | 6 个 Requirement（Q5/Q7 + Q6/远期/排除 + 性能基线） |
+| `CLAUDE.md` | `CLAUDE.md` | 重写为 OpenSpec + .claude/docs/ 双索引（5.7 KB，规则全文只在 spec） |
+
+**保留不迁移**:
+
+- `SNAPSHOT.md` — 状态快照（OpenSpec 不替代）
+- `tasks.md` — 任务追踪（OpenSpec 不替代，但已加入 P0 milestone）
+- `archive.md` — 本文件
+
+**新增加**：
+
+- `openspec/project.md` — 项目上下文
+- `openspec/config.yaml` — schema: spec-driven
+- `openspec/changes/` — 变更提案目录
+- `.claude/commands/opsx/` — 5 个 slash commands
+- `.claude/skills/openspec-*` — 5 个 skills
+
+**备份保留**：
+
+- `.claude/docs/*.md.bak` (×5) — 5 个迁移源文件完整备份
+- `CLAUDE.md.bak` — 迁移前 CLAUDE.md 备份
+
+**恢复条件**:
+
+- 如需查看原始 .md 风格（非 OpenSpec 格式），查阅对应 `*.md.bak` 文件
+- 如需 git 历史回滚，运行 `git revert 922e8fd b65021f`
+
+**更正参考**: `openspec/project.md`、`CLAUDE.md`（新版）
+
+---
+
+## rules domain 二次迁移（2026-06-03）
+
+<!-- archive: rules-domain-to-claude-md-2026-06-03 -->
+**日期**: 2026-06-03
+**事件**: `openspec/specs/rules/spec.md` 整体归档至 `openspec/changes/archive/rules-domain-2026-06-03/`，规则全文整合到 `StarryOS/CLAUDE.md` 下方"规则"章节
+**触发**: openspec-init skill 最新模板要求"rules 已整合到 CLAUDE.md"，不再单独维护 `openspec/specs/rules/` 目录
+**置信度**: HIGH
+**理由**:
+
+- 旧 rules 域从未作为变更提案参与 `/opsx:propose` 流程（始终由 openspec-init 直接生成）
+- 规则在 CLAUDE.md 中**只读一次**（启动时全量加载），无额外 IO 开销
+- 与 openspec-init skill 最新模板对齐，跨项目统一
+- 规则更新更便捷（不需要走 OpenSpec 流程）
+
+**迁移映射**:
+
+| 原位置 | 新位置 | 关键变化 |
+|--------|--------|----------|
+| `openspec/specs/rules/spec.md` (17 Reqs) | `openspec/changes/archive/rules-domain-2026-06-03/spec.md` | 文件本身完整保留作墓碑 |
+| （无） | `StarryOS/CLAUDE.md` "规则"章节 | 新增 7 大节（Karpathy / 务实编码 / Workflow Designer / 核心约束 / 技能执行 / 项目特定 / 检查清单 + Red Flags）|
+| `StarryOS/CLAUDE.md` "完整规范见 rules/spec.md" 引用 | 删除 | 改为"完整规范见本文件下方'规则'章节" |
+| `StarryOS/CLAUDE.md` 索引表中 rules 行 | 删除 | 改为"规则（本文档）" |
+| `StarryOS/CLAUDE.md` 读取顺序表 rules 引用 | 删除 | 改为"**规则**"指向本文档 |
+| `StarryOS/SNAPSHOT.md` "5 spec 域" | "4 spec 域" | 计数更新 |
+| `../CLAUDE.md` StarryOS 区 rules 引用 | 删除行 | 与子项目同步 |
+
+**当前 OpenSpec 体系**（2026-06-03 修正）:
+
+| 域 | 文件 | Requirements | 状态 |
+|----|------|--------------|------|
+| architecture | `openspec/specs/architecture/spec.md` | 13 | ✅ 活跃 |
+| learned | `openspec/specs/learned/spec.md` | 10 | ✅ 活跃 |
+| references | `openspec/specs/references/spec.md` | 8 | ✅ 活跃 |
+| optimization | `openspec/specs/optimization/spec.md` | 6 | ✅ 活跃 |
+| ~~rules~~ | `openspec/changes/archive/rules-domain-2026-06-03/spec.md` | 17 | 🪦 归档（墓碑）|
+
+**恢复条件**: 如需回滚到 spec 化规则格式，按 `openspec/changes/archive/rules-domain-2026-06-03/README.md` 的"恢复条件"段操作
+**更正参考**: `StarryOS/CLAUDE.md`（新版含规则章节）
 
 ---
 
@@ -219,3 +307,48 @@
 
 已完成: O25 batch RX, O26 batch TX, O27 IER cache, O28 ISR merge,
 O29 buf 1024, O30 TX single lock, O31 waker skip, O33 split rx/tx locks
+
+---
+
+## CodeGraph 索引补建（2026-06-03 补救）
+
+<!-- archive: codegraph-init-2026-06-03 -->
+**日期**: 2026-06-03
+**事件**: StarryOS 首次建立 CodeGraph 索引（之前 Phase 0 检查被遗漏，用户反馈后补救）
+**触发**: 用户反馈"codegraph 呢，你怎么又忘了"——openspec-init skill Phase 0 Step 2 在源码项目 MUST 执行
+**置信度**: HIGH
+**理由**:
+
+- openspec-init skill Phase 0 Step 2 明确：源码项目 MUST 检查 `codegraph --version` 并 `codegraph init`
+- 初次执行时误判为"无 .codegraph 目录" = "不需要处理"（错误推断：CLI 已装应自动 init）
+- CodeGraph MCP 工具已连接（session-start 暴露 8 个工具）但本地索引缺失 = MCP 仍能跑但无项目数据
+
+**补救操作**：
+
+| 命令 | 结果 |
+|------|------|
+| `codegraph --version` | v0.9.9 @ `/home/daivy/.npm-global/bin/codegraph` |
+| `codegraph init .` | ✅ 119 文件 / 2,174 节点 / 5,781 边 / 870ms / 4.98 MB SQLite |
+| `codegraph status .` | ✅ healthy，backend=node:sqlite built-in (full WAL) |
+| `ls .codegraph/` | ✅ `codegraph.db` + `.gitignore` 已生成 |
+
+**索引内容**（按节点类型）：
+
+| 节点类型 | 数量 |
+|---------|------|
+| import | 707 |
+| method | 683 |
+| function | 315 |
+| variable | 133 |
+| struct | 122 |
+| file | 114 |
+| enum_member | 50 |
+| type_alias | 20 |
+| enum | 18 |
+| trait | 12 |
+
+**CLAUDE.md 同步**：新增"代码智能（CodeGraph，推荐）"章节，含工具表 + 不可用时处理流程
+**新规则**（已加入 `StarryOS/CLAUDE.md` 第 5.5 节）：CodeGraph 可用时**优先**用 `codegraph_explore` 替代 Read+Grep；不可用时**不降级**，先查 status → 重连 → init 重建
+**恢复条件**: 不适用（索引建立是前向操作）
+**预防**: openspec-init skill Phase 0 Step 2 须**显式**执行（`codegraph --version` + `codegraph init`），禁止推断"无目录 = 无需处理"
+**更正参考**: `StarryOS/CLAUDE.md` "代码智能（CodeGraph）"章节 + `openspec/specs/learned/`（未来可加"openspec-init Phase 0 完整清单" Requirement）
