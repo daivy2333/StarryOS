@@ -116,59 +116,27 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 
 ### Requirement: 项目内部分析与设计文档索引
 
-`docs/analysis/` 下的所有分析文档 MUST 在本规范登记；新增分析文档 MUST 同步注册索引条目。
+`.claude/analysis/` 下的所有分析文档 MUST 在本规范登记；新增分析文档 MUST 同步注册索引条目。
 
-**项目分析文档**（`docs/analysis/`）：
+> **2026-06-11 迁移**：原有 `docs/analysis/` 下 9 份文档已迁移至 `.claude/analysis/`，按内容相似度融合为 6 份文档（删除 1 份已覆盖的 `uart-16550-crate-reuse.md`）。
 
-| 文档 | 主题 |
-|------|------|
-| `project-overview.md` | 项目概览：仓库结构、构建系统、依赖图 |
-| `boot-init.md` | 启动流程：axruntime → mount → spawn init |
-| `device-registration.md` | 设备注册：DeviceOps trait、Device struct、devfs |
-| `tty-console-stack.md` | TTY/Console 栈：N_TTY、ldisc、termios |
-| `async-io-framework.md` | 异步 I/O 框架：poll_io、PollSet、Pollable、register_irq_waker |
-| `syscall-interface.md` | 系统调用接口：FileLike、FD_TABLE、poll/select/epoll |
-| `task-process-model.md` | 任务与进程模型：Thread、ProcessData、AsThread |
-| `async-uart-design-context.md` | 异步 UART 设计上下文：现有模式、目标架构、关键文件索引 |
-| `serial-interfaces-overview.md` | 串口相关接口概览：Console/PTY/vsock 三种串口接口分析 |
-| `serial-optimization-preview.md` | 串口优化预览：从同步阻塞到异步高性能的优化分析 |
-| `project-knowledge-map.md` | 项目知识地图：宏内核 OS 分层架构、ArceOS 组件架构、cargo 依赖图 |
-| `uart-16550-integration.md` | uart_16550 集成分析：crate API 体系、MmioBackend 适配、StarOS 内核六层封装、copier 架构、端到端数据流 | 2026-06-11 |
+**项目分析文档**（`.claude/analysis/`）：
 
-**UART 初始化与 IRQ 设计文档**：
+| 文档 | 主题 | 来源 |
+|------|------|------|
+| `architecture-overview.md` | 架构概览：仓库结构、构建系统、启动链、任务/进程模型、中断框架 | ← `project-overview` + `boot-init` + `task-process-model` + `interrupt-framework` |
+| `async-patterns-reference.md` | 异步模式参考：Pipe 环形缓冲+PollSet、EventFd 原子通知、通用 poll_fn 模式、关键接口 | ← `reference-implementations` |
+| `async-uart-history.md` | 异步 UART 实现历程：Direction A/B/C 策略演进、最终架构、经验教训 | ← `async-uart-implementation-history` |
+| `user-async-performance.md` | 用户态异步性能分析：瓶颈根因（5 层）、FIONBIO 非阻塞模式、Q7 修复方案、性能基线 | ← `user-async-perf-analysis` + `nonblocking-mode-analysis` |
+| `uart-16550-integration.md` | uart_16550 集成分析：crate API 体系、MmioBackend 适配、内核六层封装、copier 架构、端到端数据流 | 新增 (2026-06-11) |
+| `optimization-opportunity-audit.md` | 2026-06-11 优化机会全面审计：4 个并行 agent 深度扫描，6+ 项未记录优化（含 3 项正确性 bug），Q8~Q11 重规划 | 保留 |
 
-| 文档 | 主题 |
-|------|------|
-| `uart-init-design.md` | UART 硬件初始化替代方案设计：uart_16550 API 分析、UART 硬件配置设计 ✅ |
-| `earlycon-design.md` | earlycon 内核日志设计方案：polling TX 实现、UART 硬件独占机制、panic 安全机制 ✅ |
-| `async-uart-device-registration.md` | AsyncUart 设备注册设计方案：DeviceOps trait 分析、Pollable trait 实现 ✅ |
-| `irq-waker-mechanism-verification.md` | IRQ waker 机制验证方案：register_irq_waker 机制、ISR + AtomicWaker 分发设计 ✅ |
-
-**实施历程与可行性评估**：
-
-| 文档 | 主题 |
-|------|------|
-| `async-uart-implementation-history.md` | AsyncUart 异步串口实现历程：两分支探索历程、渐进式集成失败、完全剔除 Console 方案 ✅ |
-
-**性能与测试分析**：
-
-| 文档 | 主题 |
-|------|------|
-| `user-async-perf-analysis.md` | 用户态异步串口性能分析：三嵌套 block_on/poll_io、yield storm、Manual 模式问题、benchmark 缺陷、对比阻塞 Console |
-| `nonblocking-mode-analysis.md` | 非阻塞模式 FIONBIO 分析：当前实现、nonblocking 标志未传播到 TTY 层、实现方案、测试用例 |
-| `uart-benchmark-optimization.md` | 性能测试优化方案：CPU 占用测量、中断频率统计、测试方法改进 |
-| `benchmark-report-async.md` | Async 异步串口性能测试报告：内核态和用户态测试结果、与 Console 对比 |
-| `optimization-opportunity-audit.md` | 2026-06-11 优化机会全面审计：4 个并行 agent 深度扫描，发现 6+ 项未记录优化（含 3 项正确性 bug），重规划 Q8~Q11 阶段 |
-
-**Embargo**：
-
-| 文档 | 主题 |
-|------|------|
-| `embassy.md` | Embassy 可用组件分析 |
+**已删除**（内容已被覆盖）：
+- `uart-16550-crate-reuse.md` — 内容已由 `uart-16550-integration.md` 完全覆盖
 
 #### Scenario: 新生成 openspec-explorer 分析文档
 
-- **WHEN** `openspec-explorer` 生成新的项目分析文档
+- **WHEN** `openspec-explorer` 生成新的项目分析文档（写入 `.claude/analysis/`）
 - **THEN** MUST 在本规范中注册：主题 / 路径 / 内容概要
 
 ---
