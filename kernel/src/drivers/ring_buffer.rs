@@ -152,11 +152,16 @@ impl RingBufTx {
     /// Push data into the ring buffer (called by producers like TtyWrite).
     pub fn push(&self, data: &[u8]) -> usize {
         // SAFETY: SPSC — only one producer writes to the TX buffer.
-        unsafe { self.writer_ref() }.push(|buf| {
+        let n = unsafe { self.writer_ref() }.push(|buf| {
             let len = data.len().min(buf.len());
             buf[..len].copy_from_slice(&data[..len]);
             len
-        })
+        });
+        // Wake the TX copier if it's waiting in register_waker().
+        if n > 0 {
+            self.poll.wake();
+        }
+        n
     }
 
     /// Pop data from the ring buffer (called by TX copier).
