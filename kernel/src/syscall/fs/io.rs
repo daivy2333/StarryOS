@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, sync::Arc, vec};
+use alloc::{borrow::Cow, sync::Arc};
 use core::{
     ffi::{c_char, c_int},
     task::Context,
@@ -261,7 +261,7 @@ impl SendFile {
 }
 
 fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> {
-    let mut buf = vec![0; 0x1000];
+    let mut buf = [0u8; 0x1000];
     let mut total_written = 0;
     let mut remaining = len;
 
