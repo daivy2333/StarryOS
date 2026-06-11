@@ -32,6 +32,7 @@
 | **Q9** | 超时机制 | VTIME 读超时（复用 axtask::future::timeout，无需 embassy-time） | ✅ (2026-06-11) |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 优化 | ✅ (2026-06-11) |
 | **Q11** | 内核通用优化 | mm/access + close_range + sendfile + tty unwrap | ✅ (2026-06-11) |
+| **Q12** | Embassy 路径 A 优化 | atomic_ring_buffer + embedded_io_async + TC tcdrain | 📋 计划中 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -39,9 +40,9 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 📋 Q6 ⏳(硬件)
 
-> 2026-06-11 代码质量收尾：cargo 警告 21→0（自动修复 6 + 死方法移除 5 + allow 标注 11）、真死代码移除 8 方法（-76 行）、O48~O50 记录到 optimization/spec.md
+> 2026-06-11 embassy 调研：路径 A（atomic_ring_buffer + embedded_io_async + TC tcdrain）立即可实施
 ```
 
 **2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
@@ -105,6 +106,26 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
   - 64B tcdrain 从 9 次切换降至 ~6 次，延迟从 ~300 µs 降至 ~200 µs
   - Gate: benchmark 端到端数据正常，e2e 报告完成
 <!-- Q7.5 --> - [x] Gate Q7: 全部通过 ✅
+
+### Q12: Embassy 路径 A 优化 📋 计划中
+
+> 基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）三项优化。均不改 ISR 逻辑、不引入 embassy-executor，立即可实施。
+
+| 子任务 | 描述 | 关键文件 | 预期收益 |
+|--------|------|----------|----------|
+| **Q12.1** | O51 `atomic_ring_buffer` 替换 `HeapRb + Mutex` | `ring_buffer.rs` — `RingBufRx`/`RingBufTx` 改用 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC） | 消除 push/pop mutex 开销（~100ns/op） |
+| **Q12.2** | O52 `embedded_io_async` trait 实现 | `device_ops.rs` — `AsyncUartReader`/`AsyncUartWriter` 新增 `impl embedded_io_async::Read/Write/BufRead` | 标准化接口 |
+| **Q12.3** | O53 TC 硬件寄存器 tcdrain | `isr.rs` + `ctl.rs` — 用 `LSR::TRANSMITTER_EMPTY` + TX ISR 替代 `TCDRAIN_ACTIVE: AtomicBool` | 删除软件状态标志 |
+| **Q12.4** | 性能回归测试 | benchmark 对比 Q11 基线，验证 atomic_ring_buffer 无退化 | — |
+| **Q12.5** | Gate Q12 | cargo check + clippy + QEMU 启动 + benchmark PASS | — |
+
+**验收标准**：
+- [ ] `cargo check` 0 错误 / `cargo clippy` 0 新增 warning
+- [ ] QEMU `make run` 内核正常启动，Shell 交互正常
+- [ ] benchmark 性能不低于 Q11 基线（1B avg latency ≤ 118µs）
+- [ ] `atomic_ring_buffer` 有单元测试覆盖
+
+**实施顺序**：Q12.2（纯 trait impl，零风险）→ Q12.3（小改动）→ Q12.1（核心改动，需测试）→ Q12.4 → Q12.5
 
 ### Q6: 真板验证 ⏳ 等待硬件
 

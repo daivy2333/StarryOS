@@ -162,6 +162,37 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 - **WHEN** Q6 真板到位后需要内存调试工具
 - **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
 
+### Requirement: Q12 Embassy 调研驱动的近期优化 — 待实现（路径 A）
+
+基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）的三项优化 MUST 在 Q12 阶段完成，无需修改架构即可获得可量化收益。
+
+| 编号 | 内容 | 优先级 | 说明 | 预期收益 |
+|------|------|--------|------|------|
+| **O51** | `atomic_ring_buffer` 替换 `HeapRb + Mutex` | 🟡 中 | 引入 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC，~768 行纯 Rust），替换 `kernel/src/drivers/ring_buffer.rs` 的 `HeapRb<u8>` + `axsync::Mutex`。消除 ring buffer 操作中的 mutex 开销，为未来 ISR 直接搬运铺路。 | 消除每次 push/pop 的 mutex lock/unlock（~100ns/op） |
+| **O52** | `embedded_io_async` trait 实现 | 🟢 低 | 为 `AsyncUartReader`/`AsyncUartWriter` 实现 `embedded_io_async::Read`/`Write`/`BufRead` trait（社区标准）。不改动核心数据路径，仅新增 trait impl 层。 | 标准化接口，可与 Rust 嵌入式生态互通 |
+| **O53** | TC 硬件寄存器 tcdrain 优化 | 🟢 低 | 用 NS16550 `LSR::TRANSMITTER_EMPTY` (bit 6) + TX ISR 替代 `TCDRAIN_ACTIVE: AtomicBool` 软件标志。embassy 使用 `tcie`（TC interrupt enable）硬件寄存器做等价优化（[buffered.rs:102-115](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-stm32/src/usart/buffered.rs#L102-L115)）。 | 删除 `TCDRAIN_ACTIVE` 软件状态，减少 `load-acquire` 开销 |
+
+**实施约束**：
+- O51/O52/O53 均不修改 ISR 逻辑，不引入 `embassy-executor`
+- O52 为纯 trait impl，零改动核心路径
+- O51 需要完整单元测试覆盖（参考 embassy `atomic_ring_buffer` 的 [L527-768 测试](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L527-L768)）
+
+#### Scenario: 引入 atomic_ring_buffer 后性能退化
+
+- **WHEN** `RingBufRx/RingBufTx` 从 `HeapRb + Mutex` 迁移到 `RingBuffer` 后 benchmark 出现退化
+- **THEN** MUST 检查 `Acquire`/`Release` 内存序是否与 embassy 原实现一致（[L236-260](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L236-L260)），禁止降级为 `Relaxed`
+
+### Requirement: 远期优化（路径 B — 未来评估）
+
+embassy 调研中识别的架构级优化，MUST 在路径 A（Q12）完成并量化收益后再评估实施。
+
+| 编号 | 内容 | 优先级 | 说明 | 前置条件 |
+|------|------|--------|------|------|
+| **O54** | ISR 直接搬运（移除 copier 任务） | 🟡 中 | ISR 中直接执行 FIFO→ring buffer 搬运（embassy `BufferedUart` 模式），消除 RX/TX 两个 copier 任务的任务切换开销。需重新评估 NS16550 ISR 延迟（当前 ~1.5 µs，加搬运后预估 ~3-5 µs @ 16 字节 FIFO）。 | O51 就位 + benchmark 验证无退化 |
+| **O55** | 半满/IDLE 唤醒策略 | 🟢 低 | 引入 embassy 的 `is_half_full()` 唤醒阈值 + IDLE line 检测（`ReceptionTimeout` 中断），减少高频 RX 下的 copier 唤醒次数。当前 NAPI 阈值（16 次连续成功）效果类似但更复杂。 | O51 或 O54 就位 |
+
+**评估标准**：路径 B 的每项 MUST 在 Q12 完成后用 benchmark 量化路径 A 收益，再决定是否投入。禁止在未验证路径 A 收益的情况下直接实施路径 B。
+
 **O45 — tcdrain 真异步化 详细方案**：
 
 当前 TCSBRK 实现（`ctl.rs:43-57`）：

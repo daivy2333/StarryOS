@@ -130,6 +130,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | `user-async-performance.md` | 用户态异步性能分析：瓶颈根因（5 层）、FIONBIO 非阻塞模式、Q7 修复方案、性能基线 | ← `user-async-perf-analysis` + `nonblocking-mode-analysis` |
 | `uart-16550-integration.md` | uart_16550 集成分析：crate API 体系、MmioBackend 适配、内核六层封装、copier 架构、端到端数据流 | 新增 (2026-06-11) |
 | `optimization-opportunity-audit.md` | 2026-06-11 优化机会全面审计：4 个并行 agent 深度扫描，6+ 项未记录优化（含 3 项正确性 bug），Q8~Q11 重规划 | 保留 |
+| `embassy-uart-evaluation.md` | embassy UART 架构评估：三层 API、ISR 搬运 vs ISR 极简对比、lock-free ring buffer、迁移路径 A/B/C、可借鉴/不可借鉴组件清单 | 新增 (2026-06-11) |
 
 **已删除**（内容已被覆盖）：
 - `uart-16550-crate-reuse.md` — 内容已由 `uart-16550-integration.md` 完全覆盖
