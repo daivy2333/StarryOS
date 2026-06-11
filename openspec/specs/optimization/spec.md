@@ -102,6 +102,21 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 | **O37** | kernel log TX 合并 | — | `ax_println!` 走 ring buffer |
 | **O32** | poll_fn 闭包 | — | 编译器可能已优化 |
 
+### Requirement: 2026-06-11 死代码审计后续优化
+
+本次审计（清理 8 项真死代码，保留 5 项预留接口）发现的后续优化机会。
+
+| 编号 | 内容 | 优先级 | 说明 |
+|------|------|--------|------|
+| **O48** | memtrack 模块集成 | 🟢 低 | `kernel/src/pseudofs/dev/memtrack.rs` — 内存追踪功能已编写但从未集成（`run_memory_analysis` 无调用者）。Q6 真板调试时可能需要，可评估是否启用 |
+| **O49** | ProcessMode::Manual 移除 | 🟢 低 | `ldisc.rs:37` — Q7 后仅 External/None 模式被构造，Manual 变体可通过重构 match 分支移除（需更新 ldisc.rs:265 匹配） |
+| **O50** | 预留接口评估 | 🟢 低 | `create_pty_master`（tty/mod.rs）、`DeviceMmap::ReadOnly`（device.rs）、`clear_elf_cache`/`cleanup_task_tables`（memtrack 引用链）— 当前用 `#[allow(dead_code)]` 标注，未来如有需求可恢复或彻底移除 |
+
+#### Scenario: 评估 O48 memtrack 模块
+
+- **WHEN** Q6 真板到位后需要内存调试工具
+- **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
+
 **O45 — tcdrain 真异步化 详细方案**：
 
 当前 TCSBRK 实现（`ctl.rs:43-57`）：
