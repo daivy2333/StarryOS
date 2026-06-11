@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-11
-> 分支：asyncuart-dev — Q0~Q7 ✅ Q8 ✅，OpenSpec 体系建立（2026-06-03），Q9~Q11 计划中，Q6 等待硬件
+> 分支：asyncuart-dev — Q0~Q7 ✅ Q8 ✅ Q10 ✅，Q9 📋 Q11 📋，Q6 ⏳ 等待硬件
 
 ---
 
@@ -31,7 +31,12 @@
 - uart_16550 添加 `set_ier()` 公共方法
 - QEMU 实机验证通过：启动正常、Shell 交互正常、benchmark 无退化、FIONBIO PASS
 - `cargo check` 0 错误 / `cargo clippy` 0 错误
-**下一步**: Q10 数据路径优化（减少拷贝 + ldisc 优化）或 Q9 超时机制
+**2026-06-11 Q10 完成**:
+- BUF_SIZE 80→256（ldisc 缓冲扩容 3.2×）
+- SimpleReader::poll 改用 push_slice 批量写入（减少 N 次 try_push 调用）
+- LineDiscipline::read() / drain_input() 改为 &self（UnsafeCell 包装 buf_rx）
+- `cargo check` 0 错误 / `cargo clippy` 0 错误
+**下一步**: Q9 超时机制（time driver 基础设施无需 Q6）或 Q11 内核通用优化
 
 ### 关键发现
 

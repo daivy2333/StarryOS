@@ -1,5 +1,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
+    cell::UnsafeCell,
     future::poll_fn,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
@@ -21,7 +22,7 @@ use starry_signal::SignalInfo;
 use super::{Terminal, termios::Termios2};
 use crate::task::send_signal_to_process_group;
 
-const BUF_SIZE: usize = 80;
+const BUF_SIZE: usize = 256;
 
 type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
@@ -192,11 +193,19 @@ struct SimpleReader<R> {
 impl<R: TtyRead> SimpleReader<R> {
     pub fn poll(&mut self) {
         let read = self.reader.read(&mut self.read_buf);
-        for ch in &self.read_buf[..read] {
-            if *ch == b'\n' {
-                let _ = self.buf_tx.try_push(b'\r');
+        let data = &self.read_buf[..read];
+        let mut start = 0;
+        for (i, &ch) in data.iter().enumerate() {
+            if ch == b'\n' {
+                if i > start {
+                    self.buf_tx.push_slice(&data[start..i]);
+                }
+                self.buf_tx.push_slice(b"\r\n");
+                start = i + 1;
             }
-            let _ = self.buf_tx.try_push(*ch);
+        }
+        if start < read {
+            self.buf_tx.push_slice(&data[start..read]);
         }
     }
 }
@@ -209,7 +218,7 @@ enum Processor<R, W> {
 
 pub struct LineDiscipline<R, W> {
     terminal: Arc<Terminal>,
-    buf_rx: CachingCons<ReadBuf>,
+    buf_rx: UnsafeCell<CachingCons<ReadBuf>>,
     poll_tx: Arc<PollSet>,
     clear_line_buf: Arc<AtomicBool>,
     processor: Processor<R, W>,
@@ -291,15 +300,25 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         };
         Self {
             terminal,
-            buf_rx,
+            buf_rx: UnsafeCell::new(buf_rx),
             poll_tx,
             clear_line_buf,
             processor,
         }
     }
 
-    pub fn drain_input(&mut self) {
-        self.buf_rx.clear();
+    /// Safe accessor for buf_rx using UnsafeCell.
+    ///
+    /// # SAFETY
+    /// Ringbuf uses atomic indices internally for SPSC safety.
+    /// Only the reader task calls pop_slice/clear on buf_rx.
+    /// The writer (InputReader) only pushes to buf_tx, never touches buf_rx.
+    fn buf_rx(&self) -> &mut CachingCons<ReadBuf> {
+        unsafe { &mut *self.buf_rx.get() }
+    }
+
+    pub fn drain_input(&self) {
+        self.buf_rx().clear();
         self.clear_line_buf.store(true, Ordering::Relaxed);
     }
 
@@ -311,7 +330,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             Processor::None(reader, _) => reader.poll(),
             _ => {}
         }
-        !self.buf_rx.is_empty()
+        !self.buf_rx().is_empty()
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {
@@ -325,12 +344,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
     }
 
-    pub fn read(&mut self, buf: &mut [u8], nonblocking: bool) -> AxResult<usize> {
+    pub fn read(&self, buf: &mut [u8], nonblocking: bool) -> AxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
         if matches!(self.processor, Processor::None(_, _)) {
-            let read = self.buf_rx.pop_slice(buf);
+            let read = self.buf_rx().pop_slice(buf);
             return if read == 0 {
                 Err(AxError::WouldBlock)
             } else {
@@ -361,7 +380,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         };
         let pollable = WaitPollable(set);
         block_on(poll_io(&pollable, IoEvents::IN, nonblocking, || {
-            total_read += self.buf_rx.pop_slice(&mut buf[total_read..]);
+            total_read += self.buf_rx().pop_slice(&mut buf[total_read..]);
             self.poll_tx.wake();
             (total_read >= vmin)
                 .then_some(total_read)
