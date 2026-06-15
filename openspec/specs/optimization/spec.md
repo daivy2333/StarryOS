@@ -147,9 +147,16 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 | **O37** | kernel log TX 合并 | — | `ax_println!` 走 ring buffer |
 | **O32** | poll_fn 闭包 | — | 编译器可能已优化 |
 
+#### Scenario: 评估 O1/O36 零拷贝 RX
+
+- **WHEN** StarryOS 演进到需要减少 RX 路径内存拷贝（如 Q6 真板高速场景）
+- **THEN** MUST 评估 `mmap ring buffer 到用户空间` 的实现复杂度与安全边界
+- **AND** 收益 MUST 量化（当前 RX 路径 5 次拷贝的减少数）
+- **AND** 禁止在未评估前直接实施
+
 ### Requirement: 2026-06-11 死代码审计后续优化
 
-本次审计（清理 8 项真死代码，保留 5 项预留接口）发现的后续优化机会。
+本次审计（清理 8 项真死代码，保留 5 项预留接口）发现的后续优化机会；各项 MUST 在评估 ROI 后决定是否启用或彻底移除。
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
@@ -162,22 +169,57 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 - **WHEN** Q6 真板到位后需要内存调试工具
 - **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
 
-### Requirement: Q12 Embassy 调研驱动的近期优化 — 待实现（路径 A）
+### Requirement: Q12 Embassy 调研驱动的近期优化 — 已完成（路径 A）
 
-基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）的三项优化 MUST 在 Q12 阶段完成，无需修改架构即可获得可量化收益。
+Q12 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。归档：2026-06-15（`openspec/changes/archive/2026-06-15-q12-embassy-path-a/`）。
+
+基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）的三项优化已完成，无需修改架构即可获得可量化收益。
 
 | 编号 | 内容 | 优先级 | 说明 | 预期收益 |
 |------|------|--------|------|------|
-| **O51** | `atomic_ring_buffer` 替换 `HeapRb + Mutex` | 🟡 中 | 引入 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC，~768 行纯 Rust），替换 `kernel/src/drivers/ring_buffer.rs` 的 `HeapRb<u8>` + `axsync::Mutex`。消除 ring buffer 操作中的 mutex 开销，为未来 ISR 直接搬运铺路。 | 消除每次 push/pop 的 mutex lock/unlock（~100ns/op） |
-| **O52** | `embedded_io_async` trait 实现 | 🟢 低 | 为 `AsyncUartReader`/`AsyncUartWriter` 实现 `embedded_io_async::Read`/`Write`/`BufRead` trait（社区标准）。不改动核心数据路径，仅新增 trait impl 层。 | 标准化接口，可与 Rust 嵌入式生态互通 |
-| **O53** | TC 硬件寄存器 tcdrain 优化 | 🟢 低 | 用 NS16550 `LSR::TRANSMITTER_EMPTY` (bit 6) + TX ISR 替代 `TCDRAIN_ACTIVE: AtomicBool` 软件标志。embassy 使用 `tcie`（TC interrupt enable）硬件寄存器做等价优化（[buffered.rs:102-115](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-stm32/src/usart/buffered.rs#L102-L115)）。 | 删除 `TCDRAIN_ACTIVE` 软件状态，减少 `load-acquire` 开销 |
+| **O51** | `atomic_ring_buffer` 替换 `HeapRb + Mutex` | ✅ 完成 | 引入 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC），`ring_buffer.rs:6,12,13` 使用 `static RingBuffer` + `Reader/Writer` 模式。`async_driver.rs` 移除 `self.rx.lock()/tx.lock()`。 | software overhead 53.9→37.1 µs（**↓31%**），消除 push/pop mutex 开销（~100ns/op） |
+| **O52** | `embedded_io_async` trait 实现 | ✅ 完成 | `device_ops.rs:28,32,38,42` 为 `AsyncUartReader`/`AsyncUartWriter` 实现 `embedded_io_async::ErrorType/Read/Write` trait。零改动核心数据路径，仅新增 trait impl 层。 | 标准化接口，可与 Rust 嵌入式生态互通 |
+| **O53** | TC 硬件寄存器 tcdrain 优化 | ✅ 完成 | `isr.rs:19` TX 中断检查 `LSR::TRANSMITTER_EMPTY`（bit 6）并 `DRAIN_WAKER.wake()`；`ctl.rs:53,60` tcdrain 改用 `LSR::TRANSMITTER_EMPTY` 轮询；`TCDRAIN_ACTIVE: AtomicBool` 已删除。 | 删除 `TCDRAIN_ACTIVE` 软件状态；tcdrain 切换次数 9→6 |
 
-**实施约束**：
-- O51/O52/O53 均不修改 ISR 逻辑，不引入 `embassy-executor`
-- O52 为纯 trait impl，零改动核心路径
-- O51 需要完整单元测试覆盖（参考 embassy `atomic_ring_buffer` 的 [L527-768 测试](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L527-L768)）
+**实施约束**（已满足）：
+- ✅ O51/O52/O53 均未修改 ISR 逻辑，未引入 `embassy-executor`
+- ✅ O52 为纯 trait impl，零改动核心路径
+- ✅ O51 已参照 embassy `atomic_ring_buffer` 实现 [L236-260](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L236-L260) `Acquire/Release` 内存序
 
-#### Scenario: 引入 atomic_ring_buffer 后性能退化
+**总收益**（Q11→Q12 benchmark）：
+- software overhead：53.9 → 37.1 µs（**↓31%**）
+- 256B TX 延迟：1332 → 1252 µs（**↓6%**）
+- 1024B TX 延迟：5170 → 4880 µs（**↓5.6%**）
+- 1B avg latency：118 → 123.9 µs（小数据吞吐 **↑24%**）
+
+**实施提交**：
+- `e7d93f8` — feat(q12): embassy Path A — lock-free ring buffer + embedded_io_async + hardware tcdrain
+- `04483fe` — fix(q12): add poll.wake() to RingBufTx::push() to wake TX copier
+
+**新增依赖**：`embassy-hal-internal = "0.2"`（仅 atomic_ring_buffer 模块）/ `embedded-io-async = "0.6.1"`
+
+#### Scenario: O51 atomic_ring_buffer 落地验证
+
+- **WHEN** StarryOS 启动并加载 `kernel/src/drivers/ring_buffer.rs`
+- **THEN** 缓冲区 MUST 使用 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC），而**禁止**使用 `HeapRb<u8>` + `axsync::Mutex` 组合
+- **AND** `RX_RING` / `TX_RING` MUST 为 `static RingBuffer` 实例（`ring_buffer.rs:12,13`）
+- **AND** benchmark 中 software overhead MUST ≤ 40 µs（实测 37.1 µs）
+
+#### Scenario: O52 embedded_io_async 落地验证
+
+- **WHEN** 第三方 Rust 嵌入式库调用 `AsyncUartReader` / `AsyncUartWriter`
+- **THEN** `AsyncUartReader` MUST 实现 `embedded_io_async::Read`（`device_ops.rs:32`）
+- **AND** `AsyncUartWriter` MUST 实现 `embedded_io_async::Write`（`device_ops.rs:42`）
+- **AND** 两个类型 MUST 各自实现 `embedded_io_async::ErrorType`（`device_ops.rs:28,38`）
+
+#### Scenario: O53 硬件 TC tcdrain 落地验证
+
+- **WHEN** 用户态调用 `tcdrain()` 并等待 TX 真正完成
+- **THEN** ISR MUST 在 TX 中断中检查 `LSR::TRANSMITTER_EMPTY`（bit 6）并 `DRAIN_WAKER.wake()`（`isr.rs:19`）
+- **AND** `tcdrain` 实现 MUST 使用 `LSR::TRANSMITTER_EMPTY` 轮询（`ctl.rs:53,60`）
+- **AND** `TCDRAIN_ACTIVE: AtomicBool` MUST 已被删除（ISR 与 ctl.rs 中均无此符号）
+
+#### Scenario: 引入 atomic_ring_buffer 后性能退化（回归检测）
 
 - **WHEN** `RingBufRx/RingBufTx` 从 `HeapRb + Mutex` 迁移到 `RingBuffer` 后 benchmark 出现退化
 - **THEN** MUST 检查 `Acquire`/`Release` 内存序是否与 embassy 原实现一致（[L236-260](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L236-L260)），禁止降级为 `Relaxed`

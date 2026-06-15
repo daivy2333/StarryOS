@@ -634,7 +634,13 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 
 ### Requirement: 2026-06-11 优化审计新发现
 
-本次审计（openspec-explorer，4 个并行 agent）揭示的未记录优化机会与正确性问题。
+本次审计（openspec-explorer，4 个并行 agent）揭示的未记录优化机会与正确性问题；各项 MUST 评估风险后立项落地，禁止"以后再说"。
+
+#### Scenario: 踩坑 5~7 任意一个未在 Q8~Q11 解决
+
+- **WHEN** 审计发现的 NAPI 退出 / ISR 锁 / IER 裸写三个正确性 Bug 任一未修复
+- **THEN** MUST 在下一个里程碑（Q8）优先修复，**禁止**以"低优先级"为由延后
+- **AND** 修复后 MUST 写 regression test 防止复发
 
 **踩坑 5：NAPI 模式永不退出（2026-06-11）**（L150）
 
@@ -678,3 +684,30 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 - **原因**：单线程 copier 的 waker 几乎不变，但代码仍每次 clone+检查
 - **简化方向**：`if !last_waker.get().map_or(false, |old| old.will_wake(&cx.waker())) { RX_WAKER.register(cx.waker()); }` — 仅在变化时 clone
 - **量化**：每 poll 周期节省 ~2 次 Arc 原子操作（~20-40ns）
+
+**踩坑 8：OpenSpec 变更的 tasks.md 漂移（2026-06-15）**（L156）
+
+- **症状**：归档 Q12 OpenSpec 变更时发现 `openspec/changes/q12-embassy-path-a/tasks.md` 21 项全部未勾选（`- [ ]`），但实际代码 4 个 git 提交已完成（`e7d93f8` / `04483fe` / `20a243a` / `ac3544d`），全局 `.claude/docs/tasks.md` 与 `SNAPSHOT.md` 也已标 ✅。
+- **根因**：
+  1. 实施时仅更新全局状态文档（`tasks.md` / `SNAPSHOT.md`），未同步勾选 change 自己的 `tasks.md`
+  2. 提交 `ac3544d docs(q12): mark Q12 complete, add OpenSpec change artifacts` 创建了 OpenSpec change 文件，但未把 tasks.md 勾上
+  3. 归档时 `openspec status --change` 报 `isComplete: false`，因 tasks.md 仍是初始未勾选
+- **影响**：
+  1. 归档前需补勾选 21 项（`replace_all` 一次性把 `- [ ]` → `- [x]`）
+  2. 需补 `specs/optimization/spec.md` delta spec（归档强制要求至少一个 delta）
+  3. 主 `openspec/specs/optimization/spec.md` 第 165 行原"待实现"条目未同步回退到"已完成"（需手动改）
+- **预防**：
+  1. **实施期间每完成一个子任务 MUST 同步勾选 change 自己的 `tasks.md`**（不能只更新全局文档）
+  2. 提交信息包含 `mark X complete` 时 MUST 检查 change 目录下 `tasks.md` 与主 spec 状态
+  3. 归档前 MUST 跑 `openspec status --change <name>` + `openspec validate <name>` 双重验证
+- **复盘模板**（每次实施完成时）：Code 提交 → **change/tasks.md 勾选** → 主 spec 同步 → 全局状态文档 → 提交 → `openspec validate`
+
+**技巧 11：OpenSpec 归档前置验证清单（2026-06-15）**（L157）
+
+| 检查项 | 命令 | 预期 |
+|--------|------|------|
+| 产物完成度 | `openspec status --change <name>` | artifacts 全部 `done` |
+| tasks 状态 | 读 `tasks.md` 统计 `- [ ]` vs `- [x]` | 全部勾选 |
+| delta spec | `ls <change>/specs/` | 至少一个 `spec.md`（含 `## ADDED/MODIFIED Requirements`） |
+| 验证格式 | `openspec validate <name>` | 无 ERROR |
+| 主 spec 同步 | 主 spec 与 delta spec 内容一致 | 主 spec 中相关条目已更新为最终态 |

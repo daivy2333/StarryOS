@@ -32,7 +32,7 @@
 | **Q9** | 超时机制 | VTIME 读超时（复用 axtask::future::timeout，无需 embassy-time） | ✅ (2026-06-11) |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 优化 | ✅ (2026-06-11) |
 | **Q11** | 内核通用优化 | mm/access + close_range + sendfile + tty unwrap | ✅ (2026-06-11) |
-| **Q12** | Embassy 路径 A 优化 | atomic_ring_buffer + embedded_io_async + TC tcdrain | ✅ (2026-06-11) |
+| **Q12** | Embassy 路径 A 优化 | atomic_ring_buffer + embedded_io_async + TC tcdrain | ✅ (2026-06-11) → 🗄️ 已归档 `archive/2026-06-15-q12-embassy-path-a/` |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -107,9 +107,12 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
   - Gate: benchmark 端到端数据正常，e2e 报告完成
 <!-- Q7.5 --> - [x] Gate Q7: 全部通过 ✅
 
-### Q12: Embassy 路径 A 优化 📋 计划中
+### Q12: Embassy 路径 A 优化 ✅ 已完成（已归档 2026-06-15）
 
 > 基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）三项优化。均不改 ISR 逻辑、不引入 embassy-executor，立即可实施。
+>
+> **🗄️ OpenSpec 变更已归档**：`openspec/changes/archive/2026-06-15-q12-embassy-path-a/`
+> 归档时补做了 tasks.md 21 项勾选 + 新增 `specs/optimization/spec.md` delta（含 O51/O52/O53 完成记录与性能基线），并通过 `openspec validate` 验证。
 
 | 子任务 | 描述 | 关键文件 | 预期收益 |
 |--------|------|----------|----------|
