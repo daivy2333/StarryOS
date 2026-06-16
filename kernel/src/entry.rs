@@ -10,7 +10,7 @@ use axtask::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
-    drivers::{uart_init, isr, ring_buffer, async_driver::DRIVER, ASYNC_TTY},
+    drivers::{uart_init, ASYNC_TTY},
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs,
@@ -19,13 +19,9 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
-    // Q4: Full async RX+TX
+    // Initialize UART hardware + async driver (MMIO, ring buffers, ISR, copiers)
     uart_init::init_uart_hardware();
-    ring_buffer::init_ring_buffers();
-    axhal::irq::register_irq_hook(isr::uart_isr_handler);
-    DRIVER.start_rx_copier();
-    DRIVER.start_tx_copier();
-    ax_println!("[kernel] Q4: AsyncUart RX+TX copiers started");
+    ax_println!("[kernel] Async UART driver initialized");
 
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");

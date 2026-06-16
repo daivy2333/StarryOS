@@ -43,12 +43,12 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     // TCSBRK (0x5409): tcdrain — wait for TX ring buffer + UART FIFO drain
     if cmd == 0x5409 {
         use uart_16550::spec::registers::LSR;
-        use crate::drivers::async_driver::DRIVER;
-        use crate::drivers::isr::DRAIN_WAKER;
-        use crate::drivers::uart_init::uart_instance;
+        use uart_16550::async_::isr::DRAIN_WAKER;
+        use uart_16550::os::OsWakerSet;
+        use crate::drivers::uart_init;
         let result = block_on(poll_fn(|cx| {
-            if DRIVER.tx.is_empty() {
-                let mut uart = uart_instance().lock();
+            if uart_init::tx_is_empty() {
+                let mut uart = uart_init::uart_instance().lock();
                 let lsr = uart.lsr();
                 if lsr.contains(LSR::TRANSMITTER_EMPTY) {
                     return Poll::Ready(Ok(0isize));
@@ -56,12 +56,12 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
                 drop(uart);
                 DRAIN_WAKER.register(cx.waker());
                 // double-check: ISR may have fired between first check and register
-                let mut uart = uart_instance().lock();
+                let mut uart = uart_init::uart_instance().lock();
                 if uart.lsr().contains(LSR::TRANSMITTER_EMPTY) {
                     return Poll::Ready(Ok(0isize));
                 }
             } else {
-                DRIVER.tx.poll.register(cx.waker());
+                uart_init::driver().tx.poll.register(cx.waker());
             }
             Poll::Pending
         }));

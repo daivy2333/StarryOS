@@ -7,6 +7,7 @@ use core::future::Future;
 use core::ptr::NonNull;
 use core::task::Waker;
 
+use alloc::string::ToString;
 use memory_addr::PhysAddr;
 use uart_16550::os::{OsIrq, OsMmio, OsRuntime, OsSpinNoIrq, OsWakerSet};
 

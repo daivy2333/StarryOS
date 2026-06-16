@@ -1,25 +1,38 @@
 // kernel/src/drivers/uart_init.rs
 
-//! UART 硬件初始化（替代 axplat UART init）
+//! UART 硬件初始化 + 异步驱动集成
 //!
-//! 使用 uart_16550 crate 本地初始化，配置 AsyncUart 专用参数：
+//! 使用 uart_16550 crate 的异步实现，配置：
 //! - 波特率：115200 bps
 //! - FIFO：使能，触发阈值 14 字节
 //! - 中断：IER::DATA_READY | IER::THR_EMPTY（RX + TX 中断）
 //! - 数据格式：8-N-1
+//!
+//! 异步驱动使用 uart_16550::async_ 模块：
+//! - AsyncUartDriver: RX/TX copier 任务（NAPI 中断合并）
+//! - RingBufRx/RingBufTx: 无锁环形缓冲区
+//! - UartPort: 硬件访问抽象
 
-use core::ptr::NonNull;
+use alloc::sync::Arc;
+use core::ptr::{NonNull, addr_of_mut};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use axhal::mem::phys_to_virt;
 use axlog::info;
+use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use kspin::SpinNoIrq;
 use lazy_static::lazy_static;
 use memory_addr::{PhysAddr, VirtAddr};
+use spin::Once;
 use uart_16550::{
     Uart16550,
+    async_::driver::{AsyncUartDriver, UartPort},
+    async_::ring_buffer::{RingBufRx, RingBufTx},
     backend::MmioBackend,
-    spec::registers::{IER, ISR, LSR, offsets},
+    spec::registers::{IER, ISR, LSR},
 };
+
+use crate::drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet};
 
 /// UART MMIO 物理地址（RISC-V QEMU virt 平台）
 pub const UART_MMIO_BASE_PHYS: usize = 0x10000000;
@@ -29,15 +42,15 @@ pub const UART_MMIO_BASE_PHYS: usize = 0x10000000;
 /// stride 4 会读到超出范围的总线错误（LoadFault）
 pub const UART_STRIDE: u8 = 1;
 
-/// NAPI: consecutive successful reads before entering polling mode
-pub const NAPI_THRESHOLD: u32 = 16;
-/// NAPI: batch size in polling mode
-pub const NAPI_BATCH_SIZE: usize = 64;
+/// Ring buffer 大小（64 KB）
+const BUF_SIZE: usize = 64 * 1024;
 
 /// 获取 UART MMIO 虚拟地址
 fn get_uart_mmio_virt() -> VirtAddr {
     phys_to_virt(PhysAddr::from(UART_MMIO_BASE_PHYS))
 }
+
+// ── 全局 UART 实例 ─────────────────────────────────────────────────
 
 // 全局 UART 实例（AsyncUart 独占访问）
 lazy_static! {
@@ -59,69 +72,126 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
     &UART
 }
 
-/// Lock-free ISR register read — safe in ISR context (single handler, no concurrency).
+// ── UartPort 实现 ──────────────────────────────────────────────────
+
+/// ArceOS UART 端口抽象，实现 uart_16550 的 `UartPort` trait。
 ///
-/// Reads the ISR register directly via MMIO, bypassing the `SpinNoIrq` lock.
-/// This is safe because `uart_isr_handler` is the sole handler for the UART IRQ
-/// line and no other code path reads ISR without holding the lock.
-///
-/// # Safety
-///
-/// Only call from `uart_isr_handler` in ISR context. Do not use from task context
-/// — use `uart_instance().lock().isr()` instead.
-pub fn read_isr_unlocked() -> ISR {
-    let ptr = get_uart_mmio_virt().as_ptr() as *const u8;
-    unsafe {
-        // SAFETY: ISR register at offset offsets::ISR (2), stride=1.
-        // Only called from ISR context — single handler, no concurrent access.
-        ISR::from_bits_retain(ptr.add(offsets::ISR as usize).read_volatile())
+/// 内部持有 `&'static SpinNoIrq<Uart16550<MmioBackend>>` 引用，
+/// 通过 `SpinNoIrq` 锁提供 `receive_bytes` 和 `send_bytes` 的安全访问。
+pub struct ArceOsUartPort {
+    uart: &'static SpinNoIrq<Uart16550<MmioBackend>>,
+}
+
+impl UartPort for ArceOsUartPort {
+    fn receive_bytes(&self, buf: &mut [u8]) -> usize {
+        self.uart.lock().receive_bytes(buf)
+    }
+
+    fn send_bytes(&self, buf: &[u8]) -> usize {
+        self.uart.lock().send_bytes(buf)
     }
 }
 
-/// Lock-free LSR register read — safe in ISR context (single handler, no concurrency).
-///
-/// Reads the LSR register directly via MMIO, bypassing the `SpinNoIrq` lock.
-/// Used in ISR to check TEMT (Transmitter Empty) for tcdrain completion.
-///
-/// # Safety
-///
-/// Only call from `uart_isr_handler` in ISR context.
-pub fn read_lsr_unlocked() -> LSR {
-    let ptr = get_uart_mmio_virt().as_ptr() as *const u8;
-    unsafe {
-        // SAFETY: LSR register at offset offsets::LSR (5), stride=1.
-        // Only called from ISR context — single handler, no concurrent access.
-        LSR::from_bits_retain(ptr.add(offsets::LSR as usize).read_volatile())
-    }
+lazy_static! {
+    static ref UART_PORT: ArceOsUartPort = ArceOsUartPort { uart: &UART };
 }
 
-// IER register manipulation helpers (direct MMIO, cached to reduce RMW)
-use core::sync::atomic::{AtomicU8, Ordering};
+// ── 类型别名 ──────────────────────────────────────────────────────
+
+/// 异步驱动类型（`ArceOsRuntime` + `ArceOsWakerSet` + `ArceOsUartPort`）
+pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
+/// 异步读取器类型
+pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
+    ArceOsRuntime,
+    ArceOsWakerSet,
+    ArceOsUartPort,
+>;
+/// 异步写入器类型
+pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
+    ArceOsRuntime,
+    ArceOsWakerSet,
+    ArceOsUartPort,
+>;
+
+// ── Ring buffer 静态存储 ──────────────────────────────────────────
+
+static RX_RING: RingBuffer = RingBuffer::new();
+static TX_RING: RingBuffer = RingBuffer::new();
+// SAFETY: initialized once during kernel init, valid forever.
+static mut RX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
+static mut TX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
+
+/// Check if the TX ring buffer is empty (no pending data for copier).
+pub fn tx_is_empty() -> bool {
+    TX_RING.is_empty()
+}
+
+// ── 驱动实例存储 ──────────────────────────────────────────────────
+
+static DRIVER: Once<Arc<ArceOsDriver>> = Once::new();
+
+/// 获取驱动实例的 `Arc` 引用（用于创建 `AsyncUartReader`/`AsyncUartWriter`）。
+pub fn driver() -> Arc<ArceOsDriver> {
+    DRIVER
+        .get()
+        .expect("UART driver not initialized")
+        .clone()
+}
+
+/// 获取驱动实例的 `&'static` 引用（用于 `start_rx_copier`/`start_tx_copier`）。
+fn driver_ref() -> &'static ArceOsDriver {
+    DRIVER
+        .get()
+        .expect("UART driver not initialized")
+        .as_ref()
+}
+
+// ── IER 缓存与中断控制 ────────────────────────────────────────────
+
+/// Cached IER value — shared between ISR (uart_16550) and copier tasks.
 static CACHED_IER: AtomicU8 = AtomicU8::new(0);
 
 fn write_ier(value: u8) {
     CACHED_IER.store(value, Ordering::Relaxed);
     uart_instance().lock().set_ier(IER::from_bits_truncate(value));
 }
-pub fn enable_rx_intr()  { write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::DATA_READY.bits()); }
-pub fn disable_rx_intr() { write_ier(CACHED_IER.load(Ordering::Relaxed) & !IER::DATA_READY.bits()); }
-pub fn enable_tx_intr()  { write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::THR_EMPTY.bits()); }
-pub fn disable_tx_intr() { write_ier(CACHED_IER.load(Ordering::Relaxed) & !IER::THR_EMPTY.bits()); }
 
-/// 初始化 UART 硬件 — Phase 1: 只读寄存器验证
+/// 重新使能 RX 中断（copier 任务回调）
+pub fn enable_rx_intr() {
+    write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::DATA_READY.bits());
+}
+
+/// 重新使能 TX 中断（copier 任务回调）
+pub fn enable_tx_intr() {
+    write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::THR_EMPTY.bits());
+}
+
+// ── ISR 包装器 ────────────────────────────────────────────────────
+
+/// UART ISR 包装器 — 桥接 axhal IRQ hook 到 uart_16550 ISR handler。
 ///
-/// 2026-05-31 纠正：此前认为"MMIO 权限阻塞"的结论有误。
-/// 经代码验证，UART MMIO（0x10000000）已被 new_kernel_aspace() 正确映射
-/// 为 READ|WRITE|DEVICE。axmm::iomap() 作为安全保障，确保权限正确。
+/// 满足 ISR 极简原则：读 ISR / 禁中断 / wake / 返回。
+fn uart_isr_wrapper(_irq: usize) {
+    let base = NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap();
+    // SAFETY: Called from ISR context with valid UART MMIO base address.
+    // CACHED_IER is shared with enable_rx_intr/enable_tx_intr via AtomicU8.
+    uart_16550::async_::isr::uart_isr_handler(_irq, base, &CACHED_IER);
+}
+
+// ── 初始化 ────────────────────────────────────────────────────────
+
+/// 初始化 UART 硬件 + 异步驱动
 ///
-/// Phase 1 策略（只读）：
-/// - 调用 axmm::iomap() 确保 UART MMIO 页表权限
-/// - 读取 IER/ISR/LSR 寄存器验证 MMIO 读访问
-/// - 不修改硬件配置（保护 Console 不受影响）
+/// 完成以下初始化步骤：
+/// 1. MMIO 映射验证
+/// 2. Ring buffer 初始化
+/// 3. `AsyncUartDriver` 创建
+/// 4. ISR 注册
+/// 5. RX/TX copier 任务启动
 ///
 /// # When to Call
 ///
-/// 在 entry.rs::init() 中调用，位于 Console 初始化之后、ISR 注册之前。
+/// 在 `entry.rs::init()` 中调用，位于 Console 初始化之后。
 pub fn init_uart_hardware() {
     ax_println!("[UART INIT] Phase 1: MMIO read-only verification");
 
@@ -154,9 +224,45 @@ pub fn init_uart_hardware() {
     // FCR threshold check: ISR bits 6-7 indicate FIFO status
     let isr = uart.isr();
     let fifo_enabled = isr.contains(ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1);
-    ax_println!("[UART INIT] FCR: FIFO enabled={}, trigger level via ISR bits 7-6", fifo_enabled);
+    ax_println!(
+        "[UART INIT] FCR: FIFO enabled={}, trigger level via ISR bits 7-6",
+        fifo_enabled
+    );
+    drop(uart);
 
     ax_println!("[UART INIT] ✅ Phase 1 PASSED: UART registers readable");
+
+    // Step 3: Initialize ring buffers
+    // SAFETY: called exactly once before any concurrent ring-buffer access.
+    // The backing `static mut` buffers live for the entire kernel lifetime.
+    unsafe {
+        RX_RING.init(addr_of_mut!(RX_BUF).cast::<u8>(), BUF_SIZE);
+        TX_RING.init(addr_of_mut!(TX_BUF).cast::<u8>(), BUF_SIZE);
+    }
+    ax_println!(
+        "[UART INIT] ✅ Ring buffers initialized ({} KB each)",
+        BUF_SIZE / 1024
+    );
+
+    // Step 4: Create async driver
+    // SAFETY: Ring buffers are initialized above, and we create exactly one
+    // RingBufRx/RingBufTx pair per ring.
+    let rx = unsafe { RingBufRx::<ArceOsWakerSet>::new(&RX_RING) };
+    let tx = unsafe { RingBufTx::<ArceOsWakerSet>::new(&TX_RING) };
+
+    let uart_port: &'static ArceOsUartPort = &*UART_PORT;
+    let driver = Arc::new(ArceOsDriver::new(rx, tx, uart_port));
+    DRIVER.call_once(|| driver);
+    ax_println!("[UART INIT] ✅ AsyncUartDriver created");
+
+    // Step 5: Register ISR
+    axhal::irq::register_irq_hook(uart_isr_wrapper);
+    ax_println!("[UART INIT] ✅ ISR registered");
+
+    // Step 6: Start copier tasks
+    driver_ref().start_rx_copier(enable_rx_intr);
+    driver_ref().start_tx_copier(enable_tx_intr);
+    ax_println!("[UART INIT] ✅ RX/TX copier tasks started");
 }
 
 /// 日志输出 UART 寄存器状态（调试验证）
