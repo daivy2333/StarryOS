@@ -55,12 +55,7 @@ pub struct TtyConfig<R, W> {
     pub process_mode: ProcessMode,
 }
 
-pub trait TtyRead: Send + Sync + 'static {
-    fn read(&mut self, buf: &mut [u8]) -> usize;
-}
-pub trait TtyWrite: Send + Sync + 'static {
-    fn write(&self, buf: &[u8]);
-}
+pub use uart_16550::{TtyRead, TtyWrite};
 
 struct InputReader<R, W> {
     terminal: Arc<Terminal>,
