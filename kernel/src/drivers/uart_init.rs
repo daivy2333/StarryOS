@@ -43,7 +43,7 @@ pub const UART_MMIO_BASE_PHYS: usize = 0x10000000;
 pub const UART_STRIDE: u8 = 1;
 
 /// Ring buffer 大小（64 KB）
-const BUF_SIZE: usize = 64 * 1024;
+pub const BUF_SIZE: usize = 64 * 1024;
 
 /// 获取 UART MMIO 虚拟地址
 fn get_uart_mmio_virt() -> VirtAddr {

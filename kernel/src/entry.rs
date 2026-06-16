@@ -23,6 +23,8 @@ pub fn init(args: &[String], envs: &[String]) {
     uart_init::init_uart_hardware();
     ax_println!("[kernel] Async UART driver initialized");
 
+    // Run kernel-side benchmark (ring buffer throughput/latency, memory, NAPI, IRQ)
+    crate::drivers::bench::run_startup_benchmark();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
