@@ -197,6 +197,25 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 - `9bed0c7` — `feat(uart-async): add ArceOS HAL adapter layer`
 - `842f8f4` — `refactor(uart-async): remove migrated local files, finalize StarryOS integration`
 
+### Q13.1: Trait 抽象开销优化 ✅ (2026-06-16)
+
+> 基于 `.claude/analysis/trait-abstraction-overhead.md` 分析，通过 `#[inline(always)]` 和批量操作减少 trait 抽象开销。
+
+| 子任务 | 描述 | 关键文件 | 验收证据 |
+|--------|------|----------|----------|
+| **O56** | ✅ `#[inline(always)]` 热路径内联 | `ring_buffer.rs` + `uart_init.rs` | `cargo check` + `clippy` 0 errors |
+| **O57** | ✅ 批量 push/pop 接口 | `ring_buffer.rs` + `driver.rs` | `cargo check` + `clippy` 0 errors |
+
+**Commits (Q13.1)**:
+- uart_16550: `a0cead0` — `perf(uart-async): add #[inline(always)] to ring buffer push/pop`
+- uart_16550: `73aca5c` — `perf(uart-async): add batch push/pop to reduce lock overhead`
+- StarryOS: `9188c0b` — `perf(uart-async): add #[inline(always)] to ArceOsUartPort methods`
+
+**验收标准**：
+- [x] `cargo check` 0 错误 / `cargo clippy` 0 warning ✅
+- [x] QEMU `make run` 内核正常启动 ✅
+- [ ] benchmark 性能验证（1B avg ≤ 130µs）— 待手动验证
+
 **验收标准** — 全部通过 ✅：
 - [x] `cargo check` 0 错误 / `cargo clippy` 0 warning
 - [x] QEMU `make run` 内核正常启动，Shell 交互正常

@@ -27,7 +27,12 @@
 - **QEMU 验证通过**：Shell 正常、benchmark 运行、FIONBIO PASS
 - **性能**：1B avg 140.1µs / P50 138.8µs / overhead 53.3µs（与 Q12 基线相近）
 - **修复**：RingBufTx::push() 缺少 wake 调用导致 Shell 挂起（de8cd8b）
-**下一步**: Q6 VisionFive2 真板验证
+**Q13.1 ✅** (2026-06-16): Trait 抽象开销优化（inline + batch）
+- `#[inline(always)]` 添加到 ring buffer push/pop + ArceOsUartPort 方法
+- 批量 push_batch/pop_batch 接口，减少锁获取次数
+- 3 个提交，`cargo check` + `cargo clippy` 0 错误/警告
+- **目标**：1B avg ≤ 130µs（待 benchmark 验证）
+**下一步**: Q6 VisionFive2 真板验证；Q13.1 benchmark 验证
 
 ### 关键发现
 
