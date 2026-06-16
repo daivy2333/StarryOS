@@ -774,3 +774,13 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 | <!-- L177 --> | **Callback pattern for OsSpinNoIrq** | `with_lock<R>(&self, f: impl FnOnce(&mut T) -> R) -> R` 使用回调模式而非返回 guard，避免 guard 生命周期问题 |
 | <!-- L178 --> | **&'static Self for no-alloc driver** | `AsyncUartDriver` 使用 `&'static Self` 而非 `Arc<Self>` 兼容 no-alloc 环境 |
 | <!-- L179 --> | **StarryOS owns ring buffer statics** | RingBuffer::new() 静态变量保留在 StarryOS，通过 `&'static` 引用传递给 uart_16550 |
+
+### Q13 性能优化洞察（2026-06-16）
+
+Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化。以下是优化方向和权衡分析。
+
+| <!-- L180 --> | **Trait 抽象开销来源** | 泛型单态化（静态分发）无虚函数表开销，但热路径上 `UartPort::receive_bytes/send_bytes` + `OsWakerSet::wake/register` 每字节增加 ~15-30ns 锁获取开销 |
+| <!-- L181 --> | **#[inline(always)] 优化** | 热路径函数添加 `#[inline(always)]` 可消除函数调用开销（-5~10µs），但可能导致代码膨胀影响 I-cache |
+| <!-- L182 --> | **批量操作优化** | 减少每字节锁获取次数，改为批量处理（-10~20µs），但增加延迟（批量等待时间） |
+| <!-- L183 --> | **Feature gate 条件编译** | 为 ArceOS 提供特化实现绕过 trait 抽象（-15~25µs），但增加维护负担、降低可移植性 |
+| <!-- L184 --> | **性能与可移植性权衡** | `#[inline(always)]` + 批量操作 = 最佳性价比（-15~30µs，无可移植性损失）；feature gate 特化 = 中等收益但降低可移植性；DMA = 最佳性能但硬件依赖 |
