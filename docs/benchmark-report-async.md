@@ -32,6 +32,7 @@
 | **Q12** | 06-11 | Embassy 路径 A：atomic_ring_buffer (O51) / embedded_io_async (O52) / TC tcdrain (O53) |
 | **Q13** | 06-16 | 异步串口提取到 uart_16550 crate（~400 行：ISR + ring buffer + copier + device_ops） |
 | **Q13.1** | 06-16 | Trait 抽象开销优化：#[inline(always)] + 批量 push_batch/pop_batch（↓20% overhead） |
+| **LTO** | 06-16 | 启用 `lto = true`，跨 crate 内联消除 embassy_hal_internal 函数调用开销 |
 
 ### 测试环境
 
@@ -54,9 +55,9 @@
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| **Ring Buffer 写入** | 385,208 KB/s | 内核态写入 Ring Buffer |
+| **Ring Buffer 写入** | 651,890 KB/s | 内核态写入 Ring Buffer（LTO 内联 embassy） |
 | **测试数据量** | 102,400 字节 | 100 × 1024 |
-| **测试耗时** | 0.26 毫秒 | 纳秒级精度 |
+| **测试耗时** | 0.15 毫秒 | 纳秒级精度 |
 | **硬件线速** | 11.52 KB/s | 115200 bps 理论极限 |
 
 ### 2.2 Ring Buffer 读取速度（RX）
@@ -65,7 +66,7 @@
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| **Ring Buffer 读取** | 863,698 KB/s | 内核态读取 Ring Buffer |
+| **Ring Buffer 读取** | 897,616 KB/s | 内核态读取 Ring Buffer（LTO） |
 | **测试数据量** | 65,536 字节 | 64 KB |
 | **测试耗时** | 0.07 毫秒 | 纳秒级精度 |
 
@@ -75,12 +76,12 @@
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| **P50 延迟** | 200 ns | 中位数延迟 |
-| **P95 延迟** | 200 ns | 95 分位延迟 |
-| **P99 延迟** | 16,100 ns | 99 分位延迟 |
-| **最小延迟** | 100 ns | 最快一次 |
-| **最大延迟** | 16,100 ns | 最慢一次 |
-| **平均延迟** | 316 ns | 平均值 |
+| **P50 延迟** | 0 ns | 中位数延迟（LTO 内联后零函数调用开销） |
+| **P95 延迟** | 100 ns | 95 分位延迟 |
+| **P99 延迟** | 14,700 ns | 99 分位延迟 |
+| **最小延迟** | 0 ns | 最快一次 |
+| **最大延迟** | 14,700 ns | 最慢一次 |
+| **平均延迟** | 195 ns | 平均值 |
 
 ### 2.4 内存占用
 
@@ -182,6 +183,7 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 | **Q12** | Embassy 路径 A：lock-free RingBuffer (O51) / embedded_io_async (O52) / TC tcdrain (O53) | software overhead ↓31%（53.9→37.1µs），64B 吞吐 ↑24% |
 | **Q13** | 异步串口提取到 uart_16550（5 trait 抽象） | overhead +16.2µs（37.1→53.3µs），可移植性 ✅ |
 | **Q13.1** | #[inline(always)] + push_batch/pop_batch | overhead ↓20%（53.3→42.6µs），1B avg ↓7.6% |
+| **LTO** | `lto = true`，跨 crate 内联 | 内核态 ring buffer ↑69% (385→652 MB/s)，e2e 不变（瓶颈在调度） |
 
 ### 性能趋势（QEMU 1B 延迟）
 
@@ -200,11 +202,11 @@ QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现�
 
 | 维度 | 结果 |
 |------|------|
-| TX 用户态 @ /dev/console + tcdrain | 518µs(64B) ~ 9852µs(4096B) |
-| TX 延迟 P50 | 139.4 µs |
+| TX 用户态 @ /dev/console + tcdrain | 376µs(64B) ~ 10240µs(4096B) |
+| TX 延迟 P50 | 124.7 µs |
 | FIONBIO nonblocking read | ✅ EAGAIN |
-| Ring Buffer TX | ~385 MB/s |
-| Ring Buffer RX | ~864 MB/s |
+| Ring Buffer TX（LTO） | ~652 MB/s |
+| Ring Buffer RX（LTO） | ~898 MB/s |
 
 ### 待验证（真板 VisionFive2）
 

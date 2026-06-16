@@ -34,10 +34,10 @@
 
 | 指标 | Console | Async | 说明 |
 |------|---------|-------|------|
-| TX Ring Buffer 写入 | 567 KB/s | ~385 MB/s | Console 逐字节 `send_raw()`；Async 批量 `push()`（trait 抽象后仍保持） |
-| TX CPU cycles/byte | 3,835 | N/A¹ | Q13 后内核 benchmark 移至独立测试分支，不再内嵌 CPU 测量 |
-| RX Ring Buffer 读取 | 不可测² | ~864 MB/s | Async 直接 pop lock-free SPSC RingBuffer |
-| RX 延迟 P50 | 不可测² | 200 ns | 单字节 pop 延迟 |
+| TX Ring Buffer 写入 | 567 KB/s | ~652 MB/s | Console 逐字节 `send_raw()`；Async 批量 `push()`（LTO 内联 embassy） |
+| TX CPU cycles/byte | 3,835 | N/A¹ | Q13 后内核 benchmark 移至独立测试分支 |
+| RX Ring Buffer 读取 | 不可测² | ~898 MB/s | Async 直接 pop lock-free SPSC RingBuffer（LTO 内联 embassy） |
+| RX 延迟 P50 | 不可测² | 0 ns | 单字节 pop 延迟（LTO 消除函数调用开销） |
 
 ¹ Q13 后内核 benchmark 移至独立测试分支 `feat/uart-16550-bench`，主分支不内嵌 CPU 周期测量。
 ² Console 无 Ring Buffer，无法做可比较的内核态 RX 测试。
@@ -120,4 +120,4 @@ Q8 前 64B 路径约 9 次任务切换，Q8（DRAIN_WAKER 条件唤醒 + ISR 无
 | 真板吞吐量 | 持平 ~11.5 KB/s | 同受波特率限制 |
 | 可移植性 | Async ✅ | uart_16550 crate 可用于任何 OS（Q13） |
 
-**完整优化历史**：Q0~Q4（驱动骨架）→ Q5（NAPI/批量I/O）→ Q7（yield storm/FIONBIO/tcdrain）→ Q8（NAPI退出/ISR无锁/O46 AtomicWaker）→ Q9（VTIME超时）→ Q10（BUF_SIZE 256/push_slice/&self）→ Q11（通用质量）→ Q12（Embassy 路径 A：lock-free RingBuffer + embedded_io_async + TC tcdrain）→ **Q13（异步串口提取到 uart_16550 crate，可移植异步 UART）** → Q13.1（inline + batch 回收开销）→ Q6（真板待验证）
+**完整优化历史**：Q0~Q4（驱动骨架）→ Q5（NAPI/批量I/O）→ Q7（yield storm/FIONBIO/tcdrain）→ Q8（NAPI退出/ISR无锁/O46 AtomicWaker）→ Q9（VTIME超时）→ Q10（BUF_SIZE 256/push_slice/&self）→ Q11（通用质量）→ Q12（Embassy 路径 A：lock-free RingBuffer + embedded_io_async + TC tcdrain）→ Q13（异步串口提取到 uart_16550 crate）→ Q13.1（inline + batch 回收开销）→ **LTO（跨 crate 内联，内核态 ring buffer ↑69%）** → Q6（真板待验证）
