@@ -393,3 +393,32 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - `OsSpinNoIrq` 使用回调模式（`with_lock`）避免 guard 生命周期问题
 - Ring buffer 静态变量由 OS 拥有（`&'static RingBuffer` 传入 uart_16550）
 - 驱动使用 `&'static Self` 而非 `Arc<Self>`（兼容 no-alloc）
+
+<!-- A034 -->
+### ADR-034: LTO 延期启用 — 已知有效但开发期暂不开
+
+**日期**: 2026-06-16
+**状态**: 已接受
+**决策**: 暂不开启 `lto = true`，记录为已知优化手段，最终发布前再加回。
+
+**背景**:
+- 2026-06-16 在 `feat/uart-16550-bench` 分支实测 LTO 效果：
+  - Ring buffer TX 385→652 MB/s（↑69%）
+  - RX 延迟 P50 200ns→<100ns
+  - e2e 延迟不变（瓶颈在调度）
+- 本质是消除跨 crate 函数调用开销（embassy_hal_internal → uart_16550）
+- 不是代码逻辑优化，纯编译器层面的链接时内联
+
+**决策理由**:
+- LTO 使 release build 时间增加 2-3×
+- 当前处于活跃开发期，编译速度比这 3% 的 ring buffer 提升更重要
+- 最终发布构建时加回一行配置即可，零代码改动
+
+**回滚操作**:
+- 从 uart_16550 + StarryOS 的 `Cargo.toml` 中删除 `[profile.release] lto = true`
+- 性能文档中 LTO 数据保留为参考（标注为"需在最终构建中开启"）
+
+**重新启用时机**:
+- 开发冻结 → 发布构建前
+- 仅需在 StarryOS `Cargo.toml` 加回一行（uart_16550 作为依赖自动继承）
+- 预期效果：ring buffer 吞吐量 ↑69%，e2e 延迟不变
