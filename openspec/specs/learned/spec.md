@@ -34,6 +34,32 @@
 | `Uart16550<MmioBackend>::new_mmio(NonNull<u8>, stride)` | RISC-V MMIO 初始化入口；stride MUST 传 1（NS16550 寄存器仅 8 字节） |
 | `uart.isr().interrupt_type()` | ISR 中读取 InterruptType 枚举分发：ReceivedDataReady/ReceptionTimeout → RX，THR_EMPTY → TX |
 
+**异步 OS 抽象 trait（Q13 新增到 uart_16550）**
+
+| 路径 | 用途 | 备注 |
+|------|------|------|
+| <!-- L160 --> | `uart_16550::os::OsRuntime` | Task spawning abstraction | `spawn<F>(future, name)` + `block_on<F>(future)` |
+| <!-- L161 --> | `uart_16550::os::OsIrq` | IRQ registration abstraction | `register_handler(irq_number, handler)` |
+| <!-- L162 --> | `uart_16550::os::OsMmio` | MMIO mapping abstraction | `map_mmio(phys, size)` + `phys_to_virt(phys)` |
+| <!-- L163 --> | `uart_16550::os::OsSpinNoIrq<T>` | IRQ-safe spinlock abstraction | `new(val)` + `with_lock(f)` (callback pattern) |
+| <!-- L164 --> | `uart_16550::os::OsWakerSet` | Waker registration abstraction | `new()` + `register(waker)` + `wake() -> u32` |
+| <!-- L165 --> | `uart_16550::async_::driver::UartPort` | UART hardware access trait | `receive_bytes(&self, buf)` + `send_bytes(&self, buf)` |
+| <!-- L166 --> | `uart_16550::async_::driver::AsyncUartDriver<R,W,U>` | Async UART driver | `new(rx, tx, uart)` + `start_rx/tx_copier(enable_intr)` |
+| <!-- L167 --> | `uart_16550::async_::device_ops::AsyncUartReader<R,W,U>` | Async UART reader | `impl TtyRead + embedded_io_async::Read` |
+| <!-- L168 --> | `uart_16550::async_::device_ops::AsyncUartWriter<R,W,U>` | Async UART writer | `impl TtyWrite + embedded_io_async::Write + Clone` |
+
+**异步模块文件路径（Q13 新增到 uart_16550 和 StarryOS）**
+
+| 路径 | 用途 |
+|------|------|
+| <!-- L169 --> | `uart_16550/src/os/mod.rs` | OS abstraction trait definitions: 5 traits for cross-platform async |
+| <!-- L170 --> | `uart_16550/src/async_/mod.rs` | Async module root: exports isr, ring_buffer, driver, device_ops |
+| <!-- L171 --> | `uart_16550/src/async_/isr.rs` | ISR handler + AtomicWaker: RX_WAKER, TX_WAKER, DRAIN_WAKER |
+| <!-- L172 --> | `uart_16550/src/async_/ring_buffer.rs` | Ring buffer with OsWakerSet: RingBufRx<W>, RingBufTx<W> |
+| <!-- L173 --> | `uart_16550/src/async_/driver.rs` | Copier driver with NAPI: AsyncUartDriver<R,W,U> + UartPort trait |
+| <!-- L174 --> | `uart_16550/src/async_/device_ops.rs` | Device ops with embedded_io_async: AsyncUartReader/Writer |
+| <!-- L175 --> | `kernel/src/drivers/os_arceos.rs` | ArceOS adapter layer: 5 trait implementations |
+
 **内核模块关键路径**
 
 | 路径 | 用途 |
@@ -739,3 +765,12 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
   3. 代码量可控 — 核心异步逻辑仅 ~400 行
   4. trait 抽象成熟 — `embedded_io_async` 是社区标准
 - **新决策**：uart_16550 应该成为完整的异步 UART crate，通过 feature gate 支持 async
+
+### Requirement: Q13 uart_16550 异步提取实施经验
+
+将异步串口从 StarryOS 提取到 uart_16550 crate 过程中积累的实现经验。
+
+| <!-- L176 --> | **UartPort trait for &mut self** | `Uart16550::receive_bytes/send_bytes` 取 `&mut self`，UartPort trait 需要内部可变性；`receive_bytes/send_bytes` 取 `&self`，底层通过 `OsSpinNoIrq::with_lock` 包装 |
+| <!-- L177 --> | **Callback pattern for OsSpinNoIrq** | `with_lock<R>(&self, f: impl FnOnce(&mut T) -> R) -> R` 使用回调模式而非返回 guard，避免 guard 生命周期问题 |
+| <!-- L178 --> | **&'static Self for no-alloc driver** | `AsyncUartDriver` 使用 `&'static Self` 而非 `Arc<Self>` 兼容 no-alloc 环境 |
+| <!-- L179 --> | **StarryOS owns ring buffer statics** | RingBuffer::new() 静态变量保留在 StarryOS，通过 `&'static` 引用传递给 uart_16550 |

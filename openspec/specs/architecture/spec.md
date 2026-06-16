@@ -360,3 +360,36 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 
 - **WHEN** 开发者需要修改 uart_16550 的异步集成策略
 - **THEN** 必须参考本 ADR-032 的决策理由，确保不破坏跨平台复用目标
+
+<!-- A033 -->
+### ADR-033: uart_16550 成为完整异步 UART crate
+
+**日期**: 2026-06-16
+**状态**: 已接受
+**决策**: 推翻 ADR-007（D1 决策），将异步串口实现从 StarryOS 提取到 uart_16550 crate
+
+**背景**:
+- StarryOS Q0~Q12 积累 ~618 行异步串口实现
+- 其他 OS 项目（Linux kernel module, Tock capsule, RTIC driver）也需要异步 UART
+- Q12 已完成基础设施迁移（atomic_ring_buffer + embedded_io_async + TC tcdrain）
+
+**决策内容**:
+1. uart_16550 新增 `async` feature gate
+2. 定义 5 个 OS 抽象 trait（OsRuntime, OsIrq, OsMmio, OsSpinNoIrq, OsWakerSet）
+3. 迁移 ISR handler, ring buffer, copier driver, device_ops 到 uart_16550
+4. StarryOS 实现 ArceOS 适配层（os_arceos.rs）
+
+**替代方案**:
+- 保持异步在 StarryOS（原 D1 决策）→ 复用性差
+- 独立 crate（uart_16550-async）→ 维护负担
+
+**影响**:
+- uart_16550 代码量增加 ~400 行
+- StarryOS 删除 ~370 行本地代码
+- 其他 OS 只需实现 5 个 trait 即可使用异步 UART
+
+**关键设计**:
+- `UartPort` trait 解决 `&mut self` 问题（Uart16550 方法需要 &mut self）
+- `OsSpinNoIrq` 使用回调模式（`with_lock`）避免 guard 生命周期问题
+- Ring buffer 静态变量由 OS 拥有（`&'static RingBuffer` 传入 uart_16550）
+- 驱动使用 `&'static Self` 而非 `Arc<Self>`（兼容 no-alloc）

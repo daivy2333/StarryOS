@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-15
-> 分支：feat/uart-16550-async — Q0~Q12 ✅，Q13 📋 异步串口提取到 uart_16550 crate（三阶段迁移），Q6 ⏳ 等待硬件
+> Last updated: 2026-06-16
+> 分支：feat/uart-16550-async — Q0~Q13 ✅（异步串口提取完成），Q6 ⏳ 等待硬件
 
 ---
 
 ## 当前状态
 
-**分支**: feat/uart-16550-async（基于 `asyncuart-dev`，Q0~Q12 完成，Q13 规划中）
+**分支**: feat/uart-16550-async（基于 `asyncuart-dev`，Q0~Q13 完成）
 **前分支**: asyncuart-dev（Q0~Q12 全部完成，已切换到 feat/uart-16550-async）
 **成果**:
 - kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
@@ -16,7 +16,14 @@
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
 **Q5.2 已完成**: 用户态自动化测试（O21）+ 非阻塞模式（O43 via Q7）
 **Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正（O44）、tcdrain 真异步化（O45）
-**Q13 规划中** (2026-06-15): 异步串口提取到 uart_16550 crate（三阶段：trait 提取 → 核心逻辑 → 适配层），ADR-032 决策推翻 D1，5 个 OS 抽象 trait 设计完成
+**Q13 Phase 1 ✅** (2026-06-16): TtyRead/TtyWrite trait 提取到 uart_16550 crate（`src/tty.rs` +27 行），StarryOS ldisc.rs 改为 `pub use uart_16550::{TtyRead, TtyWrite};`。ProcessMode/TtyConfig 遗留 StarryOS（含 alloc/OS 依赖）
+**Q13 Phase 2-3 ✅** (2026-06-16): 异步串口完整提取到 uart_16550 crate
+- 5 个 OS 抽象 trait（OsRuntime, OsIrq, OsMmio, OsSpinNoIrq, OsWakerSet）
+- 核心异步逻辑迁移：ISR handler, ring buffer, copier driver, device_ops
+- ArceOS 适配层实现（os_arceos.rs）
+- StarryOS 删除 4 个本地文件（isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs）
+- 9 个原子提交，`cargo check` + `cargo clippy` 0 错误/警告
+- uart_16550 新增 `async` feature gate，成为可复用异步 UART crate
 **2026-06-05 文档补充**:
 - O46 / O47 记录到 `optimization/spec.md`（Q8/Q9 远期优化）
 - OE1~OE5 反模式（embassy Channel/Mutex/Watch/Semaphore/select!）记录到 `optimization/spec.md` "已排除优化"
@@ -51,14 +58,14 @@
 - syscall/fs/fd_ops.rs: close_range UNSHARE 范围优化
 - terminal/mod.rs: `ws_col` 110→80（修复 QEMU 控制台显示换行错位）
 - `cargo check` 0 错误 / `cargo clippy` 0 错误
-**最终进度**: 全部可无硬件完成的优化已做完，仅剩 Q6 等待 VisionFive2 真板验证
+**最终进度**: Q0~Q13 全部完成，仅剩 Q6 等待 VisionFive2 真板验证
 - 性能趋势：1B avg latency Q8(145)→Q10(122)→Q11(118)→Q12(124)µs（Q12 去锁后小数据吞吐 ↑24%，software overhead ↓31%：53.9→37.1µs）
-- 代码量：14 文件变更（StarryOS） + 1 文件（uart_16550），净增 ~450 行
+- 代码量：Q13 提取后 StarryOS 删除 4 个本地文件（isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs），uart_16550 新增 async feature gate
 **2026-06-11 代码质量收尾**:
 - cargo 警告清零（21→0）：自动修复 6 项 + 死方法移除 5 项 + dead_code 标注 11 项
 - 真死代码移除（8 方法，-76 行）：access.rs(3) + io.rs(2) + shm.rs(1) + ops.rs(1) + ring_buffer(5)
 - 后续优化记录：O48(memtrack) + O49(Manual移除) + O50(预留接口) 写入 optimization/spec.md
-**下一步**: Q6 VisionFive2 真板验证
+**下一步**: Q6 VisionFive2 真板验证；可选 QEMU benchmark 回归测试
 
 ### 关键发现
 
@@ -113,6 +120,7 @@
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | ✅ |
 | **Q11** | 内核通用优化 | tty unwrap + mm/access 批页检查 + sendfile 栈缓冲 + close_range 优化 + ws_col 修复 | ✅ |
 | **Q12** | Embassy 路径 A | atomic_ring_buffer 去锁 (O51) + embedded_io_async (O52) + TC tcdrain (O53) | ✅ (2026-06-11) → 🗄️ 归档 2026-06-15 |
+| **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
