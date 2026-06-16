@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-16
-> 分支：feat/uart-16550-async — Q0~Q13 ✅（异步串口提取完成），Q6 ⏳ 等待硬件
+> 分支：feat/uart-16550-async — Q0~Q13 ✅ LTO ✅，Q6 ⏳ 等待硬件
 
 ---
 
@@ -34,6 +34,11 @@
 - **benchmark 验证通过**：1B avg 129.5µs ≤ 130µs ✅
 - **性能对比**：overhead 53.3→42.6µs（↓20%），1B avg 140.1→129.5µs（↓7.6%）
 - **与 Q12 差距**：+5.5µs（129.5 vs 124），为可移植性合理代价
+**LTO ✅** (2026-06-16): 启用 `lto = true` 跨 crate 内联优化
+- uart_16550 + StarryOS 双 repo 均添加 `[profile.release] lto = true`
+- **内核态 ring buffer 性能飞跃**：TX 385→652 MB/s（↑69%），RX P50 200ns→0ns
+- **e2e 延迟不变**：129.4µs（瓶颈在调度，不在函数调用）
+- 副作用：release build 时间增加（内核规模小，影响可控）
 **下一步**: Q6 VisionFive2 真板验证
 
 ### 关键发现
@@ -90,6 +95,7 @@
 | **Q11** | 内核通用优化 | tty unwrap + mm/access 批页检查 + sendfile 栈缓冲 + close_range 优化 + ws_col 修复 | ✅ |
 | **Q12** | Embassy 路径 A | atomic_ring_buffer 去锁 (O51) + embedded_io_async (O52) + TC tcdrain (O53) | ✅ (2026-06-11) → 🗄️ 归档 2026-06-15 |
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
+| **LTO** | 跨 crate 内联 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 最终架构
