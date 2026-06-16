@@ -138,6 +138,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 > 基于 `.claude/analysis/uart-16550-async-extraction.md` 可行性分析，将 StarryOS 异步串口实现（Q0~Q12 共 ~618 行）提取到 `uart_16550` crate，使其成为可复用的异步 UART crate。
 >
 > **分支**：`feat/uart-16550-async`（StarryOS + uart_16550 同名分支）
+> **测试分支**：`feat/uart-async-bench-extracted`（基于 `feat/uart-async-bench`，Q13 完成后 merge + benchmark 对比）
 > **决策**：ADR-032（推翻 D1，uart_16550 成为完整异步 UART crate）
 > **依赖**：Q12 已完成基础设施（atomic_ring_buffer + embedded_io_async + TC tcdrain）
 
@@ -173,6 +174,8 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 | **Q13.12** | StarryOS 从 uart_16550 导入异步实现 | `kernel/Cargo.toml` + `drivers/mod.rs` | 启用 `async` feature |
 | **Q13.13** | 删除已迁移的本地代码 | `kernel/src/drivers/{isr,ring_buffer,async_driver,device_ops}.rs` | 仅保留 init + TTY 绑定 |
 | **Q13.14** | 性能回归测试 | benchmark 对比 Q12 基线 | 无退化 |
+| **Q13.14.1** | merge 提取后代码到测试分支 | `feat/uart-async-bench-extracted` | `git merge feat/uart-16550-async` |
+| **Q13.14.2** | 在测试分支跑 benchmark | `feat/uart-async-bench-extracted` | 对比 `feat/uart-async-bench` 基线 |
 | **Q13.15** | Gate Phase 3 | — | `cargo check` + clippy + QEMU 启动 + benchmark PASS |
 
 **工作量**：~3 天 | **风险**：中（全局状态处理） | **收益**：消除 ~400 行本地代码
