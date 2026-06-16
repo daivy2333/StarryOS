@@ -433,7 +433,7 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 |------|-------|--------|------|
 | Ring buffer TX | 385 MB/s | 652 MB/s | ↑69% |
 | Ring buffer RX | 864 MB/s | 898 MB/s | ↑4% |
-| RX latency P50 | 200 ns | 0 ns | ✅ |
+| RX latency P50 | 200 ns | <100 ns | ✅（低于计时器分辨率） |
 | RX latency avg | 316 ns | 195 ns | ↓38% |
 | e2e 1B avg | 143.7µs | 129.4µs | 不变（噪声） |
 

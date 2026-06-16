@@ -37,7 +37,7 @@
 | TX Ring Buffer 写入 | 567 KB/s | ~652 MB/s | Console 逐字节 `send_raw()`；Async 批量 `push()`（LTO 内联 embassy） |
 | TX CPU cycles/byte | 3,835 | N/A¹ | Q13 后内核 benchmark 移至独立测试分支 |
 | RX Ring Buffer 读取 | 不可测² | ~898 MB/s | Async 直接 pop lock-free SPSC RingBuffer（LTO 内联 embassy） |
-| RX 延迟 P50 | 不可测² | 0 ns | 单字节 pop 延迟（LTO 消除函数调用开销） |
+| RX 延迟 P50 | 不可测² | <100 ns | 单字节 pop 延迟（低于计时器分辨率） |
 
 ¹ Q13 后内核 benchmark 移至独立测试分支 `feat/uart-16550-bench`，主分支不内嵌 CPU 周期测量。
 ² Console 无 Ring Buffer，无法做可比较的内核态 RX 测试。

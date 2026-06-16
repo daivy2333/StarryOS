@@ -36,7 +36,7 @@
 - **与 Q12 差距**：+5.5µs（129.5 vs 124），为可移植性合理代价
 **LTO ✅** (2026-06-16): 启用 `lto = true` 跨 crate 内联优化
 - uart_16550 + StarryOS 双 repo 均添加 `[profile.release] lto = true`
-- **内核态 ring buffer 性能飞跃**：TX 385→652 MB/s（↑69%），RX P50 200ns→0ns
+- **内核态 ring buffer 性能飞跃**：TX 385→652 MB/s（↑69%），RX P50 200ns→<100ns（低于计时器分辨率）
 - **e2e 延迟不变**：129.4µs（瓶颈在调度，不在函数调用）
 - 副作用：release build 时间增加（内核规模小，影响可控）
 **下一步**: Q6 VisionFive2 真板验证
