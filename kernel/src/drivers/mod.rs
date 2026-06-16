@@ -14,6 +14,7 @@ pub mod async_driver;
 pub mod device_ops;
 pub mod isr;
 pub mod ntty_async;
+pub mod os_arceos;
 pub mod ring_buffer;
 pub mod uart_init;
 pub use ntty_async::ASYNC_TTY;

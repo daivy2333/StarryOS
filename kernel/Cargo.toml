@@ -103,7 +103,7 @@ xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
 
 # AsyncUart dependencies
-uart_16550 = { path = "../../uart_16550" }  # Local 16550 UART driver (v0.6.0)
+uart_16550 = { path = "../../uart_16550", features = ["async"] }  # Local 16550 UART driver (v0.6.0)
 embassy-sync = "0.6.2"  # AtomicWaker (ISR-safe)
 embedded-io-async = "0.6.1"  # Standard async I/O traits (Read/Write)
 

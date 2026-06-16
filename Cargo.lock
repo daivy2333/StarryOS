@@ -3370,6 +3370,9 @@ name = "uart_16550"
 version = "0.6.0"
 dependencies = [
  "bitflags 2.11.0",
+ "embassy-hal-internal",
+ "embassy-sync",
+ "embedded-io-async",
 ]
 
 [[package]]
