@@ -209,7 +209,7 @@ pub fn init_uart_hardware() {
     }
 
     // Step 2: Direct raw pointer read test (bypass uart_16550 crate)
-    let base_ptr: *const u8 = get_uart_mmio_virt().as_ptr() as *const u8;
+    let base_ptr = get_uart_mmio_virt().as_ptr();
     ax_println!("[UART INIT] base_ptr = {:?}", base_ptr);
 
     // Try reading LSR register at stride 1 (offset 5), same offset Console uses
@@ -250,7 +250,7 @@ pub fn init_uart_hardware() {
     let rx = unsafe { RingBufRx::<ArceOsWakerSet>::new(&RX_RING) };
     let tx = unsafe { RingBufTx::<ArceOsWakerSet>::new(&TX_RING) };
 
-    let uart_port: &'static ArceOsUartPort = &*UART_PORT;
+    let uart_port: &'static ArceOsUartPort = &UART_PORT;
     let driver = Arc::new(ArceOsDriver::new(rx, tx, uart_port));
     DRIVER.call_once(|| driver);
     ax_println!("[UART INIT] ✅ AsyncUartDriver created");
