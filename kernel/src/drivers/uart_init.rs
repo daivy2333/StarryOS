@@ -83,10 +83,12 @@ pub struct ArceOsUartPort {
 }
 
 impl UartPort for ArceOsUartPort {
+    #[inline(always)]
     fn receive_bytes(&self, buf: &mut [u8]) -> usize {
         self.uart.lock().receive_bytes(buf)
     }
 
+    #[inline(always)]
     fn send_bytes(&self, buf: &[u8]) -> usize {
         self.uart.lock().send_bytes(buf)
     }
