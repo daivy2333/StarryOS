@@ -317,3 +317,46 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 
 - **WHEN** 开发者要测量 I/O 性能
 - **THEN** 必须先判断测试对象是"硬件吞吐 / 软件路径 / 端到端延迟"，再选择对应位置（内核态绕过 TTY / 用户态完整链路 / QEMU 时序欺骗需特殊处理）
+
+### Requirement: 异步串口提取 — uart_16550 成为完整异步 UART crate
+
+异步串口实现 MUST 提取到 `uart_16550` crate，通过 `async` feature gate 支持，使其成为可复用的异步 UART crate，适用于任何 Rust RISC-V OS 项目。
+
+**决策详情**（2026-06-15, ADR-032）：
+
+- **背景**：
+  - StarryOS 异步串口栈（Q0~Q12）已成熟，核心逻辑 ~400 行
+  - 其他 OS 项目（Linux kernel module, Tock capsule, RTIC driver）也需要异步 UART
+  - Q12 已完成基础设施迁移（`atomic_ring_buffer` + `embedded_io_async` + TC tcdrain）
+  - 现有 D1 决策（uart_16550 ADR-7）说"异步留在 wrapper 层"，需要推翻
+- **决策**：
+  1. uart_16550 新增 `async` feature gate，包含完整异步串口实现
+  2. 定义 5 个 OS 抽象 trait（`OsRuntime`, `OsIrq`, `OsMmio`, `OsSpinNoIrq`, `OsWakerSet`）
+  3. StarryOS 实现 ArceOS 适配层，从 uart_16550 导入异步实现
+  4. 删除 StarryOS 本地 drivers/ 中已迁移的代码
+- **原因**：
+  1. 复用需求 — 其他 OS 项目也需要异步 UART
+  2. 代码量可控 — 核心异步逻辑仅 ~400 行，不增加维护负担
+  3. trait 抽象成熟 — `embedded_io_async` 是社区标准，`embassy-sync` 是 ISR 安全的
+  4. Q12 已完成基础设施 — 可直接复用
+- **影响**：
+  - ✅ uart_16550 成为完整的异步 UART crate
+  - ✅ 其他 OS 项目可通过实现 5 个 trait 快速集成
+  - ✅ StarryOS 消除 ~400 行本地代码
+  - ⚠️ 需要推翻 D1 决策（uart_16550 ADR-7）
+  - ⚠️ 需要处理全局状态（`UART`, `DRIVER`, `ASYNC_TTY`）的泛型化
+- **替代方案**：
+  - ❌ 保持 D1 决策（wrapper 方案）— 无法复用
+  - ❌ 创建独立 crate（`portable-async-uart`）— 增加维护负担
+  - ✅ 提取到 uart_16550（本决策）— 最小侵入，复用现有
+- **状态**：📋 待实施
+
+#### Scenario: 实现异步串口的 OS 适配层
+
+- **WHEN** 开发者要在新 OS 项目中使用 uart_16550 的异步功能
+- **THEN** 必须实现 5 个 OS 抽象 trait（`OsRuntime`, `OsIrq`, `OsMmio`, `OsSpinNoIrq`, `OsWakerSet`），然后启用 `uart_16550` 的 `async` feature
+
+#### Scenario: 推翻 D1 决策
+
+- **WHEN** 开发者需要修改 uart_16550 的异步集成策略
+- **THEN** 必须参考本 ADR-032 的决策理由，确保不破坏跨平台复用目标

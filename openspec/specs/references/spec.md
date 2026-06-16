@@ -132,6 +132,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | `optimization-opportunity-audit.md` | 2026-06-11 优化机会全面审计：4 个并行 agent 深度扫描，6+ 项未记录优化（含 3 项正确性 bug），Q8~Q11 重规划 | 保留 |
 | `embassy-uart-evaluation.md` | embassy UART 架构评估：三层 API、ISR 搬运 vs ISR 极简对比、lock-free ring buffer、迁移路径 A/B/C、可借鉴/不可借鉴组件清单 | 新增 (2026-06-11) |
 | `uart-16550-fork-evaluation.md` | uart_16550 本地 Fork 必要性评估：本地 fork 仅 12 行 set_ier()、上游状态分析、决策矩阵、建议保留→上游化 | 新增 (2026-06-12) |
+| `uart-16550-async-extraction.md` | uart_16550 异步串口提取可行性分析：7 文件 618 行迁移评估、5 个 OS 抽象 trait 设计、三阶段迁移方案、推翻 D1 决策论证 | 新增 (2026-06-15) |
 
 **已删除**（内容已被覆盖）：
 - `uart-16550-crate-reuse.md` — 内容已由 `uart-16550-integration.md` 完全覆盖

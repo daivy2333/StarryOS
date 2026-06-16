@@ -711,3 +711,31 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 | delta spec | `ls <change>/specs/` | 至少一个 `spec.md`（含 `## ADDED/MODIFIED Requirements`） |
 | 验证格式 | `openspec validate <name>` | 无 ERROR |
 | 主 spec 同步 | 主 spec 与 delta spec 内容一致 | 主 spec 中相关条目已更新为最终态 |
+
+**技巧 12：异步串口提取的 5 个 OS 抽象 trait（2026-06-15）**（L158）
+
+将 StarryOS 异步串口实现提取为可复用 crate 时，仅需抽象 5 个 OS 特定 API：
+
+| Trait | 替代的 OS API | Linux 等价 | Tock 等价 |
+|-------|--------------|------------|-----------|
+| `OsRuntime` | `axtask::{block_on, spawn_with_name}` | 手动 poll loop | callback |
+| `OsIrq` | `axhal::irq::register_irq_hook` | `request_irq` | `subscribe` |
+| `OsMmio` | `axhal::mem::phys_to_virt` + `axmm::iomap` | `ioremap` | 不暴露 |
+| `OsSpinNoIrq` | `kspin::SpinNoIrq` | `spinlock_irqsave` | `critical_section` |
+| `OsWakerSet` | `axpoll::PollSet` | `wait_queue_head` | `AtomicSubscriptions` |
+
+**关键发现**：
+- 核心异步逻辑（isr.rs + ring_buffer.rs + async_driver.rs + device_ops.rs）仅 ~400 行
+- 已有依赖（embassy-sync + embassy-hal-internal + embedded-io-async）全部是 `no_std` 可移植的
+- `embedded-io-async` 是社区标准 trait，实现后可与任何 async I/O 消费者互操作
+- 三阶段迁移：trait 提取 → 核心逻辑 → 适配层，每阶段可独立验证
+
+**踩坑 4：D1 决策需要推翻（2026-06-15）**（L159）
+
+- **原决策**（uart_16550 ADR-7）：异步实现留在 StarryOS wrapper 层，uart_16550 保持 sync-only
+- **推翻理由**：
+  1. 复用需求 — 其他 OS 项目也需要异步 UART
+  2. Q12 已完成基础设施 — `atomic_ring_buffer` + `embedded_io_async` + TC tcdrain
+  3. 代码量可控 — 核心异步逻辑仅 ~400 行
+  4. trait 抽象成熟 — `embedded_io_async` 是社区标准
+- **新决策**：uart_16550 应该成为完整的异步 UART crate，通过 feature gate 支持 async
