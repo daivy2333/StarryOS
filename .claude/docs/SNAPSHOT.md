@@ -10,7 +10,7 @@
 **分支**: feat/uart-16550-async（基于 `asyncuart-dev`，Q0~Q13 完成）
 **前分支**: asyncuart-dev（Q0~Q12 全部完成，已切换到 feat/uart-16550-async）
 **成果**:
-- kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
+- kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
 - **OpenSpec 文档体系建立**（2026-06-03）：4 个 spec 域（architecture / learned / references / optimization），全部通过 `openspec validate --specs`；rules 已整合到 CLAUDE.md（迁移墓碑见 `openspec/changes/archive/rules-domain-2026-06-03/`）
 - 原 `.claude/docs/{architecture,learned,references,optimization,rules}.md` 已迁移至 `openspec/specs/`，源文件以 `.bak` 保留
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
@@ -85,7 +85,7 @@
 | **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
 | **P0** | OpenSpec 文档体系 | 4 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
 | **Q8** | 驱动引擎打磨 | NAPI 退出修复 + ISR 去锁化 + IER 规范化 + 热路径优化 + O46 AtomicWaker 推广 | ✅ |
-| **Q9** | 超时机制 | embassy-time 集成（部分无需 Q6） | 📋 计划中 |
+| **Q9** | 超时机制 | VTIME 读超时（复用 axtask::future::timeout，无需 embassy-time） | ✅ (2026-06-11) |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 锁拆分 + 缓冲扩容 | ✅ |
 | **Q11** | 内核通用优化 | tty unwrap + mm/access 批页检查 + sendfile 栈缓冲 + close_range 优化 + ws_col 修复 | ✅ |
 | **Q12** | Embassy 路径 A | atomic_ring_buffer 去锁 (O51) + embedded_io_async (O52) + TC tcdrain (O53) | ✅ (2026-06-11) → 🗄️ 归档 2026-06-15 |

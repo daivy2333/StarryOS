@@ -2,7 +2,7 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q5 / Q5.1 / Q7 已完成；Q6 / 远期待做）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone（Q0~Q7）。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q13 已完成，Q13.1 已完成；Q6 待做）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone（Q0~Q13）。
 
 ## Requirements
 
@@ -10,27 +10,13 @@
 
 Q5 阶段（中断驱动 + NAPI 批量 I/O）所有优化 MUST 视为已落地且禁止回退；新增优化 MUST 在 Q5 基础上叠加，禁止重复造轮子。
 
-**Q5.1 已完成（2026-05-31）**：
-
 | 编号 | 内容 | 效果 |
 |------|------|------|
-| **O2 / O34** | NAPI 中断合并 | 连续成功 ≥16 次后切轮询模式，batch=64，高吞吐时减少 90%+ IRQ |
-| **O4 / O35** | FCR 阈值日志 | ISR bits 6-7 检查 FIFO 状态，记录触发阈值 |
-| **O7** | uart_16550 批量读写 API | `receive_bytes` / `send_bytes` 替代逐字节操作，减少函数调用开销 |
-| **O34** | TX interleave 修复 | TX copier 用本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 |
-
-**Q5 已完成优化清单**：
-
-| 编号 | 内容 | 效果 |
-|------|------|------|
-| **O25-O26** | RX/TX 批量 I/O | 单锁内排空/填满 FIFO |
-| **O27** | IER 缓存（AtomicU8） | RMW → 单次 MMIO write |
-| **O28** | ISR 合并 | 单临界区完成 read+write |
-| **O29** | COPIER_BUF 256→1024 | 减少 lock 频率 |
-| **O30** | TX 单次 buffer lock | 消除 double lock |
-| **O31** | AtomicWaker skip | will_wake 检查 |
-| **O33** | rx/tx 独立 Mutex | 消除伪竞争 |
-| **O24** | stride=4 修复 | 已归档 |
+| **O2/O34** | NAPI 中断合并 + TX interleave 修复 | 高吞吐减少 90%+ IRQ |
+| **O4/O35** | FCR 阈值日志 | FIFO 状态监控 |
+| **O7** | uart_16550 批量读写 API | 减少函数调用开销 |
+| **O25-O33** | 批量 I/O / IER 缓存 / ISR 合并 / 锁优化 | 热路径全面优化 |
+| **O24** | stride=4 修复 | LoadFault 根因修复 |
 
 #### Scenario: 优化热路径性能
 
@@ -139,13 +125,14 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
-| **O45** | tcdrain 真异步化 | 🟡 中 | ✅ PollSet + DRAIN_WAKER，消除 `wake_by_ref` 自旋 |
-| **O46** | AtomicWaker 模式推广 | 🟡 中 | ✅ 已完成（2026-06-11 Q8）：pipe(3)/signalfd(1)/pidfd(1)/event(2) 共 8 个 PollSet→AtomicWaker，唤醒延迟 ~200ns→~50ns |
-| **O47** | embassy-time 超时机制 | 🟡 中 | ✅ 已完成（2026-06-11 Q9）：改用 axtask::future::timeout() 实现 VTIME 读超时，无需 embassy-time 依赖 |
 | **O1 / O36** | 零拷贝 RX | — | mmap ring buffer 到用户空间 |
 | **O5** | 协程优先级调度 | — | 取决于 axtask 支持 |
 | **O37** | kernel log TX 合并 | — | `ax_println!` 走 ring buffer |
 | **O32** | poll_fn 闭包 | — | 编译器可能已优化 |
+
+<!-- tombstone: O45 --> Archived in optimization/spec.md #O45 2026-06-16 — ✅ 已完成（2026-06-11 Q8），tcdrain 真异步化
+<!-- tombstone: O46 --> Archived in optimization/spec.md #O46 2026-06-16 — ✅ 已完成（2026-06-11 Q8），AtomicWaker 推广 8 处
+<!-- tombstone: O47 --> Archived in optimization/spec.md #O47 2026-06-16 — ✅ 已完成（2026-06-11 Q9），VTIME 超时机制
 
 #### Scenario: 评估 O1/O36 零拷贝 RX
 
@@ -173,56 +160,13 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 Q12 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。归档：2026-06-15（`openspec/changes/archive/2026-06-15-q12-embassy-path-a/`）。
 
-基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）的三项优化已完成，无需修改架构即可获得可量化收益。
+| 编号 | 内容 | 状态 | 关键收益 |
+|------|------|------|----------|
+| **O51** | `atomic_ring_buffer` 替换 `HeapRb + Mutex` | ✅ | overhead 53.9→37.1 µs（↓31%） |
+| **O52** | `embedded_io_async` trait 实现 | ✅ | 标准化接口，生态互通 |
+| **O53** | TC 硬件寄存器 tcdrain | ✅ | 删除 TCDRAIN_ACTIVE 软件状态 |
 
-| 编号 | 内容 | 优先级 | 说明 | 预期收益 |
-|------|------|--------|------|------|
-| **O51** | `atomic_ring_buffer` 替换 `HeapRb + Mutex` | ✅ 完成 | 引入 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC），`ring_buffer.rs:6,12,13` 使用 `static RingBuffer` + `Reader/Writer` 模式。`async_driver.rs` 移除 `self.rx.lock()/tx.lock()`。 | software overhead 53.9→37.1 µs（**↓31%**），消除 push/pop mutex 开销（~100ns/op） |
-| **O52** | `embedded_io_async` trait 实现 | ✅ 完成 | `device_ops.rs:28,32,38,42` 为 `AsyncUartReader`/`AsyncUartWriter` 实现 `embedded_io_async::ErrorType/Read/Write` trait。零改动核心数据路径，仅新增 trait impl 层。 | 标准化接口，可与 Rust 嵌入式生态互通 |
-| **O53** | TC 硬件寄存器 tcdrain 优化 | ✅ 完成 | `isr.rs:19` TX 中断检查 `LSR::TRANSMITTER_EMPTY`（bit 6）并 `DRAIN_WAKER.wake()`；`ctl.rs:53,60` tcdrain 改用 `LSR::TRANSMITTER_EMPTY` 轮询；`TCDRAIN_ACTIVE: AtomicBool` 已删除。 | 删除 `TCDRAIN_ACTIVE` 软件状态；tcdrain 切换次数 9→6 |
-
-**实施约束**（已满足）：
-- ✅ O51/O52/O53 均未修改 ISR 逻辑，未引入 `embassy-executor`
-- ✅ O52 为纯 trait impl，零改动核心路径
-- ✅ O51 已参照 embassy `atomic_ring_buffer` 实现 [L236-260](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L236-L260) `Acquire/Release` 内存序
-
-**总收益**（Q11→Q12 benchmark）：
-- software overhead：53.9 → 37.1 µs（**↓31%**）
-- 256B TX 延迟：1332 → 1252 µs（**↓6%**）
-- 1024B TX 延迟：5170 → 4880 µs（**↓5.6%**）
-- 1B avg latency：118 → 123.9 µs（小数据吞吐 **↑24%**）
-
-**实施提交**：
-- `e7d93f8` — feat(q12): embassy Path A — lock-free ring buffer + embedded_io_async + hardware tcdrain
-- `04483fe` — fix(q12): add poll.wake() to RingBufTx::push() to wake TX copier
-
-**新增依赖**：`embassy-hal-internal = "0.2"`（仅 atomic_ring_buffer 模块）/ `embedded-io-async = "0.6.1"`
-
-#### Scenario: O51 atomic_ring_buffer 落地验证
-
-- **WHEN** StarryOS 启动并加载 `kernel/src/drivers/ring_buffer.rs`
-- **THEN** 缓冲区 MUST 使用 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC），而**禁止**使用 `HeapRb<u8>` + `axsync::Mutex` 组合
-- **AND** `RX_RING` / `TX_RING` MUST 为 `static RingBuffer` 实例（`ring_buffer.rs:12,13`）
-- **AND** benchmark 中 software overhead MUST ≤ 40 µs（实测 37.1 µs）
-
-#### Scenario: O52 embedded_io_async 落地验证
-
-- **WHEN** 第三方 Rust 嵌入式库调用 `AsyncUartReader` / `AsyncUartWriter`
-- **THEN** `AsyncUartReader` MUST 实现 `embedded_io_async::Read`（`device_ops.rs:32`）
-- **AND** `AsyncUartWriter` MUST 实现 `embedded_io_async::Write`（`device_ops.rs:42`）
-- **AND** 两个类型 MUST 各自实现 `embedded_io_async::ErrorType`（`device_ops.rs:28,38`）
-
-#### Scenario: O53 硬件 TC tcdrain 落地验证
-
-- **WHEN** 用户态调用 `tcdrain()` 并等待 TX 真正完成
-- **THEN** ISR MUST 在 TX 中断中检查 `LSR::TRANSMITTER_EMPTY`（bit 6）并 `DRAIN_WAKER.wake()`（`isr.rs:19`）
-- **AND** `tcdrain` 实现 MUST 使用 `LSR::TRANSMITTER_EMPTY` 轮询（`ctl.rs:53,60`）
-- **AND** `TCDRAIN_ACTIVE: AtomicBool` MUST 已被删除（ISR 与 ctl.rs 中均无此符号）
-
-#### Scenario: 引入 atomic_ring_buffer 后性能退化（回归检测）
-
-- **WHEN** `RingBufRx/RingBufTx` 从 `HeapRb + Mutex` 迁移到 `RingBuffer` 后 benchmark 出现退化
-- **THEN** MUST 检查 `Acquire`/`Release` 内存序是否与 embassy 原实现一致（[L236-260](https://github.com/embassy-rs/embassy/blob/a7d1e449207c184c5a27ca9da3490b492257dfb4/embassy-hal-internal/src/atomic_ring_buffer.rs#L236-L260)），禁止降级为 `Relaxed`
+**总收益**：software overhead ↓31%，1B avg latency 118→123.9 µs
 
 ### Requirement: 远期优化（路径 B — 未来评估）
 

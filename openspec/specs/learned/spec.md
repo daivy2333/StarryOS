@@ -18,7 +18,7 @@
 |------|------|------|
 | `axtask::future::block_on` | 异步任务阻塞执行 | — |
 | `axtask::future::poll_io` | WouldBlock → register → await 标准模式 | — |
-| `axtask::future::register_irq_waker` | 连接中断到异步任务唤醒 | Q0~Q7 旧机制，已被 AtomicWaker 替代（见历史决策） |
+| `axtask::future::register_irq_waker` | ⚠️ STALE [2026-06-16] — Q0~Q7 旧机制，已被 AtomicWaker 替代（见历史决策） |
 | `embassy_sync::AtomicWaker::wake` | ISR 中安全唤醒 Waker，无锁中断安全 | 当前方案 |
 
 **uart_16550 crate（本项目本地依赖）**
@@ -68,7 +68,7 @@
 | `kernel/src/file/event.rs` | 轻量异步通知模式参考 |
 | `kernel/src/pseudofs/device.rs:28-55` | DeviceOps trait 核心方法（read_at/write_at/ioctl/as_pollable/flags） |
 | `kernel/src/pseudofs/dev/tty/` | TTY/ldisc/Termios 实现 |
-| `kernel/src/drivers/isr.rs` | ISR handler 入口（AtomicWaker 唤醒位置） |
+| `kernel/src/drivers/isr.rs` | ⚠️ STALE [2026-06-16] — Q13 已删除，ISR 迁移至 `uart_16550/src/async_/isr.rs` |
 | `axpoll/src/lib.rs` | Pollable trait 定义（poll + register，IoEvents 标志） |
 | `axmm/src/lib.rs:111-131` | `axmm::iomap()` 设备 MMIO 映射 API |
 | `axruntime-0.3.0-preview.2/src/lang_items.rs` | panic handler 实现 → ax_println! → polling TX |
