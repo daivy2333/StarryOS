@@ -31,8 +31,10 @@
 - `#[inline(always)]` 添加到 ring buffer push/pop + ArceOsUartPort 方法
 - 批量 push_batch/pop_batch 接口，减少锁获取次数
 - 3 个提交，`cargo check` + `cargo clippy` 0 错误/警告
-- **目标**：1B avg ≤ 130µs（待 benchmark 验证）
-**下一步**: Q6 VisionFive2 真板验证；Q13.1 benchmark 验证
+- **benchmark 验证通过**：1B avg 129.5µs ≤ 130µs ✅
+- **性能对比**：overhead 53.3→42.6µs（↓20%），1B avg 140.1→129.5µs（↓7.6%）
+- **与 Q12 差距**：+5.5µs（129.5 vs 124），为可移植性合理代价
+**下一步**: Q6 VisionFive2 真板验证
 
 ### 关键发现
 

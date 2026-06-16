@@ -214,7 +214,8 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 **验收标准**：
 - [x] `cargo check` 0 错误 / `cargo clippy` 0 warning ✅
 - [x] QEMU `make run` 内核正常启动 ✅
-- [ ] benchmark 性能验证（1B avg ≤ 130µs）— 待手动验证
+- [x] benchmark 性能验证 ✅（1B avg 129.5µs ≤ 130µs）
+- [x] FIONBIO 测试通过 ✅
 
 **验收标准** — 全部通过 ✅：
 - [x] `cargo check` 0 错误 / `cargo clippy` 0 warning
