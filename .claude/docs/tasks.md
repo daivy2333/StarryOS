@@ -1,6 +1,7 @@
 # tasks.md — 任务追踪
 
-> 由 assistant 维护，asyncuart-dev 分支。
+> 由 assistant 维护，feat/uart-16550-async 分支。
+> 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（三阶段：trait 提取 → 核心逻辑 → 适配层）。
 > 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
 > 2026-06-02 O45 完成，tcdrain 真异步化，e2e benchmark 就绪。
 > 2026-06-05 O46/O47 记录到 optimization/spec.md，OE1~OE5 反模式 + L81~L84 记录到 learned/spec.md。
@@ -33,6 +34,7 @@
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 优化 | ✅ (2026-06-11) |
 | **Q11** | 内核通用优化 | mm/access + close_range + sendfile + tty unwrap | ✅ (2026-06-11) |
 | **Q12** | Embassy 路径 A 优化 | atomic_ring_buffer + embedded_io_async + TC tcdrain | ✅ (2026-06-11) → 🗄️ 已归档 `archive/2026-06-15-q12-embassy-path-a/` |
+| **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | 📋 规划中 (2026-06-15) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -40,8 +42,9 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 📋 Q6 ⏳(硬件)
 
+> 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（feat/uart-16550-async 分支）
 > 2026-06-11 embassy 调研：路径 A（atomic_ring_buffer + embedded_io_async + TC tcdrain）立即可实施
 ```
 
@@ -129,6 +132,58 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 - [ ] `atomic_ring_buffer` 有单元测试覆盖
 
 **实施顺序**：Q12.2（纯 trait impl，零风险）→ Q12.3（小改动）→ Q12.1（核心改动，需测试）→ Q12.4 → Q12.5
+
+### Q13: 异步串口提取 📋 规划中 (2026-06-15)
+
+> 基于 `.claude/analysis/uart-16550-async-extraction.md` 可行性分析，将 StarryOS 异步串口实现（Q0~Q12 共 ~618 行）提取到 `uart_16550` crate，使其成为可复用的异步 UART crate。
+>
+> **分支**：`feat/uart-16550-async`（StarryOS + uart_16550 同名分支）
+> **决策**：ADR-032（推翻 D1，uart_16550 成为完整异步 UART crate）
+> **依赖**：Q12 已完成基础设施（atomic_ring_buffer + embedded_io_async + TC tcdrain）
+
+#### Phase 1: 纯 trait 提取（零行为变更）
+
+| 子任务 | 描述 | 关键文件 | 验收标准 |
+|--------|------|----------|----------|
+| **Q13.1** | 提取 TtyRead/TtyWrite trait 到 uart_16550 | `uart_16550/src/tty_traits.rs`（新建） | trait 定义与 StarryOS 内核一致 |
+| **Q13.2** | 提取 TtyConfig/ProcessMode 到 uart_16550 | `uart_16550/src/tty_traits.rs` | 枚举/结构体与内核一致 |
+| **Q13.3** | StarryOS 内核改为从 uart_16550 导入 | `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs` | `use uart_16550::tty_traits::*` |
+| **Q13.4** | Gate Phase 1 | — | `cargo check` + QEMU 启动 + Shell 交互 |
+
+**工作量**：~1 天 | **风险**：极低 | **收益**：trait 接口标准化
+
+#### Phase 2: 核心异步逻辑迁移
+
+| 子任务 | 描述 | 关键文件 | 验收标准 |
+|--------|------|----------|----------|
+| **Q13.5** | 定义 5 个 OS 抽象 trait | `uart_16550/src/os/mod.rs`（新建） | OsRuntime, OsIrq, OsMmio, OsSpinNoIrq, OsWakerSet |
+| **Q13.6** | 迁移 ISR handler | `uart_16550/src/async_/isr.rs`（新建） | 仅依赖 AtomicWaker + uart_16550 API |
+| **Q13.7** | 迁移 ring buffer | `uart_16550/src/async_/ring_buffer.rs`（新建） | 使用 embassy SPSC + OsWakerSet trait |
+| **Q13.8** | 迁移 copier 任务 | `uart_16550/src/async_/driver.rs`（新建） | 使用 OsRuntime trait |
+| **Q13.9** | 迁移 device_ops | `uart_16550/src/async_/device_ops.rs`（新建） | embedded_io_async impl |
+| **Q13.10** | Gate Phase 2 | — | `cargo check` + 单元测试通过 |
+
+**工作量**：~1 周 | **风险**：低 | **收益**：可复用异步串口 crate
+
+#### Phase 3: StarryOS 适配层
+
+| 子任务 | 描述 | 关键文件 | 验收标准 |
+|--------|------|----------|----------|
+| **Q13.11** | 实现 ArceOS 适配层 | `kernel/src/drivers/os_arceos.rs`（新建） | 5 个 trait 实现 |
+| **Q13.12** | StarryOS 从 uart_16550 导入异步实现 | `kernel/Cargo.toml` + `drivers/mod.rs` | 启用 `async` feature |
+| **Q13.13** | 删除已迁移的本地代码 | `kernel/src/drivers/{isr,ring_buffer,async_driver,device_ops}.rs` | 仅保留 init + TTY 绑定 |
+| **Q13.14** | 性能回归测试 | benchmark 对比 Q12 基线 | 无退化 |
+| **Q13.15** | Gate Phase 3 | — | `cargo check` + clippy + QEMU 启动 + benchmark PASS |
+
+**工作量**：~3 天 | **风险**：中（全局状态处理） | **收益**：消除 ~400 行本地代码
+
+**验收标准**：
+- [ ] `cargo check` 0 错误 / `cargo clippy` 0 新增 warning
+- [ ] QEMU `make run` 内核正常启动，Shell 交互正常
+- [ ] benchmark 性能不低于 Q12 基线
+- [ ] uart_16550 的 `async` feature 可独立编译
+
+**实施顺序**：Phase 1 → Phase 2 → Phase 3，每阶段可独立验证
 
 ### Q6: 真板验证 ⏳ 等待硬件
 

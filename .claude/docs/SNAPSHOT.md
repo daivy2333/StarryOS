@@ -1,13 +1,14 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-15
-> 分支：asyncuart-dev — Q0~Q12 ✅，Q12 OpenSpec 变更已归档（archive/2026-06-15-q12-embassy-path-a/），警告清零，死代码清理，Q6 ⏳ 等待硬件
+> 分支：feat/uart-16550-async — Q0~Q12 ✅，Q13 📋 异步串口提取到 uart_16550 crate（三阶段迁移），Q6 ⏳ 等待硬件
 
 ---
 
 ## 当前状态
 
-**分支**: asyncuart-dev（基于 `feat/uart-async-dev2`，Q0~Q7 完成，OpenSpec 文档体系建立）
+**分支**: feat/uart-16550-async（基于 `asyncuart-dev`，Q0~Q12 完成，Q13 规划中）
+**前分支**: asyncuart-dev（Q0~Q12 全部完成，已切换到 feat/uart-16550-async）
 **成果**:
 - kernel 层独立实现完整异步串口栈（~500 行），不修改任何外部 crate
 - **OpenSpec 文档体系建立**（2026-06-03）：4 个 spec 域（architecture / learned / references / optimization），全部通过 `openspec validate --specs`；rules 已整合到 CLAUDE.md（迁移墓碑见 `openspec/changes/archive/rules-domain-2026-06-03/`）
@@ -15,6 +16,7 @@
 **Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
 **Q5.2 已完成**: 用户态自动化测试（O21）+ 非阻塞模式（O43 via Q7）
 **Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正（O44）、tcdrain 真异步化（O45）
+**Q13 规划中** (2026-06-15): 异步串口提取到 uart_16550 crate（三阶段：trait 提取 → 核心逻辑 → 适配层），ADR-032 决策推翻 D1，5 个 OS 抽象 trait 设计完成
 **2026-06-05 文档补充**:
 - O46 / O47 记录到 `optimization/spec.md`（Q8/Q9 远期优化）
 - OE1~OE5 反模式（embassy Channel/Mutex/Watch/Semaphore/select!）记录到 `optimization/spec.md` "已排除优化"
