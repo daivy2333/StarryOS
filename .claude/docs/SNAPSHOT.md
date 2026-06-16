@@ -24,48 +24,10 @@
 - StarryOS 删除 4 个本地文件（isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs）
 - 9 个原子提交，`cargo check` + `cargo clippy` 0 错误/警告
 - uart_16550 新增 `async` feature gate，成为可复用异步 UART crate
-**2026-06-05 文档补充**:
-- O46 / O47 记录到 `optimization/spec.md`（Q8/Q9 远期优化）
-- OE1~OE5 反模式（embassy Channel/Mutex/Watch/Semaphore/select!）记录到 `optimization/spec.md` "已排除优化"
-- L81~L84 learned 踩坑档案（embassy 选型边界）记录到 `learned/spec.md` 新 Requirement
-**2026-06-11 优化审计与阶段重规划**:
-- 4 个并行 agent 深度扫描（UART 驱动 / ldisc 模型 / 全内核标记 / PollSet 迁移），发现 6+ 项未记录优化机会（含 3 项正确性 bug）
-- 分析文档 `.claude/analysis/optimization-opportunity-audit.md` 生成
-- L150~L155 新知识写入 `learned/spec.md`
-- 阶段重规划：原 Q8（仅 O46）→ Q8 驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46）；新增 Q10（数据路径优化）和 Q11（内核通用优化）
-- Q9 解耦：time driver 基础设施（Q9.1~Q9.3）无需 Q6 硬件，可先行完成
-**2026-06-11 Q8 完成**:
-- 3 个并行 Agent 完成 Wave 1+2（正确性修复 + 热路径优化）：NAPI 退出、ISR 去锁、IER 规范化、waker 去重、DRAIN_WAKER 条件化
-- 4 个并行 Agent 完成 Wave 3（O46 AtomicWaker 迁移）：signalfd/event/pipe/pidfd 共 8 个 PollSet→AtomicWaker
-- uart_16550 添加 `set_ier()` 公共方法
-- QEMU 实机验证通过：启动正常、Shell 交互正常、benchmark 无退化、FIONBIO PASS
-- `cargo check` 0 错误 / `cargo clippy` 0 错误
-**2026-06-11 Q10 完成**:
-- BUF_SIZE 80→256（ldisc 缓冲扩容 3.2×）
-- SimpleReader::poll 改用 push_slice 批量写入（减少 N 次 try_push 调用）
-- LineDiscipline::read() / drain_input() 改为 &self（UnsafeCell 包装 buf_rx）
-- QEMU 实机验证通过：Shell 正常、benchmark 性能提升
-- `cargo check` 0 错误 / `cargo clippy` 0 错误
-- **性能对比（Q8→Q10）**：256B TX 1332→1252 µs（↓6%），1024B TX 5170→4880 µs（↓5.6%），1B avg latency 145→122 µs（↓16%），overhead 58→35 µs（↓40%）
-**2026-06-11 Q9 完成**:
-- VTIME>0 读超时：复用 axtask::future::timeout()，无需 embassy-time
-- ldisc.rs `todo!()` 替换为 `block_on(timeout(dur, poll_io(...)))` 
-- `cargo check` 0 错误 / `cargo clippy` 0 错误
-**2026-06-11 Q11 完成**:
-- tty/mod.rs: 3 处 `.unwrap()` → `AxError` 传播
-- mm/access.rs: 批量页验证（减少 aspace 锁获取，二进制搜索最大有效范围）
-- syscall/fs/io.rs: `vec![0;4096]` → 栈数组
-- syscall/fs/fd_ops.rs: close_range UNSHARE 范围优化
-- terminal/mod.rs: `ws_col` 110→80（修复 QEMU 控制台显示换行错位）
-- `cargo check` 0 错误 / `cargo clippy` 0 错误
-**最终进度**: Q0~Q13 全部完成，仅剩 Q6 等待 VisionFive2 真板验证
-- 性能趋势：1B avg latency Q8(145)→Q10(122)→Q11(118)→Q12(124)µs（Q12 去锁后小数据吞吐 ↑24%，software overhead ↓31%：53.9→37.1µs）
-- 代码量：Q13 提取后 StarryOS 删除 4 个本地文件（isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs），uart_16550 新增 async feature gate
-**2026-06-11 代码质量收尾**:
-- cargo 警告清零（21→0）：自动修复 6 项 + 死方法移除 5 项 + dead_code 标注 11 项
-- 真死代码移除（8 方法，-76 行）：access.rs(3) + io.rs(2) + shm.rs(1) + ops.rs(1) + ring_buffer(5)
-- 后续优化记录：O48(memtrack) + O49(Manual移除) + O50(预留接口) 写入 optimization/spec.md
-**下一步**: Q6 VisionFive2 真板验证；可选 QEMU benchmark 回归测试
+- **QEMU 验证通过**：Shell 正常、benchmark 运行、FIONBIO PASS
+- **性能**：1B avg 140.1µs / P50 138.8µs / overhead 53.3µs（与 Q12 基线相近）
+- **修复**：RingBufTx::push() 缺少 wake 调用导致 Shell 挂起（de8cd8b）
+**下一步**: Q6 VisionFive2 真板验证
 
 ### 关键发现
 
