@@ -352,3 +352,73 @@ O29 buf 1024, O30 TX single lock, O31 waker skip, O33 split rx/tx locks
 **恢复条件**: 不适用（索引建立是前向操作）
 **预防**: openspec-init skill Phase 0 Step 2 须**显式**执行（`codegraph --version` + `codegraph init`），禁止推断"无目录 = 无需处理"
 **更正参考**: `StarryOS/CLAUDE.md` "代码智能（CodeGraph）"章节 + `openspec/specs/learned/`（未来可加"openspec-init Phase 0 完整清单" Requirement）
+
+---
+
+## .claude/analysis/ 批量清理（2026-06-17）
+
+<!-- archive: analysis-batch-2026-06-17 -->
+**日期**: 2026-06-17
+**事件**: `.claude/analysis/` 10 个文档批量 Compress + Simplify，原文归档至 `_archive/`
+**触发**: 用户调用 `openspec-archivist` skill 显式要求清理
+**置信度**: HIGH
+**理由**: 7/10 文档引用 Q13 已删除的文件（async_driver.rs / ring_buffer.rs / device_ops.rs / isr.rs），大量内容已迁入 `optimization/spec.md` / `tasks.md` / `architecture/spec.md` / `learned/spec.md`
+
+**操作明细**：
+
+| 文档 | 大小（K）| 操作 | 归档位置 | 替代源 |
+|------|---------|------|----------|--------|
+| `architecture-overview.md` | 26→2 | Compress | `_archive/architecture-overview.md` | `SNAPSHOT.md` + `openspec/project.md` |
+| `async-patterns-reference.md` | 11 | **Keep** | — | — |
+| `async-uart-history.md` | 13 | **Keep** | — | — |
+| `embassy-uart-evaluation.md` | 16→2 | Compress | `_archive/embassy-uart-evaluation.md` | `optimization/spec.md` §Q12 |
+| `optimization-opportunity-audit.md` | 10→2 | Compress | `_archive/optimization-opportunity-audit.md` | `optimization/spec.md` §Q8-Q11 + `tasks.md` |
+| `trait-abstraction-overhead.md` | 8→2 | Compress | `_archive/trait-abstraction-overhead.md` | `optimization/spec.md` §Q13 |
+| `uart-16550-async-extraction.md` | 14→2 | Compress | `_archive/uart-16550-async-extraction.md` | `architecture/spec.md` ADR-032 + `tasks.md` §Q13 |
+| `uart-16550-fork-evaluation.md` | 8→2 | Compress | `_archive/uart-16550-fork-evaluation.md` | `uart-16550-integration.md` §1.4 |
+| `uart-16550-integration.md` | 23→12 | **Simplify -50%** | 原位精简（in place）| `learned/spec.md` L160~L175 |
+| `user-async-performance.md` | 18→2 | Compress | `_archive/user-async-performance.md` | `optimization/spec.md` §Q7 + `tasks.md` §Q7 |
+
+**统计**：
+- 7 个 Compress（单页摘要 + ⚠️ STALE 标记 + 归档原版）
+- 1 个 Simplify -50%（保留核心结构 + 移除已删除文件代码示例）
+- 2 个 Keep（无变化）
+- 目录总大小：164K → ~26K（↓84%）
+
+**恢复条件**:
+- 单文档恢复：查阅 `.claude/analysis/_archive/<原文件名>.md`
+- 批量恢复：用户说"恢复 analysis 全部 8 个 Compress/Simplify 文档"
+
+**预防**: 未来 `openspec-explorer` 生成新分析文档时 MUST：
+1. 先 `codegraph_search` 验证路径仍存在
+2. 在 frontmatter 标注生成日期 + 关联 spec 域
+3. 内容超过 30 天未引用时由 `openspec-archivist` 自动 Stale-Warn
+
+---
+
+## .claude/docs/*.md.bak 删除（2026-06-17）
+
+<!-- archive: bak-files-deletion-2026-06-17 -->
+**日期**: 2026-06-17
+**事件**: 删除 5 个 2026-06-03 文档迁移源 `.bak` 备份
+**置信度**: HIGH
+**理由**: 备份文件（68K）已无存在价值，git history 有完整记录（commit `922e8fd` + `b65021f`）
+
+**删除文件**：
+
+| 文件 | 大小 | 备份原内容 |
+|------|------|-----------|
+| `architecture.md.bak` | 20K | 迁移前 `architecture.md` |
+| `learned.md.bak` | 29K | 迁移前 `learned.md` |
+| `optimization.md.bak` | 7K | 迁移前 `optimization.md` |
+| `references.md.bak` | 8K | 迁移前 `references.md` |
+| `rules.md.bak` | 4K | 迁移前 `rules.md` |
+
+**总计释放**: 68K 磁盘空间
+
+**恢复条件**:
+- `git show 922e8fd^:.claude/docs/architecture.md` 恢复单个
+- `git revert 922e8fd b65021f` 全部回滚
+- 或 `git log --diff-filter=D --name-only --pretty=format:` 列出所有已删除文件
+
+**更正参考**: 本 archive.md 顶部"文档体系迁移归档"条目（docs-to-openspec-2026-06-03）
