@@ -790,3 +790,21 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 | <!-- L185 --> | **优化时机分类** | 算法优化（批量）应尽早实施，收益独立于模块化；编译器优化（inline）可等需要时再加，模块化后才需要显式标注 |
 | <!-- L186 --> | **批量操作内嵌收益** | 批量操作在内嵌时就该做（减少锁获取次数），与模块化无关；Q0~Q12 期间未做是遗漏 |
 | <!-- L187 --> | **跨 crate 内联必要性** | 同一 crate 内编译器自动内联，跨 crate 需要 `#[inline(always)]` 显式标注；模块化后 inline 注解成为必需 |
+
+### Q13 模块分离后的 API 路径速查（2026-06-17）
+
+| 编号 | 名称 | 路径 | 用途 |
+|------|------|------|------|
+| <!-- L188 --> | `OsRuntime` trait | `uart_16550::os::OsRuntime` | 任务生成 `spawn(future, name)` + 同步等待 `block_on(future)` |
+| <!-- L189 --> | `OsIrq` trait | `uart_16550::os::OsIrq` | 中断处理函数注册 `register_handler(irq_number, handler)` |
+| <!-- L190 --> | `OsMmio` trait | `uart_16550::os::OsMmio` | MMIO 映射 `unsafe map_mmio(phys, size)` + `phys_to_virt(phys)` |
+| <!-- L191 --> | `OsSpinNoIrq<T>` trait | `uart_16550::os::OsSpinNoIrq` | 关中断自旋锁 `with_lock(\|T\| -> R)` 回调模式 |
+| <!-- L192 --> | `OsWakerSet` trait | `uart_16550::os::OsWakerSet` | waker 集合 `new()` + `register(waker)` + `wake() -> u32` |
+| <!-- L193 --> | `ArceOsRuntime` 适配 | `StarryOS::drivers::os_arceos::ArceOsRuntime` | 桥接 `axtask::spawn_with_name` + `axtask::future::block_on` |
+| <!-- L194 --> | `ArceOsMmio` 适配 | `StarryOS::drivers::os_arceos::ArceOsMmio` | 桥接 `axmm::iomap`（失败 fallback 到 `axhal::mem::phys_to_virt`） |
+| <!-- L195 --> | `ArceOsSpinNoIrq` 适配 | `StarryOS::drivers::os_arceos::ArceOsSpinNoIrq<T>` | 桥接 `kspin::SpinNoIrq<T>` |
+| <!-- L196 --> | `ArceOsWakerSet` 适配 | `StarryOS::drivers::os_arceos::ArceOsWakerSet` | 桥接 `axpoll::PollSet`（register/wake） |
+| <!-- L197 --> | 异步栈模块入口 | `uart_16550::async_::*` | `isr` / `ring_buffer` / `driver` / `device_ops` 4 子模块 |
+| <!-- L198 --> | `AsyncUartDriver<R, W, P>` | `uart_16550::async_::driver::AsyncUartDriver` | 异步驱动主类型，3 泛型参数：Runtime / WakerSet / UartPort |
+| <!-- L199 --> | `TtyRead` / `TtyWrite` | `uart_16550::tty::{TtyRead, TtyWrite}` | 通用 TTY 抽象 trait（Q13 Phase 1 提取） |
+| <!-- L200 --> | StarryOS 类型别名 | `StarryOS::drivers::{ArceOsDriver, ArceOsReader, ArceOsWriter}` | `pub type` 简化泛型，绑定 ArceOS 5 适配 |

@@ -134,6 +134,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | `uart-16550-fork-evaluation.md` | uart_16550 本地 Fork 必要性评估：本地 fork 仅 12 行 set_ier()、上游状态分析、决策矩阵、建议保留→上游化 | 新增 (2026-06-12) |
 | `uart-16550-async-extraction.md` | uart_16550 异步串口提取可行性分析：7 文件 618 行迁移评估、5 个 OS 抽象 trait 设计、三阶段迁移方案、推翻 D1 决策论证 | 新增 (2026-06-15) |
 | `trait-abstraction-overhead.md` | Trait 抽象开销优化分析：热路径分析、5 种优化策略（inline/批量/feature gate/零拷贝/DMA）、性能与可移植性权衡 | 新增 (2026-06-16) |
+| `async-uart-module-boundary.md` | 异步串口模块分离与可移植性分析（事后视角）：5 个 OS 抽象 trait 设计、通用层 65% / OS 层 35% 拆分、6+ OS 接入成本矩阵（Linux/Zephyr/Embassy/FreeRTOS/RT-Thread/裸机）、Q6 真板验证后续建议 | 新增 (2026-06-17) |
 
 **已删除**（内容已被覆盖）：
 - `uart-16550-crate-reuse.md` — 内容已由 `uart-16550-integration.md` 完全覆盖

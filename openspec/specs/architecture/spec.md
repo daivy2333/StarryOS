@@ -418,6 +418,54 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - 从 uart_16550 + StarryOS 的 `Cargo.toml` 中删除 `[profile.release] lto = true`
 - 性能文档中 LTO 数据保留为参考（标注为"需在最终构建中开启"）
 
+<!-- A035 -->
+### ADR-035: 异步 UART 通过 5 个 OS 抽象 trait 跨 OS 可移植
+
+**日期**: 2026-06-17
+**状态**: 已接受
+**决策**: `uart_16550` 异步栈不直接调用任何具体 OS 服务，而是定义 5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`），由目标 OS 实现这些 trait 后即可复用异步栈。
+
+**背景**:
+- Q13（2026-06-16）将异步串口从 StarryOS 提取至 `uart_16550` crate
+- 提取后必须解决"具体 OS 调用在哪一层做"的问题
+- 候选方案：(a) 适配层写在 `uart_16550` 内（绑定 ArceOS，违反通用性）；(b) `cfg_os!` 宏分叉（不优雅）；(c) 抽象 trait 边界（最终采用）
+- Q13 事后分析（`.claude/analysis/async-uart-module-boundary.md`）确认 5 trait 设计合理
+
+**决策内容**:
+- 5 个 trait 共同构成异步 UART 的**最小完备接口集**，每个 trait 对应一种"不可绕过"的 OS 能力：
+  - `OsRuntime`：异步任务生成 + 同步等待（copier 任务 + 初始化时 block_on）
+  - `OsIrq`：中断处理函数注册（ISR 必须由硬件中断控制器调度）
+  - `OsMmio`：物理地址到虚拟地址映射（UART 寄存器必须 MMIO 访问）
+  - `OsSpinNoIrq<T>`：关中断自旋锁（ISR 与进程上下文互斥）
+  - `OsWakerSet`：多 waker 集合（多个 task 等待同一事件）
+- `OsSpinNoIrq` 使用**回调模式**（`with_lock(f)`）而非 guard 模式，避免 `Guard::drop` 与 IRQ 恢复的耦合问题
+- `OsWakerSet::wake()` 返回**通知计数**而非布尔，支持上层做日志统计
+
+**影响**:
+- 5 trait 在 `uart_16550/src/os/mod.rs` 中定义，**无默认实现**（避免隐式 OS 假设）
+- `uart_16550/src/async_/` 下 5 个模块（isr / ring_buffer / driver / device_ops / mod）合计约 400 行**完全无具体 OS 符号泄漏**
+- StarryOS 适配层 `os_arceos.rs`（~123 行）实现 5 个 trait，桥接到 ArceOS 原语（`axtask` / `axhal` / `axmm` / `kspin` / `axpoll`）
+- 通用层 65% / OS 适配层 35% 的拆分比例与 Linux 子系统、Zephyr 驱动模型接近
+- 对其他 OS 接入成本约 80~150 行 trait 实现代码（详见分析文档 §6.2 通用性矩阵）
+
+**替代方案**:
+- (a) `cfg_os!` 宏分叉：`uart_16550` 内置 ArceOS / Linux / RTOS 分支；维护成本高、组合爆炸
+- (b) feature flag 多 crate：`uart_16550-arceos` / `uart_16550-linux` / ...；多 crate 生态，编译复杂
+- (c) 直接接受 OS 耦合：仅 StarryOS 使用，不通用；放弃 Q13 提取目标
+- 采用 (d) trait 抽象：单 crate，OS 无关，可扩展
+
+**扩展点（Q6 真板验证后可能新增）**:
+- `OsDma` trait：DMA 通道管理（Q6 启用 DMA 提升吞吐时）
+- `OsTimer` trait：高精度定时器（波特率自动检测、未来协议支持）
+- `OsPm` trait：电源管理（suspend/resume 场景）
+
+**参考**:
+- 详细分析：`.claude/analysis/async-uart-module-boundary.md`（事后视角，2026-06-17）
+- 5 trait 定义：`uart_16550/src/os/mod.rs`
+- StarryOS 适配：`StarryOS/kernel/src/drivers/os_arceos.rs`
+- L-188~L200：API 路径速查
+- 关联 ADR：A033（uart_16550 成为完整异步 UART crate，Q13 决策）
+
 **重新启用时机**:
 - 开发冻结 → 发布构建前
 - 仅需在 StarryOS `Cargo.toml` 加回一行（uart_16550 作为依赖自动继承）
