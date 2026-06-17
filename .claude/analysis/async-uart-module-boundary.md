@@ -10,33 +10,36 @@
 
 ## 1. 摘要
 
-Q13（2026-06-16）将 StarryOS 的异步串口实现（Q0~Q12 累计约 618 行）提取至 `uart_16550` 子项目 crate，使其成为**可复用的完整异步 UART crate**。本报告以"事后视角"审视该分离的合理性、5 个 OS 抽象 trait 的设计充分性、以及**对其他操作系统的可移植性**。
+Q13（2026-06-16）将 StarryOS 的异步串口实现（Q0~Q12 累计约 618 行）提取至 `uart_16550` 子项目 crate，使其成为**可复用的完整异步 UART crate**。本报告以"事后视角"审视该分离的合理性、5 个 OS 抽象 trait 的设计充分性、以及**对其他操作系统的可移植性**。**核心结论**：Q13 分离合理（通用层 65% / OS 适配层 35%），5 OS trait 抽象充分（最小完备集），其他 OS 接入成本约 80~120 行 trait 实现（无需单独实现）。
 
-核心结论：
-- 已独立到 `uart_16550/src/async_/` 的 5 个模块（isr / ring_buffer / driver / device_ops / mod）合计约 400 行，占原实现 ~65%，构成**完整的、可独立编译的异步 UART 栈**。
-- 保留在 StarryOS `kernel/src/drivers/` 的 4 个文件（`mod.rs` / `uart_init.rs` / `ntty_async.rs` / `os_arceos.rs`）合计约 280 行，占比 ~35%，均含**具体 OS 依赖**，无法被通用 crate 包含。
-- 5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`）覆盖了异步 UART 所需的全部 OS 能力，**抽象边界设计合理**。
-- 对其他 OS 的接入成本：需提供约 **80~120 行 trait 实现代码**（Linux、RTOS、Embassy 路径均可行）。
+**关键数据**：
+
+- 已独立到 `uart_16550/src/async_/` 的 5 个模块（isr / ring_buffer / driver / device_ops / mod）合计约 400 行，占原实现 ~65%，构成**完整的、可独立编译的异步 UART 栈**
+- 保留在 StarryOS `kernel/src/drivers/` 的 4 个文件（`mod.rs` / `uart_init.rs` / `ntty_async.rs` / `os_arceos.rs`）合计约 280 行，占比 ~35%，均含**具体 OS 依赖**
+- 5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`）覆盖异步 UART 所需的全部 OS 能力，**抽象边界设计合理**
+- 对其他 OS 的接入成本：约 **80~120 行 trait 实现代码**（Linux、RTOS、Embassy 路径均可行）
+
+**小结**：Q13 提取是"项目特定实现 → 可复用 crate"的成功案例。后续章节按架构总览（§2）→ trait 详细分析（§3）→ 独立模块（§4）→ 保留部分（§5）→ 通用性矩阵（§6）→ 已知问题（§7）→ 结论建议（§8）的顺序展开论证。
 
 ---
 
 ## 2. 架构总览
 
-### 2.1 双层结构
+Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结构（实际是三层：通用层 + OS 适配层 + OS 集成层），**职责分工清晰**：通用层做"做什么"（异步栈核心逻辑），OS 适配层做"如何桥接"（5 trait 的 ArceOS 实现），OS 集成层做"在哪运行"（平台 MMIO 地址 + TTY 进程绑定）。这种分离在 Linux 子系统、Zephyr 驱动模型中亦有先例（参见 §6 通用性矩阵）。
 
-Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结构：
+**双层（三层）结构**：
 
 | 层级 | 仓库 | 内容 | 大小 |
 |------|------|------|------|
-| **通用层** | [`uart_16550/src/async_/`](https://github.com/daivy2333/uart_16550/tree/feat/uart-16550-async/src/async_) + [`os/`](https://github.com/daivy2333/uart_16550/tree/feat/uart-16550-async/src/os) + [`tty.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/tty.rs) | 异步栈 + 5 个 OS trait + TTY trait | ~400 行 |
-| **OS 适配层** | [`os_arceos.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/os_arceos.rs) | 5 个 trait 的 ArceOS 实现 | ~123 行 |
-| **OS 集成层** | [`uart_init.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/uart_init.rs) + [`ntty_async.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/ntty_async.rs) | 平台硬件初始化 + TTY 进程绑定 | ~155 行 |
+| 通用层 | [`uart_16550/src/async_/`](https://github.com/daivy2333/uart_16550/tree/feat/uart-16550-async/src/async_) + [`os/`](https://github.com/daivy2333/uart_16550/tree/feat/uart-16550-async/src/os) + [`tty.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/tty.rs) | 异步栈 + 5 个 OS trait + TTY trait | ~400 行 |
+| OS 适配层 | [`os_arceos.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/os_arceos.rs) | 5 个 trait 的 ArceOS 实现 | ~123 行 |
+| OS 集成层 | [`uart_init.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/uart_init.rs) + [`ntty_async.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/ntty_async.rs) | 平台硬件初始化 + TTY 进程绑定 | ~155 行 |
 
 > **三层职责分工**：通用层（做什么）→ OS 适配层（如何桥接）→ OS 集成层（在哪运行）。任一层不得向上/下泄漏职责。
 
 通用层通过 `async` feature gate 控制是否编译（[`uart_16550/Cargo.toml`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/Cargo.toml)）；`Os*` trait 在 [`os/mod.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/os/mod.rs) 中定义（无默认实现，要求具体 OS 提供）。
 
-### 2.2 调用链示意
+**调用链示意**（自上而下：异步栈 → 适配层 → 集成层 → 硬件）：
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -76,19 +79,15 @@ Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结�
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 2.3 小结
-
-双层结构清晰：**通用层做"做什么"，适配层做"如何做"，集成层做"在哪做"**。这种分离在 Linux 子系统、Zephyr 驱动模型中亦有先例（参见 §6 通用性矩阵）。
+**小结**：三层结构清晰，分工明确。**通用层 65% / OS 适配层 35% 的拆分比例**与 Linux 子系统、Zephyr 驱动模型接近，符合行业实践。
 
 ---
 
 ## 3. 5 个 OS 抽象 trait 详细分析
 
-5 个 trait 共同回答了一个问题：**异步 UART 需要的 OS 能力是什么？** 其设计基于"最小完备集"原则——只抽象必需接口，不暴露可选功能。
+5 个 trait 共同回答了一个问题：**异步 UART 需要的 OS 能力是什么？** 其设计基于"最小完备集"原则——只抽象必需接口，不暴露可选功能。**关键设计原则**：每个 trait 对应"异步 UART 不可或缺的 OS 能力"——不可绕过、不可合并（合并会过度抽象）、不可拆分（拆分会泄漏 OS 细节）。
 
-### 3.1 抽象内容与必要性
-
-> **5 trait 设计原则**：每个 trait 对应"异步 UART 不可或缺的 OS 能力"——不可绕过、不可合并（合并会过度抽象）、不可拆分（拆分会泄漏 OS 细节）。
+**抽象内容与必要性**（5 trait 详细对照）：
 
 | Trait | 抽象能力 | 必需理由 | 替代方案 |
 |-------|---------|---------|---------|
@@ -98,29 +97,21 @@ Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结�
 | **`OsSpinNoIrq<T>`** | 关中断自旋锁 + 回调模式访问 | ISR 和进程上下文必须互斥访问共享状态；回调模式确保 IRQ 必然恢复 | `spin::Mutex` + `critical_section`（Linux）<br>`cortex_m::interrupt::free`（Cortex-M）<br>`taskENTER_CRITICAL`（FreeRTOS） |
 | **`OsWakerSet`** | 多 waker 注册 + 通知计数 | 多个 task 同时等待同一事件（RX 数据 / TX 完成 / tcdrain） | `std::sync::Condvar`（Linux）<br>`embassy_sync::WaitQueue`（Embassy）<br>`xEventGroupCreate`（FreeRTOS） |
 
-### 3.2 设计权衡
+**设计权衡**（3 个关键取舍）：
 
-**取舍一：使用回调模式（`with_lock(f)`）而非 guard 模式（`lock() -> Guard`）**
+- **取舍一：使用回调模式（`with_lock(f)`）而非 guard 模式（`lock() -> Guard`）**：回调模式避免 `Guard::drop` 与 `IRQ 恢复`的耦合问题——若 `Guard` 在 panic 时未运行 drop，可能永久关闭 IRQ。回调模式保证 IRQ 恢复与闭包返回原子绑定。代价是 `T` 不能跨闭包持有（`T` 仅在闭包内可访问）。
+- **取舍二：`OsWakerSet::wake()` 返回计数而非布尔**：通知计数用于上层决定是否再次 poll 或做日志统计。StarryOS 适配层 `axpoll::PollSet::wake() as u32` 直接转发。Linux 适配层可用 `Condvar::notify_all()` + 计数器实现。
+- **取舍三：未抽象 DMA / 高精度定时器**：当前 trait 不涉及 DMA 通道、DMA descriptor、定时器。Q6 真板验证后若启用 DMA，需新增 `OsDma` trait。Q12 优化 O52（embedded_io_async trait impl）已为社区标准化做铺垫。
 
-回调模式避免 `Guard::drop` 与 `IRQ 恢复`的耦合问题。具体场景：若 `Guard` 在 panic 时未运行 drop，可能永久关闭 IRQ。回调模式保证 IRQ 恢复与闭包返回原子绑定。代价是 `T` 不能跨闭包持有（`T` 仅在闭包内可访问）。
-
-**取舍二：`OsWakerSet::wake()` 返回计数而非布尔**
-
-通知计数用于上层决定是否再次 poll 或做日志统计。StarryOS 适配层 `axpoll::PollSet::wake() as u32` 直接转发。Linux 适配层可用 `Condvar::notify_all()` + 计数器实现。
-
-**取舍三：未抽象 DMA / 高精度定时器**
-
-当前 trait 不涉及 DMA 通道、DMA descriptor、定时器。Q6 真板验证后若启用 DMA，需新增 `OsDma` trait。Q12 优化 O52（embedded_io_async trait impl）已为社区标准化做铺垫。
-
-### 3.3 小结
-
-5 个 trait 共同构成异步 UART 的**最小完备接口集**，每个 trait 都对应一种"不可绕过"的 OS 能力。无过度抽象（未引入"事件循环"、"调度器"、"IO 复用"等更上层概念），亦无抽象不足（无任何 hard-coded OS 调用泄漏至 `async_/` 模块）。
+**小结**：5 个 trait 共同构成异步 UART 的**最小完备接口集**，每个 trait 都对应一种"不可绕过"的 OS 能力。无过度抽象（未引入"事件循环"、"调度器"、"IO 复用"等更上层概念），亦无抽象不足（无任何 hard-coded OS 调用泄漏至 `async_/` 模块）。
 
 ---
 
 ## 4. 已独立到 uart_16550 的模块
 
-`uart_16550/src/async_/` 下 5 个文件，共约 400 行（`wc -l` 估算，待精确核对）：
+`uart_16550/src/async_/` 下 5 个文件，共约 400 行（`wc -l` 估算，待精确核对）——**异步栈已被完整解耦，每个模块仅依赖 `Os*` trait + 通用 Rust 生态**（embassy_sync、embedded_io_async），无任何具体 OS 符号泄漏。
+
+**5 模块职责与依赖**：
 
 | 文件 | 行数 | 职责 | 关键依赖 |
 |------|------|------|---------|
@@ -130,7 +121,7 @@ Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结�
 | [`driver.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/driver.rs) | ~200 | copier 任务：poll_fn 循环 + NAPI 合并 + 批量 push/pop | `OsRuntime::spawn`、RX/TX/DRAIN waker |
 | [`device_ops.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/device_ops.rs) | ~80 | `AsyncUartReader`/`Writer` + `embedded_io_async` impl | ring buffer + `OsRuntime` |
 
-### 4.1 各模块独立可行性
+**各模块独立可行性**（额外收益：部分模块可被 16550-like 设备复用）：
 
 | 模块 | 是否可独立编译 | 独立使用场景 |
 |------|----------------|--------------|
@@ -139,17 +130,17 @@ Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结�
 | `driver.rs` | ✅ 是 | 异步 UART driver 直接复用 |
 | `device_ops.rs` | ✅ 是 | `embedded_io_async` 生态通用 |
 
-**关键观察**：`ring_buffer.rs` 和 `device_ops.rs` **不限于 UART**，未来可作为通用异步原语被其他 16550-like 设备（SPI、I2C 等）复用。这是 Q13 提取的**额外收益**（非原计划）。
+> **关键观察**：`ring_buffer.rs` 和 `device_ops.rs` **不限于 UART**，未来可作为通用异步原语被其他 16550-like 设备（SPI、I2C 等）复用。这是 Q13 提取的**额外收益**（非原计划）。
 
-### 4.2 小结
-
-异步栈已被完整解耦，每个模块仅依赖 `Os*` trait + 通用 Rust 生态（embassy_sync、embedded_io_async），无任何具体 OS 符号泄漏。
+**小结**：5 模块均已解耦到 `Os*` trait + 通用生态层级，无任何具体 OS 符号泄漏。部分模块（`ring_buffer` / `device_ops`）的"非 UART 通用性"是 Q13 提取的意外收益。
 
 ---
 
 ## 5. 保留在 StarryOS 的部分
 
-`StarryOS/kernel/src/drivers/` 现仅保留 4 个文件：
+`StarryOS/kernel/src/drivers/` 现仅保留 4 个文件，**保留部分均含具体 OS 依赖**（平台 MMIO、内核进程、ArceOS 原语），无任何文件可"零改动"被其他 OS 复用——这是 Q13 拆分的**正确边界**。
+
+**4 文件保留原因**：
 
 | 文件 | 行数 | 依赖类型 | 为何保留 |
 |------|------|---------|---------|
@@ -158,11 +149,7 @@ Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结�
 | [`ntty_async.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/ntty_async.rs) | ~21 | **内核进程抽象**（`Process` / `bind_to`） | TTY 与进程绑定 |
 | [`os_arceos.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/os_arceos.rs) | ~123 | **ArceOS 5 个 trait 实现** | 5 个 OS trait 的具体 OS 实现 |
 
-### 5.1 各文件保留原因详析
-
-**5.1.1 `uart_init.rs`（最重，~155 行）**
-
-包含的具体 OS / 平台依赖：
+**`uart_init.rs`（最重，~155 行）**——包含的具体 OS / 平台依赖：
 
 | 元素 | 依赖类型 | 为何不能移至 `uart_16550` |
 |------|---------|-------------------------|
@@ -173,9 +160,9 @@ Q13 后的异步串口栈呈现"通用 crate + 具体 OS 适配层"的双层结�
 | `static DRIVER: Once<Arc<ArceOsDriver>>` | 单实例全局状态 | 单例是 OS 级决策 |
 | `uart_isr_wrapper` | 桥接 axhal IRQ hook | 中断控制器绑定是 OS 级 |
 
-**关键观察**：`CACHED_IER` 是 ISR（`uart_16550` 内）和 copier（`StarryOS` 内）**双向共享的**——这是 trait 抽象无法表达的"跨 crate 共享状态"约束，必须由 OS 集成层显式持有。
+> **关键观察**：`CACHED_IER` 是 ISR（`uart_16550` 内）和 copier（`StarryOS` 内）**双向共享的**——这是 trait 抽象无法表达的"跨 crate 共享状态"约束，必须由 OS 集成层显式持有。
 
-**5.1.2 `ntty_async.rs`（最轻，~21 行）**
+**`ntty_async.rs`（最轻，~21 行）**：
 
 ```rust
 // 关键代码（来源: [`ntty_async.rs`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/kernel/src/drivers/ntty_async.rs)，待精确核对）
@@ -187,9 +174,7 @@ impl Tty {
 
 依赖 `starry_process::Process`（内核进程管理模块）。TTY 抽象属于"内核子系统"而非"驱动"，保留在 OS 层符合分层原则。
 
-**5.1.3 `os_arceos.rs`（桥接层，~123 行）**
-
-5 个 trait 各自只有 5~20 行实现，桥接到 ArceOS 原语：
+**`os_arceos.rs`（桥接层，~123 行）**——5 个 trait 各自只有 5~20 行实现，桥接到 ArceOS 原语：
 
 | Trait | 实现大小 | 桥接目标 |
 |-------|---------|---------|
@@ -199,23 +184,17 @@ impl Tty {
 | `ArceOsSpinNoIrq<T>` | ~14 行 | `kspin::SpinNoIrq<T>` |
 | `ArceOsWakerSet` | ~14 行 | `axpoll::PollSet`（register/wake） |
 
-**关键观察**：实现总量约 80 行，加上 trait 边界和注释约 123 行——**这是"接入 uart_16550 异步栈"的全部 OS 适配成本**。其他 OS 的接入可参考此规模。
+> **关键观察**：实现总量约 80 行，加上 trait 边界和注释约 123 行——**这是"接入 uart_16550 异步栈"的全部 OS 适配成本**。其他 OS 的接入可参考此规模。
 
-### 5.2 小结
-
-保留部分均含**具体 OS 依赖**（平台 MMIO、内核进程、ArceOS 原语），无任何文件可"零改动"被其他 OS 复用。这种"通用层 65% / OS 层 35%"的比例与 Linux 子系统、Zephyr 驱动模型的拆分比例接近。
+**小结**：保留部分均含**具体 OS 依赖**（平台 MMIO、内核进程、ArceOS 原语），无任何文件可"零改动"被其他 OS 复用。这种"通用层 65% / OS 层 35%"的比例与 Linux 子系统、Zephyr 驱动模型的拆分比例接近。
 
 ---
 
 ## 6. 通用性矩阵：其他 OS 接入需求
 
-回答用户原问题"**如果别的 OS 也需要类似结构是否是单独实现**"。
+本节回答用户原问题"**如果别的 OS 也需要类似结构是否是单独实现**"——**5 个 trait 抽象是充分的，任何具备"任务生成 + 中断注册 + MMIO + 关中断锁 + waker 集合"能力的 OS 均可接入 `uart_16550` 异步栈**，接入成本约 80~120 行 trait 实现。
 
-### 6.1 通用性结论
-
-> **结论先于论据**：5 个 trait 抽象是充分的——任何具备"任务生成 + 中断注册 + MMIO + 关中断锁 + waker 集合"能力的 OS 均可接入 `uart_16550` 异步栈。接入成本约 80~120 行 trait 实现（详见 §6.2 矩阵）。
-
-### 6.2 各 OS 接入成本估算
+**各 OS 接入成本估算**（6 种典型目标 OS）：
 
 | 目标 OS | 接入方式 | 估计代码量 | 主要工作 |
 |---------|---------|----------|---------|
@@ -226,7 +205,7 @@ impl Tty {
 | **RT-Thread** | 实现 5 trait → 桥接 `rt_thread_create` / `rt_hw_interrupt_install` / `rt_hw_get_device` / `rt_hw_interrupt_disable` / `rt_wqueue_wakeup` | ~130 行 | RT-Thread 已有 wqueue 机制 |
 | **裸机 (no_std bare-metal)** | 实现 5 trait → 极简（无需任何 OS 服务） | ~40 行 | 适合 embassy 直跑 |
 
-### 6.3 关键依赖与潜在障碍
+**关键依赖与潜在障碍**（4 个外部 crate 依赖）：
 
 | 依赖 | 现状 | 潜在障碍 |
 |------|------|---------|
@@ -235,7 +214,7 @@ impl Tty {
 | `embedded_io_async` | Q12 O52 引入 | 社区标准，跨 OS 通用 |
 | `axtask::future::block_on` | ArceOS 异步基础 | 其他 OS 需用 `futures::executor::block_on` 替代 |
 
-### 6.4 单独实现 vs 复用的选择树
+**单独实现 vs 复用的选择树**（按场景决策）：
 
 ```
 你的场景是什么？
@@ -256,60 +235,55 @@ impl Tty {
     └── ✅ 复用 uart_16550（实现 5 trait，~40 行）
 ```
 
-### 6.5 小结
-
-5 个 trait 的设计**达到了"可复用"的目标**——Q13 后 `uart_16550` 已具备跨 OS 复用的接口基础。但实际复用需要**每个目标 OS 提供 80~150 行的 trait 实现**，这一成本相比完全从零实现异步 UART（~400 行 + 调试）显著降低。
+**小结**：5 个 trait 的设计**达到了"可复用"的目标**——Q13 后 `uart_16550` 已具备跨 OS 复用的接口基础。但实际复用需要**每个目标 OS 提供 80~150 行的 trait 实现**，这一成本相比完全从零实现异步 UART（~400 行 + 调试）显著降低。
 
 ---
 
 ## 7. 已知问题与未覆盖场景
 
-### 7.1 当前 5 trait 未覆盖的 OS 能力
+5 个 trait 满足**当前阶段**所有需求，但对**真板验证 (Q6) 后的扩展场景**预留了清晰的扩展点。文档卫生问题需在 OpenSpec 维护流程中处理。
+
+**当前 5 trait 未覆盖的 OS 能力**（4 项扩展点）：
 
 | 缺失能力 | 影响场景 | 建议 |
 |---------|---------|------|
-| **DMA 通道** | Q6 真板验证后可能启用 DMA 提升吞吐 | 新增 `OsDma` trait |
-| **高精度定时器** | 未来需硬件定时器配合波特率自动检测 | 新增 `OsTimer` trait |
-| **多 UART 设备** | 当前 trait 隐含单实例假设 | 需在 trait 边界显式传递设备 ID |
-| **PM (电源管理)** | suspend/resume 场景 | 需新增 `OsPm` trait 或 hook |
+| DMA 通道 | Q6 真板验证后可能启用 DMA 提升吞吐 | 新增 `OsDma` trait |
+| 高精度定时器 | 未来需硬件定时器配合波特率自动检测 | 新增 `OsTimer` trait |
+| 多 UART 设备 | 当前 trait 隐含单实例假设 | 需在 trait 边界显式传递设备 ID |
+| PM (电源管理) | suspend/resume 场景 | 需新增 `OsPm` trait 或 hook |
 
-### 7.2 文档卫生问题
+**文档卫生问题**（3 项 OpenSpec 待办）：
 
 - 4 个新 spec 域（`arceos-adapter` / `async-uart-core` / `async-uart-traits` / `inline-batch-optimize`）的 `## Purpose` 字段均为 `TBD - created by archiving change q13-async-uart-extraction`。归档后未补充 purpose 段。
 - `CLAUDE.md` 文档索引未列出这 4 个新 spec 域（仍只列 4 个旧域）。
 - `references/spec.md` 中"项目分析文档"区域未包含本分析文档（提交时同步更新）。
 
-### 7.3 小结
-
-5 个 trait 满足**当前阶段**所有需求，但对**真板验证 (Q6) 后的扩展场景**预留了清晰的扩展点。文档卫生问题需在 OpenSpec 维护流程中处理。
+**小结**：5 个 trait 满足**当前阶段**所有需求，但对**真板验证 (Q6) 后的扩展场景**预留了清晰的扩展点（DMA / Timer / 多设备 / PM）。文档卫生问题需在 OpenSpec 维护流程中处理。
 
 ---
 
 ## 8. 结论与建议
 
-### 8.1 核心结论
+按新规范要求，本节只列核心判断（3-5 条短句，**不重复 §1~§7 数据**）：
 
-| 问题 | 答案 |
-|------|------|
-| **Q13 分离是否合理？** | ✅ 合理。通用层 ~65%、OS 适配层 ~35% 的拆分符合行业实践 |
-| **5 个 OS trait 抽象是否充分？** | ✅ 当前阶段充分。Q6 真板验证后可能需扩展 DMA/Timer 抽象 |
-| **其他 OS 接入是否需单独实现？** | ❌ 不需要。提供 5 trait 实现（~120 行）即可复用 `uart_16550` |
-| **保留部分是否合理？** | ✅ 合理。均含具体 OS 依赖（平台 MMIO、内核进程、ArceOS 原语） |
+1. **Q13 分离合理**——通用层 ~65%、OS 适配层 ~35% 的拆分符合行业实践（详见 §2 架构总览与 §5 保留原因）
+2. **5 个 OS trait 抽象充分**——构成"最小完备接口集"，无过度抽象亦无抽象不足（详见 §3 trait 详细分析）
+3. **其他 OS 接入无需单独实现**——提供 5 trait 实现（~120 行）即可复用 `uart_16550`（详见 §6 通用性矩阵）
+4. **保留部分合理**——均含具体 OS 依赖（平台 MMIO、内核进程、ArceOS 原语），无法通用化（详见 §5 保留部分）
+5. **Q6 真板验证后可能需扩展 trait**——预留 `OsDma` / `OsTimer` / 多设备 / `OsPm` 4 个扩展点（详见 §7 已知问题）
 
-### 8.2 建议行动
+**小结**：Q13 完成的模块分离**达到了"将 StarryOS 异步串口从项目特定实现提升为可复用 crate"的目标**。从架构边界、抽象充分性、跨 OS 接入成本三方面评估，分离质量高。建议在 Q6 真板验证后根据实际需求扩展 trait 集合。
 
-| 优先级 | 行动 | 原因 |
-|--------|------|------|
-| P0 | 补全 4 个新 spec 域的 `## Purpose` 段 | 文档卫生，影响 OpenSpec 体系完整性 |
-| P0 | 更新 `CLAUDE.md` 文档索引，补充 4 个新 spec 域 | 项目入口文档与实际不符 |
-| P1 | 在 `architecture/spec.md` 记录 ADR：**OS 抽象层设计** | 5 trait 是关键架构决策，需 ADR 化 |
-| P1 | Q6 真板验证前编写"trait 接入 checklist" | 加速后续 OS 接入 |
-| P2 | 探索 `ring_buffer.rs` 提取为独立子 crate | SPSC ring buffer 通用价值高 |
-| P2 | 编写"如何为 X OS 实现 5 trait"模板文档 | 降低复用门槛 |
+**后续建议行动**（按优先级）：
 
-### 8.3 最终评价
-
-Q13 完成的模块分离**达到了"将 StarryOS 异步串口从项目特定实现提升为可复用 crate"的目标**。从架构边界、抽象充分性、跨 OS 接入成本三方面评估，分离质量高。建议在 Q6 真板验证后根据实际需求扩展 trait 集合。
+| 优先级 | 行动 | 原因 | 复杂度 |
+|--------|------|------|--------|
+| P0 | 补全 4 个新 spec 域的 `## Purpose` 段 | 文档卫生，影响 OpenSpec 体系完整性 | 低 |
+| P0 | 更新 `CLAUDE.md` 文档索引，补充 4 个新 spec 域 | 项目入口文档与实际不符 | 低 |
+| P1 | 在 `architecture/spec.md` 记录 ADR：**OS 抽象层设计** | 5 trait 是关键架构决策，需 ADR 化 | 中 |
+| P1 | Q6 真板验证前编写"trait 接入 checklist" | 加速后续 OS 接入 | 中 |
+| P2 | 探索 `ring_buffer.rs` 提取为独立子 crate | SPSC ring buffer 通用价值高 | 高 |
+| P2 | 编写"如何为 X OS 实现 5 trait"模板文档 | 降低复用门槛 | 中 |
 
 ---
 
@@ -337,19 +311,19 @@ Q13 完成的模块分离**达到了"将 StarryOS 异步串口从项目特定实
 
 | 术语 | 含义 |
 |------|------|
-| **ISR (Interrupt Service Routine)** | 中断服务例程。硬件触发、由 OS 调度执行的回调函数 |
-| **MMIO (Memory-Mapped I/O)** | 内存映射 I/O。设备寄存器映射到物理地址空间，通过 `load`/`store` 指令访问 |
-| **copier task** | 搬运任务。FIFO ↔ ring buffer 之间数据搬运的异步任务 |
-| **NAPI (New API)** | Linux 网络子系统的高吞吐中断合并机制；本项目借鉴：连续成功 ≥16 次后切轮询 |
-| **AtomicWaker** | `embassy_sync` 提供的线程安全 waker 容器，ISR 与 task 间 O(1) 通知 |
-| **SPSC (Single-Producer Single-Consumer)** | 单生产者单消费者。lock-free 队列的典型场景 |
-| **DRAIN_WAKER** | 专用 waker，TX ISR 触发时唤醒 `tcdrain` 等待者 |
-| **Pollee Set** | 等待同一事件的多 waker 集合；本项目用 `axpoll::PollSet` |
-| **SpinNoIrq** | 持有期间关闭中断的自旋锁；防止 ISR 与进程上下文死锁 |
-| **ADL (Argument-Dependent Lookup)** | Rust 的"参数相关查找"；trait 方法可省略 trait 前缀 |
-| **Stride** | 寄存器地址间隔（字节）。NS16550 是字节寻址设备，stride=1；勿传 4 |
-| **Q-编号** | 项目内部"问题/任务"编号（Q0~Q13）。参见 `tasks.md` |
-| **L-编号 / A-编号 / O-编号 / R-编号** | OpenSpec 条目编号（前缀分别为 L=learned、A=architecture、O=optimization、R=references） |
+| ISR (Interrupt Service Routine) | 中断服务例程。硬件触发、由 OS 调度执行的回调函数 |
+| MMIO (Memory-Mapped I/O) | 内存映射 I/O。设备寄存器映射到物理地址空间，通过 `load`/`store` 指令访问 |
+| copier task | 搬运任务。FIFO ↔ ring buffer 之间数据搬运的异步任务 |
+| NAPI (New API) | Linux 网络子系统的高吞吐中断合并机制；本项目借鉴：连续成功 ≥16 次后切轮询 |
+| AtomicWaker | `embassy_sync` 提供的线程安全 waker 容器，ISR 与 task 间 O(1) 通知 |
+| SPSC (Single-Producer Single-Consumer) | 单生产者单消费者。lock-free 队列的典型场景 |
+| DRAIN_WAKER | 专用 waker，TX ISR 触发时唤醒 `tcdrain` 等待者 |
+| Pollee Set | 等待同一事件的多 waker 集合；本项目用 `axpoll::PollSet` |
+| SpinNoIrq | 持有期间关闭中断的自旋锁；防止 ISR 与进程上下文死锁 |
+| ADL (Argument-Dependent Lookup) | Rust 的"参数相关查找"；trait 方法可省略 trait 前缀 |
+| Stride | 寄存器地址间隔（字节）。NS16550 是字节寻址设备，stride=1；勿传 4 |
+| Q-编号 | 项目内部"问题/任务"编号（Q0~Q13）。参见 `tasks.md` |
+| L-编号 / A-编号 / O-编号 / R-编号 | OpenSpec 条目编号（前缀分别为 L=learned、A=architecture、O=optimization、R=references） |
 
 ## 附录 C：参考 commit（Q13 关键节点）
 
@@ -366,7 +340,6 @@ Q13 完成的模块分离**达到了"将 StarryOS 异步串口从项目特定实
 ---
 
 **生成日期**：2026-06-17
-**生成者**：openspec-explorer（微观模式）
+**生成者**：openspec-explorer（微观模式）→ bettermd 新规范 17 规则全量重写
 **输入任务**：用户要求分析"异步串口当前模块分离情况、保留原因、通用性"
-**生成耗时**：单次会话（Phase 1: 0.5h 等价 / Phase 2: 1h 等价 / Phase 3: 0.2h 等价）
-**遵循规范**：openspec-explorer 流程 + bettermd 16 条规则
+**遵循规范**：openspec-explorer 流程 + bettermd 新规范 17 条规则（H1/H2 only + 核心论点=首段 + 小结=**小结**：末段 + 结论=5 条短句 + 信息去重）
