@@ -470,3 +470,53 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - 开发冻结 → 发布构建前
 - 仅需在 StarryOS `Cargo.toml` 加回一行（uart_16550 作为依赖自动继承）
 - 预期效果：ring buffer 吞吐量 ↑69%，e2e 延迟不变
+
+<!-- A036 -->
+### ADR-036: OS abstraction 缩减至 2-trait 最小接口 — 删除 OsIrq/OsMmio/OsSpinNoIrq
+
+**日期**: 2026-06-19
+**状态**: 已接受
+**决策**: 从 `uart_16550::os` 中删除 `OsIrq`、`OsMmio`、`OsSpinNoIrq` 三个 trait，保留 `OsRuntime` + `OsWakerSet` 构成**最小可移植接口**。StarryOS 侧对应删除 `ArceOsIrq`、`ArceOsMmio`、`ArceOsSpinNoIrq` 三个适配器。
+
+**背景**:
+- ADR-035（2026-06-17）定义了 5 个 OS 抽象 trait，声称是"最小完备接口集"
+- 2026-06-19 实际追踪发现：被删的 3 个 trait 在整个 uart_16550 crate 中**从未被 import 或调用**——它们只存在于 trait 定义处
+- `cargo build` 报告 3 个 `dead_code` warning：`ArceOsIrq` / `ArceOsMmio` / `ArceOsSpinNoIrq` never constructed
+
+**根因分析 — 驱动架构刻意外部化了这三种职责**:
+
+| 职责 | 实际做法 | 不需要 trait 的原因 |
+|------|---------|-------------------|
+| IRQ 注册 | `axhal::irq::register_irq_hook()` 直调 | ISR handler 在 OS 层注册，驱动只接收已映射的 `NonNull<u8>` |
+| MMIO 映射 | `axmm::iomap()` + `phys_to_virt()` 直调 | 驱动在构造时已拿到映射好的指针，内部直接用 `read_volatile` |
+| 关中断锁 | `kspin::SpinNoIrq` 直用 | 锁在 UART 全局实例 `uart_instance()` 层持有，驱动通过 `UartPort` trait 间接访问 |
+
+这三种职责在驱动**外部**完成，驱动代码路径根本不需要走 trait 抽象。保留它们构成 YAGNI 违规。
+
+**决策内容**:
+- 从 `uart_16550/src/os/mod.rs` 删除 `OsIrq`（41-47 行）、`OsMmio`（54-71 行）、`OsSpinNoIrq`（81-90 行）
+- 从 `kernel/src/drivers/os_arceos.rs` 删除 `ArceOsIrq`（44-53 行）、`ArceOsMmio`（57-80 行）、`ArceOsSpinNoIrq`（85-100 行），清理不再需要的 `NonNull`/`PhysAddr` 导入
+- 模块文档更新为 "2 minimum-viable traits"，标注 IRQ/MMIO/锁外部化的架构原因
+
+**影响**:
+- uart_16550 `os` 模块从 112 行缩减到 61 行（↓45%）
+- StarryOS `os_arceos.rs` 从 123 行缩减到 63 行（↓49%）
+- 新 OS 移植接口从 5 trait → 2 trait，认知负担减半
+- `OsMmio` 删除后不再需要 `core::ptr::NonNull` / `memory_addr::PhysAddr` 导入
+- `OsIrq` 删除后不再需要 `axhal` 依赖声明
+- `cargo build` 0 warning（之前 3 个 dead_code 消除）
+
+**ADR-035 修正**:
+- ADR-035 的"5 个 trait 构成最小完备接口集"论断不成立——实际最小集是 2
+- ADR-035 保留为历史记录（记录了 Q13 提取时的完整思考过程），本 ADR 作为事后修正
+- 若未来驱动需要 DMA 管理（`OsDma`），届时追加 trait 不迟
+
+**替代方案**:
+- ❌ 保留 + suppress warning（`#[allow(dead_code)]`）：不解决根本问题，死代码持续膨胀认知负担
+- ❌ 让驱动实际调用它们：需要重构 isr.rs/driver.rs，把外部职责拉回驱动内部，方向相反
+- ✅ 删除 + 文档化：保持接口最小化，ADR 记录决策依据
+
+**参考**:
+- ADR-035（原始 5-trait 设计，2026-06-17）
+- uart_16550: `src/os/mod.rs`（2 trait 最小接口）
+- StarryOS: `kernel/src/drivers/os_arceos.rs`（2 适配器）

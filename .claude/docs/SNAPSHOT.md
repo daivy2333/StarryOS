@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-16
-> 分支：feat/uart-16550-async — Q0~Q13 ✅ LTO ✅，Q6 ⏳ 等待硬件
+> Last updated: 2026-06-19
+> 分支：feat/uart-16550-async — Q0~Q13 ✅ LTO ✅ OS trait 清理 ✅，Q6 ⏳ 等待硬件
 
 ---
 
@@ -27,6 +27,9 @@
 - **QEMU 验证通过**：Shell 正常、benchmark 运行、FIONBIO PASS
 - **性能**：1B avg 140.1µs / P50 138.8µs / overhead 53.3µs（与 Q12 基线相近）
 - **修复**：RingBufTx::push() 缺少 wake 调用导致 Shell 挂起（de8cd8b）
+- **OS trait 清理 ✅** (2026-06-19): ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq，接口从 5→2
+  - uart_16550 `os/mod.rs`: 112→61 行（↓45%），StarryOS `os_arceos.rs`: 123→63 行（↓49%）
+  - `cargo build` 0 warning（消除 3 个 dead_code）
 **Q13.1 ✅** (2026-06-16): Trait 抽象开销优化（inline + batch）
 - `#[inline(always)]` 添加到 ring buffer push/pop + ArceOsUartPort 方法
 - 批量 push_batch/pop_batch 接口，减少锁获取次数
@@ -227,10 +230,7 @@ StarryOS/
 |------|------|------|
 | **异步串口驱动** | | |
 | UART 初始化 | kernel/src/drivers/uart_init.rs | UART 硬件初始化 + IER 缓存 |
-| ISR handler | kernel/src/drivers/isr.rs | 中断处理 + AtomicWaker 唤醒 |
-| Ring Buffer | kernel/src/drivers/ring_buffer.rs | RX/TX 环形缓冲区 + PollSet |
-| AsyncUartDriver | kernel/src/drivers/async_driver.rs | RX/TX copier 任务 |
-| TtyRead/TtyWrite | kernel/src/drivers/device_ops.rs | AsyncUartReader/Writer trait 实现 |
+| OS 适配层 | kernel/src/drivers/os_arceos.rs | ArceOS trait 适配（OsRuntime + OsWakerSet，63 行）|
 | AsyncTty | kernel/src/drivers/ntty_async.rs | Tty<AsyncUartReader, AsyncUartWriter> |
 | **参考实现** | | |
 | Pipe 异步参考 | kernel/src/file/pipe.rs | poll_io + register_irq_waker 模式 |

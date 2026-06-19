@@ -1,6 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，feat/uart-16550-async 分支。
+> 2026-06-19 OS trait 清理：ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq（5→2 trait），消除 3 个 dead_code warning。
 > 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits, Phase 1 trait 提取 + Phase 2-3 核心逻辑迁移 + 适配层）。
 > 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（三阶段：trait 提取 → 核心逻辑 → 适配层）。
 > 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
@@ -36,6 +37,7 @@
 | **Q11** | 内核通用优化 | mm/access + close_range + sendfile + tty unwrap | ✅ (2026-06-11) |
 | **Q12** | Embassy 路径 A 优化 | atomic_ring_buffer + embedded_io_async + TC tcdrain | ✅ (2026-06-11) → 🗄️ 已归档 `archive/2026-06-15-q12-embassy-path-a/` |
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
+| **Q13-cleanup** | OS trait 清理 | 删除 OsIrq/OsMmio/OsSpinNoIrq（5→2），ADR-036 | ✅ (2026-06-19) |
 | **LTO** | 跨 crate 内联优化 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
@@ -44,7 +46,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ LTO ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ Q6 ⏳(硬件)
 
 > 2026-06-16 LTO 完成：`lto = true` 跨 crate 内联，内核态 ring buffer TX 385→652 MB/s（↑69%），e2e 延迟不变（瓶颈在调度）
 
