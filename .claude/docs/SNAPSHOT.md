@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-19
-> 分支：feat/uart-16550-async — Q0~Q13 ✅ LTO ✅ OS trait 清理 ✅，Q6 ⏳ 等待硬件
+> Last updated: 2026-06-21
+> 分支：feat/uart-16550-async — Q0~Q13 ✅ LTO ✅ OS trait 清理 ✅，M4 sync ⟲ 已回退到 pre-M4 基线，Q15 ⏳ 增量重融合，Q6 ⏳ 等待硬件
 
 ---
 
@@ -30,6 +30,9 @@
 - **OS trait 清理 ✅** (2026-06-19): ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq，接口从 5→2
   - uart_16550 `os/mod.rs`: 112→61 行（↓45%），StarryOS `os_arceos.rs`: 123→63 行（↓49%）
   - `cargo build` 0 warning（消除 3 个 dead_code）
+**M4 Sync ⟲ 已回退** (2026-06-21): M4 优化因 TX backpressure + 100Hz tick 导致 64B write+tcdrain 退化 73.9x（406µs→29.99ms），决定回退到 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`），通过 Q15 阶段增量重新融合。原 M4+ 代码保留在 `feat/uart-16550-async-temp` 分支。
+- 回退原因：`unblock_task(task, false)` + 100Hz tick → 每 16B refill ~10ms 调度台阶
+- 修复策略：Q15 增量融合，每步 Manual QA 验证，一旦退化立即定位
 **Q13.1 ✅** (2026-06-16): Trait 抽象开销优化（inline + batch）
 - `#[inline(always)]` 添加到 ring buffer push/pop + ArceOsUartPort 方法
 - 批量 push_batch/pop_batch 接口，减少锁获取次数
@@ -42,7 +45,12 @@
 - **内核态 ring buffer 性能飞跃**：TX 385→652 MB/s（↑69%），RX P50 200ns→<100ns（低于计时器分辨率）
 - **e2e 延迟不变**：129.4µs（瓶颈在调度，不在函数调用）
 - 副作用：release build 时间增加（内核规模小，影响可控）
-**下一步**: Q6 VisionFive2 真板验证
+**Q15 增量重融合 ⏳** (2026-06-21): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
+- 源分支：`feat/uart-16550-async-temp`（保留原 M4+ 全部代码）
+- 策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
+- 目标：融合所有方向正确的修复（RawMutex、per-port ISR、yield_now、IER 规范、flush 正确性等），同时避免 TX backpressure 退化
+- **关键约束**：不修改外部 axtask/axpoll/embassy-sync；不提高 tick；ISR 极简
+**下一步**: Q15 增量重融合 → Manual QA 验证无退化 → Q6 真板验证
 
 ### 关键发现
 
@@ -78,7 +86,10 @@
 | **O46 完成** | ✅ Q8 完成：pipe/signalfd/pidfd/event 共 8 处 PollSet→AtomicWaker（~200ns→~50ns） |
 | **O47 完成** | ✅ Q9 完成：VTIME 读超时，复用 axtask::future::timeout()（无需 embassy-time） |
 | **Embassy 选型边界** | 项目仅用 `embassy_sync::AtomicWaker`，禁用 executor/time/futures 其它子集（L81~L84 教训） |
-| **OE1~OE5 反优化** | Channel/Mutex/Watch/Semaphore/select! 替换项目原语全部为反优化，记录在 optimization 已排除区 |
+| **正确性修复** | ✅ 2026-06-20: uart_16550 12 项审计发现全部修复（2 Critical + 7 High + 3 Medium） |
+| **ArceOsRawMutex** | SpinNoIrq-based RawMutex，保护 TX ring writer，支持 Clone-safe AsyncUartWriter |
+| **Per-port ISR** | driver.handle_irq() 替代全局 waker + raw MMIO；UartPort 抽象保留 stride/架构语义 |
+| **⚠️ 性能退化** | benchmark write+tcdrain 5.4x 开销（29.99ms vs 5.56ms），疑似 RingBufTx Mutex + ISR SpinNoIrq 竞争 |
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
@@ -99,25 +110,30 @@
 | **Q12** | Embassy 路径 A | atomic_ring_buffer 去锁 (O51) + embedded_io_async (O52) + TC tcdrain (O53) | ✅ (2026-06-11) → 🗄️ 归档 2026-06-15 |
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
 | **LTO** | 跨 crate 内联 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
+| **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
+| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ⏳ 进行中 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
-### 最终架构
+### 当前架构（pre-M4 基线）
 
 ```
-IRQ 10 → uart_isr_handler
-           ├─ RX: disable_rx_intr → RX_WAKER.wake
-           └─ TX: disable_tx_intr → TX_WAKER.wake + DRAIN_WAKER.wake
+IRQ 10 → ISR handler (uart_init.rs)
+            ├─ read_isr() → 识别中断类型
+            ├─ RX: CACHED_IER 禁用 DATA_READY → global RX_WAKER.wake()
+            ├─ TX: CACHED_IER 禁用 THR_EMPTY → global TX_WAKER.wake()
+            ├─ TEMT: DRAIN_WAKER.wake()
+            └─ Line/Modem: read LSR/MSR to clear source
 
-RX copier                     TX copier
-  poll_fn:                     poll_fn:
-    UART.read FIFO               buf.pop_tx
-    buf.push_rx                  UART.write THR
-    enable_rx_intr               enable_tx_intr (if partial)
-    RX_WAKER.register            TX_WAKER.register
-    → Shell stdin ✅             ← Shell stdout ✅
+RX copier (enable_rx_intr callback)   TX copier (enable_tx_intr callback)
+  poll_fn:                              poll_fn:
+    UART.read FIFO                        buf.pop_batch
+    buf.push_rx                           UART.write THR
+    NAPI budget check                     FIFO满→enable_tx_intr→Pending
+    register waker                        register waker
+    enable_rx_intr                        → Shell stdout ✅
+    → Shell stdin ✅
 
-tcdrain (O45): PollSet 等 copier → DRAIN_WAKER 等 UART → 返回
-  64B tcdrain 切换 9→6 次，~300µs → ~200µs (QEMU)
+tcdrain/flush: PollFn 等 ring + TEMT (DRAIN_WAKER) → 返回
 
 AsyncUartReader::read → ring_buffer pop
 AsyncUartWriter::write → ring_buffer push
@@ -125,6 +141,8 @@ Tty<AsyncUartReader, AsyncUartWriter> → /dev/console
 
 内核日志: ax_println! → Console polling TX（共存）
 ```
+
+> **Q15 目标架构**：per-port driver.handle_irq()、ArceOsRawMutex、yield_now、UartPort 扩展（update_ier/read_isr/TEMT）、IER 规范 → 逐步融合，代码在 `feat/uart-16550-async-temp` 分支
 
 ### 历史
 
@@ -229,9 +247,14 @@ StarryOS/
 | 模块 | 路径 | 用途 |
 |------|------|------|
 | **异步串口驱动** | | |
-| UART 初始化 | kernel/src/drivers/uart_init.rs | UART 硬件初始化 + IER 缓存 |
-| OS 适配层 | kernel/src/drivers/os_arceos.rs | ArceOS trait 适配（OsRuntime + OsWakerSet，63 行）|
-| AsyncTty | kernel/src/drivers/ntty_async.rs | Tty<AsyncUartReader, AsyncUartWriter> |
+| UART 初始化 | kernel/src/drivers/uart_init.rs | UART 硬件初始化 + IER 缓存 + ArceOsRawMutex |
+| OS 适配层 | kernel/src/drivers/os_arceos.rs | ArceOsRawMutex + ArceOsRuntime + ArceOsWakerSet（63 行）|
+| AsyncTty | kernel/src/drivers/ntty_async.rs | Tty<ArceOsReader, ArceOsWriter> |
+| **uart_16550 crate** | | |
+| UartPort trait | uart_16550/src/async_/driver.rs | IRQ-safe 寄存器访问（update_ier, read_isr, read_lsr, read_msr）|
+| AsyncUartDriver | uart_16550/src/async_/driver.rs | Per-port waker + handle_irq + copier + NAPI budget |
+| RingBufTx | uart_16550/src/async_/ring_buffer.rs | RawMutex 保护 writer，支持 Clone-safe 多 producer |
+| ISR (legacy) | uart_16550/src/async_/isr.rs | 已弃用全局 waker，保留兼容 → 新路径: driver.handle_irq() |
 | **参考实现** | | |
 | Pipe 异步参考 | kernel/src/file/pipe.rs | poll_io + register_irq_waker 模式 |
 | EventFd 参考 | kernel/src/file/event.rs | 轻量异步通知 |

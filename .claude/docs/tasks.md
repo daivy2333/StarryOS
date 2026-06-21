@@ -1,14 +1,12 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，feat/uart-16550-async 分支。
+> 2026-06-21 M4 Sync 已回退到 pre-M4 基线（04f8920/60c5729），原代码保留在 feat/uart-16550-async-temp。
+> 2026-06-21 Q15 开启：从 pre-M4 基线增量重融合 M4+ 正确性修复，每步 Manual QA 验证无退化。
 > 2026-06-19 OS trait 清理：ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq（5→2 trait），消除 3 个 dead_code warning。
 > 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits, Phase 1 trait 提取 + Phase 2-3 核心逻辑迁移 + 适配层）。
-> 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（三阶段：trait 提取 → 核心逻辑 → 适配层）。
 > 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
-> 2026-06-02 O45 完成，tcdrain 真异步化，e2e benchmark 就绪。
-> 2026-06-05 O46/O47 记录到 optimization/spec.md，OE1~OE5 反模式 + L81~L84 记录到 learned/spec.md。
 > 条目格式: <!-- Q{编号} --> 或 <!-- P{编号} --> 标记开头，支持 grep 精确定位。
-> 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
 ---
 
@@ -39,6 +37,8 @@
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
 | **Q13-cleanup** | OS trait 清理 | 删除 OsIrq/OsMmio/OsSpinNoIrq（5→2），ADR-036 | ✅ (2026-06-19) |
 | **LTO** | 跨 crate 内联优化 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
+| **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
+| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ⏳ 进行中 |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -46,13 +46,10 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ⏳ Q6 ⏳(硬件)
 
-> 2026-06-16 LTO 完成：`lto = true` 跨 crate 内联，内核态 ring buffer TX 385→652 MB/s（↑69%），e2e 延迟不变（瓶颈在调度）
-
-> 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits，Phase 1+2+3 全部完成）
-> 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（feat/uart-16550-async 分支）
-> 2026-06-11 embassy 调研：路径 A（atomic_ring_buffer + embedded_io_async + TC tcdrain）立即可实施
+> 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
+> 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
 ```
 
 **2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
@@ -229,6 +226,44 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 - [x] uart_16550 的 `async` feature 可独立编译
 
 **工作量**：~1 天（Phase 2-3 实际） | **收益**：uart_16550 成为可复用的异步 UART crate，StarryOS 消除 ~400 行本地代码
+
+### M4 Sync ⟲ 已回退 (2026-06-21)
+
+> M4 优化因 TX backpressure (FIFO 满→Poll::Pending) + 100Hz tick 量化导致 64B write+tcdrain 退化 73.9x（406µs→29.99ms）。决定回退到 pre-M4 基线，通过 Q15 增量重新融合。原代码保留在 `feat/uart-16550-async-temp`。
+>
+> **根因**：`unblock_task(task, false)` 不请求立即重调度 + 每 16B refill ~10ms 调度台阶 → 64B 需 3 次 refill → ~30ms
+> **教训**：异步优化必须 Manual QA 验证 e2e 延迟，不可仅依赖 cargo check/clippy
+
+### Q15: M4+ 增量重融合 ⏳ 进行中
+
+> 从 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`）出发，将 `feat/uart-16550-async-temp` 上的正确性修复按最小可验证单元重新 apply。每步 cargo check → QEMU benchmark → 无退化才继续。
+
+| 子任务 | 描述 | 仓库 | 依赖 |
+|--------|------|------|------|
+| **Q15.1** | Ring buffer 诊断计数器（accepted/dropped/high_water/popped） | uart_16550 | — |
+| **Q15.2** | Waker 注册顺序修复（register 先于 enable_intr） | uart_16550 | Q15.1 |
+| **Q15.3** | Copier 诊断计数器（rx_poll/tx_poll/hw_bytes/no_progress） | uart_16550 | Q15.1 |
+| **Q15.4** | ⚠️ TX backpressure 重设计（避免 Poll::Pending 调度量化） | uart_16550 | Q15.2 |
+| **Q15.5** | take_reader() 单次门控 + ReaderAlreadyTaken | uart_16550 | — |
+| **Q15.6** | RawMutex on RingBufTx（安全 multi-producer） | uart_16550 | Q15.5 |
+| **Q15.7** | register→recheck→Pending 协议 in TX copier | uart_16550 | Q15.6 |
+| **Q15.8** | embedded-io-async Read/Write async waiting | uart_16550 | Q15.7 |
+| **Q15.9** | OsRuntime::yield_now + UartPort TEMT + real flush | uart_16550 | Q15.8 |
+| **Q15.10** | Per-port IRQ state with UartPort backend-aware ISR | uart_16550 | Q15.9 |
+| **Q15.11** | ArceOsRawMutex adapter + 类型别名更新 | StarryOS | Q15.6 |
+| **Q15.12** | ArceOsUartPort 扩展（update_ier/read_isr/read_lsr/read_msr/TEMT） | StarryOS | Q15.10 |
+| **Q15.13** | ArceOsRuntime::yield_now 实现 | StarryOS | Q15.9 |
+| **Q15.14** | ISR 简化：driver.handle_irq() 替代 raw MMIO | StarryOS | Q15.12 |
+| **Q15.15** | Manual QA: QEMU Shell + FIONBIO + benchmark（每步） | 双仓库 | 每个子任务 |
+| **Q15.16** | 清理 feat/uart-16550-async-temp 分支 | 双仓库 | Q15.15 全部通过 |
+
+**验收标准**：
+- [ ] 每个子任务 cargo check 0 errors + clippy 0 warnings
+- [ ] QEMU benchmark 64B write+tcdrain 不高于 pre-M4 基线 406µs
+- [ ] Shell 交互正常，FIONBIO PASS
+- [ ] uart_16550 tests 全部 GREEN
+
+**关键约束**：不修改 axtask/axpoll/embassy-sync；不提高全局 tick；ISR 极简原则不变；Q15.4 是风险点——TX backpressure 需要保证不退化
 
 ### Q6: 真板验证 ⏳ 等待硬件
 
