@@ -234,36 +234,48 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 > **根因**：`unblock_task(task, false)` 不请求立即重调度 + 每 16B refill ~10ms 调度台阶 → 64B 需 3 次 refill → ~30ms
 > **教训**：异步优化必须 Manual QA 验证 e2e 延迟，不可仅依赖 cargo check/clippy
 
-### Q15: M4+ 增量重融合 ⏳ 进行中
+### Q15: M4+ 增量重融合 ⏳ 进行中（M0✅ M1⏳ M2⏳ M3⏳ M4⏳）
 
-> 从 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`）出发，将 `feat/uart-16550-async-temp` 上的正确性修复按最小可验证单元重新 apply。每步 cargo check → QEMU benchmark → 无退化才继续。
+> 重构为 5 个独立增量（M0→M4），每步独立可验证、可回滚。详见 `.claude/analysis/q15-incremental-refusion-plan.md`。
+>
+> 从 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`）出发。
 
-| 子任务 | 描述 | 仓库 | 依赖 |
+#### M0: 见证层 ✅ (2026-06-23)
+
+> OpenSpec: `q15-m0-witness-layer` | 改动: uart_16550 4文件 / StarryOS 1文件
+
+| 子任务 | 描述 | 仓库 | 状态 |
 |--------|------|------|------|
-| **Q15.1** | Ring buffer 诊断计数器（accepted/dropped/high_water/popped） | uart_16550 | — |
-| **Q15.2** | Waker 注册顺序修复（register 先于 enable_intr） | uart_16550 | Q15.1 |
-| **Q15.3** | Copier 诊断计数器（rx_poll/tx_poll/hw_bytes/no_progress） | uart_16550 | Q15.1 |
-| **Q15.4** | ⚠️ TX backpressure 重设计（避免 Poll::Pending 调度量化） | uart_16550 | Q15.2 |
-| **Q15.5** | take_reader() 单次门控 + ReaderAlreadyTaken | uart_16550 | — |
-| **Q15.6** | RawMutex on RingBufTx（安全 multi-producer） | uart_16550 | Q15.5 |
-| **Q15.7** | register→recheck→Pending 协议 in TX copier | uart_16550 | Q15.6 |
-| **Q15.8** | embedded-io-async Read/Write async waiting | uart_16550 | Q15.7 |
-| **Q15.9** | OsRuntime::yield_now + UartPort TEMT + real flush | uart_16550 | Q15.8 |
-| **Q15.10** | Per-port IRQ state with UartPort backend-aware ISR | uart_16550 | Q15.9 |
-| **Q15.11** | ArceOsRawMutex adapter + 类型别名更新 | StarryOS | Q15.6 |
-| **Q15.12** | ArceOsUartPort 扩展（update_ier/read_isr/read_lsr/read_msr/TEMT） | StarryOS | Q15.10 |
-| **Q15.13** | ArceOsRuntime::yield_now 实现 | StarryOS | Q15.9 |
-| **Q15.14** | ISR 简化：driver.handle_irq() 替代 raw MMIO | StarryOS | Q15.12 |
-| **Q15.15** | Manual QA: QEMU Shell + FIONBIO + benchmark（每步） | 双仓库 | 每个子任务 |
-| **Q15.16** | 清理 feat/uart-16550-async-temp 分支 | 双仓库 | Q15.15 全部通过 |
+| **M0.1** | `telemetry` feature + `Telemetry` struct (tx_poll/tx_no_progress/tx_hw_bytes) | uart_16550 | ✅ |
+| **M0.2** | cfg-gated counter increments in `tx_copier_loop` | uart_16550 | ✅ |
+| **M0.3** | `pub fn telemetry()` accessor on `AsyncUartDriver` | uart_16550 | ✅ |
+| **M0.4** | `test_tx_latency_matrix()` — FIFO 边界矩阵 9 尺寸 | StarryOS | ✅ |
+| **M0.5** | benchmark 填充改为 `\0`（终端零显示） | StarryOS | ✅ |
+| **M0.6** | Gate M0: cargo check + clippy 双仓库 0 errors + QEMU benchmark PASS | 双仓库 | ✅ |
 
-**验收标准**：
-- [ ] 每个子任务 cargo check 0 errors + clippy 0 warnings
-- [ ] QEMU benchmark 64B write+tcdrain 不高于 pre-M4 基线 406µs
-- [ ] Shell 交互正常，FIONBIO PASS
-- [ ] uart_16550 tests 全部 GREEN
+**pre-M4 基准数据**（QEMU @ 115200 bps）：
+| 尺寸 | avg | P50 | P95 |
+|------|-----|-----|-----|
+| 1B | 0.126ms | 0.118ms | 0.136ms |
+| 15B | 0.201ms | 0.194ms | 0.261ms |
+| 16B | 0.205ms | 0.190ms | 0.308ms |
+| 17B | 0.191ms | 0.185ms | 0.287ms |
+| 32B | 0.268ms | 0.270ms | 0.365ms |
+| 49B | 0.379ms | 0.375ms | 0.532ms |
+| 64B | 0.395ms | — | — |
+| 4096B | 10.24ms | — | — |
 
-**关键约束**：不修改 axtask/axpoll/embassy-sync；不提高全局 tick；ISR 极简原则不变；Q15.4 是风险点——TX backpressure 需要保证不退化
+> 无 10ms 调度台阶（pre-M4 基线无 TX backpressure 退化）
+
+#### M1: 有界 TX fast retry ⏳
+
+#### M2: 三阶段 completion ⏳
+
+#### M3: TTY 短写契约 ⏳
+
+#### M4: IER 单 owner ⏳
+
+**关键约束**：不修改 axtask/axpoll/embassy-sync；不提高全局 tick；ISR 极简原则不变
 
 ### Q6: 真板验证 ⏳ 等待硬件
 

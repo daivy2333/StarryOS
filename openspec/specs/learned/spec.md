@@ -658,6 +658,29 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 
 ---
 
+### Q15-M0 见证层测试经验（2026-06-23）
+
+M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积累的测试部署与代码设计经验。
+
+#### QEMU benchmark 交叉编译 → 部署流程
+
+<!-- L201 -->
+- **交叉编译**：`export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH && riscv64-linux-musl-gcc -static -o tests/benchmark tests/benchmark.c`
+- **挂载部署**：`sudo mount -o loop make/disk.img /mnt && sudo cp tests/benchmark /mnt/bin/benchmark && sudo umount /mnt`
+- **运行**：`make run` → QEMU 内 `./benchmark`
+- **关键约束**：`make/disk.img` 是 `rootfs-riscv64.img` 的副本（ext4），benchmark 二进制路径为 `/bin/benchmark`
+
+#### benchmark 测试代码设计原则
+
+<!-- L202 -->
+- **填充字节用 `\0`**：`memset(buf, 0, sz)`。UART 正常传输，终端零显示。禁止用可见字符（`'A'`）或不可打印字符（`0xFF`），前者刷屏、后者显示乱码 `�`
+- **新增测试尺寸不与现有重叠**：`test_tx_throughput` 已覆盖 64/256/1024/4096B，新增矩阵只测 FIFO 边界尺寸 1/15/16/17/31/32/33/48/49
+- **排序算法匹配现有风格**：新函数用 bubble sort（与 `test_tx_latency` 一致），不引入 `qsort` + 独立 comparator
+- **输出格式对齐**：缩进 + 单位标注（`ms`），匹配 `test_tx_latency` 的 `n=X avg=Y ms P50=Z ms` 格式
+
+<!-- L203 -->
+- **数据量意识**：QEMU 115200 bps 下每 KB 数据 ≈ 87ms 传输时间。FIFO 边界矩阵 9 尺寸 × 100 迭代 ≈ 24KB（~2s）。避免尺寸重复导致数据量翻倍（曾因 64/256/1024/4096 重复导致 ~572KB → ~50s）
+
 ### Requirement: 2026-06-11 优化审计新发现
 
 本次审计（openspec-explorer，4 个并行 agent）揭示的未记录优化机会与正确性问题；各项 MUST 评估风险后立项落地，禁止"以后再说"。
