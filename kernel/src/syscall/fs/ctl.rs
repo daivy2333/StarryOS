@@ -40,30 +40,31 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         let _ = f.ioctl(cmd, nb as usize);
         return Ok(0);
     }
-    // TCSBRK (0x5409): tcdrain — wait for TX ring buffer + UART FIFO drain
+    // TCSBRK (0x5409): tcdrain — wait for all TX stages (ring → copier → FIFO → wire)
     if cmd == 0x5409 {
-        use uart_16550::spec::registers::LSR;
         use uart_16550::async_::isr::DRAIN_WAKER;
-        use uart_16550::os::OsWakerSet;
         use crate::drivers::uart_init;
         let result = block_on(poll_fn(|cx| {
-            if uart_init::tx_is_empty() {
-                let mut uart = uart_init::uart_instance().lock();
-                let lsr = uart.lsr();
-                if lsr.contains(LSR::TRANSMITTER_EMPTY) {
-                    return Poll::Ready(Ok(0isize));
-                }
-                drop(uart);
-                DRAIN_WAKER.register(cx.waker());
-                // double-check: ISR may have fired between first check and register
-                let mut uart = uart_init::uart_instance().lock();
-                if uart.lsr().contains(LSR::TRANSMITTER_EMPTY) {
-                    return Poll::Ready(Ok(0isize));
-                }
-            } else {
-                uart_init::driver().tx.poll.register(cx.waker());
+            let driver = uart_init::driver();
+            let c = driver.tx_completion();
+            if c.is_drained() {
+                return Poll::Ready(Ok(0isize));
             }
-            Poll::Pending
+
+            // Register waker before recheck (M1 D3 order: register → check)
+            if !c.ring_empty || c.copier_active || c.staged_bytes > 0 {
+                driver.tx.register_waker(cx.waker());
+            }
+            if c.staged_bytes == 0 && !c.copier_active && c.ring_empty {
+                DRAIN_WAKER.register(cx.waker());
+            }
+
+            let c2 = driver.tx_completion();
+            if c2.is_drained() {
+                Poll::Ready(Ok(0isize))
+            } else {
+                Poll::Pending
+            }
         }));
         result
     } else {

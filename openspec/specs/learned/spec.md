@@ -831,3 +831,5 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 | <!-- L198 --> | `AsyncUartDriver<R, W, P>` | `uart_16550::async_::driver::AsyncUartDriver` | 异步驱动主类型，3 泛型参数：Runtime / WakerSet / UartPort |
 | <!-- L199 --> | `TtyRead` / `TtyWrite` | `uart_16550::tty::{TtyRead, TtyWrite}` | 通用 TTY 抽象 trait（Q13 Phase 1 提取） |
 | <!-- L200 --> | StarryOS 类型别名 | `StarryOS::drivers::{ArceOsDriver, ArceOsReader, ArceOsWriter}` | `pub type` 简化泛型，绑定 ArceOS 5 适配 |
+| <!-- L201 --> | TEMT corner-case 丢唤醒窗口 | Q15-M2: 真板 NS16550 上 THRE 中断触发时 TEMT 可能为 0... | Q15-M2 driver.rs tx_copier_loop TEMT poll |
+| <!-- L202 --> | M3 TtyWrite 短写契约债务 | Q15-M3 (⏳): `TtyWrite::write(&[u8])` 无返回值，RingBufTx::push 已返回实际接收字节数但被丢弃，Tty::write_at 谎报 `Ok(buf.len())`。满 ring 时 VFS 层不感知 backpressure → 数据静默丢弃。需改为 `write(&[u8]) -> usize`，影响 TtyWrite trait 签名 + AsyncUartWriter + PtyWriter + Tty::write_at + ldisc echo（5 调用点）。breaking change，需在 M1/M2/M4 稳定后单独 A/B 验证 | Q15-M3 proposal |

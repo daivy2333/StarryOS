@@ -520,3 +520,45 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - ADR-035（原始 5-trait 设计，2026-06-17）
 - uart_16550: `src/os/mod.rs`（2 trait 最小接口）
 - StarryOS: `kernel/src/drivers/os_arceos.rs`（2 适配器）
+
+<!-- A037 -->
+### ADR-037: TxCompletion 四阶段 drain API 设计 — M2 flush/tcdrain 正确性
+
+**日期**: 2026-06-23
+**状态**: 已接受
+**决策**: 在 `AsyncUartDriver` 中引入 `TxCompletion { ring_empty, copier_active, staged_bytes, transmitter_empty }` 快照结构体 + `tx_completion()` 方法，供 `flush()` 和 `tcdrain` 轮询四阶段排空完成（ring→copier→FIFO→shift register→wire）。
+
+**背景**:
+- Q7 时代 tcdrain 直接读 `uart_instance().lock().lsr()` 判断 TEMT，绕过 driver 架构
+- `flush()` 直接返回 `Ok(())` 无任何等待
+- 缺少对 copier staging（已从 ring pop 但未 send 到 UART）的可见性
+- 真板 NS16550 存在 TEMT 丢唤醒窗口：THRE 中断触发时 TEMT 可能为 0，随后 TEMT→1 不产生新中断
+
+**决策内容**:
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| TxCompletion 快照语义 | 4 字段 Relaxed 独立读取，不保证原子性 | flush 是 polling 语义，多次调用直到收敛 |
+| tx_copier_active 生命周期 | poll 入口 set true，Pending 前 clear false | flush 只需知道 copier 当前是否在处理 |
+| tx_staged_bytes 计数 | pop_batch 后 +N，send_bytes>0 后 -S | 追踪 ring→FIFO 在途字节 |
+| UartPort 扩展 | 新增 `transmitter_empty() -> bool`，不暴露完整 LSR | 最小接口原则 |
+| TEMT corner-case fix | copier 在 send 完最后字节后 bounded spin 256 次等 TEMT | 真板 DRAIN_WAKER 窗口修复；flush 保持纯事件驱动 |
+| flush() 实现 | poll_fn + DRAIN_WAKER + register-recheck-Pending | 复用 ISR 已有 DRAIN_WAKER；两路唤醒（ring waker + DRAIN_WAKER） |
+| tcdrain 重构 | 改用 `driver().tx_completion()` 替代直接 MMIO | 消除架构分层违规，增加 ring/copier/staged 检查 |
+
+**影响**:
+- uart_16550 `driver.rs` 新增 ~65 行（TxCompletion + tx_completion + 状态字段 + TEMT poll）
+- uart_16550 `device_ops.rs` flush() 从 3 行 → ~30 行
+- StarryOS `ctl.rs` tcdrain 从直接 MMIO → driver API（消除分层违规）
+- StarryOS `uart_init.rs` 删除死代码 `tx_is_empty()`
+- 性能无退化（M2 QEMU benchmark 验证通过，64B=169KB/s vs M1=156KB/s）
+
+**替代方案**:
+- ❌ 在 flush() 中做 TEMT polling（而非 copier）→ 拒绝：flush 应保持纯事件驱动
+- ❌ 暴露完整 LSR 寄存器 → 拒绝：增加 trait 耦合
+- ❌ 用单一 AtomicU64 打包所有状态 → 拒绝：字段语义不匹配，过度复杂
+
+**参考**:
+- Q15-M2 OpenSpec 变更: `openspec/changes/m2-tx-completion-drain/`
+- learned/spec.md L201: TEMT corner-case 丢唤醒窗口
+- uart_16550: `src/async_/driver.rs`（TxCompletion + tx_completion）
+- StarryOS: `kernel/src/syscall/fs/ctl.rs`（tcdrain 新实现）
