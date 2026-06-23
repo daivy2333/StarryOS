@@ -618,7 +618,7 @@ unsafe { ptr.add(5).read_volatile() }; // 读 LSR
 
 ### Requirement: 测试方法与性能基准
 
-性能测试 MUST 在内核态和用户态分开设计，并标明 QEMU 时序欺骗边界。
+Performance benchmarks MUST be designed separately for kernel-space and user-space, and MUST label the QEMU timing deception boundary. All performance claims MUST specify measurement environment and data size.
 
 **性能测试框架**（L130，2026-06-01）
 
@@ -680,6 +680,11 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 <!-- L203 -->
 - **数据量意识**：QEMU 115200 bps 下每 KB 数据 ≈ 87ms 传输时间。FIFO 边界矩阵 9 尺寸 × 100 迭代 ≈ 24KB（~2s）。避免尺寸重复导致数据量翻倍（曾因 64/256/1024/4096 重复导致 ~572KB → ~50s）
+
+#### Scenario: 查询 Q13 提取的 API 路径
+
+- **WHEN** 开发者需要定位异步 UART 模块中某个具体类型或 trait
+- **THEN** MUST 先查本速查表（L160-L200），再去对应源码文件确认
 
 ### Requirement: 2026-06-11 优化审计新发现
 
@@ -791,16 +796,21 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 ### Requirement: Q13 uart_16550 异步提取实施经验
 
-将异步串口从 StarryOS 提取到 uart_16550 crate 过程中积累的实现经验。
+将异步串口从 StarryOS 提取到 uart_16550 crate 过程中积累的实现经验。提取后的模块边界 MUST 遵循 5-trait OS 抽象（后精简为 2-trait），所有 async 代码 SHALL 位于 `async` feature gate 后。
 
 | <!-- L176 --> | **UartPort trait for &mut self** | `Uart16550::receive_bytes/send_bytes` 取 `&mut self`，UartPort trait 需要内部可变性；`receive_bytes/send_bytes` 取 `&self`，底层通过 `OsSpinNoIrq::with_lock` 包装 |
 | <!-- L177 --> | **Callback pattern for OsSpinNoIrq** | `with_lock<R>(&self, f: impl FnOnce(&mut T) -> R) -> R` 使用回调模式而非返回 guard，避免 guard 生命周期问题 |
 | <!-- L178 --> | **&'static Self for no-alloc driver** | `AsyncUartDriver` 使用 `&'static Self` 而非 `Arc<Self>` 兼容 no-alloc 环境 |
 | <!-- L179 --> | **StarryOS owns ring buffer statics** | RingBuffer::new() 静态变量保留在 StarryOS，通过 `&'static` 引用传递给 uart_16550 |
 
-### Q13 性能优化洞察（2026-06-16）
+#### Scenario: 在新 OS 中实现异步 UART 适配
 
-Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化。以下是优化方向和权衡分析。
+- **WHEN** 开发者要在新 OS 项目中使用 uart_16550 异步功能
+- **THEN** MUST 实现 OsRuntime + OsWakerSet 两个 trait，并按本表 L176-L179 的模式注册静态 ring buffer
+
+### Requirement: Q13 性能优化洞察
+
+Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化。热路径函数 MUST 标注 `#[inline(always)]` 并优先采用批量操作减少 trait 调用次数；跨 crate 内联优化 SHALL 通过 LTO 实现。
 
 | <!-- L180 --> | **Trait 抽象开销来源** | 泛型单态化（静态分发）无虚函数表开销，但热路径上 `UartPort::receive_bytes/send_bytes` + `OsWakerSet::wake/register` 每字节增加 ~15-30ns 锁获取开销 |
 | <!-- L181 --> | **#[inline(always)] 优化** | 热路径函数添加 `#[inline(always)]` 可消除函数调用开销（-5~10µs），但可能导致代码膨胀影响 I-cache |
@@ -808,13 +818,25 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 | <!-- L183 --> | **Feature gate 条件编译** | 为 ArceOS 提供特化实现绕过 trait 抽象（-15~25µs），但增加维护负担、降低可移植性 |
 | <!-- L184 --> | **性能与可移植性权衡** | `#[inline(always)]` + 批量操作 = 最佳性价比（-15~30µs，无可移植性损失）；feature gate 特化 = 中等收益但降低可移植性；DMA = 最佳性能但硬件依赖 |
 
-### Q13.1 优化时机洞察（2026-06-16）
+#### Scenario: 评估 trait 抽象开销优化策略
 
-| <!-- L185 --> | **优化时机分类** | 算法优化（批量）应尽早实施，收益独立于模块化；编译器优化（inline）可等需要时再加，模块化后才需要显式标注 |
+- **WHEN** Q13 提取后性能出现退化
+- **THEN** MUST 优先采用 inline + 批量操作（零可移植性损失），禁止直接实施 feature gate 特化绕过 trait
+
+### Requirement: Q13.1 优化时机选择
+
+| <!-- L185 --> | **优化时机分类** | 算法优化（批量）MUST 尽早实施，收益独立于模块化；编译器优化（inline）可等需要时再加，模块化后才需要显式标注 |
 | <!-- L186 --> | **批量操作内嵌收益** | 批量操作在内嵌时就该做（减少锁获取次数），与模块化无关；Q0~Q12 期间未做是遗漏 |
 | <!-- L187 --> | **跨 crate 内联必要性** | 同一 crate 内编译器自动内联，跨 crate 需要 `#[inline(always)]` 显式标注；模块化后 inline 注解成为必需 |
 
-### Q13 模块分离后的 API 路径速查（2026-06-17）
+#### Scenario: 决定优化实施时机
+
+- **WHEN** 开发者计划实施性能优化
+- **THEN** MUST 区分算法优化（批量，尽早做）与编译器优化（inline/LTO，模块化后按需加），禁止颠倒顺序
+
+### Requirement: Q13 模块分离后的 API 路径速查
+
+API path quick-reference for post-Q13 module separation. All new async types and traits MUST be registered in this lookup table.
 
 | 编号 | 名称 | 路径 | 用途 |
 |------|------|------|------|
@@ -832,4 +854,10 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 | <!-- L199 --> | `TtyRead` / `TtyWrite` | `uart_16550::tty::{TtyRead, TtyWrite}` | 通用 TTY 抽象 trait（Q13 Phase 1 提取） |
 | <!-- L200 --> | StarryOS 类型别名 | `StarryOS::drivers::{ArceOsDriver, ArceOsReader, ArceOsWriter}` | `pub type` 简化泛型，绑定 ArceOS 5 适配 |
 | <!-- L201 --> | TEMT corner-case 丢唤醒窗口 | Q15-M2: 真板 NS16550 上 THRE 中断触发时 TEMT 可能为 0... | Q15-M2 driver.rs tx_copier_loop TEMT poll |
-| <!-- L202 --> | M3 TtyWrite 短写契约债务 | Q15-M3 (⏳): `TtyWrite::write(&[u8])` 无返回值，RingBufTx::push 已返回实际接收字节数但被丢弃，Tty::write_at 谎报 `Ok(buf.len())`。满 ring 时 VFS 层不感知 backpressure → 数据静默丢弃。需改为 `write(&[u8]) -> usize`，影响 TtyWrite trait 签名 + AsyncUartWriter + PtyWriter + Tty::write_at + ldisc echo（5 调用点）。breaking change，需在 M1/M2/M4 稳定后单独 A/B 验证 | Q15-M3 proposal |
+| <!-- L202 --> | M3 TtyWrite 短写契约 | Q15-M3 ✅ (2026-06-23): `TtyWrite::write(&[u8]) -> usize`，穿透 uart_16550（tty.rs + device_ops.rs）和 StarryOS（mod.rs + pty.rs + ldisc.rs）共 5 文件。QEMU benchmark 验证无退化（1B 0.134ms, 64B 210KB/s, FIONBIO PASS）。ADR-038 记录完整设计决策。 | Q15-M3 change |
+| <!-- L204 --> | M3 短写影响面速查 | `../uart_16550/src/tty.rs`, `../uart_16550/src/async_/device_ops.rs`, `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`, `kernel/src/file/fs.rs`, `kernel/src/syscall/fs/io.rs` | `TtyWrite::write -> usize` 会让 `Tty::write_at` 把实际接受字节数穿透到 `sys_write`；`File::write` 对 `Ok(n)` 不重试，benchmark 必须循环处理短写。详见 `.claude/analysis/q15-m3-tty-short-write-contract.md` |
+
+#### Scenario: 新增 Q13 层级 API
+
+- **WHEN** 开发者在 uart_16550 async 栈中添加新类型或 trait
+- **THEN** MUST 同时更新本速查表（上方 L176-L200 区域），标注文件路径与用途

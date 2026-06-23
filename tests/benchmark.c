@@ -53,13 +53,18 @@ static void test_tx_throughput(void) {
         size_t total = 0;
 
         for (int i = 0; i < iterations; i++) {
-            ssize_t n = write(fd, buf, test_size);
-            if (n > 0) {
-                total += n;
-                tcdrain(fd);   /* wait until UART FIFO is empty */
-            } else {
-                break;
+            /* loop on short writes — M3 contract returns actual accepted count */
+            size_t remaining = test_size;
+            while (remaining > 0) {
+                ssize_t n = write(fd, buf + (test_size - remaining), remaining);
+                if (n > 0) {
+                    total += n;
+                    remaining -= n;
+                } else {
+                    break;
+                }
             }
+            tcdrain(fd);   /* wait until UART FIFO is empty */
         }
 
         long long end = get_time_ns();

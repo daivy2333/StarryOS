@@ -143,7 +143,7 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 ### Requirement: 2026-06-11 死代码审计后续优化
 
-本次审计（清理 8 项真死代码，保留 5 项预留接口）发现的后续优化机会；各项 MUST 在评估 ROI 后决定是否启用或彻底移除。
+本次审计发现的后续优化机会 MUST 在评估 ROI 后决定是否启用或彻底移除；死代码 SHALL 不长期保留。
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
@@ -155,6 +155,11 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 - **WHEN** Q6 真板到位后需要内存调试工具
 - **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
+
+#### Scenario: 决定是否移除死代码
+
+- **WHEN** 开发者发现标注 `#[allow(dead_code)]` 的预留接口超过 90 天未被使用
+- **THEN** MUST 评估是否彻底移除，禁止无限期保留
 
 ### Requirement: Q12 Embassy 调研驱动的近期优化 — 已完成（路径 A）
 
@@ -349,7 +354,7 @@ block_on(async {
 
 ### Requirement: 性能指标基线与硬件理论极限
 
-性能测试与对比 MUST 基于下表的基线数据；任何指标声明 MUST 标注 QEMU / 真板可信度。
+Performance benchmarks and comparisons MUST use the baseline data below. All metric claims MUST label QEMU vs real-hardware credibility. QEMU throughput data SHALL be explicitly marked untrusted.
 
 **NS16550 @ 115200 bps 硬件理论极限**：
 

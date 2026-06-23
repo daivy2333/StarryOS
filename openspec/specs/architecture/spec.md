@@ -362,11 +362,13 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - **THEN** 必须参考本 ADR-032 的决策理由，确保不破坏跨平台复用目标
 
 <!-- A033 -->
-### ADR-033: uart_16550 成为完整异步 UART crate
+### Requirement: ADR-033: uart_16550 成为完整异步 UART crate
+
+uart_16550 MUST provide the complete async UART stack via the `async` feature gate with OS abstraction traits.
 
 **日期**: 2026-06-16
 **状态**: 已接受
-**决策**: 推翻 ADR-007（D1 决策），将异步串口实现从 StarryOS 提取到 uart_16550 crate
+**决策**: 推翻 ADR-007（D1 决策），将异步串口实现从 StarryOS 提取到 uart_16550 crate。
 
 **背景**:
 - StarryOS Q0~Q12 积累 ~618 行异步串口实现
@@ -394,8 +396,16 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - Ring buffer 静态变量由 OS 拥有（`&'static RingBuffer` 传入 uart_16550）
 - 驱动使用 `&'static Self` 而非 `Arc<Self>`（兼容 no-alloc）
 
+#### Scenario: New OS integrates async UART
+
+- **WHEN** a developer wants to use async UART in a new OS project
+- **THEN** they MUST implement the OS abstraction traits and enable the `async` feature gate
+- **AND** the async stack SHALL work without modifying uart_16550 internals
+
 <!-- A034 -->
-### ADR-034: LTO 延期启用 — 已知有效但开发期暂不开
+### Requirement: ADR-034: LTO 延期启用 — 已知有效但开发期暂不开
+
+LTO MUST be re-enabled before production release; during active development compile speed SHALL take priority.
 
 **日期**: 2026-06-16
 **状态**: 已接受
@@ -418,8 +428,16 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - 从 uart_16550 + StarryOS 的 `Cargo.toml` 中删除 `[profile.release] lto = true`
 - 性能文档中 LTO 数据保留为参考（标注为"需在最终构建中开启"）
 
+#### Scenario: Production build preparation
+
+- **WHEN** the project reaches development freeze
+- **THEN** LTO MUST be re-enabled in Cargo.toml before the production build
+- **AND** the ring buffer throughput regression against LTO baseline SHALL be verified
+
 <!-- A035 -->
-### ADR-035: 异步 UART 通过 5 个 OS 抽象 trait 跨 OS 可移植
+### Requirement: ADR-035: 异步 UART 通过 5 个 OS 抽象 trait 跨 OS 可移植
+
+The async UART stack MUST NOT call any concrete OS API directly; all OS dependencies SHALL go through abstraction traits.
 
 **日期**: 2026-06-17
 **状态**: 已接受
@@ -466,17 +484,25 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - L-188~L200：API 路径速查
 - 关联 ADR：A033（uart_16550 成为完整异步 UART crate，Q13 决策）
 
+#### Scenario: New OS trait required
+
+- **WHEN** a new OS capability (e.g., DMA, timer) is needed by the async stack
+- **THEN** a new trait SHALL be added to the OS abstraction layer
+- **AND** it MUST NOT break existing OS adapter implementations
+
 **重新启用时机**:
 - 开发冻结 → 发布构建前
 - 仅需在 StarryOS `Cargo.toml` 加回一行（uart_16550 作为依赖自动继承）
 - 预期效果：ring buffer 吞吐量 ↑69%，e2e 延迟不变
 
 <!-- A036 -->
-### ADR-036: OS abstraction 缩减至 2-trait 最小接口 — 删除 OsIrq/OsMmio/OsSpinNoIrq
+### Requirement: ADR-036: OS abstraction 缩减至 2-trait 最小接口
+
+The OS abstraction layer MUST only include traits actually invoked by driver code; unused YAGNI traits SHALL be removed immediately.
 
 **日期**: 2026-06-19
 **状态**: 已接受
-**决策**: 从 `uart_16550::os` 中删除 `OsIrq`、`OsMmio`、`OsSpinNoIrq` 三个 trait，保留 `OsRuntime` + `OsWakerSet` 构成**最小可移植接口**。StarryOS 侧对应删除 `ArceOsIrq`、`ArceOsMmio`、`ArceOsSpinNoIrq` 三个适配器。
+**决策**: 从 `uart_16550::os` 中删除 `OsIrq`、`OsMmio`、`OsSpinNoIrq` 三个 trait，保留 `OsRuntime` + `OsWakerSet` 构成**最小可移植接口**。
 
 **背景**:
 - ADR-035（2026-06-17）定义了 5 个 OS 抽象 trait，声称是"最小完备接口集"
@@ -521,8 +547,16 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - uart_16550: `src/os/mod.rs`（2 trait 最小接口）
 - StarryOS: `kernel/src/drivers/os_arceos.rs`（2 适配器）
 
+#### Scenario: Dead trait detected
+
+- **WHEN** `cargo build` reports dead_code warnings on OS abstraction types
+- **THEN** the unused traits MUST be removed from the OS abstraction layer
+- **AND** the corresponding adapter impls SHALL be deleted
+
 <!-- A037 -->
-### ADR-037: TxCompletion 四阶段 drain API 设计 — M2 flush/tcdrain 正确性
+### Requirement: ADR-037: TxCompletion 四阶段 drain API 设计
+
+The `flush()` implementation MUST wait for all four drain stages; `tcdrain` SHALL use `driver().tx_completion()` instead of direct MMIO.
 
 **日期**: 2026-06-23
 **状态**: 已接受
@@ -562,3 +596,59 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - learned/spec.md L201: TEMT corner-case 丢唤醒窗口
 - uart_16550: `src/async_/driver.rs`（TxCompletion + tx_completion）
 - StarryOS: `kernel/src/syscall/fs/ctl.rs`（tcdrain 新实现）
+
+#### Scenario: Flush must wait for all drain stages
+
+- **WHEN** a caller invokes `flush()` on the async UART writer
+- **THEN** the implementation MUST poll until all four stages (ring, copier, FIFO, shift register) are drained
+- **AND** the TEMT corner-case wake window SHALL be handled without polling
+
+<!-- A038 -->
+### Requirement: ADR-038: TtyWrite 改为返回实际接受字节数 — M3 短写契约
+
+TtyWrite::write MUST return the actual number of bytes accepted by the output sink so VFS callers can observe short writes.
+
+**日期**: 2026-06-23
+**状态**: 已实施 ✅ (2026-06-23)
+**决策**: 将 `uart_16550::TtyWrite::write(&[u8])` 从无返回值改为 `write(&[u8]) -> usize`，并让 StarryOS `Tty::write_at()` 返回 writer 实际接受的字节数，而不是固定返回 `Ok(buf.len())`。
+
+This contract MUST report the number of bytes accepted by the output sink so VFS callers can observe short writes.
+
+**背景**:
+- `RingBufTx::push()` 已返回实际写入数，但 `AsyncUartWriter` 的 `TtyWrite` impl 丢弃该返回值。
+- `PtyWriter::write()` 也只记录 short write warning，调用方无法得知丢弃了多少字节。
+- `Tty::write_at()` 当前固定返回完整 buffer 长度，导致 TX ring 或 PTY buffer 满时用户态看到“完整写入成功”，形成 silent data loss。
+- M1/M2/M4 已分别解决 TX fast retry、TxCompletion drain、IER single owner；M3 可以聚焦契约修正，不需要再改 TX copier。
+
+**决策内容**:
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| trait 返回值 | `usize` | 与 `TtyRead::read` 和 `embedded_io_async::Write::write` 的短 I/O 语义一致 |
+| TTY `write_at` | 返回 `Ok(self.writer.write(buf))` | VFS/sys_write 层必须看到真实接受数 |
+| 满 ring 语义 | M3 第一阶段返回 `Ok(0)`，不立即引入 `WouldBlock` | 最小 breaking change；blocking exact write 另立后续变更 |
+| ldisc echo | 显式 best-effort，忽略返回值 | echo 不是可靠数据写入路径，不能在输入处理循环里阻塞 |
+| TX copier | 不改动 | M3 只修正生产者契约，避免影响 M1/M2/M4 已验证状态机 |
+
+**影响**:
+- uart_16550 公共 trait breaking change：所有 `TtyWrite` 实现者必须返回实际接受字节数。
+- StarryOS 用户态 `write(2)` 可能开始返回短写，benchmark 和测试程序必须循环累计写入。
+- PTY 溢出从“只 warn 丢弃”变为“返回短写”，行为更符合 VFS 契约。
+- `File::write` 对 `Ok(n)` 不会触发 `poll_io` 重试；若未来需要 blocking exact write，应单独设计 OUT readiness + WouldBlock 语义。
+
+**替代方案**:
+- ❌ 保持 void trait，仅在内部日志告警：继续 silent data loss，不能接受。
+- ❌ `Tty::write_at` 循环直到写完：会把同步 trait 变成隐式阻塞点，可能重现调度台阶问题。
+- ❌ 满 ring 立即返回 `WouldBlock`：语义更强但需要完整验证 blocking/nonblocking/poll OUT，不适合 M3 第一阶段。
+- ✅ 返回实际接受数：最小修复，契约清晰，调用方可正确处理短写。
+
+#### Scenario: TX ring cannot accept the full buffer
+
+- **WHEN** a TTY writer accepts fewer bytes than the user buffer length
+- **THEN** `TtyWrite::write` MUST return the accepted byte count
+- **AND** `Tty::write_at` MUST propagate that count to VFS/sys_write callers
+
+**参考**:
+- `.claude/analysis/q15-m3-tty-short-write-contract.md`
+- learned/spec.md L202/L204
+- uart_16550: `src/tty.rs`, `src/async_/device_ops.rs`, `src/async_/ring_buffer.rs`
+- StarryOS: `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`

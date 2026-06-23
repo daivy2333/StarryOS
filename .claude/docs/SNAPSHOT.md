@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-23
-> 分支：feat/uart-16550-async — Q15: M0✅ M1✅ M2✅ M4✅ M3 ⏳
+> 分支：feat/uart-16550-async — Q15: M0✅ M1✅ M2✅ M4✅ M3✅
 
 ---
 
@@ -49,7 +49,7 @@
 **Q15 M2 ✅**: TX completion 三阶段 drain（flush/tcdrain 正确等待），TxCompletion API + TEMT corner-case fix. 性能基线 M2: 64B 169KB/s | 256B 181KB/s | 1024B 189KB/s | 4096B 190KB/s | 1B avg 0.132ms P95 0.143ms
 **Q15 M4 ✅** (2026-06-23): IER 单 owner — CACHED_IER/write_ier/enable_* 全部删除，UartPort::update_ier() 统一管理。uart_16550 真正独立可复用
 - **性能基线 M4 (QEMU)**: 64B 184KB/s | 1B 0.129ms | FIFO 无台阶
-**Q15 M3 ⏳**: TtyWrite 短写契约 — `write(&[u8])` 无返回值，RingBufTx::push 实际接收数被丢弃，Tty::write_at 谎报 `Ok(buf.len())`。满 ring 时 backpressure 不可见。breaking change，需在 M1/M2/M4 稳定后单独做
+**Q15 M3 ✅** (2026-06-23): TtyWrite 短写契约 — `write(&[u8]) -> usize`，5 文件穿透 uart_16550 + StarryOS，benchmark 增加短写循环。uart_16550 54 tests PASS，StarryOS cargo check PASS。QEMU manual QA 待运行。
 **Q15 增量重融合 ⏳** (2026-06-21): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
 - 源分支：`feat/uart-16550-async-temp`（保留原 M4+ 全部代码）
 - 策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续

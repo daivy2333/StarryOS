@@ -4,42 +4,26 @@
 TBD - created by archiving change q13-async-uart-extraction. Update Purpose after archive.
 ## Requirements
 ### Requirement: ArceOS adapter implementation
-The system SHALL implement the 5 OS abstraction traits for ArceOS (StarryOS's underlying framework).
+The system SHALL implement the OS abstraction traits for ArceOS, including `UartPort::update_ier()` with internal IER caching. StarryOS SHALL delete its external `CACHED_IER`, `write_ier`, `enable_rx_intr`, and `enable_tx_intr` functions.
 
-#### Scenario: ArceOsRuntime implementation
-- **WHEN** `ArceOsRuntime` is used as `OsRuntime`
-- **THEN** it SHALL use `axtask::spawn_with_name` for spawning and `axtask::future::block_on` for blocking
+#### Scenario: ArceOsUartPort update_ier implementation
+- **WHEN** `ArceOsUartPort::update_ier(set, clear)` is called
+- **THEN** it SHALL atomically read its internal `AtomicU8` cache, apply set/clear bits, store back, and write the new value to UART MMIO via `self.uart.lock().set_ier()`
 
-#### Scenario: ArceOsIrq implementation
-- **WHEN** `ArceOsIrq` is used as `OsIrq`
-- **THEN** it SHALL use `axhal::irq::register_irq_hook` for IRQ registration
-
-#### Scenario: ArceOsMmio implementation
-- **WHEN** `ArceOsMmio` is used as `OsMmio`
-- **THEN** it SHALL use `axhal::mem::phys_to_virt` and `axmm::iomap` for MMIO mapping
-
-#### Scenario: ArceOsSpinNoIrq implementation
-- **WHEN** `ArceOsSpinNoIrq` is used as `OsSpinNoIrq`
-- **THEN** it SHALL use `kspin::SpinNoIrq` for IRQ-safe spinlock
-
-#### Scenario: ArceOsWakerSet implementation
-- **WHEN** `ArceOsWakerSet` is used as `OsWakerSet`
-- **THEN** it SHALL use `axpoll::PollSet` for waker registration and notification
+#### Scenario: ISR wrapper adapts to new handler signature
+- **WHEN** the StarryOS ISR wrapper calls `uart_isr_handler`
+- **THEN** it SHALL pass function pointers `fn_disable_rx` and `fn_disable_tx` that each call `port.update_ier()` on the shared `ArceOsUartPort` reference
 
 ### Requirement: StarryOS integration
-The system SHALL modify StarryOS to use uart_16550's async implementation instead of local code.
+The system SHALL use uart_16550's async implementation including the new completion API for tcdrain.
 
 #### Scenario: Cargo.toml update
 - **WHEN** StarryOS kernel/Cargo.toml is updated
 - **THEN** it SHALL enable uart_16550's `async` feature
 
-#### Scenario: Adapter layer creation
-- **WHEN** StarryOS creates os_arceos.rs
-- **THEN** it SHALL implement all 5 OS traits using ArceOS APIs
-
-#### Scenario: Local code deletion
-- **WHEN** StarryOS removes local async implementation
-- **THEN** it SHALL delete isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs
+#### Scenario: tcdrain uses driver completion
+- **WHEN** `TCSBRK` ioctl is invoked
+- **THEN** the implementation SHALL poll `driver().tx_completion()` instead of directly accessing UART MMIO registers
 
 ### Requirement: Performance regression prevention
 The system SHALL verify that the migration does not cause performance regression.

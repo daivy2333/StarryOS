@@ -45,12 +45,13 @@ impl PtyWriter {
 }
 
 impl TtyWrite for PtyWriter {
-    fn write(&self, buf: &[u8]) {
-        let read = self.0.lock().push_slice(buf);
+    fn write(&self, buf: &[u8]) -> usize {
+        let written = self.0.lock().push_slice(buf);
         self.1.wake();
-        if read < buf.len() {
-            warn!("Discarding {} bytes written to pty", buf.len() - read);
+        if written < buf.len() {
+            warn!("Discarding {} bytes written to pty", buf.len() - written);
         }
+        written
     }
 }
 

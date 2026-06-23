@@ -166,13 +166,15 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
     }
 
     fn output_char(&self, term: &Termios2, ch: u8) {
+        // Echo is best-effort: output may be dropped if the output buffer
+        // is full. We explicitly ignore short-write counts.
         match ch {
-            b'\n' => self.writer.write(b"\n"),
-            b'\r' => self.writer.write(b"\r\n"),
-            ch if ch == term.special_char(VERASE) => self.writer.write(b"\x08 \x08"),
-            ch if ch == b' ' || ch.is_ascii_graphic() => self.writer.write(&[ch]),
+            b'\n' => { let _ = self.writer.write(b"\n"); }
+            b'\r' => { let _ = self.writer.write(b"\r\n"); }
+            ch if ch == term.special_char(VERASE) => { let _ = self.writer.write(b"\x08 \x08"); }
+            ch if ch == b' ' || ch.is_ascii_graphic() => { let _ = self.writer.write(&[ch]); }
             ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
-                self.writer.write(&[b'^', (ch + 0x40)]);
+                let _ = self.writer.write(&[b'^', (ch + 0x40)]);
             }
             other => {
                 warn!("Ignored echo char: {other:#x}");
