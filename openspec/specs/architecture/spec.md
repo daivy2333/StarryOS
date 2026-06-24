@@ -362,11 +362,13 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - **THEN** 必须参考本 ADR-032 的决策理由，确保不破坏跨平台复用目标
 
 <!-- A033 -->
-### ADR-033: uart_16550 成为完整异步 UART crate
+### Requirement: ADR-033: uart_16550 成为完整异步 UART crate
+
+uart_16550 MUST provide the complete async UART stack via the `async` feature gate with OS abstraction traits.
 
 **日期**: 2026-06-16
 **状态**: 已接受
-**决策**: 推翻 ADR-007（D1 决策），将异步串口实现从 StarryOS 提取到 uart_16550 crate
+**决策**: 推翻 ADR-007（D1 决策），将异步串口实现从 StarryOS 提取到 uart_16550 crate。
 
 **背景**:
 - StarryOS Q0~Q12 积累 ~618 行异步串口实现
@@ -393,3 +395,260 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - `OsSpinNoIrq` 使用回调模式（`with_lock`）避免 guard 生命周期问题
 - Ring buffer 静态变量由 OS 拥有（`&'static RingBuffer` 传入 uart_16550）
 - 驱动使用 `&'static Self` 而非 `Arc<Self>`（兼容 no-alloc）
+
+#### Scenario: New OS integrates async UART
+
+- **WHEN** a developer wants to use async UART in a new OS project
+- **THEN** they MUST implement the OS abstraction traits and enable the `async` feature gate
+- **AND** the async stack SHALL work without modifying uart_16550 internals
+
+<!-- A034 -->
+### Requirement: ADR-034: LTO 延期启用 — 已知有效但开发期暂不开
+
+LTO MUST be re-enabled before production release; during active development compile speed SHALL take priority.
+
+**日期**: 2026-06-16
+**状态**: 已接受
+**决策**: 暂不开启 `lto = true`，记录为已知优化手段，最终发布前再加回。
+
+**背景**:
+- 2026-06-16 在 `feat/uart-16550-bench` 分支实测 LTO 效果：
+  - Ring buffer TX 385→652 MB/s（↑69%）
+  - RX 延迟 P50 200ns→<100ns
+  - e2e 延迟不变（瓶颈在调度）
+- 本质是消除跨 crate 函数调用开销（embassy_hal_internal → uart_16550）
+- 不是代码逻辑优化，纯编译器层面的链接时内联
+
+**决策理由**:
+- LTO 使 release build 时间增加 2-3×
+- 当前处于活跃开发期，编译速度比这 3% 的 ring buffer 提升更重要
+- 最终发布构建时加回一行配置即可，零代码改动
+
+**回滚操作**:
+- 从 uart_16550 + StarryOS 的 `Cargo.toml` 中删除 `[profile.release] lto = true`
+- 性能文档中 LTO 数据保留为参考（标注为"需在最终构建中开启"）
+
+#### Scenario: Production build preparation
+
+- **WHEN** the project reaches development freeze
+- **THEN** LTO MUST be re-enabled in Cargo.toml before the production build
+- **AND** the ring buffer throughput regression against LTO baseline SHALL be verified
+
+<!-- A035 -->
+### Requirement: ADR-035: 异步 UART 通过 5 个 OS 抽象 trait 跨 OS 可移植
+
+The async UART stack MUST NOT call any concrete OS API directly; all OS dependencies SHALL go through abstraction traits.
+
+**日期**: 2026-06-17
+**状态**: 已接受
+**决策**: `uart_16550` 异步栈不直接调用任何具体 OS 服务，而是定义 5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`），由目标 OS 实现这些 trait 后即可复用异步栈。
+
+**背景**:
+- Q13（2026-06-16）将异步串口从 StarryOS 提取至 `uart_16550` crate
+- 提取后必须解决"具体 OS 调用在哪一层做"的问题
+- 候选方案：(a) 适配层写在 `uart_16550` 内（绑定 ArceOS，违反通用性）；(b) `cfg_os!` 宏分叉（不优雅）；(c) 抽象 trait 边界（最终采用）
+- Q13 事后分析（`.claude/analysis/async-uart-module-boundary.md`）确认 5 trait 设计合理
+
+**决策内容**:
+- 5 个 trait 共同构成异步 UART 的**最小完备接口集**，每个 trait 对应一种"不可绕过"的 OS 能力：
+  - `OsRuntime`：异步任务生成 + 同步等待（copier 任务 + 初始化时 block_on）
+  - `OsIrq`：中断处理函数注册（ISR 必须由硬件中断控制器调度）
+  - `OsMmio`：物理地址到虚拟地址映射（UART 寄存器必须 MMIO 访问）
+  - `OsSpinNoIrq<T>`：关中断自旋锁（ISR 与进程上下文互斥）
+  - `OsWakerSet`：多 waker 集合（多个 task 等待同一事件）
+- `OsSpinNoIrq` 使用**回调模式**（`with_lock(f)`）而非 guard 模式，避免 `Guard::drop` 与 IRQ 恢复的耦合问题
+- `OsWakerSet::wake()` 返回**通知计数**而非布尔，支持上层做日志统计
+
+**影响**:
+- 5 trait 在 `uart_16550/src/os/mod.rs` 中定义，**无默认实现**（避免隐式 OS 假设）
+- `uart_16550/src/async_/` 下 5 个模块（isr / ring_buffer / driver / device_ops / mod）合计约 400 行**完全无具体 OS 符号泄漏**
+- StarryOS 适配层 `os_arceos.rs`（~123 行）实现 5 个 trait，桥接到 ArceOS 原语（`axtask` / `axhal` / `axmm` / `kspin` / `axpoll`）
+- 通用层 65% / OS 适配层 35% 的拆分比例与 Linux 子系统、Zephyr 驱动模型接近
+- 对其他 OS 接入成本约 80~150 行 trait 实现代码（详见分析文档 §6.2 通用性矩阵）
+
+**替代方案**:
+- (a) `cfg_os!` 宏分叉：`uart_16550` 内置 ArceOS / Linux / RTOS 分支；维护成本高、组合爆炸
+- (b) feature flag 多 crate：`uart_16550-arceos` / `uart_16550-linux` / ...；多 crate 生态，编译复杂
+- (c) 直接接受 OS 耦合：仅 StarryOS 使用，不通用；放弃 Q13 提取目标
+- 采用 (d) trait 抽象：单 crate，OS 无关，可扩展
+
+**扩展点（Q6 真板验证后可能新增）**:
+- `OsDma` trait：DMA 通道管理（Q6 启用 DMA 提升吞吐时）
+- `OsTimer` trait：高精度定时器（波特率自动检测、未来协议支持）
+- `OsPm` trait：电源管理（suspend/resume 场景）
+
+**参考**:
+- 详细分析：`.claude/analysis/async-uart-module-boundary.md`（事后视角，2026-06-17）
+- 5 trait 定义：`uart_16550/src/os/mod.rs`
+- StarryOS 适配：`StarryOS/kernel/src/drivers/os_arceos.rs`
+- L-188~L200：API 路径速查
+- 关联 ADR：A033（uart_16550 成为完整异步 UART crate，Q13 决策）
+
+#### Scenario: New OS trait required
+
+- **WHEN** a new OS capability (e.g., DMA, timer) is needed by the async stack
+- **THEN** a new trait SHALL be added to the OS abstraction layer
+- **AND** it MUST NOT break existing OS adapter implementations
+
+**重新启用时机**:
+- 开发冻结 → 发布构建前
+- 仅需在 StarryOS `Cargo.toml` 加回一行（uart_16550 作为依赖自动继承）
+- 预期效果：ring buffer 吞吐量 ↑69%，e2e 延迟不变
+
+<!-- A036 -->
+### Requirement: ADR-036: OS abstraction 缩减至 2-trait 最小接口
+
+The OS abstraction layer MUST only include traits actually invoked by driver code; unused YAGNI traits SHALL be removed immediately.
+
+**日期**: 2026-06-19
+**状态**: 已接受
+**决策**: 从 `uart_16550::os` 中删除 `OsIrq`、`OsMmio`、`OsSpinNoIrq` 三个 trait，保留 `OsRuntime` + `OsWakerSet` 构成**最小可移植接口**。
+
+**背景**:
+- ADR-035（2026-06-17）定义了 5 个 OS 抽象 trait，声称是"最小完备接口集"
+- 2026-06-19 实际追踪发现：被删的 3 个 trait 在整个 uart_16550 crate 中**从未被 import 或调用**——它们只存在于 trait 定义处
+- `cargo build` 报告 3 个 `dead_code` warning：`ArceOsIrq` / `ArceOsMmio` / `ArceOsSpinNoIrq` never constructed
+
+**根因分析 — 驱动架构刻意外部化了这三种职责**:
+
+| 职责 | 实际做法 | 不需要 trait 的原因 |
+|------|---------|-------------------|
+| IRQ 注册 | `axhal::irq::register_irq_hook()` 直调 | ISR handler 在 OS 层注册，驱动只接收已映射的 `NonNull<u8>` |
+| MMIO 映射 | `axmm::iomap()` + `phys_to_virt()` 直调 | 驱动在构造时已拿到映射好的指针，内部直接用 `read_volatile` |
+| 关中断锁 | `kspin::SpinNoIrq` 直用 | 锁在 UART 全局实例 `uart_instance()` 层持有，驱动通过 `UartPort` trait 间接访问 |
+
+这三种职责在驱动**外部**完成，驱动代码路径根本不需要走 trait 抽象。保留它们构成 YAGNI 违规。
+
+**决策内容**:
+- 从 `uart_16550/src/os/mod.rs` 删除 `OsIrq`（41-47 行）、`OsMmio`（54-71 行）、`OsSpinNoIrq`（81-90 行）
+- 从 `kernel/src/drivers/os_arceos.rs` 删除 `ArceOsIrq`（44-53 行）、`ArceOsMmio`（57-80 行）、`ArceOsSpinNoIrq`（85-100 行），清理不再需要的 `NonNull`/`PhysAddr` 导入
+- 模块文档更新为 "2 minimum-viable traits"，标注 IRQ/MMIO/锁外部化的架构原因
+
+**影响**:
+- uart_16550 `os` 模块从 112 行缩减到 61 行（↓45%）
+- StarryOS `os_arceos.rs` 从 123 行缩减到 63 行（↓49%）
+- 新 OS 移植接口从 5 trait → 2 trait，认知负担减半
+- `OsMmio` 删除后不再需要 `core::ptr::NonNull` / `memory_addr::PhysAddr` 导入
+- `OsIrq` 删除后不再需要 `axhal` 依赖声明
+- `cargo build` 0 warning（之前 3 个 dead_code 消除）
+
+**ADR-035 修正**:
+- ADR-035 的"5 个 trait 构成最小完备接口集"论断不成立——实际最小集是 2
+- ADR-035 保留为历史记录（记录了 Q13 提取时的完整思考过程），本 ADR 作为事后修正
+- 若未来驱动需要 DMA 管理（`OsDma`），届时追加 trait 不迟
+
+**替代方案**:
+- ❌ 保留 + suppress warning（`#[allow(dead_code)]`）：不解决根本问题，死代码持续膨胀认知负担
+- ❌ 让驱动实际调用它们：需要重构 isr.rs/driver.rs，把外部职责拉回驱动内部，方向相反
+- ✅ 删除 + 文档化：保持接口最小化，ADR 记录决策依据
+
+**参考**:
+- ADR-035（原始 5-trait 设计，2026-06-17）
+- uart_16550: `src/os/mod.rs`（2 trait 最小接口）
+- StarryOS: `kernel/src/drivers/os_arceos.rs`（2 适配器）
+
+#### Scenario: Dead trait detected
+
+- **WHEN** `cargo build` reports dead_code warnings on OS abstraction types
+- **THEN** the unused traits MUST be removed from the OS abstraction layer
+- **AND** the corresponding adapter impls SHALL be deleted
+
+<!-- A037 -->
+### Requirement: ADR-037: TxCompletion 四阶段 drain API 设计
+
+The `flush()` implementation MUST wait for all four drain stages; `tcdrain` SHALL use `driver().tx_completion()` instead of direct MMIO.
+
+**日期**: 2026-06-23
+**状态**: 已接受
+**决策**: 在 `AsyncUartDriver` 中引入 `TxCompletion { ring_empty, copier_active, staged_bytes, transmitter_empty }` 快照结构体 + `tx_completion()` 方法，供 `flush()` 和 `tcdrain` 轮询四阶段排空完成（ring→copier→FIFO→shift register→wire）。
+
+**背景**:
+- Q7 时代 tcdrain 直接读 `uart_instance().lock().lsr()` 判断 TEMT，绕过 driver 架构
+- `flush()` 直接返回 `Ok(())` 无任何等待
+- 缺少对 copier staging（已从 ring pop 但未 send 到 UART）的可见性
+- 真板 NS16550 存在 TEMT 丢唤醒窗口：THRE 中断触发时 TEMT 可能为 0，随后 TEMT→1 不产生新中断
+
+**决策内容**:
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| TxCompletion 快照语义 | 4 字段 Relaxed 独立读取，不保证原子性 | flush 是 polling 语义，多次调用直到收敛 |
+| tx_copier_active 生命周期 | poll 入口 set true，Pending 前 clear false | flush 只需知道 copier 当前是否在处理 |
+| tx_staged_bytes 计数 | pop_batch 后 +N，send_bytes>0 后 -S | 追踪 ring→FIFO 在途字节 |
+| UartPort 扩展 | 新增 `transmitter_empty() -> bool`，不暴露完整 LSR | 最小接口原则 |
+| TEMT corner-case fix | copier 在 send 完最后字节后 bounded spin 256 次等 TEMT | 真板 DRAIN_WAKER 窗口修复；flush 保持纯事件驱动 |
+| flush() 实现 | poll_fn + DRAIN_WAKER + register-recheck-Pending | 复用 ISR 已有 DRAIN_WAKER；两路唤醒（ring waker + DRAIN_WAKER） |
+| tcdrain 重构 | 改用 `driver().tx_completion()` 替代直接 MMIO | 消除架构分层违规，增加 ring/copier/staged 检查 |
+
+**影响**:
+- uart_16550 `driver.rs` 新增 ~65 行（TxCompletion + tx_completion + 状态字段 + TEMT poll）
+- uart_16550 `device_ops.rs` flush() 从 3 行 → ~30 行
+- StarryOS `ctl.rs` tcdrain 从直接 MMIO → driver API（消除分层违规）
+- StarryOS `uart_init.rs` 删除死代码 `tx_is_empty()`
+- 性能无退化（M2 QEMU benchmark 验证通过，64B=169KB/s vs M1=156KB/s）
+
+**替代方案**:
+- ❌ 在 flush() 中做 TEMT polling（而非 copier）→ 拒绝：flush 应保持纯事件驱动
+- ❌ 暴露完整 LSR 寄存器 → 拒绝：增加 trait 耦合
+- ❌ 用单一 AtomicU64 打包所有状态 → 拒绝：字段语义不匹配，过度复杂
+
+**参考**:
+- Q15-M2 OpenSpec 变更: `openspec/changes/m2-tx-completion-drain/`
+- learned/spec.md L201: TEMT corner-case 丢唤醒窗口
+- uart_16550: `src/async_/driver.rs`（TxCompletion + tx_completion）
+- StarryOS: `kernel/src/syscall/fs/ctl.rs`（tcdrain 新实现）
+
+#### Scenario: Flush must wait for all drain stages
+
+- **WHEN** a caller invokes `flush()` on the async UART writer
+- **THEN** the implementation MUST poll until all four stages (ring, copier, FIFO, shift register) are drained
+- **AND** the TEMT corner-case wake window SHALL be handled without polling
+
+<!-- A038 -->
+### Requirement: ADR-038: TtyWrite 改为返回实际接受字节数 — M3 短写契约
+
+TtyWrite::write MUST return the actual number of bytes accepted by the output sink so VFS callers can observe short writes.
+
+**日期**: 2026-06-23
+**状态**: 已实施 ✅ (2026-06-23)
+**决策**: 将 `uart_16550::TtyWrite::write(&[u8])` 从无返回值改为 `write(&[u8]) -> usize`，并让 StarryOS `Tty::write_at()` 返回 writer 实际接受的字节数，而不是固定返回 `Ok(buf.len())`。
+
+This contract MUST report the number of bytes accepted by the output sink so VFS callers can observe short writes.
+
+**背景**:
+- `RingBufTx::push()` 已返回实际写入数，但 `AsyncUartWriter` 的 `TtyWrite` impl 丢弃该返回值。
+- `PtyWriter::write()` 也只记录 short write warning，调用方无法得知丢弃了多少字节。
+- `Tty::write_at()` 当前固定返回完整 buffer 长度，导致 TX ring 或 PTY buffer 满时用户态看到“完整写入成功”，形成 silent data loss。
+- M1/M2/M4 已分别解决 TX fast retry、TxCompletion drain、IER single owner；M3 可以聚焦契约修正，不需要再改 TX copier。
+
+**决策内容**:
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| trait 返回值 | `usize` | 与 `TtyRead::read` 和 `embedded_io_async::Write::write` 的短 I/O 语义一致 |
+| TTY `write_at` | 返回 `Ok(self.writer.write(buf))` | VFS/sys_write 层必须看到真实接受数 |
+| 满 ring 语义 | M3 第一阶段返回 `Ok(0)`，不立即引入 `WouldBlock` | 最小 breaking change；blocking exact write 另立后续变更 |
+| ldisc echo | 显式 best-effort，忽略返回值 | echo 不是可靠数据写入路径，不能在输入处理循环里阻塞 |
+| TX copier | 不改动 | M3 只修正生产者契约，避免影响 M1/M2/M4 已验证状态机 |
+
+**影响**:
+- uart_16550 公共 trait breaking change：所有 `TtyWrite` 实现者必须返回实际接受字节数。
+- StarryOS 用户态 `write(2)` 可能开始返回短写，benchmark 和测试程序必须循环累计写入。
+- PTY 溢出从“只 warn 丢弃”变为“返回短写”，行为更符合 VFS 契约。
+- `File::write` 对 `Ok(n)` 不会触发 `poll_io` 重试；若未来需要 blocking exact write，应单独设计 OUT readiness + WouldBlock 语义。
+
+**替代方案**:
+- ❌ 保持 void trait，仅在内部日志告警：继续 silent data loss，不能接受。
+- ❌ `Tty::write_at` 循环直到写完：会把同步 trait 变成隐式阻塞点，可能重现调度台阶问题。
+- ❌ 满 ring 立即返回 `WouldBlock`：语义更强但需要完整验证 blocking/nonblocking/poll OUT，不适合 M3 第一阶段。
+- ✅ 返回实际接受数：最小修复，契约清晰，调用方可正确处理短写。
+
+#### Scenario: TX ring cannot accept the full buffer
+
+- **WHEN** a TTY writer accepts fewer bytes than the user buffer length
+- **THEN** `TtyWrite::write` MUST return the accepted byte count
+- **AND** `Tty::write_at` MUST propagate that count to VFS/sys_write callers
+
+**参考**:
+- `.claude/analysis/q15-m3-tty-short-write-contract.md`
+- learned/spec.md L202/L204
+- uart_16550: `src/tty.rs`, `src/async_/device_ops.rs`, `src/async_/ring_buffer.rs`
+- StarryOS: `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`

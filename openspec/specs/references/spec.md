@@ -122,21 +122,11 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 
 **项目分析文档**（`.claude/analysis/`）：
 
-| 文档 | 主题 | 来源 |
-|------|------|------|
-| `architecture-overview.md` | 架构概览：仓库结构、构建系统、启动链、任务/进程模型、中断框架 | ← `project-overview` + `boot-init` + `task-process-model` + `interrupt-framework` |
-| `async-patterns-reference.md` | 异步模式参考：Pipe 环形缓冲+PollSet、EventFd 原子通知、通用 poll_fn 模式、关键接口 | ← `reference-implementations` |
-| `async-uart-history.md` | 异步 UART 实现历程：Direction A/B/C 策略演进、最终架构、经验教训 | ← `async-uart-implementation-history` |
-| `user-async-performance.md` | 用户态异步性能分析：瓶颈根因（5 层）、FIONBIO 非阻塞模式、Q7 修复方案、性能基线 | ← `user-async-perf-analysis` + `nonblocking-mode-analysis` |
-| `uart-16550-integration.md` | uart_16550 集成分析：crate API 体系、MmioBackend 适配、内核六层封装、copier 架构、端到端数据流 | 新增 (2026-06-11) |
-| `optimization-opportunity-audit.md` | 2026-06-11 优化机会全面审计：4 个并行 agent 深度扫描，6+ 项未记录优化（含 3 项正确性 bug），Q8~Q11 重规划 | 保留 |
-| `embassy-uart-evaluation.md` | embassy UART 架构评估：三层 API、ISR 搬运 vs ISR 极简对比、lock-free ring buffer、迁移路径 A/B/C、可借鉴/不可借鉴组件清单 | 新增 (2026-06-11) |
-| `uart-16550-fork-evaluation.md` | uart_16550 本地 Fork 必要性评估：本地 fork 仅 12 行 set_ier()、上游状态分析、决策矩阵、建议保留→上游化 | 新增 (2026-06-12) |
-| `uart-16550-async-extraction.md` | uart_16550 异步串口提取可行性分析：7 文件 618 行迁移评估、5 个 OS 抽象 trait 设计、三阶段迁移方案、推翻 D1 决策论证 | 新增 (2026-06-15) |
-| `trait-abstraction-overhead.md` | Trait 抽象开销优化分析：热路径分析、5 种优化策略（inline/批量/feature gate/零拷贝/DMA）、性能与可移植性权衡 | 新增 (2026-06-16) |
+| 文档 | 主题 |
+|------|------|
+| `architecture-overview.md` | 架构概览：仓库结构、构建系统、启动链、任务/进程模型、中断框架 |
 
-**已删除**（内容已被覆盖）：
-- `uart-16550-crate-reuse.md` — 内容已由 `uart-16550-integration.md` 完全覆盖
+**已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
 #### Scenario: 新生成 openspec-explorer 分析文档
 

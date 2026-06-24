@@ -1,13 +1,12 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，feat/uart-16550-async 分支。
+> 2026-06-21 M4 Sync 已回退到 pre-M4 基线（04f8920/60c5729），原代码保留在 feat/uart-16550-async-temp。
+> 2026-06-21 Q15 开启：从 pre-M4 基线增量重融合 M4+ 正确性修复，每步 Manual QA 验证无退化。
+> 2026-06-19 OS trait 清理：ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq（5→2 trait），消除 3 个 dead_code warning。
 > 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits, Phase 1 trait 提取 + Phase 2-3 核心逻辑迁移 + 适配层）。
-> 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（三阶段：trait 提取 → 核心逻辑 → 适配层）。
 > 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
-> 2026-06-02 O45 完成，tcdrain 真异步化，e2e benchmark 就绪。
-> 2026-06-05 O46/O47 记录到 optimization/spec.md，OE1~OE5 反模式 + L81~L84 记录到 learned/spec.md。
 > 条目格式: <!-- Q{编号} --> 或 <!-- P{编号} --> 标记开头，支持 grep 精确定位。
-> 方向 A（渐进式集成）和方向 B（完全剔除 Console 早期）已归档至 archive.md。
 
 ---
 
@@ -36,6 +35,10 @@
 | **Q11** | 内核通用优化 | mm/access + close_range + sendfile + tty unwrap | ✅ (2026-06-11) |
 | **Q12** | Embassy 路径 A 优化 | atomic_ring_buffer + embedded_io_async + TC tcdrain | ✅ (2026-06-11) → 🗄️ 已归档 `archive/2026-06-15-q12-embassy-path-a/` |
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
+| **Q13-cleanup** | OS trait 清理 | 删除 OsIrq/OsMmio/OsSpinNoIrq（5→2），ADR-036 | ✅ (2026-06-19) |
+| **LTO** | 跨 crate 内联优化 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
+| **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
+| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (2026-06-24 M0~M4 完成，Manual QA 待执行) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
 ---
@@ -43,11 +46,10 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-24 M0~M4 完成) Q6 ⏳(硬件)
 
-> 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits，Phase 1+2+3 全部完成）
-> 2026-06-15 Q13 规划：异步串口提取到 uart_16550 crate（feat/uart-16550-async 分支）
-> 2026-06-11 embassy 调研：路径 A（atomic_ring_buffer + embedded_io_async + TC tcdrain）立即可实施
+> 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
+> 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
 ```
 
 **2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
@@ -61,169 +63,9 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 - 性能测试: Console vs Async 统一数据量对比，Async CPU 效率高 14.3 倍
 - 性能分析: 完成用户态异步效率低下的根因分析（5 层瓶颈），FIONBIO 未传播的详细诊断
 
-<!-- tombstone: Q0-Q5.1 details --> Archived §completed sub-tasks 2026-06-02 — 22 completed items, summary in Milestone table above
+<!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 
-### Q5.2: 测试补全 ✅
-
-<!-- Q5.2.1 --> - [x] O21 用户态自动化测试 — 内核态统计 + 启动时自动测试 ✅
-<!-- Q5.2.2 --> - [x] O22 非阻塞模式测试 — ioctl(FIONBIO) ✅（Q7 O43 已落地：传播 FIONBIO 到 Tty/ldisc）
-<!-- Q5.2.3 --> - [x] Gate Q5.2: 自动化测试覆盖核心路径 ✅
-
-**已实现**:
-- `kernel/src/drivers/benchmark.rs` - 内核态统计模块（CPU 占用、NAPI 效果）
-- `tests/benchmark.c` - 用户态测试程序（吞吐量、延迟、压力测试）
-- `scripts/benchmark.sh` - 自动化脚本
-- `docs/uart-performance-comparison.md` - 性能对比报告
-- `docs/benchmark-report-async.md` - Async 详细测试报告
-- `docs/benchmark-report-console.md` - Console 详细测试报告
-
-**测试结果**（统一数据量 102,400 字节）:
-- Async CPU 效率：268 cycles/byte（Console 3,835 cycles/byte，Async 快 14.3 倍）
-- Async 延迟：P50 6.5µs（Console 17.5µs，Async 快 2.7 倍）
-- Async 内存：128 KB（Console 0 KB）
-
-**分析完成**:
-- `docs/analysis/user-async-perf-analysis.md` — 用户态异步性能打平/反超阻塞串口的 5 大根因
-- `docs/analysis/nonblocking-mode-analysis.md` — FIONBIO 实现现状、nonblocking 未传播到 TTY、3 种实现方案
-
-### Q7: 用户态性能修复 ⏳
-
-> 基于 2026-06-01 性能分析文档，修复 3 个关键问题。
-
-| 编号 | 任务 | 说明 | 关键文件 |
-|------|------|------|---------|
-| **O42** | 修复 yield storm | ProcessMode::Manual → External，消除无数据时 task yield-re-schedule 循环 | `ldisc.rs`, `ntty_async.rs` |
-| **O43** | 传播 FIONBIO nonblocking | Tty struct 添加 AtomicBool，传播到 read_at → ldisc.read | `tty/mod.rs`, `ldisc.rs` |
-| **O44** | 修正 benchmark | TX 改为 /dev/console + tcdrain()，RX 添加 raw mode 用户态测试 | `benchmark.c` |
-
-**任务条目**:
-
-<!-- Q7.1 --> - [x] O42 修复 yield storm — 改 ProcessMode::Manual → External ✅
-  - `ntty_async.rs`: 创建 PollSet, 作为 External 参数
-  - `ldisc.rs`: 使用 External 模式流程（独立 tty-reader 任务 + register on PollSet）
-  - Gate: 无数据时 Shell 不空转，`top` 等确认 CPU 归零
-
-<!-- Q7.2 --> - [x] O43 传播 FIONBIO nonblocking — Tty/ldisc 层感知 nonblocking 标志 ✅
-<!-- Q7.3 --> - [x] O44 修正 benchmark — TX /dev/console + tcdrain + FIONBIO 测试 ✅
-<!-- Q7.4 --> - [x] O45 tcdrain 真异步化 — PollSet + DRAIN_WAKER ✅
-  - `isr.rs`: 新增 DRAIN_WAKER，TX 中断时一同唤醒
-  - `ctl.rs`: TCSBRK 三段式等待（PollSet 等 copier → DRAIN_WAKER 等 UART → 返回）
-  - 64B tcdrain 从 9 次切换降至 ~6 次，延迟从 ~300 µs 降至 ~200 µs
-  - Gate: benchmark 端到端数据正常，e2e 报告完成
-<!-- Q7.5 --> - [x] Gate Q7: 全部通过 ✅
-
-### Q12: Embassy 路径 A 优化 ✅ 已完成（已归档 2026-06-15）
-
-> 基于 2026-06-11 embassy UART 架构调研（`.claude/analysis/embassy-uart-evaluation.md`），路径 A（最小借鉴）三项优化。均不改 ISR 逻辑、不引入 embassy-executor，立即可实施。
->
-> **🗄️ OpenSpec 变更已归档**：`openspec/changes/archive/2026-06-15-q12-embassy-path-a/`
-> 归档时补做了 tasks.md 21 项勾选 + 新增 `specs/optimization/spec.md` delta（含 O51/O52/O53 完成记录与性能基线），并通过 `openspec validate` 验证。
-
-| 子任务 | 描述 | 关键文件 | 预期收益 |
-|--------|------|----------|----------|
-| **Q12.1** | O51 `atomic_ring_buffer` 替换 `HeapRb + Mutex` | `ring_buffer.rs` — `RingBufRx`/`RingBufTx` 改用 `embassy_hal_internal::atomic_ring_buffer::RingBuffer`（lock-free SPSC） | 消除 push/pop mutex 开销（~100ns/op） |
-| **Q12.2** | O52 `embedded_io_async` trait 实现 | `device_ops.rs` — `AsyncUartReader`/`AsyncUartWriter` 新增 `impl embedded_io_async::Read/Write/BufRead` | 标准化接口 |
-| **Q12.3** | O53 TC 硬件寄存器 tcdrain | `isr.rs` + `ctl.rs` — 用 `LSR::TRANSMITTER_EMPTY` + TX ISR 替代 `TCDRAIN_ACTIVE: AtomicBool` | 删除软件状态标志 |
-| **Q12.4** | 性能回归测试 | benchmark 对比 Q11 基线，验证 atomic_ring_buffer 无退化 | — |
-| **Q12.5** | Gate Q12 | cargo check + clippy + QEMU 启动 + benchmark PASS | — |
-
-**验收标准**：
-- [x] `cargo check` 0 错误 / `cargo clippy` 0 新增 warning ✅
-- [x] QEMU `make run` 内核正常启动，Shell 交互正常 ✅（2026-06-16 验证）
-- [x] benchmark 性能不低于 Q12 基线 ✅（实测 1B avg 140.1µs / P50 138.8µs / overhead 53.3µs）
-- [x] FIONBIO 测试通过 ✅（O_NONBLOCK open + ioctl FIONBIO 均 PASS）
-- [ ] `atomic_ring_buffer` 有单元测试覆盖
-
-**实施顺序**：Q12.2（纯 trait impl，零风险）→ Q12.3（小改动）→ Q12.1（核心改动，需测试）→ Q12.4 → Q12.5
-
-### Q13: 异步串口提取 ✅ (2026-06-16)
-
-> 基于 `.claude/analysis/uart-16550-async-extraction.md` 可行性分析，将 StarryOS 异步串口实现（Q0~Q12 共 ~618 行）提取到 `uart_16550` crate，使其成为可复用的异步 UART crate。
->
-> **分支**：`feat/uart-16550-async`（StarryOS + uart_16550 同名分支）
-> **测试分支**：`feat/uart-async-bench-extracted`（基于 `feat/uart-async-bench`，Q13 完成后 merge + benchmark 对比）
-> **决策**：ADR-032（推翻 D1，uart_16550 成为完整异步 UART crate）
-> **依赖**：Q12 已完成基础设施（atomic_ring_buffer + embedded_io_async + TC tcdrain）
->
-> **三阶段全部完成**：9 个原子提交，`cargo check` + `cargo clippy` 0 错误/警告
-
-#### Phase 1: 纯 trait 提取（零行为变更）✅
-
-> 实际实施与原始计划有偏差：ProcessMode/TtyConfig 因含 alloc/OS 依赖留在 StarryOS，仅 TtyRead/TtyWrite 移入 uart_16550。
-> 文件路径与计划不同：trait 加入已有 `uart_16550/src/tty.rs`（非新建 `tty_traits.rs`），通过 `pub use crate::tty::*` 自动 re-export。
-
-| 子任务 | 描述 | 实际文件 | 验收证据 |
-|--------|------|----------|----------|
-| **Q13.1** | ✅ 提取 TtyRead/TtyWrite trait 到 uart_16550 | `uart_16550/src/tty.rs`（+27 行追加） | `cargo check` + `clippy` 0 errors |
-| **Q13.2** | ~~提取 TtyConfig/ProcessMode~~ → **留存 StarryOS** | `ldisc.rs`（不变） | ProcessMode(Box/Arc) = alloc 依赖，留在内核 |
-| **Q13.3** | ✅ StarryOS ldisc.rs 改为 re-export | `ldisc.rs`（+1/-6 行） | `pub use uart_16550::{TtyRead, TtyWrite};` |
-| **Q13.4** | ✅ Gate Phase 1 | — | `cargo check` ✅ + QEMU 启动 ✅ + Shell 交互 ✅ |
-
-**Commits**:
-- uart_16550: `7bee89d` — `feat(uart-async): extract TtyRead/TtyWrite traits for OS integration`
-- StarryOS: `8aac223` — `feat(uart-async): import TtyRead/TtyWrite from uart_16550`
-
-#### Phase 2: 核心异步逻辑迁移 ✅
-
-| 子任务 | 描述 | 关键文件 | 验收证据 |
-|--------|------|----------|----------|
-| **Q13.5** | ✅ 定义 5 个 OS 抽象 trait | `uart_16550/src/os/mod.rs` | OsRuntime, OsIrq, OsMmio, OsSpinNoIrq, OsWakerSet |
-| **Q13.6** | ✅ 迁移 ISR handler | `uart_16550/src/async_/isr.rs` | 仅依赖 AtomicWaker + uart_16550 API |
-| **Q13.7** | ✅ 迁移 ring buffer | `uart_16550/src/async_/ring_buffer.rs` | 使用 embassy SPSC + OsWakerSet trait |
-| **Q13.8** | ✅ 迁移 copier 任务 | `uart_16550/src/async_/driver.rs` | 使用 OsRuntime trait |
-| **Q13.9** | ✅ 迁移 device_ops | `uart_16550/src/async_/device_ops.rs` | embedded_io_async impl |
-| **Q13.10** | ✅ Gate Phase 2 | — | `cargo check` + `cargo clippy` 0 errors |
-
-#### Phase 3: StarryOS 适配层 ✅
-
-| 子任务 | 描述 | 关键文件 | 验收证据 |
-|--------|------|----------|----------|
-| **Q13.11** | ✅ 实现 ArceOS 适配层 | `kernel/src/drivers/os_arceos.rs` | 5 个 trait 实现 |
-| **Q13.12** | ✅ StarryOS 从 uart_16550 导入异步实现 | `kernel/Cargo.toml` + `drivers/mod.rs` | 启用 `async` feature |
-| **Q13.13** | ✅ 删除已迁移的本地代码 | 删除 `isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs` | 仅保留 init + TTY 绑定 |
-| **Q13.14** | ✅ 性能回归测试 | benchmark 对比 Q12 基线 | 无退化 |
-| **Q13.14.1** | ✅ merge 提取后代码到测试分支 | `feat/uart-async-bench-extracted` | `git merge feat/uart-16550-async` |
-| **Q13.14.2** | ✅ 在测试分支跑 benchmark | `feat/uart-async-bench-extracted` | 对比 `feat/uart-async-bench` 基线 |
-| **Q13.15** | ✅ Gate Phase 3 | — | `cargo check` ✅ + clippy ✅ + QEMU 启动 ✅ + benchmark PASS ✅ |
-
-**Commits (Phase 2-3)**:
-- `1005b71` — `feat(uart-async): add OS abstraction traits (OsRuntime, OsIrq, OsMmio, OsSpinNoIrq, OsWakerSet)`
-- `9ce5fe2` — `feat(uart-async): migrate ISR handler to uart_16550`
-- `c162a49` — `fix(uart-async): use Rust alloc for unstable sort in test`
-- `e6cf219` — `feat(uart-async): migrate ring buffer to uart_16550`
-- `4a000ae` — `feat(uart-async): migrate copier driver to uart_16550`
-- `8dd5cba` — `fix(uart-async): add async feature gate and fix copier type param`
-- `be87a24` — `feat(uart-async): migrate device_ops to uart_16550`
-- `9bed0c7` — `feat(uart-async): add ArceOS HAL adapter layer`
-- `842f8f4` — `refactor(uart-async): remove migrated local files, finalize StarryOS integration`
-
-### Q13.1: Trait 抽象开销优化 ✅ (2026-06-16)
-
-> 基于 `.claude/analysis/trait-abstraction-overhead.md` 分析，通过 `#[inline(always)]` 和批量操作减少 trait 抽象开销。
-
-| 子任务 | 描述 | 关键文件 | 验收证据 |
-|--------|------|----------|----------|
-| **O56** | ✅ `#[inline(always)]` 热路径内联 | `ring_buffer.rs` + `uart_init.rs` | `cargo check` + `clippy` 0 errors |
-| **O57** | ✅ 批量 push/pop 接口 | `ring_buffer.rs` + `driver.rs` | `cargo check` + `clippy` 0 errors |
-
-**Commits (Q13.1)**:
-- uart_16550: `a0cead0` — `perf(uart-async): add #[inline(always)] to ring buffer push/pop`
-- uart_16550: `73aca5c` — `perf(uart-async): add batch push/pop to reduce lock overhead`
-- StarryOS: `9188c0b` — `perf(uart-async): add #[inline(always)] to ArceOsUartPort methods`
-
-**验收标准**：
-- [x] `cargo check` 0 错误 / `cargo clippy` 0 warning ✅
-- [x] QEMU `make run` 内核正常启动 ✅
-- [x] benchmark 性能验证 ✅（1B avg 129.5µs ≤ 130µs）
-- [x] FIONBIO 测试通过 ✅
-
-**验收标准** — 全部通过 ✅：
-- [x] `cargo check` 0 错误 / `cargo clippy` 0 warning
-- [x] QEMU `make run` 内核正常启动，Shell 交互正常
-- [x] benchmark 性能不低于 Q12 基线
-- [x] uart_16550 的 `async` feature 可独立编译
-
-**工作量**：~1 天（Phase 2-3 实际） | **收益**：uart_16550 成为可复用的异步 UART crate，StarryOS 消除 ~400 行本地代码
+### Q6: 真板验证 ⏳ 等待硬件
 
 ### Q6: 真板验证 ⏳ 等待硬件
 

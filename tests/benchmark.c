@@ -47,19 +47,24 @@ static void test_tx_throughput(void) {
         int iterations = 100;
         char *buf = malloc(test_size);
         if (!buf) { perror("malloc"); continue; }
-        memset(buf, 'A', test_size);
+        memset(buf, 0, test_size);
 
         long long start = get_time_ns();
         size_t total = 0;
 
         for (int i = 0; i < iterations; i++) {
-            ssize_t n = write(fd, buf, test_size);
-            if (n > 0) {
-                total += n;
-                tcdrain(fd);   /* wait until UART FIFO is empty */
-            } else {
-                break;
+            /* loop on short writes — M3 contract returns actual accepted count */
+            size_t remaining = test_size;
+            while (remaining > 0) {
+                ssize_t n = write(fd, buf + (test_size - remaining), remaining);
+                if (n > 0) {
+                    total += n;
+                    remaining -= n;
+                } else {
+                    break;
+                }
             }
+            tcdrain(fd);   /* wait until UART FIFO is empty */
         }
 
         long long end = get_time_ns();
@@ -89,7 +94,7 @@ static void test_tx_latency(void) {
     int ok = 0;
 
     for (int i = 0; i < LAT_N; i++) {
-        char tx = 'A' + (i % 26);
+        char tx = 0;
         long long start = get_time_ns();
         if (write(fd, &tx, 1) != 1) continue;
         tcdrain(fd);
@@ -116,6 +121,60 @@ static void test_tx_latency(void) {
            (double)latencies[ok * 50 / 100] / 1000000.0,
            (double)latencies[ok * 95 / 100] / 1000000.0,
            (double)latencies[ok * 99 / 100] / 1000000.0);
+
+    close(fd);
+}
+
+/* ── TX latency FIFO boundary matrix ────────────────────────────── */
+static void test_tx_latency_matrix(void) {
+    printf("=== TX Latency FIFO Boundary Matrix ===\n");
+
+    int fd = open(DEVICE_PATH, O_WRONLY);
+    if (fd < 0) { perror("open"); return; }
+
+    int sizes[] = {1, 15, 16, 17, 31, 32, 33, 48, 49};
+    int num_sizes = sizeof(sizes) / sizeof(sizes[0]);
+
+    for (int s = 0; s < num_sizes; s++) {
+        int sz = sizes[s];
+        char *buf = malloc(sz);
+        if (!buf) { perror("malloc"); continue; }
+        memset(buf, 0, sz);
+
+        #define MAT_N 100
+        long latencies[MAT_N];
+        int ok = 0;
+
+        for (int i = 0; i < MAT_N; i++) {
+            long long start = get_time_ns();
+            ssize_t n = write(fd, buf, sz);
+            if (n != sz) continue;
+            tcdrain(fd);
+            long long end = get_time_ns();
+            latencies[ok++] = (long)(end - start);
+        }
+
+        free(buf);
+
+        if (ok == 0) { printf("  size=%d  no data\n\n", sz); continue; }
+
+        /* sort for percentiles (bubble — same as test_tx_latency) */
+        for (int i = 0; i < ok - 1; i++)
+            for (int j = 0; j < ok - i - 1; j++)
+                if (latencies[j] > latencies[j + 1]) {
+                    long t = latencies[j];
+                    latencies[j] = latencies[j + 1];
+                    latencies[j + 1] = t;
+                }
+
+        long sum = 0;
+        for (int i = 0; i < ok; i++) sum += latencies[i];
+        printf("  size=%d  n=%d  avg=%.3f ms  P50=%.3f ms  P95=%.3f ms\n\n",
+               sz, ok,
+               (double)sum / ok / 1000000.0,
+               (double)latencies[ok * 50 / 100] / 1000000.0,
+               (double)latencies[ok * 95 / 100] / 1000000.0);
+    }
 
     close(fd);
 }
@@ -171,6 +230,7 @@ int main(void) {
 
     test_tx_throughput();
     test_tx_latency();
+    test_tx_latency_matrix();
     test_nonblock_read();
 
     printf("Done.\n");

@@ -80,6 +80,7 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
 /// 通过 `SpinNoIrq` 锁提供 `receive_bytes` 和 `send_bytes` 的安全访问。
 pub struct ArceOsUartPort {
     uart: &'static SpinNoIrq<Uart16550<MmioBackend>>,
+    ier_cache: AtomicU8,
 }
 
 impl UartPort for ArceOsUartPort {
@@ -92,10 +93,29 @@ impl UartPort for ArceOsUartPort {
     fn send_bytes(&self, buf: &[u8]) -> usize {
         self.uart.lock().send_bytes(buf)
     }
+
+    #[inline(always)]
+    fn transmitter_empty(&self) -> bool {
+        self.uart.lock().lsr().contains(
+            uart_16550::spec::registers::LSR::TRANSMITTER_EMPTY,
+        )
+    }
+
+    #[inline(always)]
+    fn update_ier(&self, set: IER, clear: IER) {
+        let mut val = self.ier_cache.load(Ordering::Relaxed);
+        val |= set.bits();
+        val &= !clear.bits();
+        self.ier_cache.store(val, Ordering::Relaxed);
+        self.uart.lock().set_ier(IER::from_bits_truncate(val));
+    }
 }
 
 lazy_static! {
-    static ref UART_PORT: ArceOsUartPort = ArceOsUartPort { uart: &UART };
+    static ref UART_PORT: ArceOsUartPort = ArceOsUartPort {
+        uart: &UART,
+        ier_cache: AtomicU8::new(0),
+    };
 }
 
 // ── 类型别名 ──────────────────────────────────────────────────────
@@ -123,11 +143,6 @@ static TX_RING: RingBuffer = RingBuffer::new();
 static mut RX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
 static mut TX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
 
-/// Check if the TX ring buffer is empty (no pending data for copier).
-pub fn tx_is_empty() -> bool {
-    TX_RING.is_empty()
-}
-
 // ── 驱动实例存储 ──────────────────────────────────────────────────
 
 static DRIVER: Once<Arc<ArceOsDriver>> = Once::new();
@@ -148,26 +163,6 @@ fn driver_ref() -> &'static ArceOsDriver {
         .as_ref()
 }
 
-// ── IER 缓存与中断控制 ────────────────────────────────────────────
-
-/// Cached IER value — shared between ISR (uart_16550) and copier tasks.
-static CACHED_IER: AtomicU8 = AtomicU8::new(0);
-
-fn write_ier(value: u8) {
-    CACHED_IER.store(value, Ordering::Relaxed);
-    uart_instance().lock().set_ier(IER::from_bits_truncate(value));
-}
-
-/// 重新使能 RX 中断（copier 任务回调）
-pub fn enable_rx_intr() {
-    write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::DATA_READY.bits());
-}
-
-/// 重新使能 TX 中断（copier 任务回调）
-pub fn enable_tx_intr() {
-    write_ier(CACHED_IER.load(Ordering::Relaxed) | IER::THR_EMPTY.bits());
-}
-
 // ── ISR 包装器 ────────────────────────────────────────────────────
 
 /// UART ISR 包装器 — 桥接 axhal IRQ hook 到 uart_16550 ISR handler。
@@ -175,9 +170,11 @@ pub fn enable_tx_intr() {
 /// 满足 ISR 极简原则：读 ISR / 禁中断 / wake / 返回。
 fn uart_isr_wrapper(_irq: usize) {
     let base = NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap();
-    // SAFETY: Called from ISR context with valid UART MMIO base address.
-    // CACHED_IER is shared with enable_rx_intr/enable_tx_intr via AtomicU8.
-    uart_16550::async_::isr::uart_isr_handler(_irq, base, &CACHED_IER);
+    uart_16550::async_::isr::uart_isr_handler(
+        _irq, base,
+        || UART_PORT.update_ier(IER::empty(), IER::DATA_READY),
+        || UART_PORT.update_ier(IER::empty(), IER::THR_EMPTY),
+    );
 }
 
 // ── 初始化 ────────────────────────────────────────────────────────
@@ -262,8 +259,8 @@ pub fn init_uart_hardware() {
     ax_println!("[UART INIT] ✅ ISR registered");
 
     // Step 6: Start copier tasks
-    driver_ref().start_rx_copier(enable_rx_intr);
-    driver_ref().start_tx_copier(enable_tx_intr);
+    driver_ref().start_rx_copier();
+    driver_ref().start_tx_copier();
     ax_println!("[UART INIT] ✅ RX/TX copier tasks started");
 }
 

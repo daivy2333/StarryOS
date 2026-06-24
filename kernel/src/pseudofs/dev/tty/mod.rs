@@ -103,8 +103,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
-        self.writer.write(buf);
-        Ok(buf.len())
+        Ok(self.writer.write(buf))
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {

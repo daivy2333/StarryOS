@@ -143,7 +143,7 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 ### Requirement: 2026-06-11 死代码审计后续优化
 
-本次审计（清理 8 项真死代码，保留 5 项预留接口）发现的后续优化机会；各项 MUST 在评估 ROI 后决定是否启用或彻底移除。
+本次审计发现的后续优化机会 MUST 在评估 ROI 后决定是否启用或彻底移除；死代码 SHALL 不长期保留。
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
@@ -155,6 +155,11 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 - **WHEN** Q6 真板到位后需要内存调试工具
 - **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
+
+#### Scenario: 决定是否移除死代码
+
+- **WHEN** 开发者发现标注 `#[allow(dead_code)]` 的预留接口超过 90 天未被使用
+- **THEN** MUST 评估是否彻底移除，禁止无限期保留
 
 ### Requirement: Q12 Embassy 调研驱动的近期优化 — 已完成（路径 A）
 
@@ -349,7 +354,7 @@ block_on(async {
 
 ### Requirement: 性能指标基线与硬件理论极限
 
-性能测试与对比 MUST 基于下表的基线数据；任何指标声明 MUST 标注 QEMU / 真板可信度。
+Performance benchmarks and comparisons MUST use the baseline data below. All metric claims MUST label QEMU vs real-hardware credibility. QEMU throughput data SHALL be explicitly marked untrusted.
 
 **NS16550 @ 115200 bps 硬件理论极限**：
 
@@ -404,6 +409,7 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 |------|------|----------|----------|-------------|------|
 | **O56** | `#[inline(always)]` 热路径内联 | -5~10µs | ~-5µs | ✅ 无影响 | ✅ Q13.1 (2026-06-16) |
 | **O57** | 批量 push/pop 接口 | -10~20µs | ~-5µs | ✅ 无影响 | ✅ Q13.1 (2026-06-16) |
+| **O61** | `lto = true` 跨 crate 内联 | 0（e2e）| 0（e2e） | ✅ 无影响 | ✅ 2026-06-16 |
 
 **Q13.1 性能验证结果**（2026-06-16）：
 
@@ -418,6 +424,23 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 - ✅ overhead 减少 20%（53.3 → 42.6µs）
 - ⚠️ 与 Q12 差距 +5.5µs（129.5 vs 124），为可移植性合理代价
 - **批量操作在内嵌时就该做**：算法优化（批量）应尽早实施，编译器优化（inline）可等需要时再加
+
+**O61 LTO 跨 crate 内联详情**（2026-06-16）：
+
+- **原理**：Cargo `[profile.release] lto = true` 使编译器在链接阶段可跨 crate 边界内联函数调用。uart_16550 的 `[inline(always)]` 只能在 crate 内生效；LTO 消除了 embassy_hal_internal 等依赖的跨 crate 函数调用开销。
+- **改动**：uart_16550 + StarryOS 双 repo `Cargo.toml` 各加 3 行
+- **内核态 ring buffer 收益**：TX 385→652 MB/s（↑69%），RX P50 200ns→0ns（avg 316→195ns）
+- **e2e 延迟**：129.4µs（不变），瓶颈在调度不在函数调用
+- **副作用**：release build 时间增加（内核规模小，影响可控）
+- **注意**：LTO 是顶层行为，依赖它的 OS 项目需自己在 `[profile.release]` 开启
+
+| 指标 | LTO 前 | LTO 后 | 变化 |
+|------|-------|--------|------|
+| Ring buffer TX | 385 MB/s | 652 MB/s | ↑69% |
+| Ring buffer RX | 864 MB/s | 898 MB/s | ↑4% |
+| RX latency P50 | 200 ns | <100 ns | ✅（低于计时器分辨率） |
+| RX latency avg | 316 ns | 195 ns | ↓38% |
+| e2e 1B avg | 143.7µs | 129.4µs | 不变（噪声） |
 
 **中长期优化点（待探索）**：
 

@@ -26,19 +26,15 @@ The system SHALL migrate the ring buffer implementation from StarryOS to uart_16
 - **THEN** the ring buffer SHALL remove data from the buffer and return the number of bytes removed
 
 ### Requirement: Copier driver migration
-The system SHALL migrate the copier driver from StarryOS to uart_16550, using OsRuntime trait for task spawning.
+The system SHALL migrate the copier driver from StarryOS to uart_16550, using OsRuntime trait for task spawning. The copier SHALL use `UartPort::update_ier()` for all IER manipulation instead of receiving external callback functions.
 
 #### Scenario: RX copier loop
 - **WHEN** `AsyncUartDriver::start_rx_copier()` is called
-- **THEN** the system SHALL spawn a new task that continuously reads from UART and pushes to RX ring buffer
+- **THEN** the system SHALL spawn a new task that continuously reads from UART and pushes to RX ring buffer. When re-enabling RX interrupts, the copier SHALL call `self.uart.update_ier(IER::DATA_READY, IER::empty())`.
 
 #### Scenario: TX copier loop
 - **WHEN** `AsyncUartDriver::start_tx_copier()` is called
-- **THEN** the system SHALL spawn a new task that continuously pops from TX ring buffer and writes to UART
-
-#### Scenario: NAPI interrupt coalescing
-- **WHEN** consecutive successful reads exceed NAPI_THRESHOLD (16)
-- **THEN** the RX copier SHALL enter polling mode with NAPI_BATCH_SIZE (64)
+- **THEN** the system SHALL spawn a new task that continuously pops from TX ring buffer and writes to UART. When re-enabling TX interrupts, the copier SHALL call `self.uart.update_ier(IER::THR_EMPTY, IER::empty())`.
 
 ### Requirement: Device ops migration
 The system SHALL migrate the device ops from StarryOS to uart_16550, implementing embedded_io_async traits.
@@ -58,6 +54,10 @@ The system SHALL migrate the device ops from StarryOS to uart_16550, implementin
 #### Scenario: embedded_io_async Write impl
 - **WHEN** `AsyncUartWriter` is used as `embedded_io_async::Write`
 - **THEN** it SHALL write data to the TX ring buffer
+
+#### Scenario: embedded_io_async Write flush
+- **WHEN** `AsyncUartWriter::flush()` is called
+- **THEN** it SHALL poll `tx_completion()` until all four conditions are satisfied (ring_empty, copier_inactive, staged_bytes zero, transmitter_empty), using DRAIN_WAKER for notification and returning only after the UART has fully drained
 
 ### Requirement: Feature gate control
 The system SHALL provide an `async` feature gate to control compilation of async modules.
