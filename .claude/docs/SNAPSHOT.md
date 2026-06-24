@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-23
-> 分支：feat/uart-16550-async — Q15: M0✅ M1✅ M2✅ M4✅ M3✅
+> Last updated: 2026-06-24
+> 分支：feat/uart-16550-async — Q15 ✅ (M0~M4 增量融合完成 2026-06-24)
 
 ---
 
@@ -50,12 +50,14 @@
 **Q15 M4 ✅** (2026-06-23): IER 单 owner — CACHED_IER/write_ier/enable_* 全部删除，UartPort::update_ier() 统一管理。uart_16550 真正独立可复用
 - **性能基线 M4 (QEMU)**: 64B 184KB/s | 1B 0.129ms | FIFO 无台阶
 **Q15 M3 ✅** (2026-06-23): TtyWrite 短写契约 — `write(&[u8]) -> usize`，5 文件穿透 uart_16550 + StarryOS，benchmark 增加短写循环。uart_16550 54 tests PASS，StarryOS cargo check PASS。QEMU manual QA 待运行。
-**Q15 增量重融合 ⏳** (2026-06-21): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
-- 源分支：`feat/uart-16550-async-temp`（保留原 M4+ 全部代码）
+**Q15 增量重融合 ✅** (2026-06-24 全部 M0~M4 完成): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
+- 源分支：`feat/uart-16550-async-temp`（保留原 M4+ 全部代码，参考用）
 - 策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
 - 目标：融合所有方向正确的修复（RawMutex、per-port ISR、yield_now、IER 规范、flush 正确性等），同时避免 TX backpressure 退化
 - **关键约束**：不修改外部 axtask/axpoll/embassy-sync；不提高 tick；ISR 极简
-**下一步**: Q15 增量重融合 → Manual QA 验证无退化 → Q6 真板验证
+- **5 个 milestone 全部 commit 落地**：M0 见证层 → M1 有界 TX fast retry → M2 TX completion 三阶段 drain → M4 IER 单 owner → M3 TtyWrite 短写契约
+- **Manual QA Gate ⏳**: QEMU benchmark 待执行，确认无 64B write+tcdrain 退化
+**下一步**: Q15 Manual QA Gate（QEMU benchmark 验证无退化）→ Q6 真板验证
 
 ### 关键发现
 
@@ -116,7 +118,7 @@
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
 | **LTO** | 跨 crate 内联 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
 | **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
-| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ⏳ 进行中 |
+| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (M0~M4 完成 2026-06-24，Manual QA 待执行) |
 | **Q6** | 真板验证 | VisionFive2 | ⏳ |
 
 ### 当前架构（pre-M4 基线）
