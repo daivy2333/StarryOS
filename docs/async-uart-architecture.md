@@ -9,7 +9,7 @@
 
 ## 0. TL;DR
 
-异步串口子子系统在 RISC-V 宏内核（ArceOS 架构）中以 **kernel 层独立实现**方式提供完整异步串口栈。**关键设计点**：ISR（Interrupt Service Routine，中断服务例程）极简（读 ISR / 禁中断 / `AtomicWaker::wake()` / 返回），数据搬运全部在 copier 协程中完成；5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`）将异步栈与具体 OS 解耦。**Q13 模块分离**（2026-06-16）将异步栈核心逻辑（~400 行）从 StarryOS 提取至 `uart_16550` crate 的 `src/async_/` 子模块，使其成为可复用的完整异步 UART crate；StarryOS 仅保留平台初始化（~155 行）+ ArceOS 适配层（~123 行）。**LTO 优化**使内核态 ring buffer TX 吞吐 ↑69%（385→652 MB/s），e2e 延迟因瓶颈在调度保持不变。**关键约束**：不修改任何外部 crate（axplat/axhal/axtask）；NS16550 寄存器 stride MUST 为 1（参见术语表与 L122 教训）。
+异步串口子子系统在 RISC-V 宏内核（ArceOS 架构）中以 **kernel 层独立实现**方式提供完整异步串口栈。**关键设计点**：ISR（Interrupt Service Routine，中断服务例程）极简（读 ISR / 禁中断 / `AtomicWaker::wake()` / 返回），数据搬运全部在 copier 协程中完成；5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`）将异步栈与具体 OS 解耦。**Q13 模块分离**（2026-06-16）将异步栈核心逻辑（~400 行）从 StarryOS 提取至 `uart_16550` crate 的 `src/async_/` 子模块，使其成为可复用的完整异步 UART crate；StarryOS 仅保留平台初始化（~155 行）+ ArceOS 适配层（~123 行）。**LTO 优化**使内核态 ring buffer TX 吞吐 ↑69%（385→652 MB/s），e2e 延迟因瓶颈在调度保持不变。**Q15 当前 state**（`feat/uart-16550-bench` 分支，**无 LTO per ADR-034**）：TX 456 MB/s / **RX 1,148 MB/s**（较 Q13+LTO 897 MB/s 提升 +27.9%）。**关键约束**：不修改任何外部 crate（axplat/axhal/axtask）；NS16550 寄存器 stride MUST 为 1（参见术语表与 L122 教训）。
 
 **小结**：本节给出 5 维度的"技术路线 + 关键里程碑 + 关键约束"摘要；详细架构与决策见 §1~§5，性能与演进见 §6~§7。
 
@@ -418,7 +418,7 @@ Q8 将 pipe / signalfd / pidfd / event 共 **8 个 PollSet 实例**替换为 `em
 
 **Q13 异步串口提取**：StarryOS 异步串口栈（Q0~Q12 累计 ~618 行）应保留还是提取到 `uart_16550` crate？**决策**（ADR-032）：提取到 `uart_16550` crate，使其成为可复用的完整异步 UART crate。**代价**：~9 个原子提交、3 阶段迁移（trait → 核心逻辑 → 适配层）。**效果**：消除 StarryOS ~400 行本地代码；`uart_16550` 成为可跨 OS 复用的异步 UART 库。**关键设计**（详见 ADR-035）：5 个 OS 抽象 trait 解耦 OS 依赖；`CACHED_IER` 跨 crate 共享作为集成层职责；`ring_buffer` / `device_ops` 可作为通用异步原语被其他 16550-like 设备复用。
 
-**LTO 跨 crate 内联**：**决策**（已撤销，参见 ADR-034）：暂不开启 `lto = true` 跨 crate 内联。**理由**：LTO 使 release build 时间增加 2-3×；当前处于活跃开发期，编译速度比这 3% 的 ring buffer 提升更重要；最终发布构建时加回。**LTO 已知效果**（feat/uart-16550-bench 实测）：ring buffer TX 385→652 MB/s（↑69%）、RX 延迟 P50 200ns→<100ns、e2e 延迟不变（瓶颈在调度）。
+**LTO 跨 crate 内联**：**决策**（已撤销，参见 ADR-034）：暂不开启 `lto = true` 跨 crate 内联。**理由**：LTO 使 release build 时间增加 2-3×；当前处于活跃开发期，编译速度比这 3% 的 ring buffer 提升更重要；最终发布构建时加回。**LTO 已知效果**（feat/uart-16550-bench 历史实测）：ring buffer TX 385→652 MB/s（↑69%）、RX 延迟 P50 200ns→<100ns、e2e 延迟不变（瓶颈在调度）。**Q15 当前 state**（无 LTO）：TX 456 MB/s / RX 1,148 MB/s（详见 §6 性能摘要）。
 
 **小结**：设计决策呈现"演进式优化"特征，每个 Q 阶段针对一个具体问题，最终通过 LTO 跨 crate 内联获得性能提升。
 
@@ -426,7 +426,7 @@ Q8 将 pipe / signalfd / pidfd / event 共 **8 个 PollSet 实例**替换为 `em
 
 ## 6. 性能摘要
 
-性能演进呈现"**内核态吞吐持续提升、e2e 延迟受调度瓶颈制约**"的特征。Q13 + LTO 是当前最优组合，但 ADR-034 决定**开发期不开启 LTO**（release build 慢 2-3×），最终发布构建时再加回。**关键数据**：QEMU 上 1B e2e 延迟约 130 µs，瓶颈在调度不在函数调用（LTO 不变印证）；真板 VisionFive2 @ 115200 bps 收敛至 ~11.5 KB/s（硬件理论上限）。
+性能演进呈现"**内核态吞吐持续提升、e2e 延迟受调度瓶颈制约**"的特征。Q15 当前 state（无 LTO per ADR-034）：TX 456 MB/s / **RX 1,148 MB/s**（Q15 M0~M4 较 Q13+LTO 提升 +27.9%）。Q13 + LTO 仍是历史最优（TX 652 MB/s，release build 配置），但 ADR-034 决定**开发期不开启 LTO**（release build 慢 2-3×）。**关键数据**：QEMU 上 1B e2e 延迟约 130 µs，瓶颈在调度不在函数调用（LTO 不变印证）；真板 VisionFive2 @ 115200 bps 收敛至 ~11.5 KB/s（硬件理论上限）。
 
 **测量条件**：
 
@@ -439,8 +439,8 @@ Q8 将 pipe / signalfd / pidfd / event 共 **8 个 PollSet 实例**替换为 `em
 
 | 指标 | Q8 基线 | Q11 末 | Q12 末 | Q13（无 LTO）| Q13 + LTO | 提升（Q8→Q13+LTO）|
 |------|---------|--------|--------|------------|----------|------------------|
-| Ring Buffer TX（内核态）| 214,961 KB/s | 196,850 KB/s | 385,000 KB/s* | 385,000 KB/s | **652,000 KB/s** | ↑203%（-8% → +69%）|
-| Ring Buffer RX（内核态）| 588,776 KB/s | 393,362 KB/s | — | — | — | 数据缺失（待补）|
+| Ring Buffer TX（内核态）| 214,961 KB/s | 196,850 KB/s | 385,000 KB/s* | 385,000 KB/s | 652,000 KB/s | **456,205 KB/s**（Q15 当前，无 LTO）| ↑112%（+69% LTO / -30% Q15 no-LTO）|
+| Ring Buffer RX（内核态）| 588,776 KB/s | 393,362 KB/s | — | — | — | **1,147,959 KB/s**（Q15 当前，+27.9% vs Q13+LTO）| ↑95% |
 | 1B 平均延迟（e2e）| 144.7 µs | 140.7 µs | 124.0 µs | 140.1 µs | 129.4 µs | ↓10.6% |
 | 1B P50（e2e）| 139.5 µs | 129.2 µs | 124.0 µs | 138.8 µs | 129.5 µs | ↓7.2% |
 | 唤醒延迟（8 点）| ~200ns/次 | ~50ns/次 | ~50ns/次 | ~50ns/次 | ~50ns/次 | ↓75% |
@@ -456,9 +456,9 @@ Q8 将 pipe / signalfd / pidfd / event 共 **8 个 PollSet 实例**替换为 `em
 
 ## 7. 演进历史
 
-异步串口子系统经历了 **"基础设施 → 性能优化 → 功能补全 → 模块分离 → 跨 crate 优化"** 五阶段演进。11 个阶段累计 ~22 天高强度迭代，从 spike（Q0）到模块分离（Q13）再到跨 crate 优化（LTO），形成完整的演进轨迹。**Q6 真板验证是当前唯一待办**。
+异步串口子系统经历了 **"基础设施 → 性能优化 → 功能补全 → 模块分离 → 跨 crate 优化 → RX lock-free 深化"** 六阶段演进。13 个阶段累计 ~30 天高强度迭代（截至 2026-06-23），从 spike（Q0）到模块分离（Q13）→ 跨 crate 优化（LTO 已 revert）→ Q15 RX 路径 lock-free 深化，形成完整轨迹。**Q6 真板验证是当前唯一待办**。
 
-**阶段表**（11 个 Q 阶段 + LTO + Q6 待办）：
+**阶段表**（12 个 Q 阶段 + LTO + Q15 + Q6 待办）：
 
 | 阶段 | 日期 | 内容 | 关键指标 |
 |------|------|------|---------|
@@ -472,6 +472,7 @@ Q8 将 pipe / signalfd / pidfd / event 共 **8 个 PollSet 实例**替换为 `em
 | Q12 | 2026-06-11 | atomic_ring_buffer + embedded_io_async + TC tcdrain | Embassy 路径 A（已归档）|
 | Q13 | 2026-06-16 | 异步串口完整提取至 `uart_16550` crate（9 commits）| 模块分离 |
 | LTO | 2026-06-16 | `lto = true` 跨 crate 内联（已 revert，ADR-034）| Ring Buffer TX ↑69% |
+| Q15 M0~M4 | 2026-06-21~23 | TX completion + IER single owner + telemetry + short-write contract | Ring Buffer RX **+27.9%**（1,148 MB/s）|
 | Q6 | ⏳ 待定 | VisionFive2 真板验证 | 真板真实吞吐 |
 
 **小结**：11 个阶段累计 ~22 天高强度迭代，从 spike（Q0）到模块分离（Q13）再到跨 crate 优化（LTO），形成完整的演进轨迹。Q6 真板验证是当前唯一待办。
