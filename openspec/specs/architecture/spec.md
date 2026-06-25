@@ -652,3 +652,75 @@ This contract MUST report the number of bytes accepted by the output sink so VFS
 - learned/spec.md L202/L204
 - uart_16550: `src/tty.rs`, `src/async_/device_ops.rs`, `src/async_/ring_buffer.rs`
 - StarryOS: `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`
+
+<!-- A039 -->
+### Requirement: ADR-039: Q15 M0~M4 增量重融合策略 + Manual QA 验证 — 已完成（2026-06-25）
+
+Q15 阶段采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4+ 正确性修复，并通过 QEMU Manual QA 验证无退化。
+
+**日期**: 2026-06-21（开启）→ 2026-06-25（Manual QA 完成）
+**状态**: ✅ 已完成
+**决策**: Q15 不一次性 apply `feat/uart-16550-async-temp` 分支的全部 M4+ 代码（避免 73.9x TX backpressure 退化复现），改为按 M0→M1→M2→M4→M3 顺序的 5 个原子 milestone 增量融合，每步 `cargo check` + QEMU benchmark 双重 Gate。
+
+**背景**:
+- 2026-06-21: M4 Sync 一次性 apply 全部 M4+ 代码（含 TX backpressure 修复 + 诊断计数器），结果 64B write+tcdrain 退化 73.9x（406µs → 29.99ms）
+- 根因：`unblock_task(task, false)` + 100Hz tick → 每 16B FIFO refill 触发 ~10ms 调度台阶
+- 决策：回退到 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`），通过 Q15 阶段增量重新融合
+- 原 M4+ 代码保留在 `feat/uart-16550-async-temp` 分支（参考用，未删除）
+
+**Q15 5 个 milestone 增量融合顺序**（非时间顺序，按依赖关系）：
+1. **M0** — 见证层（RawMutex / per-port ISR / FIFO 边界矩阵 benchmark / telemetry 计数器），提供基线测量能力
+2. **M1** — 有界 TX fast retry（`TX_FAST_RETRY_LIMIT=32`），消除 16B FIFO refill 的 10ms tick 台阶
+3. **M2** — TX completion 三阶段 drain（flush / tcdrain 正确等待），TxCompletion API + TEMT corner-case fix
+4. **M4** — IER 单 owner（`UartPort::update_ier()` 统一管理），删除 CACHED_IER / write_ier / enable_*
+5. **M3** — TtyWrite 短写契约（`write(&[u8]) -> usize`），独立于驱动内部改动，聚焦 VFS 契约修正
+
+**Manual QA Gate 通过（2026-06-25）**：
+
+| Gate | 验证内容 | 通过条件 | 结果 |
+|------|---------|---------|------|
+| Q15-M0 cargo check | uart_16550 + StarryOS 0 错误/警告 | 0 error + 0 warning | ✅ |
+| Q15-M1 benchmark | 64B write+tcdrain 无 10ms 台阶 | ≤ M4 Sync 前基线 | ✅ |
+| Q15-M2 benchmark | 64B 吞吐 ≥ 156KB/s | ≥ M1 基线 | ✅ (169KB/s) |
+| Q15-M4 benchmark | IER 切换正确，无中断风暴 | cargo check + benchmark | ✅ |
+| Q15-M3 benchmark | TtyWrite 短写穿透 5 文件，1B 延迟不退化 | ≤ M4 基线 +129µs | ✅ (134µs) |
+| 最终 Manual QA | 全量 QEMU benchmark 综合 | 无 64B write+tcdrain 退化 | ✅ (170KB/s) |
+
+**增量融合策略有效性验证**：
+
+- ✅ **避免了一次性 apply 的退化复现**：Q13 M4 Sync 失败的 73.9x 退化未在 Q15 复现
+- ✅ **每步可独立回退**：5 个 milestone 各自独立 commit，任意一项引入 bug 可单独 revert
+- ✅ **保留原始参考**：temp 分支完整保留原 M4+ 代码，可对比增量 vs 一次性 apply 的差异
+- ✅ **时间效率**：5 天完成 5 个 milestone + Manual QA（原一次性 apply + debug 耗时 4 天仍未恢复）
+
+**影响**:
+- uart_16550 + StarryOS 异步栈达到 Q15 设计目标（per-port ISR / ArceOsRawMutex / yield_now / UartPort 扩展 / IER 单 owner / TtyWrite 短写）
+- Q6 真板验证成为唯一待办（依赖 VisionFive2 硬件到位）
+- `feat/uart-16550-async-temp` 分支保留作为参考，但未来不再直接 merge（增量融合策略是首选）
+
+**替代方案**:
+- ❌ 一次性 apply M4+ 全部代码：已证伪（M4 Sync 73.9x 退化）
+- ❌ 放弃 M4+ 修复，永久保留 pre-M4 状态：拒绝（IER 单 owner / TtyWrite 短写是正确性必需）
+- ❌ 按时间顺序 apply（M4 → M3 → M2 → M1 → M0）：拒绝（M4 依赖 M0 见证层 / M2 依赖 M1 TX fast retry 基线）
+- ✅ 按依赖关系增量 + 每步 Gate：当前方案，已验证有效
+
+#### Scenario: 未来 async-uart 优化合并
+
+- **WHEN** 开发者需要合并其他分支（async-uart-1 / future 等）的 async-uart 优化 commit
+- **THEN** MUST 遵循 Q15 增量融合策略：按依赖关系排序 → 摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
+- **AND** MUST 保留源分支作为参考（不删除，禁止一次性 merge）
+- **AND** 每步 MUST 在 Manual QA Gate 表格新增一行记录验证结果
+
+#### Scenario: Q15 增量融合策略失败
+
+- **WHEN** Q15 任一 milestone 引入性能退化（如 TX backpressure 复现）
+- **THEN** MUST 立即停止后续 milestone，定位退化根因
+- **AND** 修复后从该 milestone 重新增量融合，禁止跳过或绕过
+- **AND** 在 optimization.md 的 Q15 章节追加 incident 记录（含 commit hash / 退化倍数 / 修复方法）
+
+**参考**:
+- `openspec/changes/m0-witness-layer/` ... `m4-ier-single-owner/` ... `m3-tty-short-write/`
+- optimization.md: Q15 M0~M4 增量重融合 + Manual QA 章节
+- learned.md: L201/L202/L204 (Q15-M2/M3 细节)
+- SNAPSHOT.md: "Q15 已应用架构" 章节
+- `feat/uart-16550-async-temp` 分支：原 M4+ 代码参考

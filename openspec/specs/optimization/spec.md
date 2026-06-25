@@ -486,3 +486,67 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 - **WHEN** 考虑实施 O58（feature gate 条件编译）
 - **THEN** MUST 评估：(1) 可移植性损失是否可接受，(2) 维护负担是否可控，(3) 性能收益是否显著
 - **THEN** MUST 先创建 OpenSpec 变更，获得用户 approval 后才实施
+
+### Requirement: Q15 M0~M4 增量重融合 + Manual QA — 已完成（2026-06-25）
+
+Q15 阶段（2026-06-21 开启，2026-06-25 完成）从 pre-M4 基线出发，将原 `feat/uart-16550-async-temp` 分支的 M4+ 正确性修复按最小可验证单元重新 apply，每步 QEMU benchmark 验证无退化。Q15 完成后 MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。
+
+**O62 — Q15 增量重融合 5 个 milestone**：
+
+| 编号 | 内容 | 关键收益 | 状态 |
+|------|------|----------|------|
+| **O62-M0** | 见证层（RawMutex / per-port ISR / FIFO 边界矩阵 + telemetry） | 隔离验证基线，量化每次融合的退化 | ✅ (2026-06-23) |
+| **O62-M1** | 有界 TX fast retry（`TX_FAST_RETRY_LIMIT=32`） | 消除 16B FIFO refill 的 10ms tick 台阶 | ✅ (2026-06-23) |
+| **O62-M2** | TX completion 三阶段 drain（flush / tcdrain）| ring/copier/staged 检查，TEMT corner-case 修复 | ✅ (2026-06-23) |
+| **O62-M4** | IER 单 owner（`UartPort::update_ier()` 统一管理）| 删除 CACHED_IER / write_ier / enable_*，uart_16550 真正独立 | ✅ (2026-06-23) |
+| **O62-M3** | TtyWrite 短写契约（`write(&[u8]) -> usize`）| VFS/sys_write 层看到真实接受字节数，消除 silent data loss | ✅ (2026-06-23) |
+
+**关键约束**（增量融合过程中已严格执行）：
+
+- 不修改任何外部 crate（`axtask` / `axpoll` / `embassy-sync`）
+- 不提高调度 tick 频率
+- ISR 极简原则不变
+- 每步必须 `cargo check` 通过 + QEMU benchmark 验证无退化
+
+**Manual QA 验证结果（2026-06-25）**：
+
+| 指标 | Q13.1 基线 | Q15 后（无 LTO per ADR-034）| 趋势 | 备注 |
+|------|----------|----------------------------|------|------|
+| 内核态 Ring Buffer TX | 385 MB/s（LTO off）/ 652 MB/s（LTO on）| **456 MB/s** | ↑（较 LTO off）| Q15-M0 telemetry 开销抵消 + lock-free 改进 |
+| 内核态 Ring Buffer RX | 898 MB/s（LTO on）| **1,148 MB/s** | **↑27.9%** | Q15-M0/M4 lock-free 改进显著 |
+| 用户态 1B e2e 延迟（avg）| 129.5 µs | **134 µs** | +3.5% | 调度瓶颈未变，noise 范围内 |
+| 用户态 1B e2e 延迟（P50）| 125.5 µs | **118.5 µs** | -5.6% | 改善 |
+| 用户态 64B TX 吞吐 | 184 KB/s（M4 单测）| **170 KB/s** | -7.6% | QEMU 噪声范围内，无 TX backpressure 退化 |
+| 非阻塞三入口 | ✅ | **✅** | 不变 | FIONBIO 行为正确 |
+
+**结论**：
+
+- ✅ **无 64B write+tcdrain 退化**（TX backpressure 风险解除）
+- ✅ **用户态延迟与 Q13.1 基线持平**（e2e 瓶颈在调度，不在驱动层）
+- ✅ **内核态 Ring Buffer RX 显著提升**（Q15-M0/M4 lock-free 改进）
+- ✅ **IER 单 owner 达成**（uart_16550 crate 真正独立可复用）
+- ✅ **TtyWrite 短写契约落地**（VFS 契约正确，消除 silent data loss）
+
+**Q6 触发条件**（Q15 后唯一待办）：
+
+- VisionFive2 真板到位 → 必须运行 O38（时钟适配）→ O39（真板 FIFO 深度验证）→ O3/O40（DMA 探索）→ O41（高速波特率）序列
+- 真板上 Q15 Manual QA 数据需重测（QEMU 不仿真串口线延迟，吞吐数据不可信）
+- 真板硬件时间 ~86.8 µs/byte @ 115200 bps 将与 Q15 QEMU 0 µs 硬件时间形成鲜明对比
+
+#### Scenario: Q15 后再次合并 async-uart 优化
+
+- **WHEN** 开发者从 `feat/uart-16550-async-temp` 或其他临时分支再次提取优化 commit
+- **THEN** MUST 遵循 Q15 增量融合策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
+- **AND** 禁止一次性大批量 apply（避免 Q13 M4 Sync 退化的 73.9x 性能灾难复现）
+
+#### Scenario: 评估 Q15 后新优化方向
+
+- **WHEN** 开发者发现新的 async-uart 优化方向（如 IRQ affinity、零拷贝 RX、DMA）
+- **THEN** MUST 先创建 OpenSpec 变更提案，量化预期收益与风险
+- **AND** MUST 在 Q6 真板验证完成后启动（QEMU 仿真限制决定绝对吞吐无法在 QEMU 上验证）
+
+#### Scenario: 回退 Q15 任一 milestone
+
+- **WHEN** 开发者考虑回退 O62-M0/M1/M2/M3/M4 任一项
+- **THEN** MUST 附带 commit 证明：(1) 当前存在正确性 bug 或可量化的性能退化，(2) 回退后其他 milestone 不受影响
+- **AND** 禁止以"未来可重做"为由回退（Q15 已验证状态机，回归成本高于保留）

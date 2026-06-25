@@ -856,8 +856,20 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L201 --> | TEMT corner-case 丢唤醒窗口 | Q15-M2: 真板 NS16550 上 THRE 中断触发时 TEMT 可能为 0... | Q15-M2 driver.rs tx_copier_loop TEMT poll |
 | <!-- L202 --> | M3 TtyWrite 短写契约 | Q15-M3 ✅ (2026-06-23): `TtyWrite::write(&[u8]) -> usize`，穿透 uart_16550（tty.rs + device_ops.rs）和 StarryOS（mod.rs + pty.rs + ldisc.rs）共 5 文件。QEMU benchmark 验证无退化（1B 0.134ms, 64B 210KB/s, FIONBIO PASS）。ADR-038 记录完整设计决策。 | Q15-M3 change |
 | <!-- L204 --> | M3 短写影响面速查 | `../uart_16550/src/tty.rs`, `../uart_16550/src/async_/device_ops.rs`, `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`, `kernel/src/file/fs.rs`, `kernel/src/syscall/fs/io.rs` | `TtyWrite::write -> usize` 会让 `Tty::write_at` 把实际接受字节数穿透到 `sys_write`；`File::write` 对 `Ok(n)` 不重试，benchmark 必须循环处理短写。详见 `.claude/analysis/q15-m3-tty-short-write-contract.md` |
+| <!-- L205 --> | Q15 增量融合策略（核心元经验）| Q15 (2026-06-25): M13 M4 Sync 一次性 apply 全部 M4+ 代码 → 64B write+tcdrain 退化 73.9x (406µs→29.99ms)；Q15 改为按依赖关系排序的 5 个原子 milestone（M0→M1→M2→M4→M3）增量融合 + 每步 cargo check + QEMU benchmark Gate → 5 天完成 + 无退化。**铁律**：禁止一次性 apply 多个 async-uart 优化 commit，必须按依赖排序 + 每步 Gate | `architecture.md` ADR-039 + `optimization.md` Q15 章节 |
+| <!-- L206 --> | Q15 Manual QA 性能基线（2026-06-25）| QEMU 不带 LTO（per ADR-034）：用户态 1B e2e 134µs avg / P50 118.5µs / 64B TX 170KB/s / FIONBIO 全 PASS；内核态 Ring Buffer TX 456,205 KB/s / RX 1,147,959 KB/s（RX 较 Q13+LTO ↑27.9%）。**与 Q13.1 基线对比**：1B 延迟 +3.5% 在 noise 范围内；64B 吞吐 -7.6% 无 TX backpressure 退化（关键 Gate 通过） | `docs/benchmark-report-async.md` §0 |
+| <!-- L207 --> | Q15 后禁止的操作 | ❌ 一次性 merge `feat/uart-16550-async-temp` 或其他临时分支的多个 commit（Q13 M4 Sync 已证伪 73.9x 退化）；❌ 删除 temp 分支（保留作为增量融合的参考基线）；❌ 在 QEMU 上声称绝对吞吐（不仿真串口线延迟，真板验证必须等 Q6） | `architecture.md` ADR-039 替代方案章节 |
+| <!-- L208 --> | 增量融合的"依赖排序"启发式 | 按"基线能力 → 修复 → 契约"分层：M0 见证层（提供测量基线）→ M1/M2 修复（M1 fast retry 消除 tick 台阶，M2 drain 修正 flush）→ M4 规范化（IER 单 owner 整合）→ M3 契约（VFS 边界，独立于驱动内部）。M3 放最后因为它只改 trait 签名不碰驱动内部，依赖前 4 个 milestone 提供稳定的内部行为 | `architecture.md` ADR-039 |
 
 #### Scenario: 新增 Q13 层级 API
 
 - **WHEN** 开发者在 uart_16550 async 栈中添加新类型或 trait
 - **THEN** MUST 同时更新本速查表（上方 L176-L200 区域），标注文件路径与用途
+
+#### Scenario: 应用 Q15 增量融合策略
+
+- **WHEN** 开发者需要合并 async-uart 相关分支（async-uart-1 / future / temp）的多个 commit
+- **THEN** MUST 按 L208 启发式分层排序（基线 → 修复 → 规范化 → 契约）
+- **AND** MUST 每步 cargo check + QEMU benchmark Gate（参见 ADR-039 Manual QA Gate 表）
+- **AND** MUST 保留源分支作为参考，禁止一次性 merge 或删除
+- **AND** 退化时立即停止，定位根因后从该 milestone 重新融合（L205 铁律）

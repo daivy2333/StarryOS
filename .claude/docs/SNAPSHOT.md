@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-24
-> 分支：feat/uart-16550-async — Q15 ✅ (M0~M4 增量融合完成 2026-06-24)
+> Last updated: 2026-06-25
+> 分支：feat/uart-16550-async — Q15 ✅ (M0~M4 + Manual QA 验证通过 2026-06-25)
 
 ---
 
@@ -49,15 +49,19 @@
 **Q15 M2 ✅**: TX completion 三阶段 drain（flush/tcdrain 正确等待），TxCompletion API + TEMT corner-case fix. 性能基线 M2: 64B 169KB/s | 256B 181KB/s | 1024B 189KB/s | 4096B 190KB/s | 1B avg 0.132ms P95 0.143ms
 **Q15 M4 ✅** (2026-06-23): IER 单 owner — CACHED_IER/write_ier/enable_* 全部删除，UartPort::update_ier() 统一管理。uart_16550 真正独立可复用
 - **性能基线 M4 (QEMU)**: 64B 184KB/s | 1B 0.129ms | FIFO 无台阶
-**Q15 M3 ✅** (2026-06-23): TtyWrite 短写契约 — `write(&[u8]) -> usize`，5 文件穿透 uart_16550 + StarryOS，benchmark 增加短写循环。uart_16550 54 tests PASS，StarryOS cargo check PASS。QEMU manual QA 待运行。
-**Q15 增量重融合 ✅** (2026-06-24 全部 M0~M4 完成): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
+**Q15 M3 ✅** (2026-06-23): TtyWrite 短写契约 — `write(&[u8]) -> usize`，5 文件穿透 uart_16550 + StarryOS，benchmark 增加短写循环。uart_16550 54 tests PASS，StarryOS cargo check PASS。Manual QA ✅ (2026-06-25)。
+**Q15 增量重融合 ✅** (2026-06-25 全部 M0~M4 + Manual QA 完成): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
 - 源分支：`feat/uart-16550-async-temp`（保留原 M4+ 全部代码，参考用）
 - 策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
 - 目标：融合所有方向正确的修复（RawMutex、per-port ISR、yield_now、IER 规范、flush 正确性等），同时避免 TX backpressure 退化
 - **关键约束**：不修改外部 axtask/axpoll/embassy-sync；不提高 tick；ISR 极简
 - **5 个 milestone 全部 commit 落地**：M0 见证层 → M1 有界 TX fast retry → M2 TX completion 三阶段 drain → M4 IER 单 owner → M3 TtyWrite 短写契约
-- **Manual QA Gate ⏳**: QEMU benchmark 待执行，确认无 64B write+tcdrain 退化
-**下一步**: Q15 Manual QA Gate（QEMU benchmark 验证无退化）→ Q6 真板验证
+- **Manual QA Gate ✅** (2026-06-25): QEMU benchmark 验证无 64B write+tcdrain 退化，性能数据见 `docs/benchmark-report-async.md` §0
+  - 用户态 1B e2e 134µs avg / P50 118.5µs（与 Q13.1 基线 129.5µs 相近）
+  - 用户态 64B TX 170 KB/s（与 M4 基线 184 KB/s 同级，无 TX backpressure 退化）
+  - 内核态 Ring Buffer TX 456,205 KB/s / RX 1,147,959 KB/s（RX 较 Q13+LTO ↑27.9%）
+  - 非阻塞三入口全 PASS（FIONBIO）
+**下一步**: Q6 真板验证（VisionFive2 ⏳ 等待硬件到位）
 
 ### 关键发现
 
@@ -118,10 +122,10 @@
 | **Q13** | 异步串口提取 | uart_16550 成为完整异步 UART crate（三阶段迁移） | ✅ (2026-06-16) |
 | **LTO** | 跨 crate 内联 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
 | **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
-| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (M0~M4 完成 2026-06-24，Manual QA 待执行) |
-| **Q6** | 真板验证 | VisionFive2 | ⏳ |
+| **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) |
+| **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
 
-### 当前架构（pre-M4 基线）
+### 当前架构（Q15 M0~M4 + Manual QA 已验证 — 2026-06-25）
 
 ```
 IRQ 10 → ISR handler (uart_init.rs)
@@ -149,7 +153,7 @@ Tty<AsyncUartReader, AsyncUartWriter> → /dev/console
 内核日志: ax_println! → Console polling TX（共存）
 ```
 
-> **Q15 目标架构**：per-port driver.handle_irq()、ArceOsRawMutex、yield_now、UartPort 扩展（update_ier/read_isr/TEMT）、IER 规范 → 逐步融合，代码在 `feat/uart-16550-async-temp` 分支
+> **Q15 已应用架构**（与原 pre-M4 的差异）：per-port `driver.handle_irq()`（替代全局 waker）、`ArceOsRawMutex`（保护 TX ring writer，支持 Clone-safe `AsyncUartWriter`）、`yield_now` 协作让步、`UartPort` 扩展（`update_ier` / `read_isr` / TEMT 检查）、IER 单 owner（`UartPort::update_ier()` 统一管理）。M0~M4 增量已 commit 落地并通过 QEMU Manual QA。
 
 ### 历史
 
