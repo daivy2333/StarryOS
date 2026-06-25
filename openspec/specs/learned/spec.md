@@ -57,7 +57,7 @@
 | <!-- L172 --> | `uart_16550/src/async_/ring_buffer.rs` | Ring buffer with OsWakerSet: RingBufRx<W>, RingBufTx<W> |
 | <!-- L173 --> | `uart_16550/src/async_/driver.rs` | Copier driver with NAPI: AsyncUartDriver<R,W,U> + UartPort trait |
 | <!-- L174 --> | `uart_16550/src/async_/device_ops.rs` | Device ops with embedded_io_async: AsyncUartReader/Writer |
-| <!-- L175 --> | `kernel/src/drivers/os_arceos.rs` | ArceOS adapter layer: 5 trait implementations |
+| <!-- L175 --> | `kernel/src/drivers/os_arceos.rs` | ArceOS adapter layer: 2-trait minimum interface (per ADR-036) |
 
 **内核模块关键路径**
 
@@ -686,7 +686,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 ### Requirement: 2026-06-11 优化审计新发现
 
-本次审计（openspec-explorer，4 个并行 agent）揭示的未记录优化机会与正确性问题；各项 MUST 评估风险后立项落地，禁止"以后再说"。
+审计发现的未记录优化机会与正确性问题 MUST 评估风险后立项落地。本次审计由 openspec-explorer 的 4 个并行 agent 执行，禁止"以后再说"。
 
 #### Scenario: 踩坑 5~7 任意一个未在 Q8~Q11 解决
 

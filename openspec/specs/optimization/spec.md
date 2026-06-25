@@ -173,6 +173,12 @@ Q12 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit
 
 **总收益**：software overhead ↓31%，1B avg latency 118→123.9 µs
 
+#### Scenario: 维护 Q12 Embassy 路径 A 优化成果
+
+- **WHEN** 考虑对 Q12 阶段已落地的 O51/O52/O53 优化做修改或回退
+- **THEN** MUST 在新 OpenSpec 变更中说明理由并附 commit 证明
+- **AND** MUST 保持 O51 的 lock-free SPSC 收益、O52 的 trait 标准化、O53 的 TC tcdrain 行为
+
 ### Requirement: 远期优化（路径 B — 未来评估）
 
 embassy 调研中识别的架构级优化，MUST 在路径 A（Q12）完成并量化收益后再评估实施。
@@ -401,7 +407,7 @@ Performance benchmarks and comparisons MUST use the baseline data below. All met
 
 ### Requirement: Q13 Trait 抽象开销优化 — 短期已规划 / 中长期待探索
 
-Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化（124µs → 140.1µs）。短期优化（inline + batch）已规划为 Q13.1，中长期优化点记录如下。
+Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化（124µs → 140.1µs）。短期优化（inline + batch）MUST 实施为 Q13.1；中长期优化点 SHALL 记录在下方表格。
 
 **Q13.1 短期优化（已完成）**：
 

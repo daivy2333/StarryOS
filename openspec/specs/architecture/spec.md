@@ -656,7 +656,7 @@ This contract MUST report the number of bytes accepted by the output sink so VFS
 <!-- A039 -->
 ### Requirement: ADR-039: Q15 M0~M4 增量重融合策略 + Manual QA 验证 — 已完成（2026-06-25）
 
-Q15 阶段采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4+ 正确性修复，并通过 QEMU Manual QA 验证无退化。
+Q15 阶段 MUST 采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4+ 正确性修复，并通过 QEMU Manual QA 验证无退化。
 
 **日期**: 2026-06-21（开启）→ 2026-06-25（Manual QA 完成）
 **状态**: ✅ 已完成
