@@ -182,10 +182,10 @@ UART 集成前 MUST 验证全部关键寄存器状态（IER / IIR / LSR / MCR）
 
 **踩坑 6：QEMU 16550 串口模拟的时序欺骗**（L141，2026-06-01）
 
-- **现象**：QEMU 上 TX 吞吐量测出 150~250 MB/s，远超 115200 bps 理论值 11.5 KB/s
+- **现象**：QEMU 上 TX 吞吐量测出 150~250 MB/s，远超 115200 bps 物理定律上限 11.5 KB/s
 - **根因**：QEMU 的 NS16550 模拟不仿真真实串口线延迟（86.8 µs/byte），UART FIFO 数据处理为瞬时
 - **影响**：所有基于 `tcdrain` / 轮询 LSR 的吞吐量测试在 QEMU 上均不可信
-- **真板预期**：VisionFive2 @ 115200 bps → ~11.5 KB/s（受硬件波特率限制）
+- **📐 物理定律**（100% 准确）：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），实测值受调度/IRQ 延迟影响可能低于此值
 - **可靠指标（QEMU 也可测）**：内核态 ring buffer 速度、write() 延迟、CPU cycles/byte
 
 #### Scenario: 在已有 UART 实例上启用新驱动
@@ -421,7 +421,7 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 - **Console QEMU**：纯 VFS+MMIO 速度（~5 µs/64B），因为 QEMU LSR 永远 THR_EMPTY
 - **Async QEMU**：VFS + 任务切换（~300 µs/64B），因为 tcdrain 需要多次 poll → yield
 - **公平对比**：去除 tcdrain，只比 `write()` 延迟（Async 快 2.2~7.5x）
-- **真板**：两者受 115200 bps 限制，收敛到 ~11.5 KB/s；QEMU 的差距是人工产物
+- **📐 物理定律**：真板两者受 115200 bps 限制，线速上限 11.52 KB/s；QEMU 的差距是仿真人工产物（Q6 真板实测验证 ⏳）
 
 **踩坑 5：当前 benchmark 不测量实际 UART 吞吐量**（L136）
 
@@ -678,6 +678,43 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 <!-- L203 -->
 - **数据量意识**：QEMU 115200 bps 下每 KB 数据 ≈ 87ms 传输时间。FIFO 边界矩阵 9 尺寸 × 100 迭代 ≈ 24KB（~2s）。避免尺寸重复导致数据量翻倍（曾因 64/256/1024/4096 重复导致 ~572KB → ~50s）
+
+#### ArceOS 借鉴参考（DMA / HAL / async 模式）
+
+<!-- L204 -->
+| `axdma::alloc_coherent` | `others/arceos/modules/axdma/src/lib.rs:46` | DMA 一致性内存分配（返回 `DMAInfo { cpu_addr, bus_addr }` 二元组）。**仅模式参考**：NS16550 16 字节 FIFO 不需要 DMA，引入对齐约束 + cache flush 复杂度反而过度设计。未来做高速外设（NIC/块设备）可强借鉴。 | 2026-06-26 |
+<!-- L205 -->
+| `axdriver_net::dwmac::DwmacHal` | `others/arceos/axdriver_crates/axdriver_net/src/dwmac/mod.rs:32-54` | DWMAC HAL trait（7 方法：`dma_alloc` / `dma_dealloc` / `mmio_phys_to_virt` / `mmio_virt_to_phys` / `wait_until` / `configure_platform` / `cache_flush_range`）。我们 `UartPort`（4 方法）+ `OsRuntime`/`OsWakerSet`（2 trait）= 6 接口，比 DwmacHal 7 方法**更精简且正交性更好**（ADR-036 已印证）。 | 2026-06-26 |
+<!-- L206 -->
+| `axasync::waker::wake_at` | `others/arceos/modules/axasync/src/waker.rs:102` | timer-based waker（`BinaryHeap<TimerEventEntry>` + `set_oneshot_timer`）。**等价实现**：我们 `axtask::future::timeout(fut, dur)`（Q9）通过 `axtask::ax_wait_timer` + waker 实现相同语义，不引入 BinaryHeap/oneshot_timer。 | 2026-06-26 |
+<!-- L207 -->
+| `axnet::smoltcp_impl::RecvFuture::poll` | `others/arceos/modules/axnet/src/smoltcp_impl/future.rs:31-64` | "Init Flag + Waker" Future 模式：首次 poll 做一次性初始化（连接状态检查），主循环注册 waker + Pending。**PIT-006 教训**：AcceptFuture 遗漏 `register_accept_waker` → 永久 Pending。我们 ISR 极简（read_isr + 禁中断 + wake + 返回）+ AtomicWaker 直接 wake（O17 教训）已蕴含此不变量。 | 2026-06-26 |
+
+#### 内存序踩坑（2026-06-26 O63 代码验证）
+
+<!-- L208 -->
+### [ier_cache RMW 竞争 — Q6 SMP P0 阻塞]
+
+- **症状**：真板 4 核下 ISR (hart 0) 和 copier (hart N) 并发调用 `update_ier()` 时，IER 中断使能位可能被对端覆盖丢失，导致 RX 或 TX 彻底停滞
+- **根因**：`uart_init.rs:105-111` 的 `ier_cache` load-modify-store 在 `SpinNoIrq::lock()` **外面**执行。两个 hart 同时 load → modify → store 时后写者覆盖先写者
+- **解决**：把 `ier_cache` RMW 搬进 `SpinNoIrq::lock()` 内，或改用 `AtomicU8::fetch_or`/`fetch_and` 配合 `AcqRel` 排序
+- **预防**：跨 hart 访问的 Atomic 变量做 RMW 时，如用 load+store 两步，必须将两步放在同一个锁临界区内；或直接用 `fetch_*` 原子操作
+
+<!-- L209 -->
+### [tx_copier_active / tx_staged_bytes 跨 hart 读写排序 — Q6 SMP P1]
+
+- **症状**：真板多核下 flush/tcdrain （user task on hart N）可能看到 TX copier (hart M) 的陈旧 active/staged 值，导致 tcdrain 过早返回或 hang
+- **根因**：`driver.rs` 中 `tx_copier_active` / `tx_staged_bytes` 的 store/fetch_add 用 `Ordering::Relaxed`，`tx_completion()` 的 load 也用 `Relaxed`。跨 hart 无 happens-before 保证
+- **解决**：写端 → `Ordering::Release`；读端 → `Ordering::Acquire`；`fetch_add/sub` → `Ordering::AcqRel`
+- **预防**：SMP 场景下，跨 hart 共享的 flag/counter 必须建立 happens-before 边。rule of thumb：store 用 Release，load 用 Acquire
+
+<!-- L210 -->
+### [QEMU 单核掩盖 SMP 内存序问题]
+
+- **现象**：Q15 全部 Relaxed 用法在 QEMU (max-cpu-num=1) 下完全正常，`cargo check` + benchmark 0 问题
+- **根因**：QEMU 单 hart 下所有访问串行化，无并发窗口；RISC-V RVWMO 在单 hart 上 Relaxed ≈ SeqCst
+- **影响**：`kspin` 当前未启用 `smp` feature（`SpinNoIrq` 是空操作），`critical_section` 仅本地关中断。这些都只在多核下暴露
+- **预防**：开发阶段在 QEMU 上跑 `max-cpu-num = 4` + SMP feature 可以提前暴露部分问题（但非全部——QEMU 时序与真板不同）
 
 #### Scenario: 查询 Q13 提取的 API 路径
 

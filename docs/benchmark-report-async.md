@@ -4,7 +4,9 @@
 > **分支**：`feat/uart-16550-async`（Q0~Q13 + LTO 全部完成） · **测试分支**：`feat/uart-16550-bench`（独立 bench 模块）
 > **截稿日期**：2026-06-17（Q13.1 + LTO 完成后最终更新）
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/uart-performance-comparison.md`（Console vs Async 对比） · `.claude/analysis/async-uart-module-boundary.md`（Q13 事后视角）
-> **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟（86.8 µs/byte @115200 bps），吞吐量数值偏高。真板 VisionFive2 @ 115200 bps 收敛至 ~11.5 KB/s（硬件理论上限）。本文 QEMU 实测数据仅供**相对性能对比**，绝对吞吐需以真板为准。
+> **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟，吞吐量数值偏高。本文 QEMU 实测数据仅供**相对性能对比**，绝对吞吐需以 Q6 真板实测为准（⏳ 待硬件到位）。
+>
+> **📐 物理定律**（100% 准确，不依赖真板验证）：NS16550 @ 115200 bps 的单字节传输时间 = 86.8 µs（10 bits/byte × 1/115200 s），对应线速上限 11,520 B/s。这是**数学事实**，但 QEMU 实测值与此不可直接对比（QEMU 瞬时硬件时间 ≠ 86.8 µs）。
 
 ---
 
@@ -26,7 +28,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 
 ## 1. 测量条件
 
-所有性能数据 MUST 在统一测量条件下解读，**不同条件数据不可直接比较**。QEMU 16550 模型不仿真真实串口线延迟（86.8 µs/byte）使吞吐数值偏高，真板 VisionFive2 @ 115200 bps 收敛至 ~11.5 KB/s（硬件理论上限）。QEMU RISC-V `monotonic_time_nanos` 计时器分辨率约 100ns，单字节延迟测量下限为 100ns。
+所有性能数据 MUST 在统一测量条件下解读，**不同条件数据不可直接比较**。QEMU 16550 模型不仿真真实串口线延迟（86.8 µs/byte）使吞吐数值偏高。**📐 物理定律**：NS16550 @ 115200 bps 的线速上限 = 11,520 B/s（单字节 86.8 µs），但 QEMU 实测值与此不可直接对比（QEMU 瞬时硬件时间 ≠ 86.8 µs）。QEMU RISC-V `monotonic_time_nanos` 计时器分辨率约 100ns，单字节延迟测量下限为 100ns。
 
 **测试环境**（QEMU `qemu-riscv64-virt`，统一基线）：
 
@@ -42,7 +44,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 
 **QEMU 仿真限制**：
 
-- QEMU 16550 模型不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。真板 VisionFive2 @ 115200 bps 将产生 ~11.5 KB/s 的准确吞吐量。
+- QEMU 16550 模型不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），但真板实测吞吐受调度/IRQ 延迟影响可能低于此值，需 Q6 实测确认。
 - QEMU RISC-V `monotonic_time_nanos` 分辨率约 100ns，单字节延迟测量下限为 100ns（小于 100ns 的值均显示为 `<100ns`）。
 
 **优化阶段对照**（Q7~Q13.1 + LTO 共 9 个阶段）：
@@ -130,11 +132,11 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 
 **TX 吞吐量测试**：写 `/dev/console`，每次后 `tcdrain()`，100 次迭代，4 种数据大小。
 
-| 数据大小 | 实测/次（QEMU）| 硬件理论/次 | 真板预测 |
+| 数据大小 | 实测/次（QEMU）| 硬件理论/次 📐 | 真板实测 |
 |----------|-------------|------------|----------|
-| 64 bytes | 518.0 µs | 5,555.6 µs | 6.07 ms |
-| 256 bytes | 1,305.6 µs | 22,222.2 µs | 23.5 ms |
-| 1024 bytes | 4,922.5 µs | 88,888.9 µs | 93.8 ms |
+| 64 bytes | 518.0 µs | 5,555.6 µs | ⏳ Q6 实测后回填 |
+| 256 bytes | 1,305.6 µs | 22,222.2 µs | ⏳ Q6 实测后回填 |
+| 1024 bytes | 4,922.5 µs | 88,888.9 µs | ⏳ Q6 实测后回填 |
 | 4096 bytes | 9,852.0 µs | 355,555.6 µs | 365.4 ms |
 
 > **缩写说明**：`tcdrain()` 是 POSIX termios 函数，等待所有输出传输完毕；`/dev/console` 是 Linux 风格的 console 设备节点。
@@ -221,7 +223,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 - **非阻塞测试**：`open(O_NONBLOCK)` / `ioctl(FIONBIO)` / `fcntl(F_SETFL)` 三种入口
 - **编译命令**：`riscv64-linux-musl-gcc -static`
 
-**QEMU 时序说明**：QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**真板 VisionFive2 @ 115200 bps 将产生 ~11.5 KB/s 的准确吞吐量**。
+**QEMU 时序说明**：QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），实测值受调度/IRQ 延迟影响，需 Q6 实测确认。
 
 **小结**：内核态测吞吐/延迟细节（启动时自动），用户态测 e2e 性能与 FIONBIO 行为（benchmark.sh 自动化）——两套互补。
 
@@ -292,7 +294,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 
 **待验证**（真板 VisionFive2，Q6 待办）：
 
-- 真实串口吞吐量 ~11.5 KB/s @ 115200 bps（硬件理论上限）
+- 真实串口吞吐量（受调度/IRQ 延迟影响，📐 物理定律上限 11.52 KB/s）
 - DMA 可行性（O3 / O40）
 - 高速波特率支持（230400+，O41）
 

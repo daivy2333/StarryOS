@@ -92,7 +92,7 @@
 | **LSR 位注意** | THR_EMPTY=bit5（可写），TRANSMITTER_EMPTY=bit6（THR+移位寄存器全空=真正 drain） |
 | **DRAIN_WAKER** | 专用 AtomicWaker，ISR TX 中断时唤醒 tcdrain，替代 wake_by_ref 自旋 |
 | **tcdrain 性能** | QEMU 上 64B 从 9 次切换降到 6 次，延迟 ~300→~200 µs（真板上可忽略） |
-| **e2e 吞吐量** | 4096B 真板预测效率 97.7% 线速（软件开销 < 2.3%） |
+| **e2e 吞吐量** | ⏳ Q6 真板验证后回填（QEMU 不仿真串口线延迟，绝对吞吐不可信） |
 | **e2e 延迟** | 单字节 139.5 µs avg（硬件理论 86.8 µs，软件开销 52.7 µs） |
 | **O46 完成** | ✅ Q8 完成：pipe/signalfd/pidfd/event 共 8 处 PollSet→AtomicWaker（~200ns→~50ns） |
 | **O47 完成** | ✅ Q9 完成：VTIME 读超时，复用 axtask::future::timeout()（无需 embassy-time） |

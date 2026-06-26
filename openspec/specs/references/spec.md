@@ -125,6 +125,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | 文档 | 主题 |
 |------|------|
 | `architecture-overview.md` | 架构概览：仓库结构、构建系统、启动链、任务/进程模型、中断框架 |
+| `arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA 待 Q6 重新评估（O3/O40）、HAL trait 我们更精简（Q13 + ADR-036）、Q6 真板待采纳 trust u-boot（ADR-004）+ PLIC init_primary/percpu 分离（ADR-002）、arceos 自身未做异步 UART（OPT-001 我们是行业先例）。配套 optimization/spec.md O64~O73 借鉴清单 |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

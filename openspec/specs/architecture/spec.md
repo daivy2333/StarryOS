@@ -724,3 +724,66 @@ Q15 阶段 MUST 采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4
 - learned.md: L201/L202/L204 (Q15-M2/M3 细节)
 - SNAPSHOT.md: "Q15 已应用架构" 章节
 - `feat/uart-16550-async-temp` 分支：原 M4+ 代码参考
+
+<!-- A040 -->
+### Requirement: ADR-040: Q6 真板启动 PLIC / Clock "trust u-boot" 模式（Revised 2026-06-26）
+
+VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树，OS 不应"重新初始化一切"破坏硬件状态。借鉴 arceos ADR-004 决策（`others/arceos/openspec/specs/architecture/spec.md`）及其反复失败教训（PIT-007，7+ 次 `failed attempt`），但**范围收紧为 PLIC + Clock，不包含 UART**。
+
+**证据**: arceos 的 "trust u-boot" 模式仅用于 DWMAC（以太网）驱动（`modules/axdriver/src/dwmac.rs` `set_clocks_uboot()`），不是平台级模式。arceos `riscv64_starfive` 的 UART 走 SBI console 调用，完全不做 UART MMIO 初始化。NS16550 UART 初始化（设波特率/FCR/IER）是简单寄存器写入，重复设置无害——不像 DWMAC 的 PHY 协商那样会破坏已建立的链路状态（2026-06-26 `codegraph_explore` 交叉验证确认）。
+
+**日期**: 2026-06-26（Revised，Q6 真板验证前必须落实）
+**状态**: 🟡 Proposed（Q6 阻塞风险，范围已收紧）
+**决策**: Q6 真板启动 PLIC + Clock 初始化采用 "trust u-boot" 模式：
+- PLIC init：`init_primary()` 仅 primary CPU 调用，`init_percpu()` 每 CPU 调用（见 ADR-041）
+- Clock：检测 U-Boot 已配置的时钟值，跳过重新分频
+- UART：**允许正常重新初始化**（设置波特率/FCR/IER），NS16550 寄存器写入无害
+- 增加 `print_preserved_status()` dump 当前 PLIC/Clock 状态供真板 debug
+
+**影响**:
+- ✅ 避免破坏 U-Boot 已建立的 PLIC 状态和时钟树（arceos PIT-007 教训）
+- ✅ 不限制 UART 初始化灵活性（我们仍可自由配置 FCR/IER/波特率用于异步驱动）
+- ⚠️ 冷启动场景（无 bootloader）需重新评估 Clock trust 决策（我们场景不涉及）
+
+**替代方案**:
+- ❌ trust-u-boot 包含 UART：过度防御。arceos 没有此先例，NS16550 寄存器重写无害
+- ❌ 完整自主 PLIC + Clock 协商：U-Boot 接力场景破坏硬件状态（arceos 已证伪）
+- ✅ PLIC+Clock trust-u-boot + UART 自由初始化 + print_preserved_status：当前方案
+
+**参考**:
+- `others/arceos/modules/axdriver/src/dwmac.rs:101` "U-Boot has already initialized everything"
+- `others/arceos/modules/axhal/src/platform/riscv64_starfive/console.rs` — SBI console，无 UART MMIO init
+- `others/arceos/openspec/specs/learned/spec.md` PIT-007 / TIP-004
+- `.claude/analysis/arceos-borrowable-experience.md` §3.4（已标注 UART 不适用）
+- 2026-06-26 探索验证：bg_27a805e6 确认 arceos starfive 无 UART MMIO init
+
+<!-- A041 -->
+### Requirement: ADR-041: Q6 真板 PLIC 防御性设计模式（Revised 2026-06-26）
+
+借鉴 arceos ADR-002 决策，保持 PLIC init_primary / init_percpu 显式分离作为防御性设计，防止未来回归旧 arceos 的 `LazyInit<Plic>` 反模式。
+
+**2026-06-26 代码验证结论**: 当前 StarryOS 通过 crates.io 的 `axplat-riscv64-qemu-virt-0.3.1-pre.6` / `axplat-riscv64-visionfive2-0.1.0-pre.2` 使用 `static PLIC: SpinNoIrq<Plic>`（编译时初始化），`init_percpu()` 仅做幂等的 `init_by_context(this_context())` 阈值写入。**当前代码在 QEMU 和 VisionFive2 上均不会 panic**（2026-06-26 `codegraph_explore` 逐行验证，bg_c7fd5ae7）。
+
+**真正风险**: 旧 arceos 代码（`others/arceos/modules/axhal/src/platform/riscv64_qemu_virt/irq.rs`）使用 `LazyInit<Plic>`，且 `init_percpu()` 内部调用 `init_plic()` → `PLIC.init_once(Plic::new(regs))`。在 SMP 上第二次调用 `init_once()` 会 panic（`lazyinit-0.2.2/src/lib.rs:50-51` `.expect("Already initialized")`）。此反模式若被重新引入 StarryOS 会导致真板 panic。
+
+**日期**: 2026-06-26（Revised，降为防御性模式）
+**状态**: 🟡 防御性保留（当前代码安全，防止回归）
+**决策**: 保持 `init_primary` / `init_percpu` 显式分离作为代码审查 checklist：
+- `init_primary()` 做全局一次性初始化，`init_percpu()` 做 per-hart 配置
+- **禁止**在 `init_percpu()` 内部调用 `init_once()` 或等效的一次性初始化
+- 切换到 VisionFive2 平台时需验证 axplat crate 版本是否保持 `static SpinNoIrq<Plic>` 模式
+
+**影响**:
+- ✅ 当前 axplat crate 已安全（`static SpinNoIrq<Plic>` + 幂等 `init_by_context`）
+- ⚠️ 防御性关注：如未来有人移植旧 arceos 平台代码，需审查 PLIC 初始化路径
+- ✅ 无需紧急修改 — Q6 当前阻塞项是 O63（内存序），不是 PLIC 初始化
+
+**替代方案**:
+- ❌ 忽略此 ADR：虽然当前代码安全，但旧反模式存在被重新引入的风险
+- ✅ 防御性保留 + 代码审查 checklist：当前方案
+
+**参考**:
+- 当前安全代码：`axplat-riscv64-visionfive2-0.1.0-pre.2/src/irq.rs:40-57`
+- 旧 arceos bug：`others/arceos/modules/axhal/src/platform/riscv64_qemu_virt/irq.rs:127-131`
+- `others/arceos/modules/axhal/src/platform/riscv64_starfive/irq.rs:131-149`（正确分离模式）
+- 2026-06-26 探索验证：bg_c7fd5ae7 确认当前 crates 安全，bg_27a805e6 确认 arceos 正确模式
