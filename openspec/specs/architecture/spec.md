@@ -472,8 +472,8 @@ The async UART stack MUST NOT call any concrete OS API directly; all OS dependen
 - (c) 直接接受 OS 耦合：仅 StarryOS 使用，不通用；放弃 Q13 提取目标
 - 采用 (d) trait 抽象：单 crate，OS 无关，可扩展
 
-**扩展点（Q6 真板验证后可能新增）**:
-- `OsDma` trait：DMA 通道管理（Q6 启用 DMA 提升吞吐时）
+**扩展点（Q20 真板数据决策后可能新增）**:
+- `OsDma` trait：DMA 通道管理（Q20 决定启用 DMA 提升吞吐时）
 - `OsTimer` trait：高精度定时器（波特率自动检测、未来协议支持）
 - `OsPm` trait：电源管理（suspend/resume 场景）
 
@@ -695,7 +695,7 @@ Q15 阶段 MUST 采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4
 
 **影响**:
 - uart_16550 + StarryOS 异步栈达到 Q15 设计目标（per-port ISR / ArceOsRawMutex / yield_now / UartPort 扩展 / IER 单 owner / TtyWrite 短写）
-- Q6 真板验证成为唯一待办（依赖 VisionFive2 硬件到位）
+- Q15 后待办已在 2026-06-27 重排为 Q16~Q22 roadmap，后续不再使用单一 Q6 真板桶
 - `feat/uart-16550-async-temp` 分支保留作为参考，但未来不再直接 merge（增量融合策略是首选）
 
 **替代方案**:
@@ -726,15 +726,17 @@ Q15 阶段 MUST 采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4
 - `feat/uart-16550-async-temp` 分支：原 M4+ 代码参考
 
 <!-- A040 -->
-### Requirement: ADR-040: Q6 真板启动 PLIC / Clock "trust u-boot" 模式（Revised 2026-06-26）
+### Requirement: ADR-040: Q18 真板启动 PLIC / Clock "trust u-boot" 模式（Revised 2026-06-27）
+
+VisionFive2 bring-up MUST preserve U-Boot configured PLIC and Clock state unless diagnostics prove the preserved state is invalid; UART register initialization remains explicitly allowed.
 
 VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树，OS 不应"重新初始化一切"破坏硬件状态。借鉴 arceos ADR-004 决策（`others/arceos/openspec/specs/architecture/spec.md`）及其反复失败教训（PIT-007，7+ 次 `failed attempt`），但**范围收紧为 PLIC + Clock，不包含 UART**。
 
 **证据**: arceos 的 "trust u-boot" 模式仅用于 DWMAC（以太网）驱动（`modules/axdriver/src/dwmac.rs` `set_clocks_uboot()`），不是平台级模式。arceos `riscv64_starfive` 的 UART 走 SBI console 调用，完全不做 UART MMIO 初始化。NS16550 UART 初始化（设波特率/FCR/IER）是简单寄存器写入，重复设置无害——不像 DWMAC 的 PHY 协商那样会破坏已建立的链路状态（2026-06-26 `codegraph_explore` 交叉验证确认）。
 
-**日期**: 2026-06-26（Revised，Q6 真板验证前必须落实）
-**状态**: 🟡 Proposed（Q6 阻塞风险，范围已收紧）
-**决策**: Q6 真板启动 PLIC + Clock 初始化采用 "trust u-boot" 模式：
+**日期**: 2026-06-26（Revised 2026-06-27，Q18 真板观测工具阶段落实）
+**状态**: 🟡 Proposed（Q18 bring-up 风险，范围已收紧）
+**决策**: Q18 真板启动 PLIC + Clock 初始化采用 "trust u-boot" 模式：
 - PLIC init：`init_primary()` 仅 primary CPU 调用，`init_percpu()` 每 CPU 调用（见 ADR-041）
 - Clock：检测 U-Boot 已配置的时钟值，跳过重新分频
 - UART：**允许正常重新初始化**（设置波特率/FCR/IER），NS16550 寄存器写入无害
@@ -757,8 +759,16 @@ VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树�
 - `.claude/analysis/arceos-borrowable-experience.md` §3.4（已标注 UART 不适用）
 - 2026-06-26 探索验证：bg_27a805e6 确认 arceos starfive 无 UART MMIO init
 
+#### Scenario: VisionFive2 bring-up preserves bootloader state
+
+- **WHEN** StarryOS boots on VisionFive2 through U-Boot
+- **THEN** PLIC and Clock setup MUST follow the trust-u-boot policy unless Q18 diagnostics prove the preserved state is invalid
+- **AND** UART register initialization MAY still reconfigure FCR, IER, and baud rate for the async driver
+
 <!-- A041 -->
-### Requirement: ADR-041: Q6 真板 PLIC 防御性设计模式（Revised 2026-06-26）
+### Requirement: ADR-041: Q18 真板 PLIC 防御性设计模式（Revised 2026-06-27）
+
+PLIC initialization MUST keep global one-time setup separate from per-hart setup; `init_percpu()` MUST NOT perform one-time PLIC construction.
 
 借鉴 arceos ADR-002 决策，保持 PLIC init_primary / init_percpu 显式分离作为防御性设计，防止未来回归旧 arceos 的 `LazyInit<Plic>` 反模式。
 
@@ -776,7 +786,7 @@ VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树�
 **影响**:
 - ✅ 当前 axplat crate 已安全（`static SpinNoIrq<Plic>` + 幂等 `init_by_context`）
 - ⚠️ 防御性关注：如未来有人移植旧 arceos 平台代码，需审查 PLIC 初始化路径
-- ✅ 无需紧急修改 — Q6 当前阻塞项是 O63（内存序），不是 PLIC 初始化
+- ✅ 无需紧急修改 — Q17 当前优先项是 O63（内存序），PLIC 初始化作为 Q18 防御性检查保留
 
 **替代方案**:
 - ❌ 忽略此 ADR：虽然当前代码安全，但旧反模式存在被重新引入的风险
@@ -787,3 +797,9 @@ VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树�
 - 旧 arceos bug：`others/arceos/modules/axhal/src/platform/riscv64_qemu_virt/irq.rs:127-131`
 - `others/arceos/modules/axhal/src/platform/riscv64_starfive/irq.rs:131-149`（正确分离模式）
 - 2026-06-26 探索验证：bg_c7fd5ae7 确认当前 crates 安全，bg_27a805e6 确认 arceos 正确模式
+
+#### Scenario: PLIC initialization review
+
+- **WHEN** StarryOS switches or updates the VisionFive2 platform crate
+- **THEN** the PLIC initialization path MUST keep global one-time initialization separate from per-hart initialization
+- **AND** `init_percpu()` MUST NOT call `init_once()` or equivalent one-time PLIC construction

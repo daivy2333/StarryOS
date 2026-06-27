@@ -2,18 +2,19 @@
 
 > 由 assistant 维护，feat/uart-16550-async 分支。
 > 2026-06-25 Q15 M0~M4 增量重融合 + Manual QA 全部完成（QEMU benchmark 验证无 64B write+tcdrain 退化）。
+> 2026-06-27 Q15 后 roadmap 重排：单一 Q6 拆分为 Q16~Q22，按 Gate 类型分层推进（见 `.claude/analysis/optimization-milestone-replan.md`）。
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线（04f8920/60c5729），原代码保留在 feat/uart-16550-async-temp。
 > 2026-06-21 Q15 开启：从 pre-M4 基线增量重融合 M4+ 正确性修复，每步 Manual QA 验证无退化。
 > 2026-06-19 OS trait 清理：ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq（5→2 trait），消除 3 个 dead_code warning。
 > 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits, Phase 1 trait 提取 + Phase 2-3 核心逻辑迁移 + 适配层）。
-> 2026-06-03 P0 完成，OpenSpec 文档体系建立（5 spec 域全部验证通过）。
+> 2026-06-03 P0 完成，OpenSpec 文档体系建立（核心 5 域 + 后续 capability specs）。
 > 条目格式: <!-- Q{编号} --> 或 <!-- P{编号} --> 标记开头，支持 grep 精确定位。
 
 ---
 
-## 当前: 方向 C — kernel 层独立实现（asyncuart-dev）
+## 当前: 方向 C — kernel 层独立实现（feat/uart-16550-async）
 
-> 2026-06-03 完成文档体系迁移：`.claude/docs/{architecture,learned,references,optimization,rules}.md` → `openspec/specs/`，5 个 spec 域全部通过 `openspec validate --specs`。
+> 2026-06-03 完成文档体系迁移：`.claude/docs/{architecture,learned,references,optimization,rules}.md` → `openspec/specs/`，核心 5 个 spec 域完成迁移；后续 archived changes 追加 capability specs。
 > 2026-06-01 完成性能分析：发现 3 层 yield storm、Manual 模式缺陷、benchmark 不测 UART、FIONBIO 不传播。
 
 ### Milestone 概览
@@ -29,7 +30,7 @@
 | **Q5.1** | 性能优化续 | NAPI 中断合并 + 批量 API + FCR 阈值日志 + TX interleave 修复 | ✅ |
 | **Q5.2** | 测试补全 | 用户态自动化测试 + 非阻塞模式 | ✅ (O43 已落地) |
 | **Q7** | 用户态性能修复 | yield storm + FIONBIO 传播 + benchmark 修正 + tcdrain 真异步 | ✅ |
-| **P0** | OpenSpec 文档体系 | 5 spec 域迁移 + `openspec validate --specs` 全通过 | ✅ (2026-06-03) |
+| **P0** | OpenSpec 文档体系 | 核心 5 域迁移 + 后续 capability specs | ✅ (2026-06-03) |
 | **Q8** | 驱动引擎打磨 | 正确性修复（NAPI/ISR/IER）+ 热路径优化 + O46 AtomicWaker 推广 | ✅ (2026-06-11) |
 | **Q9** | 超时机制 | VTIME 读超时（复用 axtask::future::timeout，无需 embassy-time） | ✅ (2026-06-11) |
 | **Q10** | 数据路径优化 | 减少读路径拷贝 + ldisc 优化 | ✅ (2026-06-11) |
@@ -40,18 +41,25 @@
 | **LTO** | 跨 crate 内联优化 | `lto = true`，ring buffer ↑69%，e2e 不变 | ✅ (2026-06-16) |
 | **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
 | **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) |
-| **Q6** | 真板验证 | VisionFive2 | ⏳ 等待硬件 |
+| **Q16** | Roadmap / spec rebaseline | 任务重排 + stale spec 标注 + validate 已知噪音记录 | ✅ (2026-06-27) |
+| **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
+| **Q18** | 真板观测与 bring-up 工具 | O66 + O64/O65 验证脚手架 | ⏳ 待做 |
+| **Q19** | VisionFive2 UART 验证 | O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
+| **Q20** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q19 数据 | ⏳ 等待硬件数据 |
+| **Q21** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
+| **Q22** | 远期预研池 | O1/O36、O54/O55、O58/O59、O37 | 🧊 按数据触发 |
 
 ---
 
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) Q6 ⏳(硬件)
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) Q16 ✅ → Q17 ⏳ → Q18 ⏳ → Q19 ⏳(硬件) → Q20 ⏳(硬件数据) → Q21 ⏳ → Q22 🧊
 
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
 > 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
-> 2026-06-25 Q15 完成: M0~M4 全部 commit 落地 + QEMU Manual QA 验证无退化 → 下一站 Q6 真板
+> 2026-06-25 Q15 完成: M0~M4 全部 commit 落地 + QEMU Manual QA 验证无退化
+> 2026-06-27 Roadmap 重排: Q6 单一真板桶拆为 Q16~Q22，Q16 文档/规格收敛完成，下一站 Q17 内存序修复
 ```
 
 **2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
@@ -67,13 +75,61 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 
-### Q6: 真板验证 ⏳ 等待硬件
+### Q16: Roadmap / spec rebaseline ✅ (2026-06-27)
 
-<!-- Q6.1 --> - [ ] O38 VisionFive2 UART 时钟适配
-<!-- Q6.2 --> - [ ] O39 真实硬件 FIFO 深度验证
-<!-- Q6.3 --> - [ ] O3/O40 DMA 通道发现与配置
-<!-- Q6.4 --> - [ ] O41 高速波特率支持（>115200）
-<!-- Q6.5 --> - [ ] Gate Q6: 真板正常运行
+<!-- Q16.1 --> - [x] 修正 `openspec/project.md` 当前分支为 `feat/uart-16550-async`
+<!-- Q16.2 --> - [x] 生成 `.claude/analysis/optimization-milestone-replan.md`
+<!-- Q16.3 --> - [x] 将 `.claude/docs/tasks.md` 从 Q6 单桶改为 Q16~Q22 roadmap
+<!-- Q16.4 --> - [x] 更新 `openspec/specs/optimization/spec.md`，把 O63/O64/O66/O3/O40/O41/O48 等按 Gate 类型分流
+<!-- Q16.5 --> - [x] 标注或修订 stale capability specs（`async-uart-traits` / `arceos-adapter`）
+<!-- Q16.6 --> - [x] Gate Q16: roadmap 与分析文档一致；`openspec validate --specs` 的已知 parser 噪音不阻塞后续开发
+
+### Q17: SMP / 内存序正确性 ⏳ 待做
+
+<!-- Q17.1 --> - [ ] O63-P0: 修复 `ArceOsUartPort::update_ier()` 的 `ier_cache` RMW 竞争
+<!-- Q17.2 --> - [ ] O63-P1: `tx_copier_active` 改为 Release/Acquire 语义
+<!-- Q17.3 --> - [ ] O63-P1: `tx_staged_bytes` 改为 AcqRel/Acquire 语义
+<!-- Q17.4 --> - [ ] 评估 QEMU SMP 配置是否可作为真板前预检
+<!-- Q17.5 --> - [ ] Gate Q17: cargo check + QEMU benchmark 无性能退化；真板到位后复验 SMP stress
+
+### Q18: 真板观测与 bring-up 工具 ⏳ 待做
+
+<!-- Q18.1 --> - [ ] O66 `print_preserved_status()`：UART / PLIC / Clock 状态 dump
+<!-- Q18.2 --> - [ ] O64 trust-u-boot 脚手架：明确 PLIC/Clock 只观察或最小补丁，UART 可正常 re-init
+<!-- Q18.3 --> - [ ] O65 PLIC init_primary/init_percpu 防御性验证
+<!-- Q18.4 --> - [ ] O71 PAC 类型安全寄存器访问评估（只做决策，不强行引入依赖）
+<!-- Q18.5 --> - [ ] Gate Q18: QEMU 可编译运行；真板上能输出关键寄存器状态
+
+### Q19: VisionFive2 UART 验证 ⏳ 等待硬件
+
+<!-- Q19.1 --> - [ ] O38 VisionFive2 UART 时钟适配
+<!-- Q19.2 --> - [ ] O39 真实硬件 FIFO 深度验证
+<!-- Q19.3 --> - [ ] 真板复跑 Q15 Manual QA：1B latency / 64B TX / FIONBIO / tcdrain / Shell 交互
+<!-- Q19.4 --> - [ ] 更新 `SNAPSHOT.md` / `optimization/spec.md` 真板数据，明确 QEMU vs 真板可信度
+<!-- Q19.5 --> - [ ] Gate Q19: VisionFive2 串口稳定运行，真板基线数据落档
+
+### Q20: DMA / 高波特率决策 ⏳ 等待硬件数据
+
+<!-- Q20.1 --> - [ ] O3/O40/O69 DMA 决策树：JH7110 DMA 控制器是否存在、是否可达 UART FIFO、PIO vs DMA ROI
+<!-- Q20.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q19 稳定后实施
+<!-- Q20.3 --> - [ ] Gate Q20: 用真板数据决定实施 / 拒绝 DMA 与高波特率扩展
+
+### Q21: 维护性清理 ⏳ 待做
+
+<!-- Q21.1 --> - [ ] O48 memtrack 是否集成：Q19/Q20 调试需要则启用，否则记录保留/移除决策
+<!-- Q21.2 --> - [ ] O49 `ProcessMode::Manual` 移除评估
+<!-- Q21.3 --> - [ ] O50 预留接口评估（超过 90 天未用则移除或留明确注释）
+<!-- Q21.4 --> - [ ] ADR-034 发布前 LTO 检查：开发期不启用，release 前恢复
+<!-- Q21.5 --> - [ ] Gate Q21: 维护性债务有明确处理结论，不阻塞 Q17~Q20
+
+### Q22: 远期预研池 🧊 按数据触发
+
+<!-- Q22.1 --> - [ ] O1/O36 零拷贝 RX：仅当 Q19 证明 RX 拷贝是瓶颈时启动
+<!-- Q22.2 --> - [ ] O54 ISR 直接搬运：需重新评估 ISR 延迟与极简原则冲突
+<!-- Q22.3 --> - [ ] O55 半满/IDLE 唤醒：当前 NAPI 已覆盖相近收益，低优先级
+<!-- Q22.4 --> - [ ] O58 ArceOS feature gate 特化：仅当性能不达标且可接受可移植性损失时启动
+<!-- Q22.5 --> - [ ] O59 MaybeUninit ring buffer：unsafe 成本高，需单独安全分析
+<!-- Q22.6 --> - [ ] O37 kernel log TX 合并：外部 crate 约束强，收益低
 
 ### Q8: 驱动引擎打磨 ✅ (2026-06-11) → 已归档 `openspec/changes/archive/2026-06-11-q8-driver-polish/`
 
