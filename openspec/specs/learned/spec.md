@@ -896,6 +896,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L207 --> | Q15 后禁止的操作 | ❌ 一次性 merge `feat/uart-16550-async-temp` 或其他临时分支的多个 commit（Q13 M4 Sync 已证伪 73.9x 退化）；❌ 删除 temp 分支（保留作为增量融合的参考基线）；❌ 在 QEMU 上声称绝对吞吐（不仿真串口线延迟，真板验证必须等 Q6） | `architecture.md` ADR-039 替代方案章节 |
 | <!-- L208 --> | 增量融合的"依赖排序"启发式 | 按"基线能力 → 修复 → 契约"分层：M0 见证层（提供测量基线）→ M1/M2 修复（M1 fast retry 消除 tick 台阶，M2 drain 修正 flush）→ M4 规范化（IER 单 owner 整合）→ M3 契约（VFS 边界，独立于驱动内部）。M3 放最后因为它只改 trait 签名不碰驱动内部，依赖前 4 个 milestone 提供稳定的内部行为 | `architecture.md` ADR-039 |
 | <!-- L211 --> | Q15 后 milestone 重排启发式 | 不按 O 编号顺序排期，按 Gate 类型分层：文档/规格收敛 → QEMU 可验证 correctness → 真板观测脚手架 → 真板 bring-up → 数据驱动决策 → 维护性清理 → 远期实验。避免把 O63/O64/O66/O3/O40/O41/O48 等不同触发条件的项继续塞进单一 Q6 | `.claude/analysis/optimization-milestone-replan.md` |
+| <!-- L212 --> | Q17 内存序选型速查 | 不按架构分叉实现内存序；按 Rust 语言级并发契约选序。纯 telemetry 保持 `Relaxed`；跨 hart 发布/观察状态用 `Release`/`Acquire`；参与同步判断的 RMW 计数用 `AcqRel`；多字段一致性优先用锁或重新设计快照。`ier_cache` 是非原子 RMW 竞争，不能只靠 Acquire/Release 修复 | `.claude/analysis/q17-smp-memory-ordering.md` |
 
 #### Scenario: 新增 Q13 层级 API
 

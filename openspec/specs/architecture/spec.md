@@ -803,3 +803,41 @@ PLIC initialization MUST keep global one-time setup separate from per-hart setup
 - **WHEN** StarryOS switches or updates the VisionFive2 platform crate
 - **THEN** the PLIC initialization path MUST keep global one-time initialization separate from per-hart initialization
 - **AND** `init_percpu()` MUST NOT call `init_once()` or equivalent one-time PLIC construction
+
+<!-- A042 -->
+### Requirement: ADR-042: Q17 SMP 原子内存序按语义选择，不按架构分叉
+
+Shared async UART state that participates in cross-hart control flow MUST use Rust atomic orderings according to its synchronization role; StarryOS MUST NOT introduce per-architecture memory-ordering branches for Q17.
+
+**日期**: 2026-06-27
+**状态**: 已接受
+**决策**: Q17/O63 修复采用语言级内存模型：
+- 纯 telemetry / 诊断计数可保持 `Relaxed`
+- 发布状态、读取方据此决定 `flush()` / `tcdrain` Ready/Pending 时，写端用 `Release`，读端用 `Acquire`
+- 参与同步判断的 RMW 计数用 `AcqRel`，snapshot load 用 `Acquire`
+- `ier_cache` 属于非原子 RMW 竞争，必须通过锁内 RMW 或原子 RMW 修复，不能只靠更强 load/store 内存序
+
+**原因**:
+- Rust 原子内存序是跨架构的并发契约，编译器负责在 RISC-V / x86 / ARM 上生成对应指令。
+- 按架构分叉会隐藏真实同步语义，并增加未来平台遗漏修复的风险。
+- Q17 当前目标是消除 SMP 正确性风险，不是为某个 CPU 手写 fence 微优化。
+
+**影响**:
+- `tx_copier_active`、`tx_staged_bytes` 的内存序选择可在 `uart_16550` crate 内保持平台无关。
+- StarryOS `ArceOsUartPort::update_ier()` 的 IER cache 必须和 UART MMIO 写入形成单一同步边界。
+- QEMU 单 hart 通过不再作为 SMP 内存序正确性的充分证据；真板或 QEMU SMP 仍需复验。
+
+**替代方案**:
+- ❌ 针对 RISC-V 手写 fence、其他架构保留 Relaxed：语义分裂，维护成本高。
+- ❌ 全部改成 `SeqCst`：可读性差，成本更高，且不能修复非原子 RMW 覆盖问题。
+- ✅ 按字段同步语义选择最小足够内存序：当前方案。
+
+**参考**:
+- `.claude/analysis/q17-smp-memory-ordering.md`
+- `openspec/specs/optimization/spec.md` O63
+
+#### Scenario: Q17 atomic ordering review
+
+- **WHEN** Q17 changes an async UART atomic field
+- **THEN** the selected ordering MUST be justified by the field's role: telemetry, state publication, RMW progress counter, or compound snapshot
+- **AND** per-architecture ordering branches MUST NOT be introduced unless a future ADR proves a platform-specific hardware erratum requires them
