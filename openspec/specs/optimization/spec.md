@@ -2,7 +2,7 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q0~Q13 已完成，Q13.1 已完成；Q6 待做）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone（Q0~Q13）。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q15 已完成；Q16~Q22 规划中）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
 
 ## Requirements
 
@@ -102,22 +102,120 @@ Q8 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 
 - **WHEN** copier 调用 enable/disable 中断函数
 - **THEN** IER 通过 `uart_16550::Uart16550::set_ier()` 写入，CACHED_IER 与硬件 IER 一致
 
-### Requirement: Q6 真板性能优化 — 待做（VisionFive2 拿到后）
+### Requirement: Q16~Q22 后续优化 Roadmap — 已重排
 
-VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化；其中 O38（时钟适配）为最高优先级。
+Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q22，禁止继续把 O63/O64/O66/O38/O39/O3/O40/O41/O48/O49/O50 等不同触发条件的条目塞进单一 Q6。O 编号保留历史身份，Q 编号代表当前执行 milestone。
 
-| 编号 | 内容 | 优先级 | 说明 |
-|------|------|--------|------|
-| **O38** | VisionFive2 UART 时钟适配 | 🔴 高 | JH7110 时钟不同于 QEMU |
-| **O39** | 真板 FIFO 深度验证 | 🟡 中 | 可能不同于 16 字节 |
-| **O3** | DMA 支持 | 🟡 中 | 真板可能有 DMA 控制器 |
-| **O40** | DMA 通道配置 | 🟡 中 | — |
-| **O41** | 高速波特率支持 | 🟢 低 | 230400+ |
+| Milestone | 目标 | 归属条目 | Gate |
+|-----------|------|----------|------|
+| **Q16** | Roadmap / spec rebaseline | 文档任务重排、stale spec 标注、validate 已知噪音记录 | tasks / SNAPSHOT / optimization 与分析文档一致；`openspec validate --specs` 的已知 parser 噪音不阻塞后续开发 |
+| **Q17** | SMP / 内存序正确性 | **O63** | cargo check + QEMU benchmark 无退化；真板到位后复验 SMP stress |
+| **Q18** | 真板观测与 bring-up 工具 | **O66**, **O64**, **O65**, **O71** | QEMU 可编译运行；真板输出关键寄存器状态 |
+| **Q19** | VisionFive2 UART 验证 | **O38**, **O39**, Q15 Manual QA 真板复跑 | VisionFive2 串口稳定运行，真板基线数据落档 |
+| **Q20** | DMA / 高波特率决策 | **O3**, **O40**, **O69**, **O41** | 用 Q19 真板数据决定实施或拒绝 |
+| **Q21** | 维护性清理 | **O48**, **O49**, **O50**, ADR-034 release LTO | 维护性债务有明确处理结论 |
+| **Q22** | 远期预研池 | **O1/O36**, **O54/O55**, **O58/O59**, **O37** | 仅在 Q19/Q20 数据证明当前路径不足时启动 |
+
+#### Scenario: Roadmap-driven scheduling
+
+- **WHEN** 新增或重排 Q15 后优化项
+- **THEN** MUST 先判定该项属于文档收敛、QEMU correctness、真板观测、真板验证、数据驱动决策、维护清理还是远期实验
+- **AND** MUST 放入对应 Q16~Q22 milestone，禁止只按 O 编号顺序排期
+
+#### Scenario: QEMU-only work before hardware
+
+- **WHEN** VisionFive2 硬件尚未到位
+- **THEN** MUST 优先推进 Q16 和 Q17 中可在 QEMU 上验证的工作
+- **AND** MUST NOT 在 QEMU 上声称 DMA、高波特率或绝对吞吐量结论
 
 #### Scenario: 真板启动失败或串口无输出
 
 - **WHEN** VisionFive2 上 UART 无输出 / 数据乱码
 - **THEN** MUST 优先排查 O38（时钟配置）而非波特率或软件路径
+
+#### O63 风险评估：QEMU 掩盖的内存序问题（2026-06-26 bg_32a087c3 逐行代码验证）
+
+QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` 内存序足够。VisionFive2 是 4 核 RISC-V，tasks 和 ISR 可能跨 hart 并发。Q15 手动选择的 `Relaxed` 用法在多核下会导致 flush 看到陈旧值、staged_bytes 计数漂移、IER 位丢失。
+
+**2026-06-26 代码验证关键发现**：
+- `kspin` 当前编译 **未启用 `smp` feature**（features = `["default"]`），`SpinNoIrq` 是空操作
+- `critical_section` 仅 `disable_irqs()`（本地中断），不提供 SMP 互斥
+- 3 处 cross-hart Relaxed 经逐行验证确认为 real bug
+
+**影响位置**（Q15 现状，2026-06-26 代码审查确认）：
+
+| 位置 | 当前 | 风险等级 | 升级方案 |
+|---|---|---|---|
+| `uart_init.rs:106, 109` `ier_cache` 读写 | Relaxed load/store **在 SpinNoIrq 锁外面** | 🔴 **Q17 P0 — RMW 竞争**：ISR (hart 0) 和 copier (hart N) 并发调用 `update_ier()` 时，load-modify-store 可互相覆盖，导致中断使能位丢失，**RX 或 TX 彻底停滞** | 搬进 `SpinNoIrq::lock()` 内做 RMW，或改用 `AtomicU8::fetch_or`/`fetch_and` 配合 `AcqRel` |
+| `driver.rs:121-123, 274-275` `tx_copier_active` | Relaxed store（TX copier）→ Relaxed load（`tx_completion()` 被 user task 调用） | 🟡 **P1 — 状态陈旧**：flush/tcdrain 可能看到 copier 仍 active 的陈旧值，hang；或看到 inactive 的陈旧值，提前返回 | store → `Release`；load → `Acquire` |
+| `driver.rs:282-283, 299-300, 338-339` `tx_staged_bytes` fetch_add/sub | Relaxed RMW → Relaxed load（`tx_completion()`） | 🟡 **P1 — 计数漂移**：`is_drained()` 可能看到陈旧 count，误判 drain 完成 | fetch_add/sub → `AcqRel`；load → `Acquire` |
+| `driver.rs:272, 305, 311` telemetry 计数 | Relaxed（单写者，纯诊断） | ✅ 安全（可保留 Relaxed） | 无需修改 |
+
+**升级原则**：
+- 写端 store：Relaxed → Release（保证之前写入对 Acquire 可见）
+- 读端 load：Relaxed → Acquire（保证后续读看到 Release 之前的内容）
+- RMW 操作（fetch_add/sub）：Relaxed → AcqRel
+- 单 hart 内访问的纯诊断字段：可保留 Relaxed
+
+**RISC-V 性能影响**：`fence r,rw` / `fence rw,w` 几条指令，热点路径增加几 ns。Q15 的 134 µs 1B e2e 基线不会被显著影响（噪声范围内）。
+
+**关联模块**（已正确使用 AcqRel，无需修改）：
+- `embassy_sync::AtomicWaker`（RX_WAKER / TX_WAKER / DRAIN_WAKER）
+- `embassy_hal_internal::atomic_ring_buffer`（RingBufRx / RingBufTx SPSC 同步）
+
+#### Scenario: 真板多核下出现数据丢失或 hang
+
+- **WHEN** VisionFive2 上跑 stress test（多核并发读写 UART / flush）
+- **THEN** MUST 优先排查 O63（内存序），检查 hot path 字段是否漏升级 Relaxed
+- **AND** 症状：staged_bytes 漂移、flush 过早返回、tcdrain 不返回、偶发 panic
+
+#### Scenario: 评估 O63 实施范围
+
+- **WHEN** 准备 O63 实施
+- **THEN** MUST 全局 grep `Ordering::Relaxed`，逐个评估：是否跨 hart 访问？写端还是读端？是否 RMW？
+- **AND** 优先处理 hot path（`tx_copier_loop` / `rx_copier_loop` / `flush`）字段
+- **AND** 同步在 `learned/spec.md` 追加"L{编号} 内存序选型"条目，记录具体选择依据
+
+#### Scenario: O63 实施完成后验证
+
+- **WHEN** O63 全部升级完成
+- **THEN** MUST 跑 QEMU 回归 benchmark 确认无性能退化（< 5% noise 范围）
+- **AND** MUST 在真板上跑 SMP stress test 验证无数据丢失
+- **AND** 失败时定位到具体字段的内存序选择，逐个调试
+
+### Requirement: ArceOS 借鉴清单（从明扬 arceos 异步化工作获取经验）
+
+从 arceos（`/home/daivy/projects/serial/others/arceos/`，明扬异步化工作）已识别可借鉴的设计模式、踩坑教训、抽象机制。本节 MUST 集中登记真正需要新增工作的项；已等价实现的项标注 "✅ 已采纳"。
+
+> 完整分析见 `.claude/analysis/arceos-borrowable-experience.md`。本节是该分析的优化待办部分。
+>
+> **背景**：StarryOS 脱胎于 arceos，明扬在 arceos 上做 DWMAC/网络/启动等模块的异步化推进，我们从其工作获取经验后应用到 StarryOS 异步串口后续阶段开发。
+
+| ID | 来源 | 描述 | 优先级 | 触发条件 |
+|----|------|------|--------|---------|
+| **O64** | arceos ADR-004（PIT-007 / TIP-004） | **trust u-boot 模式（仅 PLIC + Clock）**：VisionFive2 启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树，OS 不应"重新初始化一切"。**不含 UART**：arceos starfive 的 UART 走 SBI console，无 MMIO init 先例；NS16550 寄存器（FCR/IER/波特率）重复设置无害（ADR-040 Revised）。arceos 反复失败 7+ 次后 commit `4334e41` "revolution" 锁定此决策。**Q18 真板观测必备**。 | 🔴 P0 | VisionFive2 硬件到位 |
+| **O65** | arceos ADR-002（PIT-003） | **PLIC init_primary / init_percpu 防御性分离**：当前 StarryOS 使用的 axplat crates（0.3.1-pre.6 / 0.1.0-pre.2）已采用 `static PLIC: SpinNoIrq<Plic>`（编译时初始化）+ 幂等 `init_by_context()`，**当前代码安全**。旧 arceos 的 `LazyInit<Plic>` + `init_percpu()` 内调 `init_plic()` 反模式**不存在于当前代码中**，但作为防御性设计模式保留（ADR-041 Revised）。降至 P1。 | 🟡 P1（防御性） | Q18 平台切换时验证 |
+| **O66** | arceos TIP-004 | **`print_preserved_status()` 验证函数**：UART / PLIC / Clock init 前后 dump 当前寄存器状态，与 U-Boot/Linux 预期对比。arceos `DwmacHalImpl::configure_platform` 实现此模式。**Q18 真板观测必备**（O64 的前置依赖）。 | 🔴 P0 | VisionFive2 硬件到位 |
+| **O67** | arceos axasync::waker::wake_at | **timer-based waker 抽象**：通过 BinaryHeap<TimerEventEntry> + set_oneshot_timer 实现定时唤醒。**✅ 已等价采纳**：`axtask::future::timeout(fut, dur)`（Q9）通过 `axtask::ax_wait_timer` + waker 实现相同语义。不引入新依赖。 | ✅ 已采纳 | — |
+| **O68** | arceos axasync::executor | **Init Flag + Waker Future 模式**：异步 future 不变量 — Pending 时必须 register waker。**✅ 已蕴含**：我们 ISR 极简（read_isr + 禁中断 + wake + 返回）+ AtomicWaker 直接 wake（O17 教训）已蕴含此不变量，无需新条目。 | ✅ 已蕴含 | — |
+| **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q20 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q20 决策 | Q19 真板数据 + O3 评估 |
+| **O70** | arceos TIP-001 / 已采纳 | **CodeGraph 优先探索**：用 `codegraph_explore` 而非 grep/Read 探索代码。**✅ 已采纳**：项目 house rule（CLAUDE.md §五.5）。 | ✅ 已采纳 | — |
+| **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q18/Q19 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q18/Q19 真板驱动开发 |
+| **O72** | arceos TIP-007 | **调试硬件中断标准日志序列**：handler 入口 log → claim → handler → EOI；EOI 必须在 wake 之前。**✅ 部分采纳**：已记录于 SNAPSHOT §关键发现，Q8 ISR 去锁化已实施。 | ✅ 部分采纳 | — |
+| **O73** | arceos OPT-005 | **benchmark 框架与基线数据**：arceos 无统一 benchmark 框架。**✅ 我们领先**：已有 `tests/benchmark.c` + `docs/benchmark-report-async.md` + 自动化脚本 + 完整 QEMU 基线（1B 134µs / 64B 170 KB/s / TX 456 MB/s / RX 1.1 GB/s）。 | ✅ 已领先 | — |
+
+#### Scenario: Q17-Q19 真板启动顺序（O63 + O64 + O66 协同，Revised 2026-06-27）
+
+- **WHEN** VisionFive2 硬件到位启动真板验证
+- **THEN** MUST 按顺序实施：(1) Q17 / O63 内存序修复（P0 — 先修 `ier_cache` RMW 竞争，再修 `tx_copier_active`/`tx_staged_bytes`）→ (2) Q18 / O66 `print_preserved_status()` 验证 U-Boot 已配置 PLIC/Clock 状态 → (3) Q18 / O64 PLIC+Clock trust-u-boot 模式（**不限制 UART 初始化**）→ (4) Q18 / O65 验证 axplat crate PLIC 初始化路径 → (5) Q19 跑通 Q15 Manual QA 全部 12 项
+- **AND** MUST 失败时优先排查 O63（内存序），其症状（staged_bytes 漂移 / flush hang / RX 停滞）最难定位
+- **AND** UART 可正常重新初始化 FCR/IER/波特率，无需 trust-u-boot
+
+#### Scenario: Q20 评估 O69（DMA 决策树）
+
+- **WHEN** Q19 真板验证完成后需要重新评估 DMA
+- **THEN** MUST 按 O3/O40 决策树走：(1) JH7110 是否有 DMA 控制器 → (2) DMA 是否能访问 UART FIFO → (3) PIO+中断 vs DMA 开销对比 → (4) 是否需要更高波特率（O41）
+- **AND** 如决定引入 DMA，**借鉴** arceos `axdma` 的 `DMAInfo` 二元组模式与 `DwmacHal::cache_flush_range` 处理
 
 ### Requirement: 远期优化（优先级低，不确定是否做）
 
@@ -136,7 +234,7 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 #### Scenario: 评估 O1/O36 零拷贝 RX
 
-- **WHEN** StarryOS 演进到需要减少 RX 路径内存拷贝（如 Q6 真板高速场景）
+- **WHEN** StarryOS 演进到需要减少 RX 路径内存拷贝（如 Q19/Q20 真板高速场景）
 - **THEN** MUST 评估 `mmap ring buffer 到用户空间` 的实现复杂度与安全边界
 - **AND** 收益 MUST 量化（当前 RX 路径 5 次拷贝的减少数）
 - **AND** 禁止在未评估前直接实施
@@ -147,13 +245,13 @@ VisionFive2 真板拿到后 MUST 完成 O38 / O39 / O3 / O40 / O41 五项优化�
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
-| **O48** | memtrack 模块集成 | 🟢 低 | `kernel/src/pseudofs/dev/memtrack.rs` — 内存追踪功能已编写但从未集成（`run_memory_analysis` 无调用者）。Q6 真板调试时可能需要，可评估是否启用 |
+| **O48** | memtrack 模块集成 | 🟢 低 | `kernel/src/pseudofs/dev/memtrack.rs` — 内存追踪功能已编写但从未集成（`run_memory_analysis` 无调用者）。Q21 维护性清理时评估；若 Q19/Q20 真板调试需要可提前启用 |
 | **O49** | ProcessMode::Manual 移除 | 🟢 低 | `ldisc.rs:37` — Q7 后仅 External/None 模式被构造，Manual 变体可通过重构 match 分支移除（需更新 ldisc.rs:265 匹配） |
 | **O50** | 预留接口评估 | 🟢 低 | `create_pty_master`（tty/mod.rs）、`DeviceMmap::ReadOnly`（device.rs）、`clear_elf_cache`/`cleanup_task_tables`（memtrack 引用链）— 当前用 `#[allow(dead_code)]` 标注，未来如有需求可恢复或彻底移除 |
 
 #### Scenario: 评估 O48 memtrack 模块
 
-- **WHEN** Q6 真板到位后需要内存调试工具
+- **WHEN** Q19/Q20 真板调试需要内存调试工具
 - **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
 
 #### Scenario: 决定是否移除死代码
@@ -172,6 +270,12 @@ Q12 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit
 | **O53** | TC 硬件寄存器 tcdrain | ✅ | 删除 TCDRAIN_ACTIVE 软件状态 |
 
 **总收益**：software overhead ↓31%，1B avg latency 118→123.9 µs
+
+#### Scenario: 维护 Q12 Embassy 路径 A 优化成果
+
+- **WHEN** 考虑对 Q12 阶段已落地的 O51/O52/O53 优化做修改或回退
+- **THEN** MUST 在新 OpenSpec 变更中说明理由并附 commit 证明
+- **AND** MUST 保持 O51 的 lock-free SPSC 收益、O52 的 trait 标准化、O53 的 TC tcdrain 行为
 
 ### Requirement: 远期优化（路径 B — 未来评估）
 
@@ -279,7 +383,7 @@ block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
 **潜在影响**：
 
 - 用户态 read() 卡死后只能 SIGKILL，无法 SIGALRM 解除（无 setitimer 集成）
-- DMA 失败时硬件可能永不唤醒（Q6 真板 O3/O40 风险）
+- DMA 失败时硬件可能永不唤醒（Q20 真板 O3/O40 风险）
 - 用户态 poll() + SO_RCVTIMEO 需要内核支持 time 抽象
 
 **优化方案**：
@@ -314,10 +418,10 @@ block_on(async {
 
 **前置依赖**：
 
-- Q6 真板验证完成（确认 DMA 失败路径是否真需要 timeout）
+- Q20 DMA 决策完成（确认 DMA 失败路径是否真需要 timeout）
 - axhal time driver 评估
 
-**优先级**：🟡 中，Q6 触发条件性实现
+**优先级**：🟡 中，Q20 触发条件性实现
 
 </details>
 
@@ -391,7 +495,7 @@ Performance benchmarks and comparisons MUST use the baseline data below. All met
 **QEMU 时序欺骗边界**（`learned` L141）：
 
 - QEMU 16550 不仿真串口线延迟，所有 tcdrain/LSR 轮询的吞吐量测试在 QEMU 上**不可信**
-- 真板预期：VisionFive2 @ 115200 bps → ~11.5 KB/s
+- **📐 物理定律**（100% 准确）：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），实测值受调度/IRQ 延迟影响可能低于此值
 - **可靠指标（QEMU 也可测）**：内核态 ring buffer 速度、`write()` 延迟、CPU cycles/byte
 
 #### Scenario: 声明性能数字
@@ -401,7 +505,7 @@ Performance benchmarks and comparisons MUST use the baseline data below. All met
 
 ### Requirement: Q13 Trait 抽象开销优化 — 短期已规划 / 中长期待探索
 
-Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化（124µs → 140.1µs）。短期优化（inline + batch）已规划为 Q13.1，中长期优化点记录如下。
+Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化（124µs → 140.1µs）。短期优化（inline + batch）MUST 实施为 Q13.1；中长期优化点 SHALL 记录在下方表格。
 
 **Q13.1 短期优化（已完成）**：
 
@@ -472,7 +576,7 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 - **改动**：需要 VisionFive2 DMA 控制器驱动
 - **收益**：接近零软件开销
 - **风险**：硬件依赖，实现复杂
-- **建议**：等待 VisionFive2 真板验证（Q6）
+- **建议**：等待 VisionFive2 真板验证与 Q20 DMA 决策
 
 #### Scenario: 评估中长期优化
 
@@ -486,3 +590,69 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 - **WHEN** 考虑实施 O58（feature gate 条件编译）
 - **THEN** MUST 评估：(1) 可移植性损失是否可接受，(2) 维护负担是否可控，(3) 性能收益是否显著
 - **THEN** MUST 先创建 OpenSpec 变更，获得用户 approval 后才实施
+
+### Requirement: Q15 M0~M4 增量重融合 + Manual QA — 已完成（2026-06-25）
+
+Q15 阶段（2026-06-21 开启，2026-06-25 完成）从 pre-M4 基线出发，将原 `feat/uart-16550-async-temp` 分支的 M4+ 正确性修复按最小可验证单元重新 apply，每步 QEMU benchmark 验证无退化。Q15 完成后 MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。
+
+**O62 — Q15 增量重融合 5 个 milestone**：
+
+| 编号 | 内容 | 关键收益 | 状态 |
+|------|------|----------|------|
+| **O62-M0** | 见证层（RawMutex / per-port ISR / FIFO 边界矩阵 + telemetry） | 隔离验证基线，量化每次融合的退化 | ✅ (2026-06-23) |
+| **O62-M1** | 有界 TX fast retry（`TX_FAST_RETRY_LIMIT=32`） | 消除 16B FIFO refill 的 10ms tick 台阶 | ✅ (2026-06-23) |
+| **O62-M2** | TX completion 三阶段 drain（flush / tcdrain）| ring/copier/staged 检查，TEMT corner-case 修复 | ✅ (2026-06-23) |
+| **O62-M4** | IER 单 owner（`UartPort::update_ier()` 统一管理）| 删除 CACHED_IER / write_ier / enable_*，uart_16550 真正独立 | ✅ (2026-06-23) |
+| **O62-M3** | TtyWrite 短写契约（`write(&[u8]) -> usize`）| VFS/sys_write 层看到真实接受字节数，消除 silent data loss | ✅ (2026-06-23) |
+
+**关键约束**（增量融合过程中已严格执行）：
+
+- 不修改任何外部 crate（`axtask` / `axpoll` / `embassy-sync`）
+- 不提高调度 tick 频率
+- ISR 极简原则不变
+- 每步必须 `cargo check` 通过 + QEMU benchmark 验证无退化
+
+**Manual QA 验证结果（2026-06-25）**：
+
+| 指标 | Q13.1 基线 | Q15 后（无 LTO per ADR-034）| 趋势 | 备注 |
+|------|----------|----------------------------|------|------|
+| 内核态 Ring Buffer TX | 385 MB/s（LTO off）/ 652 MB/s（LTO on）| **456 MB/s** | ↑（较 LTO off）| Q15-M0 telemetry 开销抵消 + lock-free 改进 |
+| 内核态 Ring Buffer RX | 898 MB/s（LTO on）| **1,148 MB/s** | **↑27.9%** | Q15-M0/M4 lock-free 改进显著 |
+| 用户态 1B e2e 延迟（avg）| 129.5 µs | **134 µs** | +3.5% | 调度瓶颈未变，noise 范围内 |
+| 用户态 1B e2e 延迟（P50）| 125.5 µs | **118.5 µs** | -5.6% | 改善 |
+| 用户态 64B TX 吞吐 | 184 KB/s（M4 单测）| **170 KB/s** | -7.6% | QEMU 噪声范围内，无 TX backpressure 退化 |
+| 非阻塞三入口 | ✅ | **✅** | 不变 | FIONBIO 行为正确 |
+
+**结论**：
+
+- ✅ **无 64B write+tcdrain 退化**（TX backpressure 风险解除）
+- ✅ **用户态延迟与 Q13.1 基线持平**（e2e 瓶颈在调度，不在驱动层）
+- ✅ **内核态 Ring Buffer RX 显著提升**（Q15-M0/M4 lock-free 改进）
+- ✅ **IER 单 owner 达成**（uart_16550 crate 真正独立可复用）
+- ✅ **TtyWrite 短写契约落地**（VFS 契约正确，消除 silent data loss）
+
+**Q16~Q20 触发条件**（Q15 后 roadmap）：
+
+- Q16 文档/规格收敛 MUST 先完成，确保 tasks / SNAPSHOT / optimization / capability specs 的 roadmap 一致
+- Q17 / O63 MUST 在真板前优先修复（QEMU 单 hart 掩盖 SMP 内存序问题）
+- VisionFive2 真板到位 → Q18 观测脚手架 → Q19 O38（时钟适配）→ O39（真板 FIFO 深度验证）→ Q15 Manual QA 真板复跑
+- Q20 O3/O40/O69（DMA 探索）与 O41（高速波特率）MUST 依赖 Q19 真板数据，禁止在 QEMU 上直接下结论
+- **📐 物理定律**：真板 NS16550 硬件时间 86.8 µs/byte @ 115200 bps（10 bits/byte × 1/115200 s）与 QEMU 0 µs 硬件时间形成本质差异
+
+#### Scenario: Q15 后再次合并 async-uart 优化
+
+- **WHEN** 开发者从 `feat/uart-16550-async-temp` 或其他临时分支再次提取优化 commit
+- **THEN** MUST 遵循 Q15 增量融合策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
+- **AND** 禁止一次性大批量 apply（避免 Q13 M4 Sync 退化的 73.9x 性能灾难复现）
+
+#### Scenario: 评估 Q15 后新优化方向
+
+- **WHEN** 开发者发现新的 async-uart 优化方向（如 IRQ affinity、零拷贝 RX、DMA）
+- **THEN** MUST 先创建 OpenSpec 变更提案，量化预期收益与风险
+- **AND** MUST 在 Q19 真板验证完成后启动硬件依赖方向（QEMU 仿真限制决定绝对吞吐无法在 QEMU 上验证）
+
+#### Scenario: 回退 Q15 任一 milestone
+
+- **WHEN** 开发者考虑回退 O62-M0/M1/M2/M3/M4 任一项
+- **THEN** MUST 附带 commit 证明：(1) 当前存在正确性 bug 或可量化的性能退化，(2) 回退后其他 milestone 不受影响
+- **AND** 禁止以"未来可重做"为由回退（Q15 已验证状态机，回归成本高于保留）

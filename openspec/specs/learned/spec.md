@@ -18,7 +18,6 @@
 |------|------|------|
 | `axtask::future::block_on` | 异步任务阻塞执行 | — |
 | `axtask::future::poll_io` | WouldBlock → register → await 标准模式 | — |
-| `axtask::future::register_irq_waker` | ⚠️ STALE [2026-06-16] — Q0~Q7 旧机制，已被 AtomicWaker 替代（见历史决策） |
 | `embassy_sync::AtomicWaker::wake` | ISR 中安全唤醒 Waker，无锁中断安全 | 当前方案 |
 
 **uart_16550 crate（本项目本地依赖）**
@@ -58,7 +57,7 @@
 | <!-- L172 --> | `uart_16550/src/async_/ring_buffer.rs` | Ring buffer with OsWakerSet: RingBufRx<W>, RingBufTx<W> |
 | <!-- L173 --> | `uart_16550/src/async_/driver.rs` | Copier driver with NAPI: AsyncUartDriver<R,W,U> + UartPort trait |
 | <!-- L174 --> | `uart_16550/src/async_/device_ops.rs` | Device ops with embedded_io_async: AsyncUartReader/Writer |
-| <!-- L175 --> | `kernel/src/drivers/os_arceos.rs` | ArceOS adapter layer: 5 trait implementations |
+| <!-- L175 --> | `kernel/src/drivers/os_arceos.rs` | ArceOS adapter layer: 2-trait minimum interface (per ADR-036) |
 
 **内核模块关键路径**
 
@@ -68,7 +67,6 @@
 | `kernel/src/file/event.rs` | 轻量异步通知模式参考 |
 | `kernel/src/pseudofs/device.rs:28-55` | DeviceOps trait 核心方法（read_at/write_at/ioctl/as_pollable/flags） |
 | `kernel/src/pseudofs/dev/tty/` | TTY/ldisc/Termios 实现 |
-| `kernel/src/drivers/isr.rs` | ⚠️ STALE [2026-06-16] — Q13 已删除，ISR 迁移至 `uart_16550/src/async_/isr.rs` |
 | `axpoll/src/lib.rs` | Pollable trait 定义（poll + register，IoEvents 标志） |
 | `axmm/src/lib.rs:111-131` | `axmm::iomap()` 设备 MMIO 映射 API |
 | `axruntime-0.3.0-preview.2/src/lang_items.rs` | panic handler 实现 → ax_println! → polling TX |
@@ -184,10 +182,10 @@ UART 集成前 MUST 验证全部关键寄存器状态（IER / IIR / LSR / MCR）
 
 **踩坑 6：QEMU 16550 串口模拟的时序欺骗**（L141，2026-06-01）
 
-- **现象**：QEMU 上 TX 吞吐量测出 150~250 MB/s，远超 115200 bps 理论值 11.5 KB/s
+- **现象**：QEMU 上 TX 吞吐量测出 150~250 MB/s，远超 115200 bps 物理定律上限 11.5 KB/s
 - **根因**：QEMU 的 NS16550 模拟不仿真真实串口线延迟（86.8 µs/byte），UART FIFO 数据处理为瞬时
 - **影响**：所有基于 `tcdrain` / 轮询 LSR 的吞吐量测试在 QEMU 上均不可信
-- **真板预期**：VisionFive2 @ 115200 bps → ~11.5 KB/s（受硬件波特率限制）
+- **📐 物理定律**（100% 准确）：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），实测值受调度/IRQ 延迟影响可能低于此值
 - **可靠指标（QEMU 也可测）**：内核态 ring buffer 速度、write() 延迟、CPU cycles/byte
 
 #### Scenario: 在已有 UART 实例上启用新驱动
@@ -423,7 +421,7 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 - **Console QEMU**：纯 VFS+MMIO 速度（~5 µs/64B），因为 QEMU LSR 永远 THR_EMPTY
 - **Async QEMU**：VFS + 任务切换（~300 µs/64B），因为 tcdrain 需要多次 poll → yield
 - **公平对比**：去除 tcdrain，只比 `write()` 延迟（Async 快 2.2~7.5x）
-- **真板**：两者受 115200 bps 限制，收敛到 ~11.5 KB/s；QEMU 的差距是人工产物
+- **📐 物理定律**：真板两者受 115200 bps 限制，线速上限 11.52 KB/s；QEMU 的差距是仿真人工产物（Q6 真板实测验证 ⏳）
 
 **踩坑 5：当前 benchmark 不测量实际 UART 吞吐量**（L136）
 
@@ -681,6 +679,43 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 <!-- L203 -->
 - **数据量意识**：QEMU 115200 bps 下每 KB 数据 ≈ 87ms 传输时间。FIFO 边界矩阵 9 尺寸 × 100 迭代 ≈ 24KB（~2s）。避免尺寸重复导致数据量翻倍（曾因 64/256/1024/4096 重复导致 ~572KB → ~50s）
 
+#### ArceOS 借鉴参考（DMA / HAL / async 模式）
+
+<!-- L204 -->
+| `axdma::alloc_coherent` | `others/arceos/modules/axdma/src/lib.rs:46` | DMA 一致性内存分配（返回 `DMAInfo { cpu_addr, bus_addr }` 二元组）。**仅模式参考**：NS16550 16 字节 FIFO 不需要 DMA，引入对齐约束 + cache flush 复杂度反而过度设计。未来做高速外设（NIC/块设备）可强借鉴。 | 2026-06-26 |
+<!-- L205 -->
+| `axdriver_net::dwmac::DwmacHal` | `others/arceos/axdriver_crates/axdriver_net/src/dwmac/mod.rs:32-54` | DWMAC HAL trait（7 方法：`dma_alloc` / `dma_dealloc` / `mmio_phys_to_virt` / `mmio_virt_to_phys` / `wait_until` / `configure_platform` / `cache_flush_range`）。我们 `UartPort`（4 方法）+ `OsRuntime`/`OsWakerSet`（2 trait）= 6 接口，比 DwmacHal 7 方法**更精简且正交性更好**（ADR-036 已印证）。 | 2026-06-26 |
+<!-- L206 -->
+| `axasync::waker::wake_at` | `others/arceos/modules/axasync/src/waker.rs:102` | timer-based waker（`BinaryHeap<TimerEventEntry>` + `set_oneshot_timer`）。**等价实现**：我们 `axtask::future::timeout(fut, dur)`（Q9）通过 `axtask::ax_wait_timer` + waker 实现相同语义，不引入 BinaryHeap/oneshot_timer。 | 2026-06-26 |
+<!-- L207 -->
+| `axnet::smoltcp_impl::RecvFuture::poll` | `others/arceos/modules/axnet/src/smoltcp_impl/future.rs:31-64` | "Init Flag + Waker" Future 模式：首次 poll 做一次性初始化（连接状态检查），主循环注册 waker + Pending。**PIT-006 教训**：AcceptFuture 遗漏 `register_accept_waker` → 永久 Pending。我们 ISR 极简（read_isr + 禁中断 + wake + 返回）+ AtomicWaker 直接 wake（O17 教训）已蕴含此不变量。 | 2026-06-26 |
+
+#### 内存序踩坑（2026-06-26 O63 代码验证）
+
+<!-- L208 -->
+### [ier_cache RMW 竞争 — Q6 SMP P0 阻塞]
+
+- **症状**：真板 4 核下 ISR (hart 0) 和 copier (hart N) 并发调用 `update_ier()` 时，IER 中断使能位可能被对端覆盖丢失，导致 RX 或 TX 彻底停滞
+- **根因**：`uart_init.rs:105-111` 的 `ier_cache` load-modify-store 在 `SpinNoIrq::lock()` **外面**执行。两个 hart 同时 load → modify → store 时后写者覆盖先写者
+- **解决**：把 `ier_cache` RMW 搬进 `SpinNoIrq::lock()` 内，或改用 `AtomicU8::fetch_or`/`fetch_and` 配合 `AcqRel` 排序
+- **预防**：跨 hart 访问的 Atomic 变量做 RMW 时，如用 load+store 两步，必须将两步放在同一个锁临界区内；或直接用 `fetch_*` 原子操作
+
+<!-- L209 -->
+### [tx_copier_active / tx_staged_bytes 跨 hart 读写排序 — Q6 SMP P1]
+
+- **症状**：真板多核下 flush/tcdrain （user task on hart N）可能看到 TX copier (hart M) 的陈旧 active/staged 值，导致 tcdrain 过早返回或 hang
+- **根因**：`driver.rs` 中 `tx_copier_active` / `tx_staged_bytes` 的 store/fetch_add 用 `Ordering::Relaxed`，`tx_completion()` 的 load 也用 `Relaxed`。跨 hart 无 happens-before 保证
+- **解决**：写端 → `Ordering::Release`；读端 → `Ordering::Acquire`；`fetch_add/sub` → `Ordering::AcqRel`
+- **预防**：SMP 场景下，跨 hart 共享的 flag/counter 必须建立 happens-before 边。rule of thumb：store 用 Release，load 用 Acquire
+
+<!-- L210 -->
+### [QEMU 单核掩盖 SMP 内存序问题]
+
+- **现象**：Q15 全部 Relaxed 用法在 QEMU (max-cpu-num=1) 下完全正常，`cargo check` + benchmark 0 问题
+- **根因**：QEMU 单 hart 下所有访问串行化，无并发窗口；RISC-V RVWMO 在单 hart 上 Relaxed ≈ SeqCst
+- **影响**：`kspin` 当前未启用 `smp` feature（`SpinNoIrq` 是空操作），`critical_section` 仅本地关中断。这些都只在多核下暴露
+- **预防**：开发阶段在 QEMU 上跑 `max-cpu-num = 4` + SMP feature 可以提前暴露部分问题（但非全部——QEMU 时序与真板不同）
+
 #### Scenario: 查询 Q13 提取的 API 路径
 
 - **WHEN** 开发者需要定位异步 UART 模块中某个具体类型或 trait
@@ -688,7 +723,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 ### Requirement: 2026-06-11 优化审计新发现
 
-本次审计（openspec-explorer，4 个并行 agent）揭示的未记录优化机会与正确性问题；各项 MUST 评估风险后立项落地，禁止"以后再说"。
+审计发现的未记录优化机会与正确性问题 MUST 评估风险后立项落地。本次审计由 openspec-explorer 的 4 个并行 agent 执行，禁止"以后再说"。
 
 #### Scenario: 踩坑 5~7 任意一个未在 Q8~Q11 解决
 
@@ -856,8 +891,22 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L201 --> | TEMT corner-case 丢唤醒窗口 | Q15-M2: 真板 NS16550 上 THRE 中断触发时 TEMT 可能为 0... | Q15-M2 driver.rs tx_copier_loop TEMT poll |
 | <!-- L202 --> | M3 TtyWrite 短写契约 | Q15-M3 ✅ (2026-06-23): `TtyWrite::write(&[u8]) -> usize`，穿透 uart_16550（tty.rs + device_ops.rs）和 StarryOS（mod.rs + pty.rs + ldisc.rs）共 5 文件。QEMU benchmark 验证无退化（1B 0.134ms, 64B 210KB/s, FIONBIO PASS）。ADR-038 记录完整设计决策。 | Q15-M3 change |
 | <!-- L204 --> | M3 短写影响面速查 | `../uart_16550/src/tty.rs`, `../uart_16550/src/async_/device_ops.rs`, `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`, `kernel/src/file/fs.rs`, `kernel/src/syscall/fs/io.rs` | `TtyWrite::write -> usize` 会让 `Tty::write_at` 把实际接受字节数穿透到 `sys_write`；`File::write` 对 `Ok(n)` 不重试，benchmark 必须循环处理短写。详见 `.claude/analysis/q15-m3-tty-short-write-contract.md` |
+| <!-- L205 --> | Q15 增量融合策略（核心元经验）| Q15 (2026-06-25): M13 M4 Sync 一次性 apply 全部 M4+ 代码 → 64B write+tcdrain 退化 73.9x (406µs→29.99ms)；Q15 改为按依赖关系排序的 5 个原子 milestone（M0→M1→M2→M4→M3）增量融合 + 每步 cargo check + QEMU benchmark Gate → 5 天完成 + 无退化。**铁律**：禁止一次性 apply 多个 async-uart 优化 commit，必须按依赖排序 + 每步 Gate | `architecture.md` ADR-039 + `optimization.md` Q15 章节 |
+| <!-- L206 --> | Q15 Manual QA 性能基线（2026-06-25）| QEMU 不带 LTO（per ADR-034）：用户态 1B e2e 134µs avg / P50 118.5µs / 64B TX 170KB/s / FIONBIO 全 PASS；内核态 Ring Buffer TX 456,205 KB/s / RX 1,147,959 KB/s（RX 较 Q13+LTO ↑27.9%）。**与 Q13.1 基线对比**：1B 延迟 +3.5% 在 noise 范围内；64B 吞吐 -7.6% 无 TX backpressure 退化（关键 Gate 通过） | `docs/benchmark-report-async.md` §0 |
+| <!-- L207 --> | Q15 后禁止的操作 | ❌ 一次性 merge `feat/uart-16550-async-temp` 或其他临时分支的多个 commit（Q13 M4 Sync 已证伪 73.9x 退化）；❌ 删除 temp 分支（保留作为增量融合的参考基线）；❌ 在 QEMU 上声称绝对吞吐（不仿真串口线延迟，真板验证必须等 Q6） | `architecture.md` ADR-039 替代方案章节 |
+| <!-- L208 --> | 增量融合的"依赖排序"启发式 | 按"基线能力 → 修复 → 契约"分层：M0 见证层（提供测量基线）→ M1/M2 修复（M1 fast retry 消除 tick 台阶，M2 drain 修正 flush）→ M4 规范化（IER 单 owner 整合）→ M3 契约（VFS 边界，独立于驱动内部）。M3 放最后因为它只改 trait 签名不碰驱动内部，依赖前 4 个 milestone 提供稳定的内部行为 | `architecture.md` ADR-039 |
+| <!-- L211 --> | Q15 后 milestone 重排启发式 | 不按 O 编号顺序排期，按 Gate 类型分层：文档/规格收敛 → QEMU 可验证 correctness → 真板观测脚手架 → 真板 bring-up → 数据驱动决策 → 维护性清理 → 远期实验。避免把 O63/O64/O66/O3/O40/O41/O48 等不同触发条件的项继续塞进单一 Q6 | `.claude/analysis/optimization-milestone-replan.md` |
+| <!-- L212 --> | Q17 内存序选型速查 | 不按架构分叉实现内存序；按 Rust 语言级并发契约选序。纯 telemetry 保持 `Relaxed`；跨 hart 发布/观察状态用 `Release`/`Acquire`；参与同步判断的 RMW 计数用 `AcqRel`；多字段一致性优先用锁或重新设计快照。`ier_cache` 是非原子 RMW 竞争，不能只靠 Acquire/Release 修复 | `.claude/analysis/q17-smp-memory-ordering.md` |
 
 #### Scenario: 新增 Q13 层级 API
 
 - **WHEN** 开发者在 uart_16550 async 栈中添加新类型或 trait
 - **THEN** MUST 同时更新本速查表（上方 L176-L200 区域），标注文件路径与用途
+
+#### Scenario: 应用 Q15 增量融合策略
+
+- **WHEN** 开发者需要合并 async-uart 相关分支（async-uart-1 / future / temp）的多个 commit
+- **THEN** MUST 按 L208 启发式分层排序（基线 → 修复 → 规范化 → 契约）
+- **AND** MUST 每步 cargo check + QEMU benchmark Gate（参见 ADR-039 Manual QA Gate 表）
+- **AND** MUST 保留源分支作为参考，禁止一次性 merge 或删除
+- **AND** 退化时立即停止，定位根因后从该 milestone 重新融合（L205 铁律）

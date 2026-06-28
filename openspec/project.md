@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，基于 ArceOS 组件化架构。核心目标是**实现高性能异步串口通信**。当前活跃分支：`asyncuart-dev`（基于 `feat/uart-async-dev2` 整合分支）。
+StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，基于 ArceOS 组件化架构。核心目标是**实现高性能异步串口通信**。当前活跃分支：`feat/uart-16550-async`。
 
 ## 技术栈
 
@@ -65,7 +65,7 @@ StarryOS/
 
 - 提交信息格式：`feat(uart-async): / fix(uart-async): / refactor(uart-async): / docs(uart-async):`
 - 分支策略：`main ← feat/uart-async-*`（PR 合并）
-- 当前活跃分支：`asyncuart-dev`（基于 `feat/uart-async-dev2`）
+- 当前活跃分支：`feat/uart-16550-async`
 - **禁止把 Claude 列为 co-author / 共同创作者**（任何形式 `Co-Authored-By: Claude`）
 
 ### 编码约束

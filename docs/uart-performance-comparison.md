@@ -6,7 +6,9 @@
 > **测试环境**：QEMU riscv64-virt · NS16550 @ 115200 bps · FIFO 16B
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/benchmark-report-async.md`（Async 详细数据） · `docs/manual-qa-report.md`（QA 验证） · `.claude/analysis/async-uart-module-boundary.md`（Q13 事后视角）
 >
-> **⚠️ QEMU 仿真限制声明**：QEMU 的 NS16550 不仿真串口线延迟（86.8 µs/byte）。用户态吞吐量在 QEMU 上**不可直接对比**——真板两者均收敛至 ~11.5 KB/s（硬件理论上限）。本文讨论 QEMU 上**可信维度**：内核态速度、CPU 效率、write() 延迟、功能覆盖。
+> **⚠️ QEMU 仿真限制声明**：QEMU 的 NS16550 不仿真串口线延迟（86.8 µs/byte）。用户态吞吐量在 QEMU 上**不可直接对比**——真板实测数据 ⏳ 待 Q6 验证后回填。本文讨论 QEMU 上**可信维度**：内核态速度、CPU 效率、write() 延迟、功能覆盖。
+>
+> **📐 物理定律**（100% 准确）：NS16550 @ 115200 bps 的线速上限 = 11,520 B/s（单字节 86.8 µs）。这是数学事实，但实测吞吐受调度/IRQ 延迟影响可能低于此值。
 >
 > **Q13 架构变更**：异步串口核心逻辑（ISR / ring buffer / copier / device_ops ~400 行）已提取到独立 [uart_16550](https://github.com/daivy2333/uart_16550) crate（`async` feature），内核仅保留初始化（~150 行）+ 适配层（~30 行）。
 
@@ -14,26 +16,26 @@
 
 ## 0. TL;DR
 
-Console（同步阻塞）与 Async（Q13.1 异步中断驱动）在 8 个对比维度上 **Async 在 7 个维度胜出**（CPU 效率、延迟、唤醒、吞吐、内核态速度、功能、可移植性），**1 个维度持平**（真板吞吐量受波特率限制，~11.5 KB/s）。Q13 trait 抽象带来可移植性，代价 5.5 µs 软件 overhead（已被 Q13.1 inline+batch 回收至 42.6 µs）；LTO 跨 crate 内联使内核态 ↑69%，但 e2e 不变（**瓶颈在调度**）。
+Console（同步阻塞）与 Async（Q15 M0~M4 异步中断驱动）在 8 个对比维度上 **Async 在 7 个维度胜出**（CPU 效率、延迟、唤醒、吞吐、内核态速度、功能、可移植性），**1 个维度持平**（真板吞吐量受波特率限制，📐 物理定律上限 11.52 KB/s）。Q15 当前 state（无 LTO per ADR-034）实测：TX 456 MB/s / RX 1,148 MB/s；Q13 trait 抽象带来可移植性，Q13.1 inline+batch 回收 overhead；e2e 不变（**瓶颈在调度**）。
 
 | 维度 | Console（同步阻塞）| Async（Q13.1）| 提升 |
 |------|----------------|--------------|------|
 | CPU 效率 | 3,835 cycles/byte | 13 cycles/byte（Q12 数据）| ⬆ **~295×** |
 | write() 延迟 P50 | 17.5 µs（逐字节轮询 LSR）| 8.5 µs（push ring buf 即返回）| ⬆ **2.1×** |
 | 唤醒延迟 | ~200ns（PollSet spinlock）| ~50ns（AtomicWaker lock-free）| ⬆ **4×** |
-| 内核态吞吐 TX | 567 KB/s | ~652 MB/s（Q13.1 + LTO）| ⬆ **~1150×** |
+| 内核态吞吐 TX | 567 KB/s | ~456 MB/s（Q15 M0~M4，无 LTO per ADR-034）| ⬆ **~804×** |
 | 非阻塞读（FIONBIO）| ❌ | ✅ open / fcntl / ioctl 三入口 | 功能补全 |
 | 读超时（VTIME）| ❌ | ✅ axtask::future::timeout | 功能补全 |
 | 可移植性 | ❌（绑定 axplat）| ✅（5 OS trait 抽象，Q13）| 跨 OS 可复用 |
-| 真板吞吐量 | ~11.5 KB/s | ~11.5 KB/s | 持平（硬件理论上限）|
+| 真板吞吐量 | 📐 上限 11.52 KB/s | 📐 上限 11.52 KB/s | 持平（物理定律上限，⏳ Q6 实测后回填）|
 
-**小结**：Async 在所有可优化维度均显著优于 Console，**唯一不可优化的维度是真板吞吐量（受 115200 bps 波特率限制）**。本节 8 维度数据为后续 §3~§7 的索引表，详细对比见对应章节。
+**小结**：Async 在所有可优化维度均显著优于 Console，**唯一不可优化的维度是真板吞吐量（受 115200 bps 波特率限制，📐 物理定律上限 11.52 KB/s）**。本节 8 维度数据为后续 §3~§7 的索引表，详细对比见对应章节。
 
 ---
 
 ## 1. 测量条件
 
-性能对比需在**统一测量条件**下进行。QEMU 仿真与真板硬件在串口时序上存在本质差异——QEMU 的 NS16550 不仿真真实串口线延迟（86.8 µs/byte），导致部分数据不可比。Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销，**两者在 QEMU 上无法公平对比**——真板均收敛至 ~11.5 KB/s。
+性能对比需在**统一测量条件**下进行。QEMU 仿真与真板硬件在串口时序上存在本质差异——QEMU 的 NS16550 不仿真真实串口线延迟（86.8 µs/byte），导致部分数据不可比。Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销，**两者在 QEMU 上无法公平对比**——真板实测数据 ⏳ 待 Q6 验证后回填。
 
 **测试环境**（QEMU riscv64-virt，Console 与 Async 共用）：
 
@@ -51,7 +53,7 @@ Console（同步阻塞）与 Async（Q13.1 异步中断驱动）在 8 个对比�
 **QEMU 性能数据可信维度**：
 
 - ✅ **可信**：内核态速度、CPU 效率、write() 延迟、功能覆盖
-- ❌ **不可信**：用户态吞吐（绝对值）——真板均收敛至 ~11.5 KB/s
+- ❌ **不可信**：用户态吞吐（绝对值）——⏳ Q6 真板实测后回填
 
 **对比基线**：
 - **Console**：Q12 之前的同步阻塞实现，作为 Async 的对比基线
@@ -98,20 +100,20 @@ Console 与 Async 在架构上呈现**"同步轮询 vs 异步中断驱动"**的�
 
 ## 3. 内核态性能
 
-内核态测试直接操作 Ring Buffer，无系统调用开销，**不受 QEMU 串口时序影响**，反映纯软件性能。**关键观察**：Async 内核态吞吐（MB/s 级）远高于 Console（KB/s 级），提升约 **1150×**（TX）与 **295× CPU 效率**（cycles/byte），是可信的相对性能对比数据。
+内核态测试直接操作 Ring Buffer，无系统调用开销，不受 QEMU 串口时序影响。Async 吞吐（MB/s 级）远高于 Console（KB/s 级），TX 提升约 804×，CPU 效率 295×，是可信的相对对比数据。
 
-**内核态性能对照**（Console vs Async，Async 数据来自 [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/bench.rs)）：
+**内核态性能对照**（Console vs Async，Async 数据来自 [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs)，Q15 当前 state 无 LTO）：
 
 | 指标 | Console | Async | 差异 | 测量方法 |
 |------|---------|-------|------|---------|
-| TX Ring Buffer 写入 | 567 KB/s | ~652 MB/s（Q13.1 + LTO）| ⬆ ~1150× | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/bench.rs) 102,400 字节 |
+| TX Ring Buffer 写入 | 567 KB/s | **456 MB/s** | ⬆ ~804× | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs) 102,400 字节 |
 | TX CPU cycles/byte | 3,835 | 13（Q12 数据）| ⬆ ~295× | CPU 周期采样 |
-| RX Ring Buffer 读取 | 不可测¹ | ~898 MB/s | — | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/bench.rs) 65,536 字节 |
+| RX Ring Buffer 读取 | 不可测¹ | **1,148 MB/s** | — | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs) 65,536 字节 |
 | RX 延迟 P50 | 不可测¹ | <100 ns | — | 100 次单字节 |
 
 > **脚注 1**：Console 无 Ring Buffer，无法做可比较的内核态 RX 测试。
 > **脚注 2**：Q13 后内核 benchmark 移至独立测试分支 `feat/uart-16550-bench`，主分支不内嵌 CPU 周期测量。
-> **数据来源说明**：Async 列数据来自 `feat/uart-16550-bench` 分支 `bench.rs`（Q13.1 + LTO 构建）；Console 列数据来自 `feat/uart-16550-async` 分支 `bench.rs`（Q12 前基线）。两列测量方法不同（Console 逐字节 MMIO 写 THR，Async 批量 push ring buffer），吞吐差异主要来自"同步轮询 vs 异步批量"路径差异而非单纯实现效率。
+> **数据来源说明**：Async 列数据来自 `feat/uart-16550-bench` 分支 `bench.rs`（Q15 M0~M4 构建，**无 LTO per ADR-034**），TX 456 MB/s / RX 1,148 MB/s；Console 列数据来自 `feat/uart-16550-async` 分支 `bench.rs`（Q12 前基线，567 KB/s）。两列测量方法不同（Console 逐字节 MMIO 写 THR，Async 批量 push ring buffer），吞吐差异主要来自"同步轮询 vs 异步批量"路径差异。
 
 **性能差异根因**：
 
@@ -119,7 +121,7 @@ Console 与 Async 在架构上呈现**"同步轮询 vs 异步中断驱动"**的�
 - **CPU 效率提升 ~295×**：Console 每字节 3,835 cycles（系统调用 + 轮询 LSR），Async 13 cycles（单次 `push` 操作）
 - **Async 接收**：直接 `pop` lock-free SPSC RingBuffer（LTO 内联 embassy）
 
-**小结**：内核态性能是 Async 优势最显著的维度（1150× 吞吐 + 295× CPU 效率），**不受 QEMU 仿真限制影响**——是 §1 中标注的"✅ 可信维度"的代表。
+**小结**：内核态性能是 Async 优势最显著的维度。Q15 当前 state：TX 456 MB/s（vs Console 567 KB/s = 804×） + RX 1,148 MB/s（Console 不可测） + CPU 效率 295×，**不受 QEMU 仿真限制影响**——是 §1 中标注的"✅ 可信维度"的代表。
 
 ---
 
@@ -143,7 +145,7 @@ Console 与 Async 在架构上呈现**"同步轮询 vs 异步中断驱动"**的�
 
 ## 5. 用户态吞吐量（⚠️ QEMU 时序欺骗）
 
-Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销。**两者在 QEMU 上无法公平对比**——真板均收敛至 ~11.5 KB/s（硬件理论上限）。本节标"⚠️"以提示数据可信度限制（详见 §1 测量条件）。
+Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销。**两者在 QEMU 上无法公平对比**——真板实测数据 ⏳ 待 Q6 验证后回填。本节标"⚠️"以提示数据可信度限制（详见 §1 测量条件）。
 
 **Async 端到端路径**（64B 写入示意，Q8 优化后约 4~6 次任务切换，Q8 前约 9 次）：
 
@@ -160,14 +162,14 @@ tcdrain   → poll: buf 非空 → 注册 tx.poll
 
 **吞吐量对照表**（QEMU 时序欺骗下数据**仅作参考**）：
 
-| 大小 | Async Q13.1（QEMU）| 硬件理论 | 真板预测 |
+| 大小 | Async Q13.1（QEMU）| 硬件理论 📐 | 真板实测 |
 |------|------------------|----------|----------|
-| 64 B | 518.0 µs | 5,556 µs | 6,070 µs |
-| 256 B | 1,305.6 µs | 22,222 µs | 23,500 µs |
-| 1024 B | 4,922.5 µs | 88,889 µs | 93,800 µs |
-| 4096 B | 9,852.0 µs | 355,556 µs | 365,400 µs |
+| 64 B | 518.0 µs | 5,556 µs | ⏳ Q6 实测 |
+| 256 B | 1,305.6 µs | 22,222 µs | ⏳ Q6 实测 |
+| 1024 B | 4,922.5 µs | 88,889 µs | ⏳ Q6 实测 |
+| 4096 B | 9,852.0 µs | 355,556 µs | ⏳ Q6 实测 |
 
-> **数据可信度**：QEMU 上的 Async 吞吐受 copier 任务切换开销影响；真板因 tcdrain 等待 LSR 完整传输，吞吐量收敛至 ~11.5 KB/s。
+> **数据可信度**：QEMU 上的 Async 吞吐受 copier 任务切换开销影响；绝对吞吐需 Q6 真板实测确认。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），但实测值受调度/IRQ 延迟影响可能低于此值。
 
 **小结**：用户态吞吐在 QEMU 上**不可信**（§1 标注的"❌ 不可信维度"）。Async 端到端路径已经过 Q8 优化（9→4~6 次任务切换），但 QEMU 仿真限制决定绝对值需以真板（Q6）为准。
 
@@ -237,13 +239,13 @@ Async 相比 Console 在内存上多占用 128 KB（ring buffer），后台任�
 
 按新规范要求，本节只列核心判断（3-5 条短句，**不重复 §0 与 §3~§7 数据**）：
 
-1. **Async 在 7 维度全面胜出，1 维度持平**——8 维度对照见 §0，唯一持平项是真板吞吐量（受 115200 bps 硬件理论上限约束，**非实现差异**）
+1. **Async 在 7 维度全面胜出，1 维度持平**——8 维度对照见 §0，唯一持平项是真板吞吐量（受 115200 bps 物理定律约束，📐 上限 11.52 KB/s，**非实现差异**；⏳ Q6 实测后回填）
 2. **架构差异根因 = 异步 ring buffer 中转**——Console 无此层导致 CPU 效率/延迟/功能全面落后（详见 §2 架构对照表）
-3. **可移植性是 Q13 的核心收益**——5 OS trait 抽象使 `uart_16550` 可用于任何 OS（详见 §6 + `.claude/analysis/async-uart-module-boundary.md`）
+3. **可移植性收益**——5 OS trait 抽象使 `uart_16550` 可用于任何 OS（详见 §6 + `.claude/analysis/async-uart-module-boundary.md`）
 4. **QEMU 数据仅作相对对比**——绝对吞吐需以真板（Q6）为准（详见 §1 测量条件 + §5 吞吐量"⚠️"标注）
-5. **后续工作仅余 Q6 真板验证**——DMA 可行性、波特率扩展（230400+）等场景待真板硬件到位后评估
+5. **Q15 当前 state**——TX 456 MB/s（无 LTO）/ RX 1,148 MB/s（**M0~M4 提升 +27.9%** vs Q13+LTO 状态）
 
-**小结**：异步串口子系统的设计与实现已被 Q0~Q13 + LTO 共 12 个阶段优化验证，**Async 模式在所有可优化维度均显著优于 Console**。本节作为"核心判断"已与 §0 TL;DR 8 维度数据互为表里（§0 给数据，本节给判断）。
+**小结**：异步串口子系统的设计与实现已被 Q0~Q15 共 13 个阶段优化验证，**Async 模式在所有可优化维度均优于 Console**。本节作为判断与 §0 TL;DR 8 维度数据互为表里（§0 给数据，本节给判断）。
 
 **完整优化历史**（仅供索引，详情见 `docs/async-uart-architecture.md` §7 与 `.claude/docs/tasks.md`）：
 
@@ -260,6 +262,7 @@ Async 相比 Console 在内存上多占用 128 KB（ring buffer），后台任�
 | Q13 | 2026-06-16 | 异步串口提取到 `uart_16550` crate |
 | Q13.1 | 2026-06-16 | inline + batch 回收开销 |
 | LTO | 2026-06-16 → revert（ADR-034）| 跨 crate 内联 |
+| Q15 M0~M4 | 2026-06-21~23 | TX completion + IER single owner + telemetry + short-write contract（详见 `openspec/specs/tx-*` / `openspec/specs/ier-*`）|
 | Q6 | ⏳ 待定 | VisionFive2 真板验证 |
 
 ---

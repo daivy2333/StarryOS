@@ -1,7 +1,7 @@
 # async-uart-traits Specification
 
 ## Purpose
-TBD - created by archiving change q13-async-uart-extraction. Update Purpose after archive.
+Archived capability spec from Q13 async-uart extraction. ADR-036 supersedes the original 5-trait plan: the current minimum OS abstraction is `OsRuntime` + `OsWakerSet`; `OsIrq`, `OsMmio`, and `OsSpinNoIrq` remain here only as historical requirements from the archived change.
 ## Requirements
 ### Requirement: OsRuntime trait definition
 The system SHALL define an `OsRuntime` trait that provides task spawning and blocking execution capabilities.
@@ -14,38 +14,41 @@ The system SHALL define an `OsRuntime` trait that provides task spawning and blo
 - **WHEN** `OsRuntime::block_on()` is called with a future
 - **THEN** the system SHALL block the current thread until the future completes and return its result
 
-### Requirement: OsIrq trait definition
-The system SHALL define an `OsIrq` trait that provides interrupt handler registration capabilities.
+### Requirement: OsIrq trait definition — superseded by ADR-036
+
+The system MUST treat the archived `OsIrq` trait requirement as superseded by ADR-036. Current async UART integration SHALL NOT require `OsIrq`; IRQ registration is handled outside the reusable driver by the OS adapter layer.
 
 #### Scenario: Register IRQ handler
 - **WHEN** `OsIrq::register_handler()` is called with an IRQ number and handler function
-- **THEN** the system SHALL register the handler to be called when the specified IRQ fires
+- **THEN** this archived behavior SHALL be interpreted as historical Q13 context, not as a current implementation requirement
 
 #### Scenario: Handler execution context
 - **WHEN** an IRQ fires after handler registration
-- **THEN** the system SHALL call the registered handler in ISR context
+- **THEN** current StarryOS SHALL dispatch through its OS-level IRQ hook and call the uart_16550 ISR wrapper without requiring an `OsIrq` trait
 
-### Requirement: OsMmio trait definition
-The system SHALL define an `OsMmio` trait that provides MMIO memory mapping capabilities.
+### Requirement: OsMmio trait definition — superseded by ADR-036
+
+The system MUST treat the archived `OsMmio` trait requirement as superseded by ADR-036. Current async UART integration SHALL NOT require `OsMmio`; MMIO mapping is performed before constructing the reusable driver.
 
 #### Scenario: Map MMIO region
 - **WHEN** `OsMmio::map_mmio()` is called with physical address and size
-- **THEN** the system SHALL map the physical MMIO region to virtual memory and return the virtual address
+- **THEN** this archived behavior SHALL be interpreted as historical Q13 context, not as a current implementation requirement
 
 #### Scenario: Physical to virtual translation
 - **WHEN** `OsMmio::phys_to_virt()` is called with a physical address
-- **THEN** the system SHALL return the corresponding virtual address
+- **THEN** current StarryOS SHALL use OS-level MMIO setup outside the async UART trait boundary
 
-### Requirement: OsSpinNoIrq trait definition
-The system SHALL define an `OsSpinNoIrq` trait that provides IRQ-safe spinlock capabilities.
+### Requirement: OsSpinNoIrq trait definition — superseded by ADR-036
+
+The system MUST treat the archived `OsSpinNoIrq` trait requirement as superseded by ADR-036. Current async UART integration SHALL NOT require `OsSpinNoIrq`; locking is owned by the StarryOS `UartPort` implementation.
 
 #### Scenario: Create spinlock
 - **WHEN** `OsSpinNoIrq::new()` is called with an initial value
-- **THEN** the system SHALL create a new spinlock protecting the value
+- **THEN** this archived behavior SHALL be interpreted as historical Q13 context, not as a current implementation requirement
 
 #### Scenario: Lock with IRQ disabled
 - **WHEN** `OsSpinNoIrq::lock()` is called
-- **THEN** the system SHALL disable IRQs, acquire the lock, and return a guard that re-enables IRQs on drop
+- **THEN** current StarryOS SHALL use its concrete lock inside `ArceOsUartPort` rather than exposing a reusable `OsSpinNoIrq` trait
 
 ### Requirement: OsWakerSet trait definition
 The system SHALL define an `OsWakerSet` trait that provides waker registration and notification capabilities.
@@ -78,4 +81,3 @@ The system SHALL define an `OsWakerSet` trait that provides waker registration a
 - **WHEN** line discipline emits an echo character sequence
 - **THEN** it MAY ignore the returned count
 - **AND** the implementation MUST make that best-effort behavior explicit in code
-

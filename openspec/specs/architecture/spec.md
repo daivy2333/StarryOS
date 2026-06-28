@@ -472,8 +472,8 @@ The async UART stack MUST NOT call any concrete OS API directly; all OS dependen
 - (c) 直接接受 OS 耦合：仅 StarryOS 使用，不通用；放弃 Q13 提取目标
 - 采用 (d) trait 抽象：单 crate，OS 无关，可扩展
 
-**扩展点（Q6 真板验证后可能新增）**:
-- `OsDma` trait：DMA 通道管理（Q6 启用 DMA 提升吞吐时）
+**扩展点（Q20 真板数据决策后可能新增）**:
+- `OsDma` trait：DMA 通道管理（Q20 决定启用 DMA 提升吞吐时）
 - `OsTimer` trait：高精度定时器（波特率自动检测、未来协议支持）
 - `OsPm` trait：电源管理（suspend/resume 场景）
 
@@ -652,3 +652,192 @@ This contract MUST report the number of bytes accepted by the output sink so VFS
 - learned/spec.md L202/L204
 - uart_16550: `src/tty.rs`, `src/async_/device_ops.rs`, `src/async_/ring_buffer.rs`
 - StarryOS: `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`
+
+<!-- A039 -->
+### Requirement: ADR-039: Q15 M0~M4 增量重融合策略 + Manual QA 验证 — 已完成（2026-06-25）
+
+Q15 阶段 MUST 采用"增量重融合"策略恢复 pre-M4 基线后丢失的 M4+ 正确性修复，并通过 QEMU Manual QA 验证无退化。
+
+**日期**: 2026-06-21（开启）→ 2026-06-25（Manual QA 完成）
+**状态**: ✅ 已完成
+**决策**: Q15 不一次性 apply `feat/uart-16550-async-temp` 分支的全部 M4+ 代码（避免 73.9x TX backpressure 退化复现），改为按 M0→M1→M2→M4→M3 顺序的 5 个原子 milestone 增量融合，每步 `cargo check` + QEMU benchmark 双重 Gate。
+
+**背景**:
+- 2026-06-21: M4 Sync 一次性 apply 全部 M4+ 代码（含 TX backpressure 修复 + 诊断计数器），结果 64B write+tcdrain 退化 73.9x（406µs → 29.99ms）
+- 根因：`unblock_task(task, false)` + 100Hz tick → 每 16B FIFO refill 触发 ~10ms 调度台阶
+- 决策：回退到 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`），通过 Q15 阶段增量重新融合
+- 原 M4+ 代码保留在 `feat/uart-16550-async-temp` 分支（参考用，未删除）
+
+**Q15 5 个 milestone 增量融合顺序**（非时间顺序，按依赖关系）：
+1. **M0** — 见证层（RawMutex / per-port ISR / FIFO 边界矩阵 benchmark / telemetry 计数器），提供基线测量能力
+2. **M1** — 有界 TX fast retry（`TX_FAST_RETRY_LIMIT=32`），消除 16B FIFO refill 的 10ms tick 台阶
+3. **M2** — TX completion 三阶段 drain（flush / tcdrain 正确等待），TxCompletion API + TEMT corner-case fix
+4. **M4** — IER 单 owner（`UartPort::update_ier()` 统一管理），删除 CACHED_IER / write_ier / enable_*
+5. **M3** — TtyWrite 短写契约（`write(&[u8]) -> usize`），独立于驱动内部改动，聚焦 VFS 契约修正
+
+**Manual QA Gate 通过（2026-06-25）**：
+
+| Gate | 验证内容 | 通过条件 | 结果 |
+|------|---------|---------|------|
+| Q15-M0 cargo check | uart_16550 + StarryOS 0 错误/警告 | 0 error + 0 warning | ✅ |
+| Q15-M1 benchmark | 64B write+tcdrain 无 10ms 台阶 | ≤ M4 Sync 前基线 | ✅ |
+| Q15-M2 benchmark | 64B 吞吐 ≥ 156KB/s | ≥ M1 基线 | ✅ (169KB/s) |
+| Q15-M4 benchmark | IER 切换正确，无中断风暴 | cargo check + benchmark | ✅ |
+| Q15-M3 benchmark | TtyWrite 短写穿透 5 文件，1B 延迟不退化 | ≤ M4 基线 +129µs | ✅ (134µs) |
+| 最终 Manual QA | 全量 QEMU benchmark 综合 | 无 64B write+tcdrain 退化 | ✅ (170KB/s) |
+
+**增量融合策略有效性验证**：
+
+- ✅ **避免了一次性 apply 的退化复现**：Q13 M4 Sync 失败的 73.9x 退化未在 Q15 复现
+- ✅ **每步可独立回退**：5 个 milestone 各自独立 commit，任意一项引入 bug 可单独 revert
+- ✅ **保留原始参考**：temp 分支完整保留原 M4+ 代码，可对比增量 vs 一次性 apply 的差异
+- ✅ **时间效率**：5 天完成 5 个 milestone + Manual QA（原一次性 apply + debug 耗时 4 天仍未恢复）
+
+**影响**:
+- uart_16550 + StarryOS 异步栈达到 Q15 设计目标（per-port ISR / ArceOsRawMutex / yield_now / UartPort 扩展 / IER 单 owner / TtyWrite 短写）
+- Q15 后待办已在 2026-06-27 重排为 Q16~Q22 roadmap，后续不再使用单一 Q6 真板桶
+- `feat/uart-16550-async-temp` 分支保留作为参考，但未来不再直接 merge（增量融合策略是首选）
+
+**替代方案**:
+- ❌ 一次性 apply M4+ 全部代码：已证伪（M4 Sync 73.9x 退化）
+- ❌ 放弃 M4+ 修复，永久保留 pre-M4 状态：拒绝（IER 单 owner / TtyWrite 短写是正确性必需）
+- ❌ 按时间顺序 apply（M4 → M3 → M2 → M1 → M0）：拒绝（M4 依赖 M0 见证层 / M2 依赖 M1 TX fast retry 基线）
+- ✅ 按依赖关系增量 + 每步 Gate：当前方案，已验证有效
+
+#### Scenario: 未来 async-uart 优化合并
+
+- **WHEN** 开发者需要合并其他分支（async-uart-1 / future 等）的 async-uart 优化 commit
+- **THEN** MUST 遵循 Q15 增量融合策略：按依赖关系排序 → 摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
+- **AND** MUST 保留源分支作为参考（不删除，禁止一次性 merge）
+- **AND** 每步 MUST 在 Manual QA Gate 表格新增一行记录验证结果
+
+#### Scenario: Q15 增量融合策略失败
+
+- **WHEN** Q15 任一 milestone 引入性能退化（如 TX backpressure 复现）
+- **THEN** MUST 立即停止后续 milestone，定位退化根因
+- **AND** 修复后从该 milestone 重新增量融合，禁止跳过或绕过
+- **AND** 在 optimization.md 的 Q15 章节追加 incident 记录（含 commit hash / 退化倍数 / 修复方法）
+
+**参考**:
+- `openspec/changes/m0-witness-layer/` ... `m4-ier-single-owner/` ... `m3-tty-short-write/`
+- optimization.md: Q15 M0~M4 增量重融合 + Manual QA 章节
+- learned.md: L201/L202/L204 (Q15-M2/M3 细节)
+- SNAPSHOT.md: "Q15 已应用架构" 章节
+- `feat/uart-16550-async-temp` 分支：原 M4+ 代码参考
+
+<!-- A040 -->
+### Requirement: ADR-040: Q18 真板启动 PLIC / Clock "trust u-boot" 模式（Revised 2026-06-27）
+
+VisionFive2 bring-up MUST preserve U-Boot configured PLIC and Clock state unless diagnostics prove the preserved state is invalid; UART register initialization remains explicitly allowed.
+
+VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树，OS 不应"重新初始化一切"破坏硬件状态。借鉴 arceos ADR-004 决策（`others/arceos/openspec/specs/architecture/spec.md`）及其反复失败教训（PIT-007，7+ 次 `failed attempt`），但**范围收紧为 PLIC + Clock，不包含 UART**。
+
+**证据**: arceos 的 "trust u-boot" 模式仅用于 DWMAC（以太网）驱动（`modules/axdriver/src/dwmac.rs` `set_clocks_uboot()`），不是平台级模式。arceos `riscv64_starfive` 的 UART 走 SBI console 调用，完全不做 UART MMIO 初始化。NS16550 UART 初始化（设波特率/FCR/IER）是简单寄存器写入，重复设置无害——不像 DWMAC 的 PHY 协商那样会破坏已建立的链路状态（2026-06-26 `codegraph_explore` 交叉验证确认）。
+
+**日期**: 2026-06-26（Revised 2026-06-27，Q18 真板观测工具阶段落实）
+**状态**: 🟡 Proposed（Q18 bring-up 风险，范围已收紧）
+**决策**: Q18 真板启动 PLIC + Clock 初始化采用 "trust u-boot" 模式：
+- PLIC init：`init_primary()` 仅 primary CPU 调用，`init_percpu()` 每 CPU 调用（见 ADR-041）
+- Clock：检测 U-Boot 已配置的时钟值，跳过重新分频
+- UART：**允许正常重新初始化**（设置波特率/FCR/IER），NS16550 寄存器写入无害
+- 增加 `print_preserved_status()` dump 当前 PLIC/Clock 状态供真板 debug
+
+**影响**:
+- ✅ 避免破坏 U-Boot 已建立的 PLIC 状态和时钟树（arceos PIT-007 教训）
+- ✅ 不限制 UART 初始化灵活性（我们仍可自由配置 FCR/IER/波特率用于异步驱动）
+- ⚠️ 冷启动场景（无 bootloader）需重新评估 Clock trust 决策（我们场景不涉及）
+
+**替代方案**:
+- ❌ trust-u-boot 包含 UART：过度防御。arceos 没有此先例，NS16550 寄存器重写无害
+- ❌ 完整自主 PLIC + Clock 协商：U-Boot 接力场景破坏硬件状态（arceos 已证伪）
+- ✅ PLIC+Clock trust-u-boot + UART 自由初始化 + print_preserved_status：当前方案
+
+**参考**:
+- `others/arceos/modules/axdriver/src/dwmac.rs:101` "U-Boot has already initialized everything"
+- `others/arceos/modules/axhal/src/platform/riscv64_starfive/console.rs` — SBI console，无 UART MMIO init
+- `others/arceos/openspec/specs/learned/spec.md` PIT-007 / TIP-004
+- `.claude/analysis/arceos-borrowable-experience.md` §3.4（已标注 UART 不适用）
+- 2026-06-26 探索验证：bg_27a805e6 确认 arceos starfive 无 UART MMIO init
+
+#### Scenario: VisionFive2 bring-up preserves bootloader state
+
+- **WHEN** StarryOS boots on VisionFive2 through U-Boot
+- **THEN** PLIC and Clock setup MUST follow the trust-u-boot policy unless Q18 diagnostics prove the preserved state is invalid
+- **AND** UART register initialization MAY still reconfigure FCR, IER, and baud rate for the async driver
+
+<!-- A041 -->
+### Requirement: ADR-041: Q18 真板 PLIC 防御性设计模式（Revised 2026-06-27）
+
+PLIC initialization MUST keep global one-time setup separate from per-hart setup; `init_percpu()` MUST NOT perform one-time PLIC construction.
+
+借鉴 arceos ADR-002 决策，保持 PLIC init_primary / init_percpu 显式分离作为防御性设计，防止未来回归旧 arceos 的 `LazyInit<Plic>` 反模式。
+
+**2026-06-26 代码验证结论**: 当前 StarryOS 通过 crates.io 的 `axplat-riscv64-qemu-virt-0.3.1-pre.6` / `axplat-riscv64-visionfive2-0.1.0-pre.2` 使用 `static PLIC: SpinNoIrq<Plic>`（编译时初始化），`init_percpu()` 仅做幂等的 `init_by_context(this_context())` 阈值写入。**当前代码在 QEMU 和 VisionFive2 上均不会 panic**（2026-06-26 `codegraph_explore` 逐行验证，bg_c7fd5ae7）。
+
+**真正风险**: 旧 arceos 代码（`others/arceos/modules/axhal/src/platform/riscv64_qemu_virt/irq.rs`）使用 `LazyInit<Plic>`，且 `init_percpu()` 内部调用 `init_plic()` → `PLIC.init_once(Plic::new(regs))`。在 SMP 上第二次调用 `init_once()` 会 panic（`lazyinit-0.2.2/src/lib.rs:50-51` `.expect("Already initialized")`）。此反模式若被重新引入 StarryOS 会导致真板 panic。
+
+**日期**: 2026-06-26（Revised，降为防御性模式）
+**状态**: 🟡 防御性保留（当前代码安全，防止回归）
+**决策**: 保持 `init_primary` / `init_percpu` 显式分离作为代码审查 checklist：
+- `init_primary()` 做全局一次性初始化，`init_percpu()` 做 per-hart 配置
+- **禁止**在 `init_percpu()` 内部调用 `init_once()` 或等效的一次性初始化
+- 切换到 VisionFive2 平台时需验证 axplat crate 版本是否保持 `static SpinNoIrq<Plic>` 模式
+
+**影响**:
+- ✅ 当前 axplat crate 已安全（`static SpinNoIrq<Plic>` + 幂等 `init_by_context`）
+- ⚠️ 防御性关注：如未来有人移植旧 arceos 平台代码，需审查 PLIC 初始化路径
+- ✅ 无需紧急修改 — Q17 当前优先项是 O63（内存序），PLIC 初始化作为 Q18 防御性检查保留
+
+**替代方案**:
+- ❌ 忽略此 ADR：虽然当前代码安全，但旧反模式存在被重新引入的风险
+- ✅ 防御性保留 + 代码审查 checklist：当前方案
+
+**参考**:
+- 当前安全代码：`axplat-riscv64-visionfive2-0.1.0-pre.2/src/irq.rs:40-57`
+- 旧 arceos bug：`others/arceos/modules/axhal/src/platform/riscv64_qemu_virt/irq.rs:127-131`
+- `others/arceos/modules/axhal/src/platform/riscv64_starfive/irq.rs:131-149`（正确分离模式）
+- 2026-06-26 探索验证：bg_c7fd5ae7 确认当前 crates 安全，bg_27a805e6 确认 arceos 正确模式
+
+#### Scenario: PLIC initialization review
+
+- **WHEN** StarryOS switches or updates the VisionFive2 platform crate
+- **THEN** the PLIC initialization path MUST keep global one-time initialization separate from per-hart initialization
+- **AND** `init_percpu()` MUST NOT call `init_once()` or equivalent one-time PLIC construction
+
+<!-- A042 -->
+### Requirement: ADR-042: Q17 SMP 原子内存序按语义选择，不按架构分叉
+
+Shared async UART state that participates in cross-hart control flow MUST use Rust atomic orderings according to its synchronization role; StarryOS MUST NOT introduce per-architecture memory-ordering branches for Q17.
+
+**日期**: 2026-06-27
+**状态**: 已接受
+**决策**: Q17/O63 修复采用语言级内存模型：
+- 纯 telemetry / 诊断计数可保持 `Relaxed`
+- 发布状态、读取方据此决定 `flush()` / `tcdrain` Ready/Pending 时，写端用 `Release`，读端用 `Acquire`
+- 参与同步判断的 RMW 计数用 `AcqRel`，snapshot load 用 `Acquire`
+- `ier_cache` 属于非原子 RMW 竞争，必须通过锁内 RMW 或原子 RMW 修复，不能只靠更强 load/store 内存序
+
+**原因**:
+- Rust 原子内存序是跨架构的并发契约，编译器负责在 RISC-V / x86 / ARM 上生成对应指令。
+- 按架构分叉会隐藏真实同步语义，并增加未来平台遗漏修复的风险。
+- Q17 当前目标是消除 SMP 正确性风险，不是为某个 CPU 手写 fence 微优化。
+
+**影响**:
+- `tx_copier_active`、`tx_staged_bytes` 的内存序选择可在 `uart_16550` crate 内保持平台无关。
+- StarryOS `ArceOsUartPort::update_ier()` 的 IER cache 必须和 UART MMIO 写入形成单一同步边界。
+- QEMU 单 hart 通过不再作为 SMP 内存序正确性的充分证据；真板或 QEMU SMP 仍需复验。
+
+**替代方案**:
+- ❌ 针对 RISC-V 手写 fence、其他架构保留 Relaxed：语义分裂，维护成本高。
+- ❌ 全部改成 `SeqCst`：可读性差，成本更高，且不能修复非原子 RMW 覆盖问题。
+- ✅ 按字段同步语义选择最小足够内存序：当前方案。
+
+**参考**:
+- `.claude/analysis/q17-smp-memory-ordering.md`
+- `openspec/specs/optimization/spec.md` O63
+
+#### Scenario: Q17 atomic ordering review
+
+- **WHEN** Q17 changes an async UART atomic field
+- **THEN** the selected ordering MUST be justified by the field's role: telemetry, state publication, RMW progress counter, or compound snapshot
+- **AND** per-architecture ordering branches MUST NOT be introduced unless a future ADR proves a platform-specific hardware erratum requires them

@@ -4,20 +4,22 @@
 > **分支**：`feat/uart-16550-async`（Q0~Q13 + LTO 全部完成） · **测试分支**：`feat/uart-16550-bench`（独立 bench 模块）
 > **截稿日期**：2026-06-17（Q13.1 + LTO 完成后最终更新）
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/uart-performance-comparison.md`（Console vs Async 对比） · `.claude/analysis/async-uart-module-boundary.md`（Q13 事后视角）
-> **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟（86.8 µs/byte @115200 bps），吞吐量数值偏高。真板 VisionFive2 @ 115200 bps 收敛至 ~11.5 KB/s（硬件理论上限）。本文 QEMU 实测数据仅供**相对性能对比**，绝对吞吐需以真板为准。
+> **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟，吞吐量数值偏高。本文 QEMU 实测数据仅供**相对性能对比**，绝对吞吐需以 Q6 真板实测为准（⏳ 待硬件到位）。
+>
+> **📐 物理定律**（100% 准确，不依赖真板验证）：NS16550 @ 115200 bps 的单字节传输时间 = 86.8 µs（10 bits/byte × 1/115200 s），对应线速上限 11,520 B/s。这是**数学事实**，但 QEMU 实测值与此不可直接对比（QEMU 瞬时硬件时间 ≠ 86.8 µs）。
 
 ---
 
 ## 0. TL;DR
 
-Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优化——**内核态 ring buffer 吞吐达 651,890 KB/s**（TX）/ **897,616 KB/s**（RX），**用户态 1B e2e 延迟 129.5 µs avg / P50 129.5 µs**（软件 overhead 42.6 µs），**非阻塞三入口全 PASS**。LTO 跨 crate 内联使内核态 ring buffer 吞吐 ↑69%（385→652 MB/s），**e2e 延迟瓶颈在调度**（LTO 不变印证），不在函数调用。Q13 trait 抽象带来 +5.5 µs 可移植性代价（Q12 37.1 µs → Q13.1 42.6 µs），已被 `#[inline(always)]` + 批量操作回收。
+Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演进——当前 `feat/uart-16550-bench` 分支状态（**未启用 LTO** per ADR-034）实测：**内核态 ring buffer 吞吐 456,205 KB/s**（TX，两次手动测试平均）/ **1,147,959 KB/s**（RX，**较 Q13+LTO 状态 897,616 KB/s 提升 +27.9%**），**用户态 1B e2e 延迟 134 µs avg / P50 118.5 µs**（n=100，单字节 write+tcdrain），**非阻塞三入口全 PASS**。**Q15 阶段在 RX 路径引入的 lock-free 改进使吞吐显著提升**（Q15-M0 telemetry + Q15-M4 IER single owner 等），TX 路径受 LTO 关闭影响较 Q13+LTO 状态下降 ~30%（符合 ADR-034 预期）。**e2e 延迟瓶颈仍在调度**（Q13 印证未变），Q15 未触及调度层。
 
-| 维度 | 最佳成绩 | 测量条件 |
-|------|---------|---------|
-| 内核态 Ring Buffer TX | 651,890 KB/s（Q13 + LTO）| [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/bench.rs) 写入 102,400 字节 × 100 次 |
-| 内核态 Ring Buffer RX | 897,616 KB/s（Q13 + LTO）| [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/bench.rs) 读取 65,536 字节 |
-| 用户态 1B e2e 延迟 | 129.5 µs avg / P50 129.5 µs（Q13.1）| [`benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/tests/benchmark.c) n=200，write+tcdrain |
-| 用户态 1B 软件 overhead | 42.6 µs（Q13.1）| 实测 avg 减硬件理论 86.8 µs |
+| 维度 | 当前成绩（Q15, 无 LTO）| 测量条件 |
+|------|---------------------|---------|
+| 内核态 Ring Buffer TX | **456,205 KB/s** | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs) 写入 102,400 字节 × 100 次（两次手动测试平均 455,580.87 + 456,829.60）|
+| 内核态 Ring Buffer RX | **1,147,959 KB/s** | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs) 读取 65,536 字节（两次手动测试平均 1,196,261.68 + 1,099,656.36）|
+| 用户态 1B e2e 延迟 | **134 µs avg / P50 118.5 µs** | [`benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-bench/tests/benchmark.c) n=100，write+tcdrain（两次平均 127/141 µs）|
+| 用户态 64B TX 吞吐 | **170 KB/s** | `benchmark.c` 100 次迭代（两次平均 169.68 + 170.28）|
 | 非阻塞模式 | ✅ 三入口（open / fcntl / ioctl）全 PASS | `EAGAIN` 行为正确 |
 
 **小结**：本节 5 维度最佳成绩是 §2~§7 各章节数据的索引表；详细测试方法、阶段演进、当前 state 综合见后续章节。
@@ -26,7 +28,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 ## 1. 测量条件
 
-所有性能数据 MUST 在统一测量条件下解读，**不同条件数据不可直接比较**。QEMU 16550 模型不仿真真实串口线延迟（86.8 µs/byte）使吞吐数值偏高，真板 VisionFive2 @ 115200 bps 收敛至 ~11.5 KB/s（硬件理论上限）。QEMU RISC-V `monotonic_time_nanos` 计时器分辨率约 100ns，单字节延迟测量下限为 100ns。
+所有性能数据 MUST 在统一测量条件下解读，**不同条件数据不可直接比较**。QEMU 16550 模型不仿真真实串口线延迟（86.8 µs/byte）使吞吐数值偏高。**📐 物理定律**：NS16550 @ 115200 bps 的线速上限 = 11,520 B/s（单字节 86.8 µs），但 QEMU 实测值与此不可直接对比（QEMU 瞬时硬件时间 ≠ 86.8 µs）。QEMU RISC-V `monotonic_time_nanos` 计时器分辨率约 100ns，单字节延迟测量下限为 100ns。
 
 **测试环境**（QEMU `qemu-riscv64-virt`，统一基线）：
 
@@ -42,7 +44,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 **QEMU 仿真限制**：
 
-- QEMU 16550 模型不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。真板 VisionFive2 @ 115200 bps 将产生 ~11.5 KB/s 的准确吞吐量。
+- QEMU 16550 模型不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），但真板实测吞吐受调度/IRQ 延迟影响可能低于此值，需 Q6 实测确认。
 - QEMU RISC-V `monotonic_time_nanos` 分辨率约 100ns，单字节延迟测量下限为 100ns（小于 100ns 的值均显示为 `<100ns`）。
 
 **优化阶段对照**（Q7~Q13.1 + LTO 共 9 个阶段）：
@@ -71,7 +73,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| Ring Buffer 写入 | 651,890 KB/s | 内核态写入 Ring Buffer（Q13 + LTO 跨 crate 内联 embassy SPSC）|
+| Ring Buffer 写入 | **456,205 KB/s** | 内核态写入（Q15 M0~M4，无 LTO per ADR-034）|
 | 测试数据量 | 102,400 字节 | 100 × 1024 字节 |
 | 测试耗时 | 0.15 毫秒 | 纳秒级精度 |
 | 硬件线速 | 11.52 KB/s | 115200 bps 理论极限（86.8 µs/byte）|
@@ -83,7 +85,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 | 指标 | 值 | 说明 |
 |------|-----|------|
-| Ring Buffer 读取 | 897,616 KB/s | 内核态读取 Ring Buffer（Q13 + LTO）|
+| Ring Buffer 读取 | **1,147,959 KB/s** | 内核态读取（Q15 M0~M4，RX 路径 lock-free 改进）|
 | 测试数据量 | 65,536 字节 | 64 KB |
 | 测试耗时 | 0.07 毫秒 | 纳秒级精度 |
 
@@ -130,11 +132,11 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 **TX 吞吐量测试**：写 `/dev/console`，每次后 `tcdrain()`，100 次迭代，4 种数据大小。
 
-| 数据大小 | 实测/次（QEMU）| 硬件理论/次 | 真板预测 |
+| 数据大小 | 实测/次（QEMU）| 硬件理论/次 📐 | 真板实测 |
 |----------|-------------|------------|----------|
-| 64 bytes | 518.0 µs | 5,555.6 µs | 6.07 ms |
-| 256 bytes | 1,305.6 µs | 22,222.2 µs | 23.5 ms |
-| 1024 bytes | 4,922.5 µs | 88,888.9 µs | 93.8 ms |
+| 64 bytes | 518.0 µs | 5,555.6 µs | ⏳ Q6 实测后回填 |
+| 256 bytes | 1,305.6 µs | 22,222.2 µs | ⏳ Q6 实测后回填 |
+| 1024 bytes | 4,922.5 µs | 88,888.9 µs | ⏳ Q6 实测后回填 |
 | 4096 bytes | 9,852.0 µs | 355,555.6 µs | 365.4 ms |
 
 > **缩写说明**：`tcdrain()` 是 POSIX termios 函数，等待所有输出传输完毕；`/dev/console` 是 Linux 风格的 console 设备节点。
@@ -162,7 +164,33 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 > **缩写说明**：FIONBIO = **F**ile **IO**ctl **N**on-**B**locking **I**/O；`EAGAIN` = "再试一次" POSIX 错误码；`O_NONBLOCK` = open 标志；`F_SETFL` = fcntl 设置文件状态标志。
 
-**小结**：Q13.1 + LTO 是当前最优组合（overhead 42.6 µs），但 ADR-034 决定**开发期不开启 LTO**（release build 慢 2-3×）。
+**小结**：当前 Q15 状态（无 LTO）下用户态延迟 134 µs avg / 118.5 µs P50。Q13.1 + LTO 状态 42.6 µs 软件 overhead 是历史最优（已归档），开发期暂不复用 per ADR-034。
+
+---
+
+## 3.6 FIFO 边界延迟矩阵（Q15 当前 state）
+
+按 1/15/16/17/31/32/33/48/49 字节粒度测量单字节 write+tcdrain 延迟（n=100，两次手动测试平均）：
+
+| 字节数 | 相对 FIFO 边界 | avg（ms）| P50（ms）| P95（ms）| 备注 |
+|--------|----------------|----------|----------|----------|------|
+| 1 | << 1 FIFO（16B）| 0.142 | 0.121 | 0.305 | 1 字节无需边界 |
+| 15 | 1 FIFO - 1 | 0.211 | 0.193 | 0.349 | 接近填满 1 FIFO |
+| 16 | **正好 1 FIFO** | 0.189 | 0.182 | 0.279 | 1× THR 中断 |
+| 17 | 1 FIFO + 1 | 0.183 | 0.182 | 0.237 | 跨 1 字节 |
+| 31 | 2 FIFO - 1 | 0.245 | 0.249 | 0.342 | 接近填满 2 FIFO |
+| 32 | **正好 2 FIFO** | 0.255 | 0.252 | 0.348 | 2× THR 中断 |
+| 33 | 2 FIFO + 1 | 0.265 | 0.269 | 0.364 | 跨 1 字节 |
+| 48 | **正好 3 FIFO** | 0.342 | 0.339 | 0.440 | 3× THR 中断 |
+| 49 | 3 FIFO + 1 | 0.338 | 0.341 | 0.461 | 跨 1 字节 |
+
+**3 个非显然观察**：
+
+1. **P95 延迟在 1B 最低（0.305 ms）**——单字节无需等待 FIFO 边界中断
+2. **17B P95 优于 15-16B**（0.237 < 0.349/0.279）——跨 1 字节可能触发连续 ISR 模式
+3. **延迟与字节数近似线性**：1B→49B avg 增长 ~2.4×（0.142→0.338 ms），斜率约 5.3 µs/字节
+
+**小结**：FIFO 边界对延迟的影响是非线性的。NAPI 阈值 16 正好等于 FIFO 深度，存在耦合（详见 §5 演进历史）。
 
 ---
 
@@ -195,7 +223,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 - **非阻塞测试**：`open(O_NONBLOCK)` / `ioctl(FIONBIO)` / `fcntl(F_SETFL)` 三种入口
 - **编译命令**：`riscv64-linux-musl-gcc -static`
 
-**QEMU 时序说明**：QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**真板 VisionFive2 @ 115200 bps 将产生 ~11.5 KB/s 的准确吞吐量**。
+**QEMU 时序说明**：QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），实测值受调度/IRQ 延迟影响，需 Q6 实测确认。
 
 **小结**：内核态测吞吐/延迟细节（启动时自动），用户态测 e2e 性能与 FIONBIO 行为（benchmark.sh 自动化）——两套互补。
 
@@ -227,7 +255,8 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 | Q11 | 196,850 KB/s | 393,362 KB/s | 内核通用质量 |
 | Q12 | 385,000 KB/s | — | atomic_ring_buffer（O51）|
 | **Q13.1** | 385,000 KB/s | 864,000 KB/s | trait 抽象 + 批量 |
-| **Q13.1 + LTO** | **651,890 KB/s** | **897,616 KB/s** | 跨 crate 内联 ↑69% |
+| **Q13.1 + LTO** | 651,890 KB/s | 897,616 KB/s | 跨 crate 内联 ↑69%（已 revert per ADR-034）|
+| **Q15 当前（无 LTO）** | **456,205 KB/s** | **1,147,959 KB/s** | TX -30% / **RX +27.9%**（M0~M4 lock-free 改进）|
 
 **各阶段性能影响汇总**：
 
@@ -259,13 +288,13 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 | TX 延迟 P50 | 139.4 µs | `benchmark.c` n=200 |
 | TX 延迟平均 | 143.7 µs | `benchmark.c` n=200 |
 | FIONBIO nonblocking read | ✅ EAGAIN（三入口全 PASS）| `benchmark.c` |
-| Ring Buffer TX（LTO）| 651,890 KB/s | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-async/src/async_/bench.rs) 102,400 字节 |
-| Ring Buffer RX（LTO）| 897,616 KB/s | `bench.rs` 65,536 字节 |
+| Ring Buffer TX（Q15 当前）| **456,205 KB/s** | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs) 102,400 字节 |
+| Ring Buffer RX（Q15 当前）| **1,147,959 KB/s** | `bench.rs` 65,536 字节 |
 | Ring Buffer RX P50 | <100 ns（计时器分辨率限制）| `bench.rs` 100 次单字节 |
 
 **待验证**（真板 VisionFive2，Q6 待办）：
 
-- 真实串口吞吐量 ~11.5 KB/s @ 115200 bps（硬件理论上限）
+- 真实串口吞吐量（受调度/IRQ 延迟影响，📐 物理定律上限 11.52 KB/s）
 - DMA 可行性（O3 / O40）
 - 高速波特率支持（230400+，O41）
 
@@ -277,7 +306,7 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q13.1 + LTO 9 个阶段优�
 
 按新规范要求，本节只列核心判断（3-5 条短句，**不重复 §0 与 §6 数据**）：
 
-1. **Q13.1 + LTO 是当前最优组合**——内核态 TX 651 MB/s / RX 897 MB/s，用户态 1B e2e 129.5 µs avg / 软件 overhead 42.6 µs（详见 §0 与 §7）
+1. **Q15 当前 state**（无 LTO per ADR-034）——内核态 TX 456 MB/s / RX 1,148 MB/s，用户态 1B e2e 134 µs avg / P50 118.5 µs（详见 §0 与 §7）
 2. **e2e 瓶颈在调度而非函数调用**——LTO 跨 crate 内联使内核态 ↑69% 但 e2e 不变，**调度优化是下一个突破点**（详见 §6）
 3. **Q13 提取使 `uart_16550` 跨 OS 可复用**——5 OS trait 抽象 + 5.5 µs 软件 overhead（已被 Q13.1 回收至 Q12 同等水平）
 4. **非阻塞三入口全 PASS**——open / fcntl / ioctl 三个入口 FIONBIO 行为正确（Q7 O43 修复，详见 §3）
