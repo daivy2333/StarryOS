@@ -19,6 +19,7 @@ mod config;
 mod drivers;
 mod file;
 mod mm;
+pub mod platform;
 mod pseudofs;
 mod syscall;
 mod task;

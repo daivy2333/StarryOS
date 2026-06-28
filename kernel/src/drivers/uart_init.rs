@@ -33,21 +33,15 @@ use uart_16550::{
 };
 
 use crate::drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet};
-
-/// UART MMIO 物理地址（RISC-V QEMU virt 平台）
-pub const UART_MMIO_BASE_PHYS: usize = 0x10000000;
-
-/// UART 寄存器 stride（NS16550 是字节寻址设备，stride=1）
-/// 注意：stride 不能设为 4——NS16550 寄存器仅 0x00-0x07 共 8 字节，
-/// stride 4 会读到超出范围的总线错误（LoadFault）
-pub const UART_STRIDE: u8 = 1;
+use crate::platform;
 
 /// Ring buffer 大小（64 KB）
 pub const BUF_SIZE: usize = 64 * 1024;
 
-/// 获取 UART MMIO 虚拟地址
+/// 获取 UART MMIO 虚拟地址（从 platform descriptor 读取）
 fn get_uart_mmio_virt() -> VirtAddr {
-    phys_to_virt(PhysAddr::from(UART_MMIO_BASE_PHYS))
+    let desc = platform::descriptor();
+    phys_to_virt(PhysAddr::from(desc.console.base_paddr))
 }
 
 // ── 全局 UART 实例 ─────────────────────────────────────────────────
@@ -55,13 +49,13 @@ fn get_uart_mmio_virt() -> VirtAddr {
 // 全局 UART 实例（AsyncUart 独占访问）
 lazy_static! {
     static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
-        // SAFETY: get_uart_mmio_virt() returns the virtual address mapped from physical
-        // UART MMIO address (0x10000000) on RISC-V QEMU virt platform. This mapping
-        // is established by axruntime during boot, and we have exclusive access
-        // protected by SpinNoIrq.
+        // SAFETY: get_uart_mmio_virt() returns the virtual address mapped from
+        // the platform descriptor console base (0x10000000 for QEMU).
+        // This mapping is established by axruntime during boot.
+        let desc = platform::descriptor();
         Uart16550::new_mmio(
             NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap(),
-            UART_STRIDE,
+            desc.console.reg_stride,
         )
         .expect("UART MMIO address invalid")
     });
@@ -195,7 +189,8 @@ pub fn init_uart_hardware() {
     ax_println!("[UART INIT] Phase 1: MMIO read-only verification");
 
     // Step 1: Ensure UART MMIO is mapped with DEVICE|READ|WRITE
-    match axmm::iomap(PhysAddr::from(UART_MMIO_BASE_PHYS), 0x1000) {
+    let desc = platform::descriptor();
+    match axmm::iomap(PhysAddr::from(desc.console.base_paddr), 0x1000) {
         Ok(vaddr) => {
             ax_println!("[UART INIT] ✅ iomap OK: UART MMIO at {:?}", vaddr);
         }
