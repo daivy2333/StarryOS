@@ -17,6 +17,27 @@ Lichee RV Dock 的主要价值不是直接验证当前 StarryOS 的 Q17 SMP 修�
 
 当前 StarryOS 仓库默认面向 QEMU virt，并已有 `vf2` 构建入口。异步 UART 初始化仍使用 QEMU virt 的 UART MMIO 地址 `0x10000000`。Lichee RV Dock 是 Allwinner D1 平台，UART、PLIC、timer、内存布局、启动协议均不同，因此不能直接把当前 StarryOS 镜像烧进 TF 卡运行。
 
+### 分支策略
+
+Lichee RV Dock 的测试分支不应直接基于主开发分支创建。正确顺序是：
+
+1. `feat/uart-16550-async` 继续作为主开发分支。
+2. `feat/uart-16550-bench` 作为测试分支，先同步主开发分支的最新实现。
+3. 在 `feat/uart-16550-bench` 上维护 benchmark / 测试兼容代码，并确认 QEMU benchmark 正常。
+4. 从已经验证过的 `feat/uart-16550-bench` 派生 `uart-16550-lichee`，只做 Lichee RV Dock 相关测试与适配探索。
+
+推荐命令：
+
+```bash
+git switch feat/uart-16550-bench
+git merge feat/uart-16550-async
+# 解决冲突后，先完成 QEMU benchmark 验证
+
+git switch -C uart-16550-lichee feat/uart-16550-bench
+```
+
+这样可以保证 Lichee RV Dock 分支继承测试分支里的 benchmark 代码，而不是直接从开发分支开始重复补测试兼容。
+
 ## 2. 推荐阶段
 
 ### 阶段 A：跑通官方 Linux
