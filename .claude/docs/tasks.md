@@ -44,7 +44,7 @@
 | **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) |
 | **Q16** | Roadmap / spec rebaseline | 任务重排 + stale spec 标注 + validate 已知噪音记录 | ✅ (2026-06-27) |
 | **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
-| **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ⏳ 待做 |
+| **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ⏳ 待做 |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
@@ -56,13 +56,14 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) Q16 ✅ → Q17 ⏳ → Q18 ⏳ → Q19 ⏳(Lichee) → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) Q16 ✅ Q18 ✅ (2026-06-28 platform descriptor + early console) → Q17 ⏳ → Q19 ⏳(Lichee) → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
 
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
 > 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
 > 2026-06-25 Q15 完成: M0~M4 全部 commit 落地 + QEMU Manual QA 验证无退化
 > 2026-06-27 Roadmap 首次重排: Q6 单一真板桶拆为原 Q16~Q22，Q16 文档/规格收敛完成，下一站 Q17 内存序修复
 > 2026-06-28 Roadmap 二次重排: 新增 Q18 平台参数解耦和 Q19 Lichee RV Dock smoke test，VisionFive2 阶段顺延到 Q20
+> 2026-06-28 Q18 完成: platform descriptor + early console + QEMU 行为保持，提交 `941ad05`，归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`
 ```
 
 **2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
@@ -95,16 +96,16 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 <!-- Q17.4 --> - [ ] 评估 QEMU SMP 配置是否可作为真板前预检
 <!-- Q17.5 --> - [ ] Gate Q17: cargo check + QEMU benchmark 无性能退化；真板到位后复验 SMP stress
 
-### Q18: 平台参数解耦 / early console 基础 ⏳ 待做
+### Q18: 平台参数解耦 / early console 基础 ✅ (2026-06-28)
 
-> 来源：OpenSpec change `q18-platform-descriptor-early-console`，`.claude/analysis/platform-parameter-decoupling.md`，ADR-044，learned L217-L220。
+> 来源：OpenSpec change `q18-platform-descriptor-early-console`（已归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`），`.claude/analysis/platform-parameter-decoupling.md`，ADR-044，learned L217-L220。
 
-<!-- Q18.1 --> - [ ] 新增 StarryOS platform descriptor 或等价集中配置，表达 `name / memory / kernel / console / interrupt / timer / boot`
-<!-- Q18.2 --> - [ ] 将 QEMU UART facts 从 `kernel/src/drivers/uart_init.rs` 抽出到 QEMU descriptor，QEMU 行为保持不变
-<!-- Q18.3 --> - [ ] 新增 early console 抽象：不依赖 ring buffer / async task / IRQ / PLIC / rootfs
-<!-- Q18.4 --> - [ ] 实现 `Ns16550U8EarlyConsole` 作为 QEMU baseline，确认 `make ARCH=riscv64 build` 不退化
-<!-- Q18.5 --> - [ ] 设计 `DwApbUart32EarlyConsole` 接口，但不要求 Q18 阶段真板启动
-<!-- Q18.6 --> - [ ] Gate Q18: QEMU 构建和启动行为保持；驱动初始化路径不再新增板级 base/irq/stride/width 常量
+<!-- Q18.1 --> - [x] 新增 StarryOS platform descriptor 或等价集中配置，表达 `name / memory / kernel / console / interrupt / timer / boot`
+<!-- Q18.2 --> - [x] 将 QEMU UART facts 从 `kernel/src/drivers/uart_init.rs` 抽出到 QEMU descriptor，QEMU 行为保持不变
+<!-- Q18.3 --> - [x] 新增 early console 抽象：不依赖 ring buffer / async task / IRQ / PLIC / rootfs
+<!-- Q18.4 --> - [x] 实现 `Ns16550U8EarlyConsole` 作为 QEMU baseline，确认 `make ARCH=riscv64 build` 不退化
+<!-- Q18.5 --> - [x] 设计 `DwApbUart32EarlyConsole` 接口，但不要求 Q18 阶段真板启动
+<!-- Q18.6 --> - [x] Gate Q18: QEMU 构建和启动行为保持；驱动初始化路径不再新增板级 base/irq/stride/width 常量
 
 ### Q19: Lichee RV Dock early smoke test ⏳ 待做
 
