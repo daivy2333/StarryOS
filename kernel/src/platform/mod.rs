@@ -9,20 +9,29 @@ pub mod descriptor;
 pub mod early_console;
 
 pub use console::{ConsoleConfig, ConsoleKind, MmioAccessWidth};
-pub use early_console::{DwApbUart32EarlyConsole, EarlyConsole, Ns16550U8EarlyConsole};
 pub use descriptor::{
     BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
     PlatformDescriptor, TimerConfig,
 };
+pub use early_console::{DwApbUart32EarlyConsole, EarlyConsole, Ns16550U8EarlyConsole};
 
 pub mod lichee_d1;
 pub mod qemu;
+#[cfg(all(target_arch = "riscv64", feature = "lichee-d1"))]
+pub mod smoke;
 pub mod visionfive2;
 
+#[cfg(all(feature = "qemu", feature = "lichee-d1"))]
+compile_error!("features `qemu` and `lichee-d1` cannot be enabled together");
+
 /// Returns the build-time platform descriptor for the active target.
-///
-/// In Q18 this always returns the QEMU descriptor. Later milestones
-/// (Q19, Q20) will select the appropriate descriptor via Cargo features.
 pub fn descriptor() -> &'static PlatformDescriptor {
-    &qemu::QEMU_VIRT
+    #[cfg(feature = "lichee-d1")]
+    {
+        &lichee_d1::LICHEE_D1
+    }
+    #[cfg(not(feature = "lichee-d1"))]
+    {
+        &qemu::QEMU_VIRT
+    }
 }

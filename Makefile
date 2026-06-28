@@ -57,4 +57,12 @@ la:
 vf2:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=mmio build
 
-.PHONY: build run justrun debug disasm clean
+lichee:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
+	@echo "Packing Android boot image..."
+	@python3 tools/android_boot_image.py pack \
+		--kernel StarryOS_riscv64-lichee-d1.bin \
+		--output starry-lichee-boot.img
+	@python3 tools/android_boot_image.py inspect starry-lichee-boot.img
+
+.PHONY: build run justrun debug disasm clean lichee

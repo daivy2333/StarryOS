@@ -21,6 +21,24 @@ Lichee RV Dock 的主要价值不是直接验证当前 StarryOS 的 Q17 SMP 修�
 
 当前适配入口已经清晰：先做 D1 platform + Android boot image + UART0 early console，只要求串口输出一行 smoke test 日志；rootfs、USB、SD/MMC、Shell、async benchmark 都放到后续阶段。
 
+### StarryOS 当前板测状态（2026-06-28）
+
+StarryOS 已经不再停留在官方 Linux 采集阶段，也不再停留在“镜像格式未知”阶段。当前真实进度如下：
+
+1. 官方镜像 `LicheeRV_Tina_hdmi_8723ds.img` 的 boot 分区确认是 Android boot image，`kernel_addr = 0x40200000`，name 为 `d1-nezha`。
+2. StarryOS 已新增 D1 axplat 路径，Lichee 构建不再复用 QEMU axplat boot symbols。
+3. `DWARF=n` 是强制尺寸 gate；未关闭 DWARF 时 boot image 曾为 `25.6M`，会超过约 `10.1M` boot 分区。
+4. 最新真板日志已经进入 StarryOS payload，但在 `percpu::imp::init` 的 AMO 操作上 fault：
+
+```text
+Unhandled exception: Store/AMO access fault
+EPC: ffffffc040244648 TVAL: ffffffc0402c6908
+```
+
+符号化结果：`EPC` 是 `percpu::imp::init` 中的 `amoor.w.aqrl`，`TVAL` 是 `.bss` 中的 `percpu::imp::IS_INIT`。这说明当前问题不是 USB、SD 卡、rootfs、benchmark 部署或官方 Linux 信息缺失，而是 D1/C906 early page table 的内存属性。
+
+已采取的修复：D1 early boot DDR identity/high-half mapping 使用 T-Head C9xx normal-memory `SH|B|C` PTE bits（60/61/62）。下一步是重编并重新写入 boot 分区复测。
+
 ### Roadmap 对齐（2026-06-28）
 
 根据 `.claude/analysis/platform-parameter-decoupling.md` 和 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，Lichee RV Dock 不再作为孤立实验推进，而是纳入 StarryOS 后续 milestone：
@@ -203,6 +221,8 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > licheerv.dts
 - PLIC：base `0x10000000`
 - RAM：`0x40000000 + 512 MiB`
 - 初期 timer 路线：优先使用 OpenSBI timer，不先适配 D1 SoC timer
+- Q19a 当前不需要 USB / SDMMC / rootfs：最新 fault 已发生在 StarryOS runtime 初始化阶段，后续 benchmark 部署方式不是当前阻塞点
+- Q19a 当前不需要继续泛采集官方 Linux：若 PTE 修复后仍失败，优先看串口 fault、EPC/TVAL 符号化和最终页表属性
 
 后续若要补充信息，优先从官方手册 / 主线 DTS / 适配失败日志中查证；不要再无目标地从官方 Linux 导出大块数据。
 
@@ -319,6 +339,49 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > /mnt/exUDISK/lichee.dts
 4. 生成 Android boot image：page size 2048，kernel addr `0x40200000`，ramdisk 可为空。
 5. 写入测试 SD 卡的 `/dev/by-name/boot` 前先备份原 boot 分区。
 6. 串口观察 early log。
+
+### 当前重编与替换流程
+
+在开发机正常构建环境中重编：
+
+```bash
+PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH make lichee
+ls -lh starry-lichee-boot.img
+python3 tools/android_boot_image.py inspect starry-lichee-boot.img
+```
+
+写入前必须确认：
+
+- `starry-lichee-boot.img` 小于当前 boot 分区备份大小，经验值约 `10.1M`。
+- Android boot header 仍为 `name = d1-nezha`。
+- `kernel_addr = 0x40200000`。
+- `page_size = 2048`。
+
+在官方 Linux 中备份并替换：
+
+```bash
+ls -lh /mnt/exUDISK/starry-lichee-boot.img
+dd if=/dev/by-name/boot of=/mnt/exUDISK/boot-official-backup.img bs=1M
+sync
+dd if=/mnt/exUDISK/starry-lichee-boot.img of=/dev/by-name/boot bs=1M conv=fsync
+sync
+reboot -f
+```
+
+如果需要恢复官方 boot：
+
+```bash
+dd if=/mnt/exUDISK/boot-official-backup.img of=/dev/by-name/boot bs=1M conv=fsync
+sync
+reboot -f
+```
+
+复测判断：
+
+- 出现 D1 axplat / axruntime 早期日志：说明 C906 early PTE 修复有效。
+- 出现 `[starry-d1] early boot`：Q19 early smoke 成功。
+- 再次出现 `Store/AMO access fault`，但 EPC/TVAL 已变化：先符号化，再判断是否进入最终页表阶段。
+- 如果 fault 指向最终 kernel address space，优先检查 final page table 是否也启用了 `xuantie-c9xx` / T-Head C9xx memory attributes。
 
 ## 3. 和星光 2 的复用关系
 

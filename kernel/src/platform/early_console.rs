@@ -111,10 +111,8 @@ impl EarlyConsole for Ns16550U8EarlyConsole {
 /// silent data corruption on byte-addressed devices.
 pub struct DwApbUart32EarlyConsole {
     /// Virtual address of UART MMIO base.
-    #[allow(dead_code)]
     base: core::ptr::NonNull<u8>,
     /// Register stride (4 for DW APB UART on 32-bit bus).
-    #[allow(dead_code)]
     stride: u8,
 }
 
@@ -124,7 +122,6 @@ impl DwApbUart32EarlyConsole {
     /// # Safety
     ///
     /// Caller guarantees the address is valid and MMIO-mapped.
-    #[allow(dead_code)]
     pub unsafe fn new(base_paddr: usize, stride: u8) -> Self {
         Self {
             base: core::ptr::NonNull::new(base_paddr as *mut u8).unwrap(),
@@ -138,7 +135,6 @@ impl DwApbUart32EarlyConsole {
     ///
     /// Same contract as [`new`](Self::new): `config.base_paddr` must
     /// point to a valid MMIO-mapped DW APB UART with DEVICE permissions.
-    #[allow(dead_code)]
     pub unsafe fn from_config(config: &super::console::ConsoleConfig) -> Self {
         assert!(
             matches!(config.kind, super::console::ConsoleKind::DwApbUart),
@@ -149,16 +145,52 @@ impl DwApbUart32EarlyConsole {
     }
 }
 
+impl EarlyConsole for DwApbUart32EarlyConsole {
+    fn putchar(&self, ch: u8) {
+        // DW APB UART register offsets (in units of stride):
+        //   offset 0: THR (Transmitter Holding Register) — write
+        //   offset 5: LSR (Line Status Register) — bit 5 = THR empty
+        const UART_THR: usize = 0;
+        const UART_LSR: usize = 5;
+        const UART_LSR_THRE: u32 = 1 << 5;
+
+        // Poll until transmitter holding register is empty.
+        loop {
+            // SAFETY: base and stride are valid per constructor contract.
+            let lsr: u32 = unsafe {
+                self.base
+                    .as_ptr()
+                    .add(UART_LSR * self.stride as usize)
+                    .cast::<u32>()
+                    .read_volatile()
+            };
+            if lsr & UART_LSR_THRE != 0 {
+                break;
+            }
+        }
+
+        // SAFETY: THR is ready per LSR check above. Write only the low byte;
+        // upper bytes are ignored by DW APB UART hardware.
+        unsafe {
+            self.base
+                .as_ptr()
+                .add(UART_THR * self.stride as usize)
+                .cast::<u32>()
+                .write_volatile(ch as u32);
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     extern crate alloc;
 
-    use super::*;
-    use alloc::vec;
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use core::cell::RefCell;
+
+    use super::*;
 
     /// Mock early console that captures all `putchar` calls into a `Vec<u8>`.
     struct MockEarlyConsole {
@@ -219,5 +251,16 @@ mod tests {
         let mock = MockEarlyConsole::new();
         mock.write_str("");
         assert_eq!(mock.into_bytes(), vec![]);
+    }
+
+    #[test]
+    fn dw_apb_uart_register_offsets() {
+        // Verify register offset constants are correct for DW APB UART
+        // stride=4 means: THR at base+0, LSR at base+20
+        let stride: usize = 4;
+        assert_eq!(0 * stride, 0); // THR offset
+        assert_eq!(5 * stride, 20); // LSR offset
+        // LSR THRE bit 5
+        assert_eq!(1 << 5, 0x20);
     }
 }

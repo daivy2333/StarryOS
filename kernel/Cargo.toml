@@ -11,7 +11,9 @@ repository.workspace = true
 [features]
 dev-log = []
 input = ["dep:axinput", "axfeat/input"]
+lichee-d1 = []
 memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
+qemu = []
 vsock = ["axfeat/vsock"]
 
 [dependencies]

@@ -123,7 +123,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 |----------|------|--------|------|
 | **O74** | Platform descriptor 集中化 | 🔴 P0 | 抽出 QEMU/Lichee/VisionFive2 的 UART kind、base、irq、stride、MMIO access width、boot strategy；落实 ADR-044 |
 | **O75** | Early console 分层 | 🔴 P0 | 新增不依赖 IRQ / async task / rootfs 的 polling early console；QEMU 用 NS16550 U8，Lichee/VF2 用 DW APB U32 |
-| **O76** | Lichee Android boot image smoke test | 🔴 P0 | boot image 工具链 + D1 platform skeleton + UART0 polling 输出，验证 `[starry-d1] early boot` |
+| **O76** | Lichee Android boot image smoke test | 🔴 P0 | boot image 工具链 + D1 platform skeleton + UART0 polling 输出；当前已进入 axruntime/percpu，D1/C906 early PTE `SH|B|C` 修复后复测 `[starry-d1] early boot` |
 
 #### Scenario: Roadmap-driven scheduling
 
@@ -657,7 +657,7 @@ Q15 阶段（2026-06-21 开启，2026-06-25 完成）从 pre-M4 基线出发，�
 - Q16 文档/规格收敛 MUST 先完成，确保 tasks / SNAPSHOT / optimization / capability specs 的 roadmap 一致
 - Q17 / O63 MUST 在真板前优先修复（QEMU 单 hart 掩盖 SMP 内存序问题）
 - Q18 / O74-O75 MUST 先完成平台参数解耦和 early console 基础，避免继续把板级参数写入 driver init
-- Q19 / O76 使用 Lichee RV Dock 演练 Android boot image + D1 polling early console，目标是 `[starry-d1] early boot`
+- Q19 / O76 使用 Lichee RV Dock 演练 Android boot image + D1 polling early console；当前已确认 U-Boot 能加载 StarryOS D1 payload，最新阻塞从 boot image / axplat 选择推进为 D1/C906 PTE memory attribute 复测
 - VisionFive2 真板到位 → Q20 O66/O64/O65 观测与 trust-u-boot 验证 → O38（时钟适配）→ O39（真板 FIFO 深度验证）→ Q15 Manual QA 真板复跑
 - Q21 O3/O40/O69（DMA 探索）与 O41（高速波特率）MUST 依赖 Q20 真板数据，禁止在 QEMU 上直接下结论
 - **📐 物理定律**：真板 NS16550 硬件时间 86.8 µs/byte @ 115200 bps（10 bits/byte × 1/115200 s）与 QEMU 0 µs 硬件时间形成本质差异

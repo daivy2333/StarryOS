@@ -852,6 +852,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axplat-riscv64-lichee-d1"
+version = "0.1.0"
+dependencies = [
+ "axconfig-macros",
+ "axcpu",
+ "axplat",
+ "kspin",
+ "lazyinit",
+ "log",
+ "riscv 0.16.0",
+ "riscv_plic",
+ "sbi-rt",
+]
+
+[[package]]
 name = "axplat-riscv64-qemu-virt"
 version = "0.3.1-pre.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3162,6 +3177,7 @@ name = "starryos"
 version = "0.2.0-preview.2"
 dependencies = [
  "axfeat",
+ "axplat-riscv64-lichee-d1",
  "axplat-riscv64-visionfive2",
  "starry-kernel",
 ]

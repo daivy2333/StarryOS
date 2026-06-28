@@ -1,0 +1,15 @@
+id: q19-lichee-d1-early-smoke
+title: Q19 Lichee RV Dock D1 early smoke test
+status: proposed
+owner: assistant
+created: 2026-06-28
+milestone: Q19
+related_specs:
+  - platform-descriptor-early-console
+  - lichee-d1-early-smoke
+related_analysis:
+  - .claude/analysis/lichee-rv-dock-adaptation-plan.md
+  - .claude/analysis/lichee/public-platform-notes.md
+  - .claude/analysis/platform-parameter-decoupling.md
+  - .claude/analysis/d1-axplat-bringup-plan.md
+supersedes: []

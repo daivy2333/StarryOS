@@ -1,0 +1,28 @@
+[package]
+name = "axplat-riscv64-lichee-d1"
+version = "0.1.0"
+edition = "2024"
+authors = ["StarryOS contributors"]
+description = "axplat HAL implementation for Lichee RV Dock (Allwinner D1)"
+license = "GPL-3.0-or-later OR Apache-2.0"
+repository = "https://github.com/Starry-OS/StarryOS"
+
+[features]
+irq-if = ["axplat/irq"]
+irq = ["irq-if", "dep:riscv_plic"]
+smp = ["axplat/smp"]
+
+[lib]
+name = "axplat_riscv64_lichee_d1"
+path = "src/lib.rs"
+
+[dependencies]
+kspin = "0.1"
+lazyinit = "0.2"
+log = "0.4"
+riscv = "0.16"
+riscv_plic = { version = "0.2", optional = true }
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+axconfig-macros = "0.2"
+axcpu = { version = "=0.3.0-preview.8" }
+axplat = { version = "=0.3.1-pre.6" }

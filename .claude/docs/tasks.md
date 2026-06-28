@@ -45,7 +45,7 @@
 | **Q16** | Roadmap / spec rebaseline | 任务重排 + stale spec 标注 + validate 已知噪音记录 | ✅ (2026-06-27) |
 | **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
-| **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ⏳ 待做 |
+| **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ⏳ 已进 axruntime；C906 PTE 修复待复测 |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
@@ -56,13 +56,15 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) Q16 ✅ Q18 ✅ (2026-06-28 platform descriptor + early console) → Q17 ⏳ → Q19 ⏳(Lichee) → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25) Q16 ✅ Q18 ✅ (2026-06-28) Q19 ⏳ (D1 axplat 已进 axruntime；C906 PTE 修复待复测) → Q17 ⏳ → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
 
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
 > 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
 > 2026-06-25 Q15 完成: M0~M4 全部 commit 落地 + QEMU Manual QA 验证无退化
 > 2026-06-27 Roadmap 首次重排: Q6 单一真板桶拆为原 Q16~Q22，Q16 文档/规格收敛完成，下一站 Q17 内存序修复
 > 2026-06-28 Roadmap 二次重排: 新增 Q18 平台参数解耦和 Q19 Lichee RV Dock smoke test，VisionFive2 阶段顺延到 Q20
+> 2026-06-28 Q19 修正: D1 axplat crate 创建 + `MYPLAT`/`PLAT_CONFIG` 接入，ELF entry 0xffffffc040200000，`axplat_riscv64_lichee_d1::boot` 符号确认。`make lichee` 已强制 `DWARF=n`；当前沙箱完整重编被 `lwext4_rust` C 编译 `Bad system call` 阻断，需在正常环境复验 boot image size < boot 分区。
+> 2026-06-28 Q19 板测: U-Boot 已识别 StarryOS Android boot image 并进入 payload；最新 fault 为 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908`，已定位到 `percpu::imp::init` 对 `.bss` `IS_INIT` 的 AMO。根因是 D1/C906 early DDR PTE 缺少 T-Head normal-memory `SH|B|C` bits，已修复，下一步重编烧写复测。
 > 2026-06-28 Q18 完成: platform descriptor + early console + QEMU 行为保持，提交 `941ad05`，归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`
 ```
 
@@ -107,16 +109,22 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 <!-- Q18.5 --> - [x] 设计 `DwApbUart32EarlyConsole` 接口，但不要求 Q18 阶段真板启动
 <!-- Q18.6 --> - [x] Gate Q18: QEMU 构建和启动行为保持；驱动初始化路径不再新增板级 base/irq/stride/width 常量
 
-### Q19: Lichee RV Dock early smoke test ⏳ 待做
+### Q19: Lichee RV Dock D1 axplat bring-up ⏳ 已进 axruntime，C906 PTE 修复待复测
 
-> 来源：`.claude/analysis/lichee-rv-dock-adaptation-plan.md`、`.claude/analysis/lichee/public-platform-notes.md`。
+> 来源：OpenSpec change `q19-lichee-d1-early-smoke`，`.claude/analysis/d1-axplat-bringup-plan.md`、`.claude/analysis/lichee-rv-dock-adaptation-plan.md`。
+> 2026-06-28：D1 axplat 切换已验证；`DWARF=n` 尺寸问题已纳入 `make lichee`；真板已从 boot image / QEMU axplat 阶段推进到 StarryOS payload 内部。当前最新板测 fault 已定位到 D1/C906 早期页表 memory attribute，DDR PTE `SH|B|C` 修复后等待重编烧写复测。
 
-<!-- Q19.1 --> - [ ] boot image 工具链：备份/解析官方 Android boot image，复现 `page_size=2048`、`kernel_addr=0x40200000`
-<!-- Q19.2 --> - [ ] 新增 Lichee RV Dock / Allwinner D1 descriptor：RAM `0x40000000+512MiB`，kernel `0x40200000`，UART0 `0x02500000`，IRQ 18，stride 4，width 32
-<!-- Q19.3 --> - [ ] 生成 D1 最小平台骨架和链接配置，构建产物不依赖 rootfs / USB / SDMMC / async TTY
-<!-- Q19.4 --> - [ ] 实现 D1 UART0 polling early console，串口输出 `[starry-d1] early boot`
-<!-- Q19.5 --> - [ ] early console 成功后打印 hart id / SBI version / timebase，timer 初期优先 SBI
-<!-- Q19.6 --> - [ ] Gate Q19: Lichee RV Dock 串口看到 smoke test 输出；失败排查限定在 boot image、link/load 地址、UART base/stride/access width
+<!-- Q19.1 --> - [x] 建立执行前见证 ✅：确认原 `make lichee` 仅为 `cp` QEMU 产物改名
+<!-- Q19.2 --> - [x] 新增 `crates/axplat-riscv64-lichee-d1/`（11 文件：boot/console/init/irq/mem/power/time/lib.rs + axconfig.toml + build.rs + Cargo.toml）
+<!-- Q19.3 --> - [x] Cargo/Make 接入：`dep:axplat-riscv64-lichee-d1` feature + `MYPLAT`/`PLAT_CONFIG` + `DWARF=n` + 移除 `cp` hack
+<!-- Q19.4 --> - [x] D1 link/load contract：ELF entry `0xffffffc040200000`、boot image `kernel_addr=0x40200000`
+<!-- Q19.5 --> - [x] D1 axplat 层 UART0 32-bit MMIO polling console（DW APB UART，stride 4，不依赖 IRQ/async/rootfs）
+<!-- Q19.6 --> - [x] Host Gate 部分通过：无 qemu_virt boot 引用、`readelf` entry `0xffffffc040200000`、`openspec validate` passed；`make lichee` 强制 `DWARF=n` 以满足 boot 分区尺寸 gate
+<!-- Q19.7 --> - [ ] Manual Board Gate ⏳：真板已进入 StarryOS payload；下一步复测期望 D1 axplat / axruntime 串口输出，并最终到 `[starry-d1] early boot`
+<!-- Q19.8 --> - [x] 链接问题修复：`irq-if` + no-op `IrqIf` 满足 `__IrqIf_register` / `__IrqIf_set_enable` / `__IrqIf_handle`，不提前启用 PLIC
+<!-- Q19.9 --> - [x] 板测 fault 定位：`Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908` = `percpu::imp::init` AMO 写 `.bss` `IS_INIT`
+<!-- Q19.10 --> - [x] D1/C906 early DDR PTE 修复：identity/high-half DDR mapping 设置 T-Head normal-memory `SH|B|C` bits 60/61/62
+<!-- Q19.11 --> - [ ] 重编 + 烧写验证 PTE 修复；若后续在最终页表后再次 fault，检查 final page table 的 `xuantie-c9xx` attrs
 
 ### Q20: VisionFive2 UART 验证 ⏳ 等待硬件
 

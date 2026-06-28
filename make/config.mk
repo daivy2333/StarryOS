@@ -12,6 +12,10 @@ else
   MEM := $(shell axconfig-gen $(PLAT_CONFIG) -r plat.phys-memory-size 2>/dev/null | tr -d _ | xargs printf "%dB")
 endif
 
+ifneq ($(KERNEL_BASE_PADDR),)
+  config_args += -w 'plat.kernel-base-paddr=$(KERNEL_BASE_PADDR)'
+endif
+
 ifneq ($(SMP),)
   config_args += -w 'plat.max-cpu-num=$(SMP)'
 else

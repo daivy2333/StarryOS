@@ -24,13 +24,13 @@ pub const LICHEE_D1: PlatformDescriptor = PlatformDescriptor {
         size: 0x20000000, // 512 MiB
     },
     kernel: KernelImageLayout {
-        load_paddr: 0x40200000,
-        link_vaddr: 0xffffffff40200000,
+        load_paddr: 0x4020_0000,
+        link_vaddr: 0xffffffc0_4020_0000,
     },
     console: ConsoleConfig {
         kind: ConsoleKind::DwApbUart,
-        base_paddr: 0x02500000,
-        irq: Some(18),
+        base_paddr: 0x0250_0000,
+        irq: None, // early console is polling-only; IRQ deferred
         reg_stride: 4,
         reg_width: MmioAccessWidth::U32,
         baud: 115200,

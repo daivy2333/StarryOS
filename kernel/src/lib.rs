@@ -6,6 +6,10 @@
 #![feature(bstr)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![cfg_attr(
+    feature = "lichee-d1",
+    allow(dead_code, unused_imports, unused_variables)
+)]
 
 extern crate alloc;
 extern crate axruntime;

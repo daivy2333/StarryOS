@@ -926,3 +926,83 @@ StarryOS board-specific constants MUST be centralized behind a build-time platfo
 - **WHEN** a StarryOS driver needs board-specific base addresses, IRQ numbers, register stride, register width, or boot image parameters
 - **THEN** it MUST read them from the platform descriptor or equivalent centralized platform module
 - **AND** it MUST NOT introduce new board-specific constants directly inside driver initialization code
+
+<!-- A045 -->
+### Requirement: ADR-045: D1 真板正路径必须接入 D1 axplat 启动层
+
+StarryOS Lichee RV Dock bring-up MUST replace the QEMU axplat boot path with a D1-specific axplat before expecting StarryOS `entry.rs` smoke code to run.
+
+**日期**: 2026-06-28
+**状态**: 已接受（Q19 正路径方案）
+**决策**:
+- 新增或接入本地 `axplat-riscv64-lichee-d1`，由它负责 `_start`、早期页表、MMU enable、内存布局、D1 polling console 和平台初始化。
+- Lichee 构建必须通过 `MYPLAT` / `PLAT_CONFIG` 选择 D1 axplat；禁止继续使用 `axfeat/defplat` 的 QEMU virt 启动层。
+- Host-side Gate 必须检查 `readelf` / linker script / `objdump`：entry 与 linker base 应为 D1 高半区地址，boot symbols 必须是 D1 axplat 而不是 QEMU axplat。
+- StarryOS `kernel/src/platform/*` descriptor 只表达 StarryOS 驱动层事实；它不能替代 axplat 启动层。
+
+**原因**:
+- 最新板测中 U-Boot 已识别 `d1-nezha` Android boot image 并跳转，但没有 StarryOS 输出，说明问题位于 payload 早期执行路径。
+- 当前 ELF 仍以 `0xffffffc080200000` 为入口并调用 `axplat_riscv64_qemu_virt::boot`，与 D1 `0x40200000` 物理加载和 `0xffffffc040200000` 高半区预期不一致。
+- `axruntime` 会在 StarryOS `entry::init` 前运行；如果 axplat console、页表或 MMU 设置错误，`[starry-d1] early boot` 永远不会打印。
+
+**影响**:
+- Q19 后续实现重点从 `entry.rs` smoke 分支转向本地 D1 axplat crate。
+- D1 polling console 要放在 axplat 层，至少在 axruntime 早期日志前可用；StarryOS 层 smoke console 只能作为第二层确认。
+- `DWARF=n` 仍是 Lichee boot image 打包的强制 Gate，直到 raw binary debug section 控制被正式解决。
+
+**替代方案**:
+- ❌ 只覆盖 `KERNEL_BASE_PADDR`：不能替换 QEMU `_start`、页表、console 与 MMIO 范围。
+- ❌ 只在 `kernel/src/platform/lichee_d1.rs` 增加常量：该层运行太晚，无法修复 axplat 早期失败。
+- ❌ 直接复用 VisionFive2 axplat：RAM 起点相近，但 hart-id、UART、PLIC 和 console access width 都不是 D1。
+- ✅ 本地 `axplat-riscv64-lichee-d1` + artifact inspection + Android boot smoke：当前方案。
+
+**参考**:
+- `.claude/analysis/d1-axplat-bringup-plan.md`
+- `.claude/analysis/platform-parameter-decoupling.md`
+- `openspec/specs/learned/spec.md` L221-L222
+
+#### Scenario: D1 boot path verification
+
+- **WHEN** StarryOS builds a Lichee RV Dock boot image
+- **THEN** host inspection MUST prove the boot path references `axplat_riscv64_lichee_d1`
+- **AND** it MUST NOT reference `axplat_riscv64_qemu_virt::boot`
+- **AND** board flashing MUST be deferred if the generated linker base, ELF entry, or Android boot image address do not match the D1 contract
+
+<!-- A046 -->
+### Requirement: ADR-046: D1/C906 early page table 必须设置 T-Head normal-memory PTE flags
+
+StarryOS Lichee RV Dock early boot page table MUST mark DDR mappings with T-Head C9xx normal-memory attributes before entering `axruntime` / `percpu` initialization.
+
+**日期**: 2026-06-28
+**状态**: 已接受（Q19 板测修复）
+**决策**:
+- D1 axplat early boot 的 DDR identity mapping 与 high-half mapping 使用 `PTE_DDR = 0xef | (1 << 60) | (1 << 61) | (1 << 62)`。
+- 低地址 / MMIO bootstrap mapping 暂不套用 cacheable normal-memory 属性，避免把 UART / PLIC / timer 等设备区错误标记为普通内存。
+- `Store/AMO access fault` 如果发生在 `.bss` / percpu 原子操作附近，默认按 D1/C906 memory attribute 问题优先排查。
+- 后续最终页表也必须继承等价的 `xuantie-c9xx` / T-Head C9xx 属性；early page table 修复不代表最终页表已经安全。
+
+**原因**:
+- 真板日志已经进入 StarryOS payload：U-Boot 识别 `d1-nezha`，打印 `Starting kernel ...` 后触发 `Store/AMO access fault`。
+- `EPC ffffffc040244648` 符号化为 `percpu::imp::init` 中的 `amoor.w.aqrl`，`TVAL ffffffc0402c6908` 对应 `.bss` 符号 `percpu::imp::IS_INIT`。
+- 项目依赖中的 `ax-page-table-entry` 对 `xuantie-c9xx` 明确使用 `SH = 1<<60`、`B = 1<<61`、`C = 1<<62` 表示 normal memory。
+
+**影响**:
+- Q19 下一次板测应重编带该 PTE 修复的镜像并重新写入 boot 分区。
+- 如果修复后串口能继续输出，说明 D1 axplat 已跨过 `axruntime`/`percpu` 早期障碍。
+- 如果后续在内存管理初始化后再次 fault，应检查最终 kernel address space 的 PTE 属性，而不是回退到 boot image 格式或官方 Linux 采集。
+
+**替代方案**:
+- ❌ 禁用 percpu / atomics：规避症状，不解决 D1/C906 内存属性要求。
+- ❌ 把整个 0..1G 都标记为 normal memory：可能误标设备 MMIO。
+- ✅ 仅对 DDR `0x40000000..0x80000000` 和高半区 DDR 镜像设置 `SH|B|C`：当前方案。
+
+**参考**:
+- `crates/axplat-riscv64-lichee-d1/src/boot.rs`
+- `openspec/specs/learned/spec.md` L229-L230
+- `.claude/analysis/d1-axplat-bringup-plan.md`
+
+#### Scenario: D1/C906 AMO fault diagnosis
+
+- **WHEN** Lichee RV Dock 在 `Starting kernel ...` 后报告 `Store/AMO access fault`
+- **THEN** MUST 先符号化 EPC/TVAL，确认是否落在 DDR `.bss` / percpu / atomic 路径
+- **AND** MUST 检查 early page table 和 final page table 是否设置 T-Head C9xx normal-memory PTE flags

@@ -1,0 +1,28 @@
+arch = "riscv64"
+platform = "riscv64-lichee-d1"
+package = "axplat-riscv64-lichee-d1"
+
+[plat]
+max-cpu-num = 1
+phys-memory-base = 0x4000_0000
+phys-memory-size = 0x2000_0000
+kernel-base-paddr = 0x4020_0000
+kernel-base-vaddr = "0xffffffc040200000"
+phys-virt-offset = "0xffffffc000000000"
+phys-bus-offset = 0
+kernel-aspace-base = "0xffffffc000000000"
+kernel-aspace-size = "0x0000003fffffffff"
+boot-stack-size = 0x40000
+
+[devices]
+mmio-ranges = [
+    [0x0250_0000, 0x1000],
+    [0x1000_0000, 0x400_0000],
+] # [(uint, uint)]
+timer-frequency = 24_000_000
+timer-irq = "0x8000_0000_0000_0005"
+ipi-irq = "0x8000_0000_0000_0001"
+virtio-mmio-ranges = [[0, 0]] # [(uint, uint)]
+uart-paddr = 0x0250_0000
+uart-irq = 18
+plic-paddr = 0x1000_0000
