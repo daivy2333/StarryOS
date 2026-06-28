@@ -1,0 +1,63 @@
+root@MaixLinux:/# cat /proc/partitions
+major minor  #blocks  name
+
+ 179        0   30533632 mmcblk0
+ 179        1       4032 mmcblk0p1
+ 179        2        252 mmcblk0p2
+ 179        3        252 mmcblk0p3
+ 179        4      10332 mmcblk0p4
+ 179        5        504 mmcblk0p5
+ 179        6      14112 mmcblk0p6
+ 179        7    8388608 mmcblk0p7
+ 259        0   22093784 mmcblk0p8
+   8        0    7761920 sda
+root@MaixLinux:/# ls -la /dev/by-name 2>/dev/null
+drwxr-xr-x    2 root     root           200 Jan  1 08:00 .
+drwxr-xr-x    8 root     root          3380 Jan  1 08:00 ..
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 UDISK -> /dev/mmcblk0p8
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 boot -> /dev/mmcblk0p4
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 boot-resource -> /dev/mmcblk0p1
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 dsp0 -> /dev/mmcblk0p5
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 env -> /dev/mmcblk0p2
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 env-redund -> /dev/mmcblk0p3
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 recovery -> /dev/mmcblk0p6
+lrwxrwxrwx    1 root     root            14 Jan  1 08:00 rootfs -> /dev/mmcblk0p7
+root@MaixLinux:/# ls -la /dev/block/by-name 2>/dev/null
+root@MaixLinux:/# blkid 2>/dev/null
+/dev/mmcblk0: PTUUID="ab6f3888-569a-4926-9668-80941dcb40bc" PTTYPE="gpt"
+/dev/mmcblk0p1: SEC_TYPE="msdos" LABEL="Volumn" TYPE="vfat" PARTLABEL="boot-resource" PARTUUID="a0085546-4166-744a-a353-fca9272b8e45"
+/dev/mmcblk0p2: PARTLABEL="env" PARTUUID="a0085546-4166-744a-a353-fca9272b8e46"
+/dev/mmcblk0p3: PARTLABEL="env-redund" PARTUUID="a0085546-4166-744a-a353-fca9272b8e47"
+/dev/mmcblk0p4: PARTLABEL="boot" PARTUUID="a0085546-4166-744a-a353-fca9272b8e48"
+/dev/mmcblk0p5: PARTLABEL="dsp0" PARTUUID="a0085546-4166-744a-a353-fca9272b8e49"
+/dev/mmcblk0p6: PARTLABEL="recovery" PARTUUID="a0085546-4166-744a-a353-fca9272b8e4a"
+/dev/mmcblk0p7: UUID="57f8f4bc-abf4-655f-bf67-946fc0f9f25b" TYPE="ext4" PARTLABEL="rootfs" PARTUUID="a0085546-4166-744a-a353-fca9272b8e4b"
+/dev/mmcblk0p8: PARTLABEL="UDISK" PARTUUID="a0085546-4166-744a-a353-fca9272b8e4c"
+/dev/sda: LABEL="UDISK" UUID="F04D-7C46" TYPE="vfat"
+root@MaixLinux:/# fdisk -l /dev/mmcblk0 2>/dev/null
+Disk /dev/mmcblk0: 29 GB, 31266439168 bytes, 61067264 sectors
+3786 cylinders, 256 heads, 63 sectors/track
+Units: cylinders of 16128 * 512 = 8257536 bytes
+
+Device       Boot StartCHS    EndCHS        StartLBA     EndLBA    Sectors  Size Id Type
+/dev/mmcblk0p1    0,0,2       1023,255,63          1 4294967295 4294967295 2047G ee EFI GPT
+root@MaixLinux:/# mkdir -p /tmp/bootp4
+root@MaixLinux:/# mount -o ro /dev/mmcblk0p4 /tmp/bootp4
+NTFS signature is missing.
+Failed to mount '/dev/mmcblk0p4': Invalid argument
+The device '/dev/mmcblk0p4' doesn't seem to have a valid NTFS.
+Maybe the wrong device is used? Or the whole disk instead of a
+partition (e.g. /dev/sda, not /dev/sda1)? Or the other way around?
+mount: mounting /dev/mmcblk0p4 on /tmp/bootp4 failed: Invalid argument
+root@MaixLinux:/# ls -la /tmp/bootp4
+drwxr-xr-x    2 root     root            40 Jun 28 17:24 .
+drwxrwxrwt   14 root     root           440 Jun 28 17:24 ..
+root@MaixLinux:/# find /tmp/bootp4 -maxdepth 3 -type f -print
+root@MaixLinux:/# umount /tmp/bootp4
+umount: can't unmount /tmp/bootp4: Invalid argument
+root@MaixLinux:/# dd if=/dev/mmcblk0p4 of=/mnt/exUDISK/mmcblk0p4-head.bin bs=1M
+count=8
+8+0 records in
+8+0 records out
+root@MaixLinux:/# sync
+root@MaixLinux:/#

@@ -128,6 +128,9 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | `arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA 待 Q6 重新评估（O3/O40）、HAL trait 我们更精简（Q13 + ADR-036）、Q6 真板待采纳 trust u-boot（ADR-004）+ PLIC init_primary/percpu 分离（ADR-002）、arceos 自身未做异步 UART（OPT-001 我们是行业先例）。配套 optimization/spec.md O64~O73 借鉴清单 |
 | <!-- R2 --> `.claude/analysis/optimization-milestone-replan.md` | Q15 后优化项 milestone 重规划：将 Q6 过载项拆分为 Q16 文档收敛、Q17 SMP 内存序、Q18 真板观测、Q19 VisionFive2 验证、Q20 DMA/高波特率决策、Q21 维护性清理、Q22 远期预研池 |
 | <!-- R3 --> `.claude/analysis/q17-smp-memory-ordering.md` | Q17 / O63 SMP 内存序实施前分析：`ier_cache` RMW 竞争、TX completion Release/Acquire 语义、无需按架构分叉的 Rust 原子模型依据、验证 Gate |
+| <!-- R4 --> `.claude/analysis/lichee/public-platform-notes.md` | Lichee RV Dock 公开资料与真板采集对照：D1 UART/PLIC/timer/boot image/RAM/启动链事实基线 |
+| <!-- R5 --> `.claude/analysis/lichee-rv-dock-adaptation-plan.md` | Lichee RV Dock 适配方案：方向、技术路线、milestone、风险与下一步工程清单 |
+| <!-- R6 --> `.claude/analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

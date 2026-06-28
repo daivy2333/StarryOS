@@ -4,6 +4,8 @@
 >
 > 当前结论：Lichee RV Dock 适合作为真板流程演练板，但不适合作为 Q17 SMP / 多核内存序验证板。它使用 Allwinner D1 / XuanTie C906，属于单核 RISC-V 平台。
 
+> 2026-06-28 更新：官方 Linux 采集阶段已完成。当前信息量已经足够进入 StarryOS Lichee RV Dock early console smoke test 适配；后续不再需要继续从官方 Linux 泛采集数据。除非 smoke test 失败并指向 bootloader / clock / UART 细节，否则新的官方 Linux 采集不是阻塞项。
+
 ## 1. 定位与边界
 
 Lichee RV Dock 的主要价值不是直接验证当前 StarryOS 的 Q17 SMP 修复，而是提前打通以下流程：
@@ -16,6 +18,21 @@ Lichee RV Dock 的主要价值不是直接验证当前 StarryOS 的 Q17 SMP 修�
 - 为后续星光 2 bring-up 建立可复用检查清单
 
 当前 StarryOS 仓库默认面向 QEMU virt，并已有 `vf2` 构建入口。异步 UART 初始化仍使用 QEMU virt 的 UART MMIO 地址 `0x10000000`。Lichee RV Dock 是 Allwinner D1 平台，UART、PLIC、timer、内存布局、启动协议均不同，因此不能直接把当前 StarryOS 镜像烧进 TF 卡运行。
+
+当前适配入口已经清晰：先做 D1 platform + Android boot image + UART0 early console，只要求串口输出一行 smoke test 日志；rootfs、USB、SD/MMC、Shell、async benchmark 都放到后续阶段。
+
+### Roadmap 对齐（2026-06-28）
+
+根据 `.claude/analysis/platform-parameter-decoupling.md` 和 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，Lichee RV Dock 不再作为孤立实验推进，而是纳入 StarryOS 后续 milestone：
+
+| Milestone | 与 Lichee RV Dock 的关系 | Gate |
+|-----------|--------------------------|------|
+| Q17 | SMP / 内存序修复，Lichee 不用于验证多核，但应先消除通用 async UART 风险 | QEMU benchmark 无退化 |
+| Q18 | 平台参数解耦 / early console 基础，为 Lichee 和 VisionFive2 共享前置 | QEMU 行为保持，driver 不再新增板级硬编码 |
+| Q19 | Lichee RV Dock early smoke test 主阶段 | 串口输出 `[starry-d1] early boot` |
+| Q20 | VisionFive2 UART 验证，复用 Q18/Q19 形成的平台边界和 bring-up 经验 | VisionFive2 真板基线落档 |
+
+因此，Lichee 的下一步工程入口不是继续采集官方 Linux 信息，而是在 Q18 后进入 Q19：Android boot image 工具链、D1 platform descriptor、D1 UART0 32-bit polling early console。
 
 ### 分支策略
 
@@ -130,6 +147,89 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > licheerv.dts
 
 如果没有 `dtc`，先保存 `devicetree.tar.gz`，回开发机后再分析。
 
+### 已采集参数（2026-06-28）
+
+以下数据来自官方 Linux 上运行 `tests/explorer.c` 的输出，原始记录保存在 `.claude/analysis/lichee/新建 文本文档.txt`。
+
+| 项 | 当前值 |
+|----|--------|
+| SoC / model | `allwinner,d1` / `sun20iw1p1` |
+| 当前烧录镜像 | `LicheeRV_Tina_hdmi_8723ds.img` |
+| Linux | `5.4.61`，节点名 `MaixLinux` |
+| CPU | 单核 `hart 0`，ISA `rv64imafdcvu`，MMU `sv39` |
+| RAM (DT) | base `0x40000000`，size `0x20000000` |
+| RAM (Linux iomem) | `0x40200000-0x5fffffff` 可用系统内存，内核占用 `0x40200000` 起 |
+| Console | `ttyS0,115200`，`stdout-path = serial0:115200n8` |
+| UART0 | base `0x02500000`，size `0x400`，`status = okay`，Linux `ttyS0` |
+| UART1 | base `0x02500400`，size `0x400`，`status = okay`，Linux `ttyS1` |
+| UART compatible | vendor DT: `allwinner,sun20i-uart`；mainline DT: `snps,dw-apb-uart` |
+| UART0 IRQ | `/proc/interrupts` 显示 PLIC IRQ `18` |
+| PLIC | base `0x10000000`，size `0x04000000`，compatible `riscv,plic0` |
+| Timer | base `0x02050000`，size `0xa0`，compatible `allwinner,sun4i-a10-timer` |
+| Timer IRQ | `/proc/interrupts` 显示 PLIC IRQ `75` |
+| timebase | `0x016e3600` = 24 MHz |
+| rootfs | `/dev/mmcblk0p7` ext4 |
+| boot/resource | `/dev/mmcblk0p1` 挂载到 `/mnt/SDCARD` |
+| boot image | `/dev/mmcblk0p4` (`/dev/by-name/boot`)，Android boot image |
+| U-Boot load | `sunxi_flash read 45000000 boot; bootm 45000000` |
+| kernel_addr | Android boot header: `0x40200000` |
+| USB 外接盘 | `/dev/sda` 挂载到 `/mnt/exUDISK` |
+
+镜像名含义按 Sipeed 官方后缀约定理解：`Tina` 表示 Tina / OpenWrt 小 Linux，`hdmi` 表示默认 HDMI 输出，`8723ds` 表示 RTL8723DS Wi-Fi / BLE 驱动配置。该镜像名能确认当前系统类型和外设配置，但不能直接推出 `/dev/mmcblk0p4` 的 boot image 格式。
+
+`tests/boot_probe.c` 已确认 `/dev/mmcblk0p4` 是 Android boot image，header 关键字段：
+
+| 字段 | 值 |
+|------|----|
+| name | `d1-nezha` |
+| kernel_size | `9783580` bytes |
+| kernel_addr | `0x40200000` |
+| ramdisk_size | `12` bytes |
+| ramdisk_addr | `0x41200000` |
+| second_addr | `0x41100000` |
+| tags_addr | `0x40200100` |
+| page_size | `2048` |
+
+### 当前不再阻塞的信息
+
+以下问题已经有足够答案，不需要继续从官方 Linux 采集：
+
+- 启动链：`BOOT0 -> OpenSBI v0.6 -> U-Boot 2018.05 -> Android boot image`
+- boot 分区：`/dev/by-name/boot` = `/dev/mmcblk0p4`
+- U-Boot 加载命令：`sunxi_flash read 45000000 boot; bootm 45000000`
+- kernel 加载地址：Android boot header `kernel_addr = 0x40200000`
+- 串口 console：UART0，base `0x02500000`，IRQ `18`，baud `115200`
+- UART 访问模型：DesignWare APB UART，stride 4，32-bit MMIO
+- PLIC：base `0x10000000`
+- RAM：`0x40000000 + 512 MiB`
+- 初期 timer 路线：优先使用 OpenSBI timer，不先适配 D1 SoC timer
+
+后续若要补充信息，优先从官方手册 / 主线 DTS / 适配失败日志中查证；不要再无目标地从官方 Linux 导出大块数据。
+
+### 已完成采集记录
+
+本轮 bring-up 已完成 boot 分区、启动链和板级参数采集。以下命令曾用于采集，不再是下一步阻塞项：
+
+```bash
+ls -la /mnt/SDCARD
+find /mnt/SDCARD -maxdepth 2 -type f -print
+cp /sys/firmware/fdt /mnt/exUDISK/lichee.dtb
+```
+
+如果板子上有 `dtc`：
+
+```bash
+dtc -I fs -O dts /sys/firmware/devicetree/base > /mnt/exUDISK/lichee.dts
+```
+
+如果没有 `dtc`，保留 `lichee.dtb` 回开发机反编译。
+
+实际结论：
+
+- `/mnt/SDCARD` 是 `boot-resource` 分区，只包含 `bootlogo.bmp`、`magic.bin` 等资源。
+- `/dev/by-name/boot` (`/dev/mmcblk0p4`) 是真正 boot 分区，格式为 Android boot image。
+- `/sys/firmware/fdt` 在当前系统中拷出为空；后续如果需要完整 DTS，优先使用 mainline DTS + explorer 输出对照，不阻塞 early smoke test。
+
 ### 阶段 C：跑用户态测试程序
 
 在官方 Linux 上先跑用户态测试，验证交叉编译、部署、执行、结果采集流程。
@@ -177,6 +277,48 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > licheerv.dts
 6. 跑 shell
 7. 跑 `/dev/console` 读写测试
 8. 跑 async UART benchmark
+
+### 适配前置待办
+
+在真正修改 StarryOS 平台代码前，先完成以下确认：
+
+- 查 D1 / sun20iw1p1 官方手册 UART 章节，确认 `allwinner,sun20i-uart` 是否兼容 NS16550：
+  - 寄存器 offset 与当前 `uart_16550` 是否一致
+  - mainline DT 显示 `reg-shift = 2`、`reg-io-width = 4`，即 register stride 4 + 32-bit access；确认当前 `uart_16550` 是否能支持，或需要 `dw-apb-uart` backend
+  - FIFO 深度与触发阈值
+  - IER / IIR / LSR / FCR 位定义
+  - baud rate divisor / clock 输入关系
+- 查 PLIC / 中断章节，确认 Linux 显示的 UART0 IRQ `18`、timer IRQ `75` 与裸机初始化需要的 source id 一致。
+- 查 timer / clock 章节，确认 `0x02050000` timer 能否用于 StarryOS，或是否应优先使用 SBI timer。
+- 查启动链资料，明确 U-Boot 加载 StarryOS 的镜像格式、加载地址、DTB 传递方式。
+- 当前 boot 路线已确定为 Android boot image：优先设计 StarryOS kernel 打包到 Android boot image，并写入 `/dev/by-name/boot` 的 smoke-test 流程。
+- 整理一个 Allwinner D1 platform 草案：
+  - RAM base / size
+  - kernel load address (`0x40200000` 优先)
+  - UART0 base / IRQ / stride
+  - PLIC base / context
+  - timer source
+  - early console 路径
+- 先实现 early console smoke test，再考虑异步 UART 栈复用。
+
+### 下一步工程目标
+
+最小目标：`StarryOS` 通过当前 U-Boot 启动链在 UART0 输出一行 early log。
+
+成功标准：
+
+```text
+[starry-d1] early boot
+```
+
+建议拆分：
+
+1. 新增 D1 / Lichee RV platform 常量：RAM、UART0、PLIC、SBI timer。
+2. 准备 UART0 early console：DesignWare APB UART，stride 4，32-bit MMIO。
+3. 设置 kernel link/load address，优先对齐 `0x40200000`。
+4. 生成 Android boot image：page size 2048，kernel addr `0x40200000`，ramdisk 可为空。
+5. 写入测试 SD 卡的 `/dev/by-name/boot` 前先备份原 boot 分区。
+6. 串口观察 early log。
 
 ## 3. 和星光 2 的复用关系
 
@@ -227,6 +369,6 @@ test-results.txt
 - NS16550 stride: `1`
 - QEMU virt 中断和设备布局
 
-因此 Lichee RV Dock bring-up 前不能只改烧录命令。需要先确认 D1 的 UART 是否兼容 16550、寄存器 stride、IRQ 编号和时钟初始化要求，再决定是否复用当前 `uart_16550` 异步栈。
+因此 Lichee RV Dock bring-up 前不能只改烧录命令。当前已确认 D1 UART 是 DW APB UART 风格：UART0 base `0x02500000`、IRQ `18`、register stride 4、32-bit MMIO。后续必须先适配 D1 platform 和 early console，再考虑复用或扩展 `uart_16550` 异步栈。
 
 Q17 之前，Lichee RV Dock 可以用于单核真板流程和基础串口实验；Q17 的 SMP / 内存序验证仍需要 QEMU SMP 或多核真板。

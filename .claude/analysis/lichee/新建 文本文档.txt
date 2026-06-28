@@ -1,0 +1,561 @@
+
+root@MaixLinux:/mnt/exUDISK# ./explorer
+EXPLORER_OUTPUT_BEGIN
+program=tests/explorer.c
+purpose=Lichee RV Dock official Linux board information capture
+
+==============================================================================
+SECTION: basic system
+==============================================================================
+sysname=Linux
+nodename=MaixLinux
+release=5.4.61
+version=#189 PREEMPT Thu Dec 23 07:30:37 UTC 2021
+machine=riscv64
+time=Thu Jan  1 08:01:03 1970
+
+==============================================================================
+SECTION: procfs platform files
+==============================================================================
+
+-- cmdline --
+$ cat /proc/cmdline
+earlyprintk=sunxi-uart,0x02500000 clk_ignore_unused initcall_debug=0 console=tty0 console=ttyS0,115200 loglevel=0 root=/dev/mmcblk0p7 init=/sbin/init partitions=boot-resource@mmcblk0p1:env@mmcblk0p2:env-redund@mmcblk0p3:boot@mmcblk0p4:dsp0@mmcblk0p5:recovery@mmcblk0p6:rootfs@mmcblk0p7:UDISK@mmcblk0p8 cma=8M snum= mac_addr= wifi_mac= bt_mac= specialstr= gpt=1 rootfstype=ext4 androidboot.mode=normal androidboot.hardware=sun20iw1p1 boot_type=1 androidboot.boot_type=1 gpt=1 uboot_message=2018.05-g0a88ac9-dirty
+
+-- cpuinfo --
+$ cat /proc/cpuinfo
+processor       : 0
+hart            : 0
+isa             : rv64imafdcvu
+mmu             : sv39
+
+
+-- meminfo --
+$ cat /proc/meminfo
+MemTotal:         503628 kB
+MemFree:          424684 kB
+MemAvailable:     442316 kB
+Buffers:             824 kB
+Cached:            22268 kB
+SwapCached:            0 kB
+Active:            19948 kB
+Inactive:          17584 kB
+Active(anon):      14444 kB
+Inactive(anon):       28 kB
+Active(file):       5504 kB
+Inactive(file):    17556 kB
+Unevictable:           0 kB
+Mlocked:               0 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Dirty:                 0 kB
+Writeback:             0 kB
+AnonPages:         14444 kB
+Mapped:            14456 kB
+Shmem:                36 kB
+KReclaimable:       4732 kB
+Slab:              17968 kB
+SReclaimable:       4732 kB
+SUnreclaim:        13236 kB
+KernelStack:        1344 kB
+PageTables:          472 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:      251812 kB
+Committed_AS:     149556 kB
+VmallocTotal:   67108863 kB
+VmallocUsed:        3056 kB
+VmallocChunk:          0 kB
+Percpu:               32 kB
+CmaTotal:           8192 kB
+CmaFree:               0 kB
+
+-- iomem --
+$ cat /proc/iomem
+01701000-01701fff : 3003000.msgbox msgbox@0601f000
+02000000-020004ff : 2000000.pinctrl pinctrl@2000000
+02001000-02001fff : 2001000.clock clock@2001000
+02008000-020083ff : ledc@2008000
+02009400-020097ff : 2009400.ths ths@02009400
+02010000-02010fff : 2010000.iommu iommu@2010000
+02030000-0203034b : sunxi-internal-codec
+02031000-0203104f : sunxi-dmic
+02034000-0203409f : sunxi-daudio
+02500000-025003ff : uart
+02500400-025007ff : uart
+02502800-02502bff : twi@2502800
+03002000-03002fff : 3002000.dma-controller dma-controller@3002000
+03003000-03003fff : 3003000.msgbox msgbox@0601f000
+03006000-03006fff : 3006000.sid sid@3006000
+04020000-04020fff : 4020000.sdmmc sdmmc@4020000
+04021000-04021fff : 4021000.sdmmc sdmmc@4021000
+06011000-0601101f : 6011000.watchdog watchdog@6011000
+0601f000-0601ffff : 3003000.msgbox msgbox@0601f000
+07010000-0701023f : 7010000.clock clock@7010000
+07090000-0709031f : 7090000.rtc rtc@7090000
+40200000-5fffffff : System RAM
+  40200000-4022cfff : Kernel code
+  40875ed6-40b5491b : Kernel data
+
+-- interrupts --
+$ cat /proc/interrupts
+           CPU0
+  1:          0  SiFive PLIC  77  sunxikbd
+  4:          0  SiFive PLIC  80  2010000.iommu
+  6:          0  SiFive PLIC  82  cedar_dev
+  8:          0  SiFive PLIC 160  7090000.rtc
+ 18:        168  SiFive PLIC  18  uart0
+ 26:          0  SiFive PLIC 102  3003000.msgbox
+ 27:         34  SiFive PLIC  27  twi2
+ 29:          0  SiFive PLIC 105  5410000.g2d
+ 31:       2464  SiFive PLIC 107  dispaly
+ 36:          0  SiFive PLIC  36  ledcirq
+ 41:          3  SiFive PLIC  41  audio jack irq
+ 45:         46  SiFive PLIC  45  sunxi_usb_udc
+ 49:        428  SiFive PLIC  49  ehci_hcd:usb1
+ 50:          0  SiFive PLIC  50  ohci_hcd:usb2
+ 56:       1200  SiFive PLIC  56  mmc0
+ 57:      25115  SiFive PLIC  57  mmc1
+ 64:          0  SiFive PLIC 140  3003000.msgbox
+ 66:        384  SiFive PLIC  66  3002000.dma-controller
+ 70:          0  SiFive PLIC 144  3003000.msgbox
+ 75:          0  SiFive PLIC  75  timer@2050000
+176:          1  sunxi_pio_edge 134  4020000.sdmmc cd
+216:          0  sunxi_pio_edge 174  fts_ts
+
+-- irq stat --
+$ cat /proc/stat
+cpu  3804 0 612 77 21 0 7 0 0 0
+cpu0 3804 0 612 77 21 0 7 0 0 0
+intr 30045 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 288 0 0 0 0 0 0 0 0 34 0 0 0 2484 0 0 0 0 0 0 0 0 0 3 0 0 0 46 0 0 0 434 0 0 0 0 0 0 1200 25171 0 0 0 0 0 0 0 0 384 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+ctxt 85648
+btime 17
+processes 621
+procs_running 2
+procs_blocked 0
+softirq 14079 1 4483 4 2 1294 0 3246 0 0 5049
+
+-- devices --
+$ cat /proc/devices
+Character devices:
+  1 mem
+  2 pty
+  3 ttyp
+  4 /dev/vc/0
+  4 tty
+  5 /dev/tty
+  5 /dev/console
+  5 /dev/ptmx
+  7 vcs
+ 10 misc
+ 13 input
+ 29 fb
+ 81 video4linux
+ 89 i2c
+ 90 mtd
+116 alsa
+128 ptm
+136 pts
+150 cedar_dev
+153 spi
+180 usb
+189 usb_device
+216 rfcomm
+243 hdmi
+244 rpmb
+245 ttyGS
+246 ttyS
+247 disp
+248 sunxi-pwm-dev
+249 watchdog
+250 g2d_chrdev
+251 BaseRemoteCtl
+252 media
+253 rtc
+254 gpiochip
+
+Block devices:
+  8 sd
+ 31 mtdblock
+ 65 sd
+ 66 sd
+ 67 sd
+ 68 sd
+ 69 sd
+ 70 sd
+ 71 sd
+128 sd
+129 sd
+130 sd
+131 sd
+132 sd
+133 sd
+134 sd
+135 sd
+179 mmc
+254 ubiblock
+259 blkext
+
+-- tty drivers --
+$ cat /proc/tty/drivers
+/dev/tty             /dev/tty        5       0 system:/dev/tty
+/dev/console         /dev/console    5       1 system:console
+/dev/ptmx            /dev/ptmx       5       2 system
+/dev/vc/0            /dev/vc/0       4       0 system:vtmaster
+rfcomm               /dev/rfcomm   216 0-255 serial
+g_serial             /dev/ttyGS    245 0-3 serial
+uart                 /dev/ttyS     246 0-5 serial
+pty_slave            /dev/pts      136 0-1048575 pty:slave
+pty_master           /dev/ptm      128 0-1048575 pty:master
+pty_slave            /dev/ttyp       3 0-15 pty:slave
+pty_master           /dev/pty        2 0-15 pty:master
+unknown              /dev/tty        4 1-63 console
+
+-- consoles --
+$ cat /proc/consoles
+ttyS0                -W- (EC p  )  246:0
+tty0                 -WU (E  p  )    4:1
+
+-- version --
+$ cat /proc/version
+Linux version 5.4.61 (nihao@dedba907972f) (riscv64-unknown-linux-gnu-gcc (C-SKY RISCV Tools V1.8.4 B20200702) 8.1.0, GNU ld (GNU Binutils) 2.32) #189 PREEMPT Thu Dec 23 07:30:37 UTC 2021
+
+==============================================================================
+SECTION: filesystem summary
+==============================================================================
+/: total=102281216 free=24997888 avail=17657856 block=4096
+/tmp: total=257855488 free=257818624 avail=257818624 block=4096
+
+-- mounts --
+$ cat /proc/mounts
+/dev/root / ext4 rw,noatime 0 0
+devtmpfs /dev devtmpfs rw,relatime,size=247628k,nr_inodes=61907,mode=755 0 0
+proc /proc proc rw,nosuid,nodev,noexec,noatime 0 0
+sysfs /sys sysfs rw,nosuid,nodev,noexec,noatime 0 0
+cgroup /sys/fs/cgroup cgroup rw,nosuid,nodev,noexec,relatime,blkio,devices,freezer,pids,rdma 0 0
+tmpfs /tmp tmpfs rw,nosuid,nodev,noatime 0 0
+devpts /dev/pts devpts rw,nosuid,noexec,relatime,mode=600,ptmxmode=000 0 0
+debugfs /sys/kernel/debug debugfs rw,noatime 0 0
+none /sys/kernel/config configfs rw,relatime 0 0
+adb /dev/usb-ffs/adb functionfs rw,relatime 0 0
+/dev/mmcblk0p1 /mnt/SDCARD vfat rw,relatime,fmask=0000,dmask=0000,allow_utime=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+/dev/sda /mnt/exUDISK vfat rw,relatime,fmask=0000,dmask=0000,allow_utime=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+
+-- filesystems --
+$ cat /proc/filesystems
+nodev   sysfs
+nodev   tmpfs
+nodev   bdev
+nodev   proc
+nodev   cgroup
+nodev   cgroup2
+nodev   devtmpfs
+nodev   configfs
+nodev   debugfs
+nodev   sockfs
+nodev   pipefs
+nodev   ramfs
+nodev   devpts
+        ext3
+        ext2
+        ext4
+        squashfs
+        vfat
+nodev   overlay
+nodev   ubifs
+        fuseblk
+nodev   fuse
+nodev   fusectl
+nodev   functionfs
+
+-- block devices --
+$ ls /sys/block
+mmcblk0
+sda
+
+==============================================================================
+SECTION: tty and console sysfs
+==============================================================================
+
+-- active console --
+$ cat /sys/class/tty/console/active
+tty0 ttyS0
+
+-- tty symlinks --
+[console]
+/sys/class/tty/console -> ../../devices/virtual/tty/console
+
+-- tty dev --
+$ cat /sys/class/tty/console/dev
+5:1
+[ttyS0]
+/sys/class/tty/ttyS0 -> ../../devices/platform/soc@3000000/2500000.uart/tty/ttyS0
+/sys/class/tty/ttyS0/device -> ../../../2500000.uart
+
+-- tty dev --
+$ cat /sys/class/tty/ttyS0/dev
+246:0
+[ttyS1]
+/sys/class/tty/ttyS1 -> ../../devices/platform/soc@3000000/2500400.uart/tty/ttyS1
+/sys/class/tty/ttyS1/device -> ../../../2500400.uart
+
+-- tty dev --
+$ cat /sys/class/tty/ttyS1/dev
+246:1
+
+==============================================================================
+SECTION: device tree summary
+==============================================================================
+
+-- dt model --
+$ cat /sys/firmware/devicetree/base/model
+sun20iw1p1
+
+
+-- dt compatible --
+$ cat /sys/firmware/devicetree/base/compatible
+allwinner,d1
+arm,sun20iw1p1
+allwinner,sun20iw1p1
+
+
+NODE /sys/firmware/devicetree/base/memory@40000000
+  name: memory
+  device_type: memory
+  reg: <0x00000000 0x40000000 0x00000000 0x20000000>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/uart@2501400
+  name: uart
+  compatible: allwinner,sun20i-uart
+  device_type: uart5
+  status: disabled
+  reg: <0x00000000 0x02501400 0x00000000 0x00000400>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/uart@2500800
+  name: uart
+  compatible: allwinner,sun20i-uart
+  device_type: uart2
+  status: disabled
+  reg: <0x00000000 0x02500800 0x00000000 0x00000400>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/interrupt-controller@10000000
+  name: interrupt-controller
+  compatible: riscv,plic0
+  reg: <0x00000000 0x10000000 0x00000000 0x04000000>
+  #address-cells: <0x00000002>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/uart@2501000
+  name: uart
+  compatible: allwinner,sun20i-uart
+  device_type: uart4
+  status: disabled
+  reg: <0x00000000 0x02501000 0x00000000 0x00000400>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/uart@2500400
+  name: uart
+  compatible: allwinner,sun20i-uart
+  device_type: uart1
+  status: okay
+  reg: <0x00000000 0x02500400 0x00000000 0x00000400>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/uart@2500c00
+  name: uart
+  compatible: allwinner,sun20i-uart
+  device_type: uart3
+  status: disabled
+  reg: <0x00000000 0x02500c00 0x00000000 0x00000400>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/uart@2500000
+  name: uart
+  compatible: allwinner,sun20i-uart
+  device_type: uart0
+  status: okay
+  reg: <0x00000000 0x02500000 0x00000000 0x00000400>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/timer@2050000
+  name: timer
+  compatible: allwinner,sun4i-a10-timer
+  device_type: soc_timer
+  status: okay
+  reg: <0x00000000 0x02050000 0x00000000 0x000000a0>
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart0_pins@1
+  name: uart0_pins
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart2_pins@1
+  name: uart2_pins
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart1_pins
+  name: uart1_pins
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart0_pins@0
+  name: uart0_pins
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart1_pins@0
+  name: uart1_pins
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart2_pins@0
+  name: uart2_pins
+
+NODE /sys/firmware/devicetree/base/soc@3000000/pinctrl@2000000/uart3_pins@0
+  name: uart3_pins
+
+NODE /sys/firmware/devicetree/base/chosen
+  name: chosen
+  bootargs: earlyprintk=sunxi-uart,0x02500000 clk_ignore_unused initcall_debug=0 console=tty0 console=ttyS0,115200 loglevel=0 root=/dev/mmcblk0p7 init=/sbin/init partitions=boot-resource@mmcblk0p1:env@mmcblk0p2:env-redund@mmcblk0p3:boot@mmcblk0p4:dsp0@mmcblk0p5:recovery@mmcblk0p6:rootfs@mmcblk0p7:UDISK@mmcblk0p8 cma=8M snum= mac_addr= wifi_mac= bt_mac= specialstr= gpt=1 rootfstype=ext4 androidboot.mode=normal androidboot.hardware=sun20iw1p1 boot_type=1 androidboot.boot_type=1 gpt=1 uboot_message=2018.05-g0a88ac9-dirty-config-dirty(12/14/2021-18:32:11) mbr_offset=1556480 androidboot.dramsize=512
+  stdout-path: serial0:115200n8
+
+NODE /sys/firmware/devicetree/base/cpus
+  name: cpus
+  timebase-frequency: <0x016e3600>
+  #address-cells: <0x00000001>
+  #size-cells: <0x00000000>
+
+NODE /sys/firmware/devicetree/base/cpus/idle-states
+  name: idle-states
+
+NODE /sys/firmware/devicetree/base/cpus/idle-states/cpu-sleep
+  name: cpu-sleep
+  compatible: riscv,idle-state
+
+NODE /sys/firmware/devicetree/base/cpus/cpu@0
+  name: cpu
+  compatible: riscv
+  device_type: cpu
+  status: okay
+  reg: <0x00000000>
+  clock-frequency: <0x016e3600>
+
+NODE /sys/firmware/devicetree/base/cpus/cpu@0/interrupt-controller
+  name: interrupt-controller
+  compatible: riscv,cpu-intc
+
+==============================================================================
+SECTION: platform bus sysfs
+==============================================================================
+
+-- platform devices --
+$ ls /sys/bus/platform/devices
+2000c14.pwm4
+soc@3000000:usbc0@0
+alarmtimer.0.auto
+reg-dummy
+vdd_3v3
+2502800.twi
+1c0e000.ve
+5809420.isp
+5809440.scaler
+2000c11.pwm1
+2009400.ths
+5801000.csi
+2030340.sound
+5c01000.tvd0
+cpu-opp-table
+203034c.dummy_cpudai
+20000.dump_reg
+7010000.clock
+5809410.isp
+2500000.uart
+5000000.disp
+2030000.codec
+5809470.sensor
+vdd-cpu
+2000c15.pwm5
+snd-soc-dummy
+soc@3000000:addr_mgt@0
+2000000.pinctrl
+Fixed MDIO bus.0
+usb1-vbus
+5410000.g2d
+3006000.sid
+5800800.vind
+1c0c000.lcd0
+3003000.msgbox
+5c00000.tvd
+2000c12.pwm2
+2031060.sounddmic
+4101000.ehci0-controller
+2500400.uart
+3102000.mbus-comtroller
+7090000.rtc_ccu
+soc@3000000:pmu
+3000000.sram_ctrl
+2034000.daudio
+20340a0.sounddaudio2
+5809430.scaler
+4200000.ehci1-controller
+soc@3000000
+5809000.vinc
+5500000.hdmi
+2000c16.pwm6
+2010000.iommu
+2031000.dmic
+2001000.clock
+pio-33
+4101400.ohci0-controller
+regulatory.0
+soc@3000000:rfkill@0
+2000c00.pwm
+5809200.vinc
+20340a4.hdmiaudio
+2000c13.pwm3
+7090000.rtc
+2031050.sound
+4200400.ohci1-controller
+2008000.ledc
+soc@3000000:idle
+4020000.sdmmc
+3040000.ce
+soc@3000000:rpaf-dsp@203034c
+2000c10.pwm0
+5809480.sensor
+dsp0
+5400000.deinterlace
+6011000.watchdog
+2000c17.pwm7
+3002000.dma-controller
+dram
+2009800.keyboard
+pio-18
+4100000.udc-controller
+2050000.timer
+4021000.sdmmc
+
+-- interrupt controllers --
+$ ls /sys/class/irq
+ERROR: No such file or directory
+
+-- clock class --
+$ ls /sys/class/clk
+ERROR: No such file or directory
+
+-- firmware --
+$ ls /sys/firmware
+devicetree
+fdt
+
+==============================================================================
+SECTION: usb and network
+==============================================================================
+
+-- usb devices --
+$ ls /sys/bus/usb/devices
+usb1
+1-1
+usb2
+1-0:1.0
+1-1:1.0
+2-0:1.0
+
+-- net devices --
+$ ls /sys/class/net
+wlan1
+sit0
+lo
+wlan0
+
+==============================================================================
+SECTION: copy marker
+==============================================================================
+EXPLORER_OUTPUT_END

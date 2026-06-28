@@ -897,6 +897,14 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L208 --> | 增量融合的"依赖排序"启发式 | 按"基线能力 → 修复 → 契约"分层：M0 见证层（提供测量基线）→ M1/M2 修复（M1 fast retry 消除 tick 台阶，M2 drain 修正 flush）→ M4 规范化（IER 单 owner 整合）→ M3 契约（VFS 边界，独立于驱动内部）。M3 放最后因为它只改 trait 签名不碰驱动内部，依赖前 4 个 milestone 提供稳定的内部行为 | `architecture.md` ADR-039 |
 | <!-- L211 --> | Q15 后 milestone 重排启发式 | 不按 O 编号顺序排期，按 Gate 类型分层：文档/规格收敛 → QEMU 可验证 correctness → 真板观测脚手架 → 真板 bring-up → 数据驱动决策 → 维护性清理 → 远期实验。避免把 O63/O64/O66/O3/O40/O41/O48 等不同触发条件的项继续塞进单一 Q6 | `.claude/analysis/optimization-milestone-replan.md` |
 | <!-- L212 --> | Q17 内存序选型速查 | 不按架构分叉实现内存序；按 Rust 语言级并发契约选序。纯 telemetry 保持 `Relaxed`；跨 hart 发布/观察状态用 `Release`/`Acquire`；参与同步判断的 RMW 计数用 `AcqRel`；多字段一致性优先用锁或重新设计快照。`ier_cache` 是非原子 RMW 竞争，不能只靠 Acquire/Release 修复 | `.claude/analysis/q17-smp-memory-ordering.md` |
+| <!-- L213 --> | Lichee RV Dock 采集完成边界 | 2026-06-28: 官方 Linux 采集已足够支撑 StarryOS early console smoke test，后续不再泛采集。已确认：D1/C906 单核 Sv39，RAM `0x40000000 + 512MiB`，OpenSBI v0.6 + U-Boot 2018.05，boot 分区 `/dev/by-name/boot` 是 Android boot image，U-Boot `sunxi_flash read 45000000 boot; bootm 45000000`，kernel_addr `0x40200000`。 | `.claude/analysis/lichee/public-platform-notes.md` + `docs/licheerv-dock-bringup.md` |
+| <!-- L214 --> | Lichee RV Dock UART 事实 | D1 UART0: base `0x02500000`, size `0x400`, IRQ `18`, console `ttyS0,115200`。mainline DTS 是 `snps,dw-apb-uart`，`reg-shift = 2`、`reg-io-width = 4`，即 register stride 4 + 32-bit MMIO；不能沿用 QEMU NS16550 stride=1 假设。 | mainline `sunxi-d1s-t113.dtsi` + 真板 `probe`/explorer |
+| <!-- L215 --> | Lichee RV Dock boot image 事实 | `/dev/mmcblk0p4` / `boot` header magic `ANDROID!`，name `d1-nezha`，page_size `2048`，kernel_size `9783580`，kernel_addr `0x40200000`，ramdisk_addr `0x41200000`，tags_addr `0x40200100`。StarryOS smoke test 优先生成 Android boot image 写入 boot 分区；写入前必须备份原 boot。 | `tests/boot_probe.c` 输出 `.claude/analysis/lichee/probe` |
+| <!-- L216 --> | Lichee RV Dock early smoke test 路线 | 下一步工程目标不是继续采集，而是新增 D1 platform + DW APB UART early console + Android boot image 打包。成功标准：串口输出 `[starry-d1] early boot`。初期 timer 优先走 SBI timer，rootfs/USB/SD/Shell/async benchmark 后置。 | `docs/licheerv-dock-bringup.md` |
+| <!-- L217 --> | 平台参数耦合点速查 | `kernel/src/drivers/uart_init.rs` 当前硬编码 QEMU UART：base `0x10000000`、stride 1、raw LSR `base+5`、`iomap(..., 0x1000)`；换 Lichee / VisionFive2 时不能只改构建目标，必须把 UART facts 从 driver init 中抽出。 | `.claude/analysis/platform-parameter-decoupling.md` |
+| <!-- L218 --> | axconfig 可复用边界 | `make/platform.mk` 已支持 `MYPLAT` / `PLAT_CONFIG`，`make/config.mk` 生成 `.axconfig.toml`，`make/build.mk` 读取 `plat.kernel-base-paddr`。这些可复用为多平台入口，但 axconfig 还不能完整表达 UART kind / reg width / boot image strategy。 | `.claude/analysis/platform-parameter-decoupling.md` |
+| <!-- L219 --> | 32-bit MMIO access width 缺口 | `../uart_16550/src/backend/mmio.rs` 支持 stride，但 volatile read/write 当前是 `u8`；D1 / VisionFive2 的 DW APB UART 需要 stride 4 + 32-bit MMIO。后续不能只把 stride 改成 4，必须显式处理 access width。 | `.claude/analysis/platform-parameter-decoupling.md` |
+| <!-- L220 --> | early console 分层经验 | 真板 bring-up 应先用不依赖 IRQ / async task / rootfs 的 polling early console 输出首字节；async UART `/dev/console` 在 early console 和平台 descriptor 稳定后再接入。 | `.claude/analysis/platform-parameter-decoupling.md` |
 
 #### Scenario: 新增 Q13 层级 API
 
@@ -910,3 +918,17 @@ API path quick-reference for post-Q13 module separation. All new async types and
 - **AND** MUST 每步 cargo check + QEMU benchmark Gate（参见 ADR-039 Manual QA Gate 表）
 - **AND** MUST 保留源分支作为参考，禁止一次性 merge 或删除
 - **AND** 退化时立即停止，定位根因后从该 milestone 重新融合（L205 铁律）
+
+#### Scenario: 启动 Lichee RV Dock 适配
+
+- **WHEN** 开发者开始 StarryOS Lichee RV Dock 适配
+- **THEN** MUST 使用 L213-L216 作为事实基线，不再重复从官方 Linux 泛采集
+- **AND** MUST 先做 early console smoke test，再扩展 PLIC / rootfs / Shell / async benchmark
+- **AND** MUST 将 UART 按 DW APB UART stride 4 / 32-bit MMIO 处理，禁止套用 QEMU stride=1 配置
+
+#### Scenario: 新增真板平台适配
+
+- **WHEN** 开发者为 StarryOS 新增 Lichee RV Dock、VisionFive2 或其他真板平台
+- **THEN** MUST 先把平台事实记录到 platform descriptor 或等价集中配置中
+- **AND** MUST 禁止在 `uart_init.rs` 等驱动初始化路径继续散落板级 base / irq / stride / access width 常量
+- **AND** MUST 先完成 polling early console smoke test，再接 async UART、PLIC、timer、rootfs 或 benchmark

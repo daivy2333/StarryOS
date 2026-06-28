@@ -1,0 +1,85 @@
+[32]HELLO! BOOT0 is starting!
+[35]BOOT0 commit : 27369ab
+
+OpenSBI v0.6
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name          : T-HEAD Xuantie Platform
+Platform HART Features : RV64ACDFIMSUVX
+Platform Max HARTs     : 1
+Current Hart           : 0
+Firmware Base          : 0x40000400
+Firmware Size          : 75 KB
+Runtime SBI Version    : 0.2
+
+MIDELEG : 0x0000000000000222
+MEDELEG : 0x000000000000b1ff
+PMP0    : 0x0000000040000000-0x000000004001ffff (A)
+PMP1    : 0x0000000040000000-0x000000007fffffff (A,R,W,X)
+PMP2    : 0x0000000080000000-0x00000000bfffffff (A,R,W,X)
+PMP3    : 0x0000000000020000-0x0000000000027fff (A,▒
+
+U-Boot 2018.05-g0a88ac9-dirty-config-dirty (Dec 14 2021 - 18:32:11 +0800) Allwinner Technology
+
+[00.171]DRAM:  512 MiB
+[00.173]Relocation Offset is: 1df30000
+[00.177]secure enable bit: 0
+[00.179]CPU=1008 MHz(1008),PLL6=600 Mhz,AHB=200 Mhz, APB1=100Mhz  MBus=300Mhz
+[00.186]flash init start
+[00.188]workmode = 0,storage type = 1
+[00.192][mmc]: mmc driver ver uboot2018:2021-04-16 14:23:00-1
+[00.198][mmc]: get sdc_type fail and use default host:tm1.
+[00.204][mmc]: can't find node "mmc0",will add new node
+[00.209][mmc]: fdt err returned <no error>
+[00.212][mmc]: Using default timing para
+[00.216][mmc]: SUNXI SDMMC Controller Version:0x50310
+[00.234][mmc]: card_caps:0x3000000a
+[00.237][mmc]: host_caps:0x3000003f
+[00.241]sunxi flash init ok
+[00.243]line:714 init_clocks
+__clk_init: clk pll_periph0x2 already initialized
+register fix_factor clk error
+[00.259]Loading Environment from SUNXI_FLASH... OK
+[00.279]out of usb burn from boot: not need burn key
+root_partition is rootfs
+set root to /dev/mmcblk0p7
+[00.288]update part info
+[00.292]update bootcmd
+[00.294]change working_fdt 0x5eaefda8 to 0x5eacfda8
+[00.313]update dts
+Hit any key to stop autoboot:  0
+Android's image name: d1-nezha
+No reserved memory region found in source FDT
+[00.744]
+Starting kernel ...
+
+[00.747][mmc]: MMC Device 2 not found
+[00.750][mmc]: mmc 2 not find, so not exit
+formating /dev/by-name/UDISK to ext4
+/etc/preinit: line 1: mkfs.ext4: not found
+Please press Enter to activate this console.
+Trying to connect to SWUpdate...
+
+root@MaixLinux:/# ls -la /mnt/SDCARD
+drwxrwxrwx    3 root     root          8192 Jan  1 08:00 .
+drwxr-xr-x    6 root     root          4096 Dec 23  2021 ..
+drwxrwxrwx    2 root     root          1024 Dec 20  2025 System Volume Information
+-rwxrwxrwx    1 root     root        691254 Jan  1  1980 bootlogo.bmp
+-rwxrwxrwx    1 root     root           512 Jan  1  1980 magic.bin
+root@MaixLinux:/# find /mnt/SDCARD -maxdepth 3 -type f -print
+/mnt/SDCARD/bootlogo.bmp
+/mnt/SDCARD/magic.bin
+/mnt/SDCARD/System Volume Information/WPSettings.dat
+/mnt/SDCARD/System Volume Information/IndexerVolumeGuid
+root@MaixLinux:/# cp /sys/firmware/fdt /mnt/exUDISK/lichee.dtb
+root@MaixLinux:/# dtc -I fs -O dts /sys/firmware/devicetree/base > /mnt/exUDISK/
+lichee.dts
+/bin/ash: dtc: not found
+root@MaixLinux:/#

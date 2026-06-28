@@ -841,3 +841,88 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **WHEN** Q17 changes an async UART atomic field
 - **THEN** the selected ordering MUST be justified by the field's role: telemetry, state publication, RMW progress counter, or compound snapshot
 - **AND** per-architecture ordering branches MUST NOT be introduced unless a future ADR proves a platform-specific hardware erratum requires them
+
+<!-- A043 -->
+### Requirement: ADR-043: Lichee RV Dock 采用 Android boot image + D1 polling early console 分阶段适配
+
+StarryOS Lichee RV Dock bring-up MUST start from an Android boot image smoke test and a D1 UART0 polling early console before enabling PLIC, timer, async TTY, storage, USB, or benchmark workloads.
+
+**日期**: 2026-06-28
+**状态**: 已接受（适配方案阶段）
+**决策**:
+- 沿用官方启动链 `BOOT0 -> OpenSBI -> U-Boot -> Android boot image`，优先生成可由当前 U-Boot `bootm` 加载的 Android boot image。
+- 第一阶段 kernel load/link 基线使用官方 boot header 中的 `0x40200000`。
+- 第一阶段 console 使用 D1 UART0 polling early console：base `0x02500000`，stride 4，32-bit MMIO，baud 115200。
+- 第一阶段不启用 UART IRQ、async TTY、rootfs、USB、SD/MMC 或 benchmark。
+- D1 UART 不能直接复用当前 QEMU NS16550 byte-addressed 假设；完整 async UART 适配需在 smoke test 后再扩展 `uart_16550` backend 或新增 DW APB UART 适配层。
+
+**原因**:
+- Lichee RV Dock 官方镜像已确认 boot 分区为 Android boot image，U-Boot 环境变量已确认从 boot 分区加载到内存后 `bootm`。
+- D1 UART 是 DesignWare APB UART，公开 DTS 与真板采集均指向 stride 4、32-bit MMIO；当前 StarryOS QEMU UART 初始化路径使用 `0x10000000` 和 stride 1，不能只改 base 地址。
+- first-byte serial output 是真板 bring-up 的最小可观测闭环，能把启动链、链接地址和 UART 访问模型问题与后续子系统隔离。
+
+**影响**:
+- Lichee RV Dock 后续适配应优先提交平台骨架、boot image 工具链和 early console，而不是先接入 benchmark。
+- Q17 SMP 验证不能依赖 Lichee RV Dock；该板仅用于单核真板流程、启动链和串口适配演练。
+- 如果 M3 smoke test 失败，排查范围优先限定为 boot image、link/load 地址、UART base/stride/access-width，不应立刻扩大到 async TTY 或文件系统。
+
+**替代方案**:
+- ❌ 直接把完整 StarryOS async UART benchmark 打包烧录：变量过多，失败不可定位。
+- ❌ 只修改 QEMU UART base 为 `0x02500000`：忽略 D1 UART 32-bit MMIO 访问宽度，风险高。
+- ❌ 改 U-Boot 环境变量加载裸镜像：增加恢复风险，第一阶段无必要。
+- ✅ Android boot image + D1 polling early console + milestone gate：当前方案。
+
+**参考**:
+- `.claude/analysis/lichee-rv-dock-adaptation-plan.md`
+- `.claude/analysis/lichee/public-platform-notes.md`
+- `docs/licheerv-dock-bringup.md`
+- `openspec/specs/learned/spec.md` L213-L216
+
+#### Scenario: Lichee RV Dock early bring-up
+
+- **WHEN** StarryOS starts a Lichee RV Dock bring-up milestone
+- **THEN** the first runnable target MUST be a boot-image smoke test with D1 UART0 polling early console output
+- **AND** async TTY, UART IRQ, rootfs, USB, SD/MMC, shell, and benchmark workloads MUST remain disabled until polling serial output is confirmed
+
+<!-- A044 -->
+### Requirement: ADR-044: 多平台适配采用 build-time platform descriptor 分离平台事实、驱动能力与启动策略
+
+StarryOS board-specific constants MUST be centralized behind a build-time platform descriptor or equivalent platform module before adding Lichee RV Dock or VisionFive2 async UART support.
+
+**日期**: 2026-06-28
+**状态**: 已接受（架构重构前置决策）
+**决策**:
+- StarryOS 复用现有 `MYPLAT` / `PLAT_CONFIG` / `axconfig` / `axplat` 机制选择平台，不另起一套平台选择系统。
+- StarryOS 自己新增轻量 platform descriptor，集中表达 async UART 和 bring-up 需要但 axconfig 不完整表达的事实：UART kind、base、irq、register stride、MMIO access width、early console strategy、boot image strategy。
+- `kernel/src/drivers/uart_init.rs` 不得继续作为板级常量来源；它只能消费 platform descriptor，并负责 async UART 初始化。
+- 真板 bring-up 必须先使用 polling early console。async UART、PLIC、timer、rootfs、USB、benchmark 在 early console 可观测后逐步接回。
+- D1 / VisionFive2 等 DW APB UART 平台必须显式表达 32-bit MMIO access width；不能只把 NS16550 stride 从 1 改成 4。
+
+**原因**:
+- 当前 `uart_init.rs` 硬编码 QEMU UART base `0x10000000`、stride 1、raw LSR `base+5`，这会让 `make MYPLAT=...` 仍然访问 QEMU 地址。
+- 构建系统已经有 `MYPLAT`、`PLAT_CONFIG`、`.axconfig.toml` 和 `axconfig-gen`，应顺势接入，而不是在驱动里堆条件编译常量。
+- axconfig 能表达 memory / PLIC / UART base / IRQ，但不能完整表达 `ConsoleKind`、`reg_width` 和 boot image strategy。
+- `uart_16550` 当前 MMIO backend 只有 stride 参数，底层 volatile access width 是 `u8`。D1 / VisionFive2 的 DW APB UART 需要 32-bit MMIO 访问模型。
+
+**影响**:
+- Lichee RV Dock 和 VisionFive2 适配可共享同一套平台边界：descriptor + early console + async UART backend。
+- 上层 TTY、line discipline、`/dev/console` 不需要感知 UART base / stride / width。
+- 后续若引入 DTB 解析，也应先解析成同一个 descriptor，而不是让各驱动分散解析 DTB。
+- QEMU 现有行为可作为第一个 descriptor 复刻，降低重构风险。
+
+**替代方案**:
+- ❌ 在 `uart_init.rs` 内按平台写 `#[cfg(feature = "...")]` 常量：短期快，但会继续污染驱动层。
+- ❌ 完整运行时 DTB 解析作为第一步：过重，会推迟 early console 可观测闭环。
+- ❌ 仅复用 axplat ConsoleIf：适合 polling console，不足以表达 async UART ring buffer、waker 和 IRQ 控制。
+- ✅ build-time platform descriptor + early console + 分阶段接回 async UART：当前方案。
+
+**参考**:
+- `.claude/analysis/platform-parameter-decoupling.md`
+- `.claude/analysis/lichee-rv-dock-adaptation-plan.md`
+- `openspec/specs/learned/spec.md` L217-L220
+
+#### Scenario: Board constants are centralized
+
+- **WHEN** a StarryOS driver needs board-specific base addresses, IRQ numbers, register stride, register width, or boot image parameters
+- **THEN** it MUST read them from the platform descriptor or equivalent centralized platform module
+- **AND** it MUST NOT introduce new board-specific constants directly inside driver initialization code

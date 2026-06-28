@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-27
-> 分支：feat/uart-16550-async — Q16 ✅ (Q15 后 roadmap 重排完成，下一步 Q17 / O63)
+> Last updated: 2026-06-28
+> 分支：uart-16550-lichee — Q17 待做，Q18/Q19 已按平台参数解耦与 Lichee RV Dock smoke test 重排
 
 ---
 
 ## 当前状态
 
-**分支**: feat/uart-16550-async（基于 `asyncuart-dev`，Q0~Q13 完成）
+**分支**: uart-16550-lichee（基于 benchmark 分支，用于 Lichee RV Dock 适配规划与后续 smoke test；主线异步串口路线仍承接 feat/uart-16550-async）
 **前分支**: asyncuart-dev（Q0~Q12 全部完成，已切换到 feat/uart-16550-async）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
@@ -61,15 +61,23 @@
   - 用户态 64B TX 170 KB/s（与 M4 基线 184 KB/s 同级，无 TX backpressure 退化）
   - 内核态 Ring Buffer TX 456,205 KB/s / RX 1,147,959 KB/s（RX 较 Q13+LTO ↑27.9%）
   - 非阻塞三入口全 PASS（FIONBIO）
-**Q16 Roadmap rebaseline ✅** (2026-06-27): 根据 `.claude/analysis/optimization-milestone-replan.md` 将 Q15 后优化项从单一 Q6 拆为 Q16~Q22：
+**Q16 Roadmap rebaseline ✅** (2026-06-27): 根据 `.claude/analysis/optimization-milestone-replan.md` 将 Q15 后优化项从单一 Q6 拆为原 Q16~Q22：
 - **Q16** 文档与规格收敛（已完成）：同步 tasks / SNAPSHOT / optimization / stale capability specs；`openspec validate --specs` 的已知 parser 噪音不阻塞后续开发
 - **Q17** SMP / 内存序正确性：O63，先在 QEMU 可验证范围内修复，再真板复验
 - **Q18** 真板观测与 bring-up 工具：O66 + O64/O65 验证脚手架
 - **Q19** VisionFive2 UART 验证：O38/O39 + Q15 Manual QA 真板复跑
-- **Q20** DMA / 高波特率决策：O3/O40/O69 + O41，依赖 Q19 真板数据
+- **Q20** DMA / 高波特率决策：O3/O40/O69 + O41，原计划依赖 Q19 真板数据
 - **Q21** 维护性清理：O48/O49/O50 + release LTO 检查
 - **Q22** 远期预研池：O1/O36、O54/O55、O58/O59、O37，按真板数据触发
-**下一步**: 进入 Q17 O63 内存序修复
+**Q16.1 Roadmap 二次重排 ✅** (2026-06-28): 根据 `.claude/analysis/platform-parameter-decoupling.md` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，新增平台解耦与 Lichee smoke test 阶段：
+- **Q17** SMP / 内存序正确性保持不变：O63，先修跨 hart 风险
+- **Q18** 平台参数解耦 / early console 基础：platform descriptor、QEMU 行为保持、early console 抽象
+- **Q19** Lichee RV Dock early smoke test：Android boot image、D1 platform skeleton、UART0 polling 输出 `[starry-d1] early boot`
+- **Q20** VisionFive2 UART 验证：O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑
+- **Q21** DMA / 高波特率决策：O3/O40/O69 + O41，依赖 Q20 真板数据
+- **Q22** 维护性清理：O48/O49/O50 + release LTO 检查
+- **Q23** 远期预研池：O1/O36、O54/O55、O58/O59、O37，按真板数据触发
+**下一步**: 先完成 Q17 O63；随后进入 Q18 平台参数解耦，为 Q19 Lichee smoke test 做前置
 
 ### 关键发现
 
@@ -100,7 +108,7 @@
 | **LSR 位注意** | THR_EMPTY=bit5（可写），TRANSMITTER_EMPTY=bit6（THR+移位寄存器全空=真正 drain） |
 | **DRAIN_WAKER** | 专用 AtomicWaker，ISR TX 中断时唤醒 tcdrain，替代 wake_by_ref 自旋 |
 | **tcdrain 性能** | QEMU 上 64B 从 9 次切换降到 6 次，延迟 ~300→~200 µs（真板上可忽略） |
-| **e2e 吞吐量** | ⏳ Q19 真板验证后回填（QEMU 不仿真串口线延迟，绝对吞吐不可信） |
+| **e2e 吞吐量** | ⏳ Q20 VisionFive2 真板验证后回填（QEMU 不仿真串口线延迟，绝对吞吐不可信） |
 | **e2e 延迟** | 单字节 139.5 µs avg（硬件理论 86.8 µs，软件开销 52.7 µs） |
 | **O46 完成** | ✅ Q8 完成：pipe/signalfd/pidfd/event 共 8 处 PollSet→AtomicWaker（~200ns→~50ns） |
 | **O47 完成** | ✅ Q9 完成：VTIME 读超时，复用 axtask::future::timeout()（无需 embassy-time） |
@@ -133,11 +141,12 @@
 | **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) |
 | **Q16** | Roadmap / spec rebaseline | 任务重排 + stale spec 标注 + validate 噪音记录 | ✅ (2026-06-27) |
 | **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
-| **Q18** | 真板观测与 bring-up 工具 | O66 + O64/O65 验证脚手架 | ⏳ 待做 |
-| **Q19** | VisionFive2 UART 验证 | O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
-| **Q20** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q19 数据 | ⏳ 等待硬件数据 |
-| **Q21** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
-| **Q22** | 远期预研池 | O1/O36、O54/O55、O58/O59、O37 | 🧊 按数据触发 |
+| **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ⏳ 待做 |
+| **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ⏳ 待做 |
+| **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
+| **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
+| **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
+| **Q23** | 远期预研池 | O1/O36、O54/O55、O58/O59、O37 | 🧊 按数据触发 |
 
 ### 当前架构（Q15 M0~M4 + Manual QA 已验证 — 2026-06-25）
 
@@ -209,7 +218,7 @@ StarryOS/
 │   │   ├── architecture/spec.md  # ADR-001~031（按主题分组）
 │   │   ├── learned/spec.md       # API/文件/踩坑/技巧/性能/测试
 │   │   ├── references/spec.md    # 依赖/子项目/规范/Embassy/Linux/分析
-│   │   └── optimization/spec.md  # Q0~Q15 完成 + Q16~Q22 roadmap
+│   │   └── optimization/spec.md  # Q0~Q15 完成 + Q16~Q23 roadmap
 │   └── changes/          # 变更提案
 ├── .claude/              # Claude Code / OpenSpec 工具链
 │   ├── commands/opsx/    # OpenSpec slash commands（5）
@@ -254,11 +263,11 @@ StarryOS/
 | `openspec/specs/architecture/spec.md` | ADR-001~041（按主题分组） | 26 Requirements |
 | `openspec/specs/learned/spec.md` | API 路径、文件速查、踩坑档案、技巧模式、性能/测试、embassy 选型边界 | 12 Requirements |
 | `openspec/specs/references/spec.md` | 依赖、子项目索引、规范、Embassy、Linux serial、项目分析 | 7 Requirements |
-| `openspec/specs/optimization/spec.md` | Q0~Q15 已完成 + Q16~Q22 roadmap + 已排除（含 OE1~OE5）+ 性能基线 | 11 Requirements |
+| `openspec/specs/optimization/spec.md` | Q0~Q15 已完成 + Q16~Q23 roadmap + 已排除（含 OE1~OE5）+ 性能基线 | 11 Requirements |
 | `openspec/project.md` | 项目上下文（技术栈、约束、目录、Git 规范） | — |
 | `CLAUDE.md`（索引部分） | OpenSpec + .claude/docs/ 双索引入口 | 9.7 KB（含规则） |
 | `openspec/changes/archive/rules-domain-2026-06-03/` | rules spec 墓碑（17 Requirements） | 🪦 |
-| `.claude/docs/tasks.md` | 任务追踪（Q0~Q15 已完成，Q16~Q22 后续 roadmap） | Q0~Q22 |
+| `.claude/docs/tasks.md` | 任务追踪（Q0~Q15 已完成，Q16~Q23 后续 roadmap） | Q0~Q23 |
 | `.claude/docs/archive.md` | 已归档内容（含 2026-06-03 OpenSpec 迁移 + rules domain 二次迁移） | 持续累积 |
 | `.claude/docs/*.md.bak` (×5) | OpenSpec 迁移前源文件备份 | 70 KB |
 | `docs/uart-performance-comparison.md` | Console vs Async 对比报告 | ✅ Q7 更新 |
