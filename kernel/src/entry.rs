@@ -3,12 +3,18 @@ use alloc::{
     sync::Arc,
 };
 
+#[cfg(not(feature = "lichee-d1"))]
 use axfs::FS_CONTEXT;
+#[cfg(not(feature = "lichee-d1"))]
 use axhal::uspace::UserContext;
+#[cfg(not(feature = "lichee-d1"))]
 use axsync::Mutex;
+#[cfg(not(feature = "lichee-d1"))]
 use axtask::{AxTaskExt, spawn_task};
+#[cfg(not(feature = "lichee-d1"))]
 use starry_process::{Pid, Process};
 
+#[cfg(not(feature = "lichee-d1"))]
 use crate::{
     drivers::{ASYNC_TTY, uart_init},
     file::FD_TABLE,

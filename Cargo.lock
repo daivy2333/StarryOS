@@ -3179,6 +3179,7 @@ dependencies = [
  "axfeat",
  "axplat-riscv64-lichee-d1",
  "axplat-riscv64-visionfive2",
+ "page_table_entry",
  "starry-kernel",
 ]
 

@@ -656,7 +656,7 @@ sys_read → File::read → block_on(poll_io(File, IN, nb, || inner.read()))
 
 ---
 
-### Q15-M0 见证层测试经验（2026-06-23）
+**Q15-M0 见证层测试经验（2026-06-23）**
 
 M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积累的测试部署与代码设计经验。
 
@@ -693,7 +693,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 #### 内存序踩坑（2026-06-26 O63 代码验证）
 
 <!-- L208 -->
-### [ier_cache RMW 竞争 — Q6 SMP P0 阻塞]
+**[ier_cache RMW 竞争 — Q6 SMP P0 阻塞]**
 
 - **症状**：真板 4 核下 ISR (hart 0) 和 copier (hart N) 并发调用 `update_ier()` 时，IER 中断使能位可能被对端覆盖丢失，导致 RX 或 TX 彻底停滞
 - **根因**：`uart_init.rs:105-111` 的 `ier_cache` load-modify-store 在 `SpinNoIrq::lock()` **外面**执行。两个 hart 同时 load → modify → store 时后写者覆盖先写者
@@ -701,7 +701,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **预防**：跨 hart 访问的 Atomic 变量做 RMW 时，如用 load+store 两步，必须将两步放在同一个锁临界区内；或直接用 `fetch_*` 原子操作
 
 <!-- L209 -->
-### [tx_copier_active / tx_staged_bytes 跨 hart 读写排序 — Q6 SMP P1]
+**[tx_copier_active / tx_staged_bytes 跨 hart 读写排序 — Q6 SMP P1]**
 
 - **症状**：真板多核下 flush/tcdrain （user task on hart N）可能看到 TX copier (hart M) 的陈旧 active/staged 值，导致 tcdrain 过早返回或 hang
 - **根因**：`driver.rs` 中 `tx_copier_active` / `tx_staged_bytes` 的 store/fetch_add 用 `Ordering::Relaxed`，`tx_completion()` 的 load 也用 `Relaxed`。跨 hart 无 happens-before 保证
@@ -709,7 +709,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **预防**：SMP 场景下，跨 hart 共享的 flag/counter 必须建立 happens-before 边。rule of thumb：store 用 Release，load 用 Acquire
 
 <!-- L210 -->
-### [QEMU 单核掩盖 SMP 内存序问题]
+**[QEMU 单核掩盖 SMP 内存序问题]**
 
 - **现象**：Q15 全部 Relaxed 用法在 QEMU (max-cpu-num=1) 下完全正常，`cargo check` + benchmark 0 问题
 - **根因**：QEMU 单 hart 下所有访问串行化，无并发窗口；RISC-V RVWMO 在单 hart 上 Relaxed ≈ SeqCst
@@ -915,6 +915,15 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L228 --> | D1 boot image 尺寸 gate | 未传 `DWARF=n` 时 raw binary / Android boot image 曾达到 `25.6M`，超过当前 boot 分区约 `10.1M` 容量。`rust-objcopy --strip-debug` 对该产物无效，因为调试相关段在当前链接布局中仍进入 raw binary。Lichee 构建必须在 `make lichee` 中强制 `DWARF=n`，或后续改 linker 明确丢弃 debug sections。 | Q19 烧录踩坑 |
 | <!-- L229 --> | D1/C906 Store/AMO fault 根因 | 板测日志 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908` 已符号化：EPC 位于 `percpu::imp::init` 的 `amoor.w.aqrl`，TVAL 是 `.bss` 中 `percpu::imp::IS_INIT`。这不是 USB/SD/MMC 问题，而是 D1/C906 早期页表 DDR 映射缺少 T-Head C9xx normal-memory 属性。早期 DDR PTE 必须设置 `SH\|B\|C`（bits 60/61/62）。 | Q19 板测定位 |
 | <!-- L230 --> | D1 final page table 风险 | Q19 当前修复覆盖 early boot page table；后续若在 `axmm` / `new_kernel_aspace` 切换最终页表后再次出现 AMO / load / store fault，应优先检查最终页表是否也带 `xuantie-c9xx` / T-Head C9xx PTE 属性，而不是先怀疑 UART 或 boot image。 | Q19 后续风险 |
+| <!-- L231 --> | D1 smoke test 完成事实 | 2026-06-29 真板验证通过：官方 U-Boot Android boot image 成功加载 StarryOS，串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。这证明 D1 axplat、load/link 地址、Android boot image 打包、UART0 polling early console 已完成最小闭环。 | Q19 真板验收 |
+| <!-- L232 --> | D1 final PTE 修复 | 早期 PTE 修复后仍可能在最终页表阶段 fault；`lichee-d1` feature 必须启用 `page_table_entry/xuantie-c9xx`，让 final page table 也带 T-Head C9xx memory attributes。 | Q19 final page table 修复 |
+| <!-- L233 --> | D1 virtio 空 MMIO 修复 | D1 没有 virtio-mmio。`virtio-mmio-ranges` 必须写成空数组 `[]`，不能写成 `[[0,0]]` 占位；后者会让 `axdriver_virtio::probe_mmio_device` 访问 `phys_to_virt(0)`，fault VA 表现为 `0xffffffc000000000`。 | Q19 runtime fault 修复 |
+| <!-- L234 --> | Lichee smoke feature gate | Lichee Q19a 只验证 boot + early console，必须把 fs/net/display/axdriver/PCI/task-ext 从 smoke 路径隔离。否则会出现 `No block device found!`、`PCI_ECAM_BASE`/`PCI_RANGES`/`PCI_BUS_END` 缺失，或 `TaskExt` extern_trait 链接符号缺失。QEMU 完整用户态路径通过 `starry-kernel/qemu` 保持这些特性。 | Q19 feature gate 修复 |
+| <!-- L235 --> | D1 最小启动后扩展顺序 | Q19a 完成后不要回到官方 Linux 泛采集；后续按 PLIC/timer → SDMMC/block → rootfs/VFS → TTY/async UART → benchmark 顺序单独立项，避免把 benchmark 或 rootfs 问题误当成 early boot 阻塞。 | Q19 后续路线 |
+| <!-- L236 --> | Q19B benchmark 依赖链 | QEMU 用户态 benchmark 路径是 `entry::init -> init_uart_hardware -> run_startup_benchmark -> pseudofs::mount_all -> load_user_app -> add_stdio(/dev/console) -> benchmark.c`。D1 当前 `entry.rs` 仍在 `lichee-d1` 下直接进入 `run_lichee_d1_smoke() -> !`，所以 Q19B 必须先拆 staged mode，再恢复完整路径。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
+| <!-- L237 --> | Q19B async UART 首要阻塞 | `kernel/src/drivers/uart_init.rs` 的 QEMU 路径仍按 byte MMIO 做 raw LSR `base+5` 读取，并通过 `uart_16550::MmioBackend` 做 U8 volatile；D1/DW APB UART 必须用 stride 4 + 32-bit MMIO。Q19B-M1 要先做 D1-safe `UartPort` 或扩展 `uart_16550` width-aware backend。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
+| <!-- L238 --> | D1 PLIC 代码已存在但未启用 | `crates/axplat-riscv64-lichee-d1/src/irq.rs` 已有 PLIC claim/complete 与 handler table，feature 为 `irq`；当前顶层 `lichee-d1` 只启用 `irq-if`，走 `irq_stub`。Q19B-M2 应显式启用 `axplat-riscv64-lichee-d1/irq` 并验证 UART IRQ 18。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
+| <!-- L239 --> | Q19B 用户 benchmark 推荐先嵌入 ELF | 为了尽快得到 D1 async UART 数据，Q19B 推荐先把 `tests/benchmark.c` 编译为静态 RISC-V ELF 并嵌入内核/小 initramfs，复用用户 ELF loader，避免先被 SDMMC/rootfs bring-up 阻塞。SDMMC/rootfs parity 可放后续阶段。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
 
 #### Scenario: 新增 Q13 层级 API
 
@@ -932,7 +941,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 #### Scenario: 启动 Lichee RV Dock 适配
 
 - **WHEN** 开发者开始 StarryOS Lichee RV Dock 适配
-- **THEN** MUST 使用 L213-L216 作为事实基线，不再重复从官方 Linux 泛采集
+- **THEN** MUST 使用 L213-L216 与 L231-L239 作为事实基线，不再重复从官方 Linux 泛采集
 - **AND** MUST 先做 early console smoke test，再扩展 PLIC / rootfs / Shell / async benchmark
 - **AND** MUST 将 UART 按 DW APB UART stride 4 / 32-bit MMIO 处理，禁止套用 QEMU stride=1 配置
 

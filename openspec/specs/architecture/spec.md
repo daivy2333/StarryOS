@@ -1006,3 +1006,47 @@ StarryOS Lichee RV Dock early boot page table MUST mark DDR mappings with T-Head
 - **WHEN** Lichee RV Dock 在 `Starting kernel ...` 后报告 `Store/AMO access fault`
 - **THEN** MUST 先符号化 EPC/TVAL，确认是否落在 DDR `.bss` / percpu / atomic 路径
 - **AND** MUST 检查 early page table 和 final page table 是否设置 T-Head C9xx normal-memory PTE flags
+
+<!-- A047 -->
+### Requirement: ADR-047: Q19B 先嵌入 benchmark payload，再追求 SDMMC/rootfs parity
+
+StarryOS Lichee RV Dock benchmark bring-up MUST first reach async UART benchmark data through staged platform modes and an embedded benchmark payload; SDMMC/rootfs parity MUST NOT block the first Q19B benchmark dataset.
+
+**日期**: 2026-06-29
+**状态**: 已接受（Q19B 探索结论）
+**决策**:
+- Q19B 从 Q19A smoke-only 路径拆出显式模式：smoke、kernel benchmark、user benchmark。
+- 先实现 D1-safe async UART path（DW APB UART stride 4 / 32-bit MMIO）与真实 PLIC UART IRQ 18，再进入 `/dev/console` 和用户态 benchmark。
+- 第一个用户态 benchmark 数据优先通过 embedded benchmark ELF 或小 initramfs 获取，复用现有 `load_user_app`/ELF loader 能力，避免先实现完整 SDMMC/rootfs。
+- SDMMC/rootfs 从 TF 卡运行 `/bin/benchmark` 是后续 parity 阶段，不作为 Q19B 首个成功标准。
+- QEMU benchmark 数据和 D1 真板数据必须分栏记录；QEMU 不仿真物理串口线延迟，不能覆盖 D1 结果。
+
+**原因**:
+- 当前 `entry.rs` 在 `feature = "lichee-d1"` 时直接进入 `run_lichee_d1_smoke() -> !`，完整 QEMU 用户路径被绕开。
+- QEMU 用户 benchmark 依赖 `/dev/console`、`tcdrain`、`FIONBIO`、`clock_gettime` 和用户 ELF 加载；这些比 Q19A smoke 多出多个可独立失败的子系统。
+- D1 当前没有 StarryOS SDMMC/rootfs 路径。若把 SDMMC 作为前置，无法区分 block bring-up 失败和 async UART/TTY 失败。
+- `crates/axplat-riscv64-lichee-d1/src/irq.rs` 已有真实 PLIC 实现，但顶层 Lichee feature 当前只启用 `irq-if` stub；这适合单独作为 Q19B-M2 Gate。
+
+**影响**:
+- Q19B milestone 必须按 mode split → D1 async UART backend → PLIC/UART IRQ → kernel benchmark → `/dev/console` → embedded user benchmark → optional SDMMC/rootfs 的顺序推进。
+- `tests/benchmark.c` 应保持与 QEMU source-compatible；差异应在 payload delivery 和平台 feature 中处理。
+- 文档和结果保存路径应区分 `lichee-kbench` 与 `lichee-userbench`，原始串口日志建议保存到 `.claude/analysis/lichee/q19b-*.txt`。
+
+**替代方案**:
+- ❌ 直接启用完整 qemu feature set：会重新引入 block/PCI/virtio 假设，已经导致 `No block device found` 与 PCI 常量缺失。
+- ❌ 先做 SDMMC/rootfs：工程价值高，但会延迟第一个 async UART 真板数据，并扩大排障面。
+- ❌ 只跑 `drivers::bench::run_startup_benchmark()` 就声明完成：它只覆盖 ring buffer/driver 层，不证明用户态 syscall、TTY、tcdrain、FIONBIO。
+- ✅ 嵌入 benchmark ELF，先得到 D1 用户态 `/dev/console` 数据，再补 SDMMC/rootfs parity：当前方案。
+
+**参考**:
+- `.claude/analysis/q19b-lichee-benchmark-plan.md`
+- `openspec/specs/learned/spec.md` L236-L239
+- `tests/benchmark.c`
+- `kernel/src/entry.rs`
+
+#### Scenario: Q19B first benchmark dataset
+
+- **WHEN** Q19B aims to collect the first Lichee RV Dock async UART benchmark data
+- **THEN** it MUST run through a staged mode that has D1 async UART, PLIC IRQ, `/dev/console`, and a user benchmark payload
+- **AND** it SHOULD use an embedded benchmark ELF before SDMMC/rootfs is available
+- **AND** it MUST NOT count kernel ring benchmark alone as the final Q19B user benchmark gate

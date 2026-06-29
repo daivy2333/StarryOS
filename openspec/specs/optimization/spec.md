@@ -107,13 +107,14 @@ Q8 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 
 Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64/O66/O38/O39/O3/O40/O41/O48/O49/O50 等不同触发条件的条目塞进单一 Q6。O 编号保留历史身份，Q 编号代表当前执行 milestone。
 
 > 2026-06-28 二次重排：基于 `.claude/analysis/platform-parameter-decoupling.md` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，在真板验证前新增 Q18 平台参数解耦和 Q19 Lichee RV Dock early smoke test。原 VisionFive2 / DMA / 维护 / 远期池顺延。
+> 2026-06-29 更新：Q19 / O76 已在 Lichee RV Dock 真板完成，串口输出 `[starry-d1] smoke complete, halting.`。
 
 | Milestone | 目标 | 归属条目 | Gate |
 |-----------|------|----------|------|
 | **Q16** | Roadmap / spec rebaseline | 文档任务重排、stale spec 标注、validate 已知噪音记录 | tasks / SNAPSHOT / optimization 与分析文档一致；`openspec validate --specs` 的已知 parser 噪音不阻塞后续开发 |
 | **Q17** | SMP / 内存序正确性 | **O63** | cargo check + QEMU benchmark 无退化；真板到位后复验 SMP stress |
 | **Q18** | 平台参数解耦 / early console 基础 | **O74**, **O75** | QEMU 行为保持；`uart_init.rs` 不再新增板级 base/irq/stride/width 常量 |
-| **Q19** | Lichee RV Dock early smoke test | **O76**, L213-L216, ADR-043 | Lichee 串口输出 `[starry-d1] early boot` |
+| **Q19** | Lichee RV Dock early smoke test | **O76**, L213-L216, L231-L235, ADR-043 | ✅ Lichee 串口输出 `[starry-d1] smoke complete, halting.` |
 | **Q20** | VisionFive2 UART 验证 | **O66**, **O64**, **O65**, **O71**, **O38**, **O39**, Q15 Manual QA 真板复跑 | VisionFive2 串口稳定运行，真板基线数据落档 |
 | **Q21** | DMA / 高波特率决策 | **O3**, **O40**, **O69**, **O41** | 用 Q20 真板数据决定实施或拒绝 |
 | **Q22** | 维护性清理 | **O48**, **O49**, **O50**, ADR-034 release LTO | 维护性债务有明确处理结论 |
@@ -123,7 +124,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 |----------|------|--------|------|
 | **O74** | Platform descriptor 集中化 | 🔴 P0 | 抽出 QEMU/Lichee/VisionFive2 的 UART kind、base、irq、stride、MMIO access width、boot strategy；落实 ADR-044 |
 | **O75** | Early console 分层 | 🔴 P0 | 新增不依赖 IRQ / async task / rootfs 的 polling early console；QEMU 用 NS16550 U8，Lichee/VF2 用 DW APB U32 |
-| **O76** | Lichee Android boot image smoke test | 🔴 P0 | boot image 工具链 + D1 platform skeleton + UART0 polling 输出；当前已进入 axruntime/percpu，D1/C906 early PTE `SH|B|C` 修复后复测 `[starry-d1] early boot` |
+| **O76** | Lichee Android boot image smoke test | ✅ 完成 | boot image 工具链 + D1 platform skeleton + UART0 polling 输出已在真板通过；最终验收输出为 `[starry-d1] smoke complete, halting.` |
 
 #### Scenario: Roadmap-driven scheduling
 
@@ -147,7 +148,8 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 
 - **WHEN** Q18 platform descriptor 与 early console 基础完成
 - **THEN** Q19 MUST 优先做 Android boot image + D1 UART0 polling 输出
-- **AND** rootfs / USB / SDMMC / async TTY / benchmark MUST remain deferred until `[starry-d1] early boot` is visible on serial
+- **AND** rootfs / USB / SDMMC / async TTY / benchmark MUST remain deferred until `[starry-d1] smoke complete, halting.` is visible on serial
+- **AND** after Q19 completion, further Lichee work MUST be planned as a new scoped stage instead of expanding O76
 
 #### Scenario: 真板启动失败或串口无输出
 
@@ -657,7 +659,7 @@ Q15 阶段（2026-06-21 开启，2026-06-25 完成）从 pre-M4 基线出发，�
 - Q16 文档/规格收敛 MUST 先完成，确保 tasks / SNAPSHOT / optimization / capability specs 的 roadmap 一致
 - Q17 / O63 MUST 在真板前优先修复（QEMU 单 hart 掩盖 SMP 内存序问题）
 - Q18 / O74-O75 MUST 先完成平台参数解耦和 early console 基础，避免继续把板级参数写入 driver init
-- Q19 / O76 使用 Lichee RV Dock 演练 Android boot image + D1 polling early console；当前已确认 U-Boot 能加载 StarryOS D1 payload，最新阻塞从 boot image / axplat 选择推进为 D1/C906 PTE memory attribute 复测
+- Q19 / O76 使用 Lichee RV Dock 演练 Android boot image + D1 polling early console；2026-06-29 已确认 U-Boot 能加载 StarryOS D1 payload，并完成 `[starry-d1] smoke complete, halting.` 真板验收
 - VisionFive2 真板到位 → Q20 O66/O64/O65 观测与 trust-u-boot 验证 → O38（时钟适配）→ O39（真板 FIFO 深度验证）→ Q15 Manual QA 真板复跑
 - Q21 O3/O40/O69（DMA 探索）与 O41（高速波特率）MUST 依赖 Q20 真板数据，禁止在 QEMU 上直接下结论
 - **📐 物理定律**：真板 NS16550 硬件时间 86.8 µs/byte @ 115200 bps（10 bits/byte × 1/115200 s）与 QEMU 0 µs 硬件时间形成本质差异

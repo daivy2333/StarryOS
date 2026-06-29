@@ -4,7 +4,7 @@
 >
 > 当前结论：Lichee RV Dock 适合作为真板流程演练板，但不适合作为 Q17 SMP / 多核内存序验证板。它使用 Allwinner D1 / XuanTie C906，属于单核 RISC-V 平台。
 
-> 2026-06-28 更新：官方 Linux 采集阶段已完成。当前信息量已经足够进入 StarryOS Lichee RV Dock early console smoke test 适配；后续不再需要继续从官方 Linux 泛采集数据。除非 smoke test 失败并指向 bootloader / clock / UART 细节，否则新的官方 Linux 采集不是阻塞项。
+> 2026-06-29 更新：StarryOS 已在 Lichee RV Dock 真板完成 early smoke test。官方 U-Boot 成功加载 StarryOS Android boot image，D1 axplat 进入 StarryOS payload，UART0 输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。Q19a 最小启动目标达成。
 
 ## 1. 定位与边界
 
@@ -19,25 +19,49 @@ Lichee RV Dock 的主要价值不是直接验证当前 StarryOS 的 Q17 SMP 修�
 
 当前 StarryOS 仓库默认面向 QEMU virt，并已有 `vf2` 构建入口。异步 UART 初始化仍使用 QEMU virt 的 UART MMIO 地址 `0x10000000`。Lichee RV Dock 是 Allwinner D1 平台，UART、PLIC、timer、内存布局、启动协议均不同，因此不能直接把当前 StarryOS 镜像烧进 TF 卡运行。
 
-当前适配入口已经清晰：先做 D1 platform + Android boot image + UART0 early console，只要求串口输出一行 smoke test 日志；rootfs、USB、SD/MMC、Shell、async benchmark 都放到后续阶段。
+当前适配入口已经验证：D1 platform + Android boot image + UART0 polling early console 可以在真板完成最小 smoke test。rootfs、USB、SD/MMC、Shell、async benchmark 仍属于后续阶段，不能和最小启动目标混在一起推进。
 
-### StarryOS 当前板测状态（2026-06-28）
+### StarryOS 当前板测状态（2026-06-29）
 
-StarryOS 已经不再停留在官方 Linux 采集阶段，也不再停留在“镜像格式未知”阶段。当前真实进度如下：
+StarryOS 已经完成 Lichee RV Dock / Allwinner D1 的最小真板启动验证。当前真实进度如下：
 
 1. 官方镜像 `LicheeRV_Tina_hdmi_8723ds.img` 的 boot 分区确认是 Android boot image，`kernel_addr = 0x40200000`，name 为 `d1-nezha`。
 2. StarryOS 已新增 D1 axplat 路径，Lichee 构建不再复用 QEMU axplat boot symbols。
 3. `DWARF=n` 是强制尺寸 gate；未关闭 DWARF 时 boot image 曾为 `25.6M`，会超过约 `10.1M` boot 分区。
-4. 最新真板日志已经进入 StarryOS payload，但在 `percpu::imp::init` 的 AMO 操作上 fault：
+4. D1 early boot DDR identity/high-half mapping 已加入 T-Head C9xx normal-memory `SH|B|C` PTE bits（60/61/62），解决 `percpu::imp::init` 的 early AMO fault。
+5. `lichee-d1` feature 已启用 `page_table_entry/xuantie-c9xx`，解决最终页表阶段的 C906 memory attribute 风险。
+6. D1 `virtio-mmio-ranges` 必须保持空数组 `[]`；Lichee smoke 路径禁用 fs/net/display/axdriver/PCI/task-ext，避免无设备阶段触发 `No block device found` 或 PCI 常量缺失。
+7. 最新 `make lichee` 生成的 Android boot image 核心字段：
+
+| 字段 | 值 |
+|------|----|
+| output | `starry-lichee-boot.img` |
+| kernel_size | `118976` bytes |
+| kernel_addr | `0x40200000` |
+| ramdisk_size | `12` bytes |
+| page_size | `2048` |
+| name | `d1-nezha` |
+
+真板串口验收输出：
 
 ```text
-Unhandled exception: Store/AMO access fault
-EPC: ffffffc040244648 TVAL: ffffffc0402c6908
+arch = riscv64
+platform = riscv64-lichee-d1
+target = riscv64gc-unknown-none-elf
+build_mode = release
+log_level = warn
+backtrace = false
+smp = 1
+
+Boot at 1970-01-01 00:00:00.396399808 UTC
+
+[starry-d1] early boot
+hart_id: unavailable in S-mode
+sbi_version: 0.2
+[starry-d1] smoke complete, halting.
 ```
 
-符号化结果：`EPC` 是 `percpu::imp::init` 中的 `amoor.w.aqrl`，`TVAL` 是 `.bss` 中的 `percpu::imp::IS_INIT`。这说明当前问题不是 USB、SD 卡、rootfs、benchmark 部署或官方 Linux 信息缺失，而是 D1/C906 early page table 的内存属性。
-
-已采取的修复：D1 early boot DDR identity/high-half mapping 使用 T-Head C9xx normal-memory `SH|B|C` PTE bits（60/61/62）。下一步是重编并重新写入 boot 分区复测。
+历史 fault 仍保留为排障经验：`Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908` 的符号化结果是 `percpu::imp::init` 中的 `amoor.w.aqrl` 访问 `.bss` `percpu::imp::IS_INIT`，根因是 D1/C906 页表缺少 T-Head normal-memory 属性。这不是 USB、SD 卡、rootfs、benchmark 部署或官方 Linux 信息缺失。
 
 ### Roadmap 对齐（2026-06-28）
 
@@ -47,10 +71,10 @@ EPC: ffffffc040244648 TVAL: ffffffc0402c6908
 |-----------|--------------------------|------|
 | Q17 | SMP / 内存序修复，Lichee 不用于验证多核，但应先消除通用 async UART 风险 | QEMU benchmark 无退化 |
 | Q18 | 平台参数解耦 / early console 基础，为 Lichee 和 VisionFive2 共享前置 | QEMU 行为保持，driver 不再新增板级硬编码 |
-| Q19 | Lichee RV Dock early smoke test 主阶段 | 串口输出 `[starry-d1] early boot` |
+| Q19 | Lichee RV Dock early smoke test 主阶段 | ✅ 串口输出 `[starry-d1] smoke complete, halting.` |
 | Q20 | VisionFive2 UART 验证，复用 Q18/Q19 形成的平台边界和 bring-up 经验 | VisionFive2 真板基线落档 |
 
-因此，Lichee 的下一步工程入口不是继续采集官方 Linux 信息，而是在 Q18 后进入 Q19：Android boot image 工具链、D1 platform descriptor、D1 UART0 32-bit polling early console。
+因此，Lichee 的 Q19a 最小启动入口已经跑通。后续如果继续扩展，应单独规划新阶段：PLIC/Timer、SDMMC/block、rootfs、TTY、async UART、benchmark，逐项打开，不要回到无目标的官方 Linux 泛采集。
 
 ### 分支策略
 
@@ -221,8 +245,8 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > licheerv.dts
 - PLIC：base `0x10000000`
 - RAM：`0x40000000 + 512 MiB`
 - 初期 timer 路线：优先使用 OpenSBI timer，不先适配 D1 SoC timer
-- Q19a 当前不需要 USB / SDMMC / rootfs：最新 fault 已发生在 StarryOS runtime 初始化阶段，后续 benchmark 部署方式不是当前阻塞点
-- Q19a 当前不需要继续泛采集官方 Linux：若 PTE 修复后仍失败，优先看串口 fault、EPC/TVAL 符号化和最终页表属性
+- Q19a 当前不需要 USB / SDMMC / rootfs：最小 smoke test 已完成，后续 benchmark 部署方式不是当前阻塞点
+- Q19a 当前不需要继续泛采集官方 Linux：如果后续扩展阶段失败，优先看新增阶段的串口 fault、EPC/TVAL 符号化和对应驱动路径
 
 后续若要补充信息，优先从官方手册 / 主线 DTS / 适配失败日志中查证；不要再无目标地从官方 Linux 导出大块数据。
 
@@ -321,26 +345,27 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > /mnt/exUDISK/lichee.dts
   - early console 路径
 - 先实现 early console smoke test，再考虑异步 UART 栈复用。
 
-### 下一步工程目标
+### 已完成的最小工程目标
 
-最小目标：`StarryOS` 通过当前 U-Boot 启动链在 UART0 输出一行 early log。
+最小目标已经完成：`StarryOS` 通过当前 U-Boot 启动链在 UART0 输出 early smoke 日志，并主动 halt。
 
 成功标准：
 
 ```text
 [starry-d1] early boot
+[starry-d1] smoke complete, halting.
 ```
 
-建议拆分：
+已完成拆分：
 
 1. 新增 D1 / Lichee RV platform 常量：RAM、UART0、PLIC、SBI timer。
 2. 准备 UART0 early console：DesignWare APB UART，stride 4，32-bit MMIO。
-3. 设置 kernel link/load address，优先对齐 `0x40200000`。
+3. 设置 kernel link/load address，对齐 `0x40200000`。
 4. 生成 Android boot image：page size 2048，kernel addr `0x40200000`，ramdisk 可为空。
 5. 写入测试 SD 卡的 `/dev/by-name/boot` 前先备份原 boot 分区。
-6. 串口观察 early log。
+6. 串口观察到 `[starry-d1] smoke complete, halting.`。
 
-### 当前重编与替换流程
+### 当前已验证的重编与替换流程
 
 在开发机正常构建环境中重编：
 
@@ -356,6 +381,7 @@ python3 tools/android_boot_image.py inspect starry-lichee-boot.img
 - Android boot header 仍为 `name = d1-nezha`。
 - `kernel_addr = 0x40200000`。
 - `page_size = 2048`。
+- 当前已验证产物 `kernel_size = 118976` bytes。
 
 在官方 Linux 中备份并替换：
 
@@ -378,10 +404,35 @@ reboot -f
 
 复测判断：
 
-- 出现 D1 axplat / axruntime 早期日志：说明 C906 early PTE 修复有效。
-- 出现 `[starry-d1] early boot`：Q19 early smoke 成功。
+- 出现 D1 axplat / axruntime 早期日志：说明 boot image、D1 axplat 和 early mapping 正常。
+- 出现 `[starry-d1] smoke complete, halting.`：Q19 early smoke 成功。
 - 再次出现 `Store/AMO access fault`，但 EPC/TVAL 已变化：先符号化，再判断是否进入最终页表阶段。
 - 如果 fault 指向最终 kernel address space，优先检查 final page table 是否也启用了 `xuantie-c9xx` / T-Head C9xx memory attributes。
+
+### Q19 排障链记录
+
+本次 bring-up 过程中已经解决的关键问题如下，后续遇到相似症状时按这个顺序排查：
+
+| 症状 | 根因 | 解决 |
+|------|------|------|
+| boot 分区写入时报 `No space left on device` | 未关闭 DWARF，boot image 达 `25.6M`，超过约 `10.1M` boot 分区 | `make lichee` 强制 `DWARF=n` |
+| U-Boot `Starting kernel ...` 后无 StarryOS 输出 | 仍链接 QEMU axplat，`lichee-d1` feature 只影响 StarryOS entry，不替换 platform boot | 用 `MYPLAT=axplat-riscv64-lichee-d1` 和 `PLAT_CONFIG=.../axconfig.toml` 接入 D1 axplat |
+| 链接缺 `__IrqIf_register` / `__IrqIf_set_enable` / `__IrqIf_handle` | `axruntime/axtask/axhal` 需要 irq interface 符号 | D1 axplat 提供 `irq-if` + no-op `IrqIf`，PLIC 后续再实现 |
+| `percpu::imp::init` AMO 写 `.bss` 时 `Store/AMO access fault` | D1/C906 early PTE 缺少 T-Head normal-memory `SH|B|C` bits | early DDR identity/high-half PTE 加 bits 60/61/62 |
+| 最终页表后全局数据访问 fault | final page table 未使用 C906 PTE 属性 | `lichee-d1` feature 启用 `page_table_entry/xuantie-c9xx` |
+| `No block device found!` | smoke 阶段启用了 fs/block，但 D1 还没有 SDMMC/virtio block driver | Lichee smoke 禁用 fs/net/display/axdriver 依赖 |
+| `PCI_ECAM_BASE` / `PCI_RANGES` / `PCI_BUS_END` 编译缺失 | 无 PCI 平台仍把 `axdriver` 默认 PCI bus 编进来 | Lichee smoke 路径隔离 QEMU `axdriver`，`task-ext` 也只放到 QEMU feature |
+| fault VA `0xffffffc000000000` | `virtio-mmio-ranges = [[0,0]]` 被当作真实 MMIO range，访问 `phys_to_virt(0)` | D1 配置使用空数组 `virtio-mmio-ranges = []` |
+
+### 后续扩展顺序
+
+Q19a 完成后，继续扩展 Lichee RV Dock 时建议按以下顺序单独立项：
+
+1. PLIC / timer 最小初始化或观测：先保持 no-op IRQ，逐步打开。
+2. SDMMC / block driver：解决 rootfs 和 benchmark 文件加载。
+3. rootfs / VFS：确认 block 后再启用 fs。
+4. TTY / async UART：从 polling early console 迁移到中断驱动串口。
+5. benchmark：最后运行，不应作为早期 bring-up 的阻塞项。
 
 ## 3. 和星光 2 的复用关系
 

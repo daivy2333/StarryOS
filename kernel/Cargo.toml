@@ -13,7 +13,15 @@ dev-log = []
 input = ["dep:axinput", "axfeat/input"]
 lichee-d1 = []
 memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
-qemu = []
+qemu = [
+    "dep:axdisplay",
+    "dep:axdriver",
+    "dep:axfs",
+    "dep:axnet",
+    "axfeat/fs-ng-ext4",
+    "axfeat/net-ng",
+    "axfeat/task-ext",
+]
 vsock = ["axfeat/vsock"]
 
 [dependencies]
@@ -26,25 +34,21 @@ axfeat = { workspace = true, features = [
     "alloc-slab",
 
     "multitask",
-    "task-ext",
     "sched-rr",
 
     "rtc",
-
-    "fs-ng-ext4",
-    "net-ng",
 ] }
 
 axalloc.workspace = true
 axconfig.workspace = true
-axdisplay.workspace = true
-axdriver.workspace = true
-axfs.workspace = true
+axdisplay = { workspace = true, optional = true }
+axdriver = { workspace = true, optional = true }
+axfs = { workspace = true, optional = true }
 axhal.workspace = true
 axinput = { workspace = true, optional = true }
 axlog.workspace = true
 axmm.workspace = true
-axnet.workspace = true
+axnet = { workspace = true, optional = true }
 axruntime.workspace = true
 axsync.workspace = true
 axtask.workspace = true

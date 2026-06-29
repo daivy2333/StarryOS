@@ -1,0 +1,116 @@
+Platform Name          : T-HEAD Xuantie Platform
+Platform HART Features : RV64ACDFIMSUVX
+Platform Max HARTs     : 1
+Current Hart           : 0
+Firmware Base          : 0x40000400
+Firmware Size          : 75 KB
+Runtime SBI Version    : 0.2
+
+MIDELEG : 0x0000000000000222
+MEDELEG : 0x000000000000b1ff
+PMP0    : 0x0000000040000000-0x000000004001ffff (A)
+PMP1    : 0x0000000040000000-0x000000007fffffff (A,R,W,X)
+PMP2    : 0x0000000080000000-0x00000000bfffffff (A,R,W,X)
+PMP3    : 0x0000000000020000-0x0000000000027fff (A,▒
+
+U-Boot 2018.05-g0a88ac9-dirty-config-dirty (Dec 14 2021 - 18:32:11 +0800) Allwinner Technology
+
+[00.171]DRAM:  512 MiB
+[00.173]Relocation Offset is: 1df30000
+[00.177]secure enable bit: 0
+[00.179]CPU=1008 MHz(1008),PLL6=600 Mhz,AHB=200 Mhz, APB1=100Mhz  MBus=300Mhz
+[00.186]flash init start
+[00.189]workmode = 0,storage type = 1
+[00.192][mmc]: mmc driver ver uboot2018:2021-04-16 14:23:00-1
+[00.198][mmc]: get sdc_type fail and use default host:tm1.
+[00.204][mmc]: can't find node "mmc0",will add new node
+[00.209][mmc]: fdt err returned <no error>
+[00.212][mmc]: Using default timing para
+[00.216][mmc]: SUNXI SDMMC Controller Version:0x50310
+[00.234][mmc]: card_caps:0x3000000a
+[00.237][mmc]: host_caps:0x3000003f
+[00.241]sunxi flash init ok
+[00.243]line:714 init_clocks
+__clk_init: clk pll_periph0x2 already initialized
+register fix_factor clk error
+[00.259]Loading Environment from SUNXI_FLASH... OK
+[00.279]out of usb burn from boot: not need burn key
+root_partition is rootfs
+set root to /dev/mmcblk0p7
+[00.288]update part info
+[00.292]update bootcmd
+[00.294]change working_fdt 0x5eaefda8 to 0x5eacfda8
+[00.313]update dts
+Hit any key to stop autoboot:  0
+Android's image name: d1-nezha
+No reserved memory region found in source FDT
+[00.348]
+Starting kernel ...
+
+[00.351][mmc]: MMC Device 2 not found
+[00.354][mmc]: mmc 2 not find, so not exit
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = riscv64
+platform = riscv64-lichee-d1
+target = riscv64gc-unknown-none-elf
+build_mode = release
+log_level = warn
+backtrace = false
+smp = 1
+
+Boot at 1970-01-01 00:00:00.408767704 UTC
+
+panicked at /home/daivy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axcpu-0.3.0-preview.8/src/riscv/trap.rs:55:17:
+Unhandled trap Exception(StoreFault) @ 0xffffffc040234b70, stval=0xffffffc04025f018:
+TrapFrame {
+    regs: GeneralRegisters {
+        zero: 0x80b18c9d639c5b67,
+        ra: 0xffffffc040231832,
+        sp: 0xffffffc0402a0900,
+        gp: 0xffffffc040263000,
+        tp: 0x0,
+        t0: 0xffffffc0402ffc00,
+        t1: 0xffffffc04023478e,
+        t2: 0xffffffc0402c7000,
+        s0: 0xffffffc0402a0e70,
+        s1: 0x4,
+        a0: 0xffffffc04025f018,
+        a1: 0xffffffc04025eb68,
+        a2: 0x4000,
+        a3: 0x64,
+        a4: 0x69,
+        a5: 0xffffffc0402cef80,
+        a6: 0x11000,
+        a7: 0x10000,
+        s2: 0xffffffc04024bf40,
+        s3: 0xffffffc0402a0c38,
+        s4: 0x1,
+        s5: 0x4000,
+        s6: 0xffffffc0402a2a40,
+        s7: 0xffffffc040248ee6,
+        s8: 0xffffffc04024fcb5,
+        s9: 0x2,
+        s10: 0xffffffc04024d0a9,
+        s11: 0xffffffc040250178,
+        t3: 0xffffffc0402a4470,
+        t4: 0x0,
+        t5: 0x80,
+        t6: 0x6,
+    },
+    sepc: 0xffffffc040234b70,
+    sstatus: Sstatus {
+        bits: 0x8000000200046120,
+    },
+}
+<backtrace disabled>
+
+<backtrace disabled>

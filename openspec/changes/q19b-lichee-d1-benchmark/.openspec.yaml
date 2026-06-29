@@ -1,0 +1,15 @@
+id: q19b-lichee-d1-benchmark
+title: Q19B Lichee RV Dock async UART benchmark
+status: proposed
+owner: assistant
+created: 2026-06-29
+milestone: Q19B
+related_specs:
+  - platform-descriptor-early-console
+  - lichee-d1-benchmark
+related_analysis:
+  - .claude/analysis/q19b-lichee-benchmark-plan.md
+  - .claude/analysis/d1-axplat-bringup-plan.md
+  - .claude/analysis/platform-parameter-decoupling.md
+  - docs/licheerv-dock-bringup.md
+supersedes: []

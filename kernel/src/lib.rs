@@ -20,13 +20,20 @@ extern crate axlog;
 pub mod entry;
 
 mod config;
+#[cfg(not(feature = "lichee-d1"))]
 mod drivers;
+#[cfg(not(feature = "lichee-d1"))]
 mod file;
+#[cfg(not(feature = "lichee-d1"))]
 mod mm;
 pub mod platform;
+#[cfg(not(feature = "lichee-d1"))]
 mod pseudofs;
+#[cfg(not(feature = "lichee-d1"))]
 mod syscall;
+#[cfg(not(feature = "lichee-d1"))]
 mod task;
+#[cfg(not(feature = "lichee-d1"))]
 mod time;
 
 // Critical section implementation for embassy-sync AtomicWaker

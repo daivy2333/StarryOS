@@ -64,7 +64,12 @@ qemu = [
     "starry-kernel/dev-log",
     "starry-kernel/qemu",
 ]
-lichee-d1 = ["dep:axplat-riscv64-lichee-d1", "axplat-riscv64-lichee-d1/irq-if", "starry-kernel/lichee-d1"]
+lichee-d1 = [
+    "dep:axplat-riscv64-lichee-d1",
+    "dep:page_table_entry",
+    "axplat-riscv64-lichee-d1/irq-if",
+    "starry-kernel/lichee-d1",
+]
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]
@@ -85,6 +90,11 @@ optional = true
 [dependencies.axplat-riscv64-lichee-d1]
 path = "crates/axplat-riscv64-lichee-d1"
 optional = true
+
+[dependencies.page_table_entry]
+version = "=0.6.1"
+optional = true
+features = ["xuantie-c9xx"]
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

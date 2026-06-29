@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-28
-> 分支：uart-16550-lichee — Q18 完成，Q19 D1 axplat 已进 axruntime，C906 PTE 修复待复测，Q17 待做
+> Last updated: 2026-06-29
+> 分支：uart-16550-lichee — Q18 完成，Q19 Lichee RV Dock 真板 early smoke test 完成，Q17 待做
 
 ---
 
@@ -78,8 +78,8 @@
 - **Q22** 维护性清理：O48/O49/O50 + release LTO 检查
 - **Q23** 远期预研池：O1/O36、O54/O55、O58/O59、O37，按真板数据触发
 **Q19 D1 axplat 修正** (2026-06-28): 创建 `crates/axplat-riscv64-lichee-d1/`，接入 `MYPLAT`/`PLAT_CONFIG`，D1 ELF 引用 `axplat_riscv64_lichee_d1::boot` 而非 QEMU；修正 `make lichee` 强制 `DWARF=n`，并将 D1 UART IRQ 常量改回采集事实 `18`。链接阶段的 `IrqIf` undefined symbols 通过 `irq-if` + no-op `IrqIf` 解决，完整 PLIC 留给后续 `irq` feature。
-**Q19 板测进展** (2026-06-28): U-Boot 已识别 StarryOS Android boot image (`d1-nezha`) 并进入 payload；最新串口 fault 为 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908`。符号化结果：EPC 在 `percpu::imp::init` 的 `amoor.w.aqrl`，TVAL 是 `.bss` 中 `percpu::imp::IS_INIT`，说明已经跨过 boot image / axplat 选择问题，当前根因是 D1/C906 early DDR PTE 缺少 T-Head normal-memory `SH|B|C` bits。`boot.rs` 已修复 DDR identity/high-half mapping，待重编烧写复测。
-**下一步**: 在正常构建环境运行 `PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH make lichee`，确认 `starry-lichee-boot.img < 10.1M` 后写入 `/dev/by-name/boot` 复测；如果后续 fault 发生在最终页表切换后，优先检查 final page table 的 `xuantie-c9xx` attrs。
+**Q19 真板 smoke test ✅** (2026-06-29): Lichee RV Dock 已通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。这标志着 D1 axplat、load/link 地址、Android boot image 打包、DW APB UART0 polling early console、C906 early/final page table 属性、Lichee smoke feature gate 均已通过最小真板验证。
+**下一步**: Q19a 已完成；后续不要继续从官方 Linux 泛采集。下一阶段按 roadmap 回到 Q17 SMP / 内存序修复，或启动新的 Lichee 扩展阶段（PLIC/Timer/SDMMC/rootfs/TTY/benchmark）前先单独立项。
 
 ### 关键发现
 
@@ -122,7 +122,9 @@
 | **D1 boot image 尺寸** | `DWARF=n` 必须保留；否则 boot image 曾达 `25.6M`，超过官方 boot 分区约 `10.1M` |
 | **D1 IrqIf stub** | `irq-if` + no-op `IrqIf` 只解决 axruntime/axtask/axhal 符号需求，不代表 PLIC 已启用 |
 | **D1/C906 PTE 属性** | DDR early page table 需要 T-Head normal-memory `SH|B|C` bits 60/61/62；否则 `percpu` AMO 写 `.bss` 会 `Store/AMO access fault` |
-| **D1 final page table 风险** | early PTE 已修复；若后续在 `axmm` 后 fault，检查最终页表是否也启用 `xuantie-c9xx` 属性 |
+| **D1 final page table 属性** | `page_table_entry/xuantie-c9xx` 必须在 `lichee-d1` feature 下启用；否则最终页表切换后可能在 `.bss`/全局数据访问上 fault |
+| **D1 virtio 空 MMIO** | D1 无 virtio-mmio，`virtio-mmio-ranges` 必须是空数组 `[]`，不能写成 `[[0,0]]`；否则会访问 `phys_to_virt(0)` |
+| **D1 smoke feature gate** | Lichee smoke 阶段必须禁用 fs/net/display/axdriver/PCI/task-ext，直到真实 block/PLIC/TTY 路径实现；否则会触发 `No block device found` 或 PCI 常量缺失 |
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
@@ -148,7 +150,7 @@
 | **Q16** | Roadmap / spec rebaseline | 任务重排 + stale spec 标注 + validate 噪音记录 | ✅ (2026-06-27) |
 | **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
-| **Q19** | Lichee RV Dock early smoke test | D1 axplat crate + build wiring + Android boot image + host gates | ⏳ 已进 axruntime；C906 PTE 修复待复测 |
+| **Q19** | Lichee RV Dock early smoke test | D1 axplat crate + build wiring + Android boot image + UART0 smoke output | ✅ 真板 `[starry-d1] smoke complete` |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
