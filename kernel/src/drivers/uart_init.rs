@@ -15,25 +15,41 @@
 
 use alloc::sync::Arc;
 use core::ptr::{NonNull, addr_of_mut};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::AtomicU8;
+use core::sync::atomic::Ordering;
 
 use axhal::mem::phys_to_virt;
 use axlog::info;
 use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
-use kspin::SpinNoIrq;
 use lazy_static::lazy_static;
 use memory_addr::{PhysAddr, VirtAddr};
 use spin::Once;
 use uart_16550::{
-    Uart16550,
     async_::driver::{AsyncUartDriver, UartPort},
     async_::ring_buffer::{RingBufRx, RingBufTx},
-    backend::MmioBackend,
-    spec::registers::{IER, ISR, LSR},
+    spec::registers::IER,
 };
 
 use crate::drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet};
 use crate::platform;
+
+// ── QEMU NS16550 path ────────────────────────────────────────────────
+
+#[cfg(not(feature = "lichee-d1-async-uart"))]
+use {
+    core::sync::atomic::AtomicU8 as _,
+    kspin::SpinNoIrq,
+    uart_16550::{
+        Uart16550,
+        backend::MmioBackend,
+        spec::registers::ISR,
+    },
+};
+
+// ── D1 DW APB UART path ──────────────────────────────────────────────
+
+#[cfg(feature = "lichee-d1-async-uart")]
+use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
 
 /// Ring buffer 大小（64 KB）
 pub const BUF_SIZE: usize = 64 * 1024;
@@ -44,9 +60,9 @@ fn get_uart_mmio_virt() -> VirtAddr {
     phys_to_virt(PhysAddr::from(desc.console.base_paddr))
 }
 
-// ── 全局 UART 实例 ─────────────────────────────────────────────────
+// ── QEMU: 全局 UART 实例 ─────────────────────────────────────────────
 
-// 全局 UART 实例（AsyncUart 独占访问）
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 lazy_static! {
     static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
         // SAFETY: get_uart_mmio_virt() returns the virtual address mapped from
@@ -61,22 +77,21 @@ lazy_static! {
     });
 }
 
-/// 获取全局 UART 实例的引用
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
     &UART
 }
 
-// ── UartPort 实现 ──────────────────────────────────────────────────
+// ── QEMU: UartPort 实现 ──────────────────────────────────────────────
 
 /// ArceOS UART 端口抽象，实现 uart_16550 的 `UartPort` trait。
-///
-/// 内部持有 `&'static SpinNoIrq<Uart16550<MmioBackend>>` 引用，
-/// 通过 `SpinNoIrq` 锁提供 `receive_bytes` 和 `send_bytes` 的安全访问。
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 pub struct ArceOsUartPort {
     uart: &'static SpinNoIrq<Uart16550<MmioBackend>>,
     ier_cache: AtomicU8,
 }
 
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 impl UartPort for ArceOsUartPort {
     #[inline(always)]
     fn receive_bytes(&self, buf: &mut [u8]) -> usize {
@@ -105,6 +120,7 @@ impl UartPort for ArceOsUartPort {
     }
 }
 
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 lazy_static! {
     static ref UART_PORT: ArceOsUartPort = ArceOsUartPort {
         uart: &UART,
@@ -112,24 +128,57 @@ lazy_static! {
     };
 }
 
-// ── 类型别名 ──────────────────────────────────────────────────────
+// ── D1: UartPort 实例 ────────────────────────────────────────────────
 
-/// 异步驱动类型（`ArceOsRuntime` + `ArceOsWakerSet` + `ArceOsUartPort`）
+#[cfg(feature = "lichee-d1-async-uart")]
+lazy_static! {
+    static ref D1_UART_PORT: ArceOsD1UartPort = {
+        let desc = platform::descriptor();
+        // SAFETY: D1 platform MMIO is identity-mapped by OpenSBI; UART0 clock
+        // and pins are configured by U-Boot.
+        unsafe {
+            ArceOsD1UartPort::new(
+                NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap(),
+                desc.console.reg_stride,
+            )
+        }
+    };
+}
+
+// ── 类型别名 ─────────────────────────────────────────────────────────
+
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
-/// 异步读取器类型
+#[cfg(feature = "lichee-d1-async-uart")]
+pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsD1UartPort>;
+
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
     ArceOsRuntime,
     ArceOsWakerSet,
     ArceOsUartPort,
 >;
-/// 异步写入器类型
+#[cfg(feature = "lichee-d1-async-uart")]
+pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
+    ArceOsRuntime,
+    ArceOsWakerSet,
+    ArceOsD1UartPort,
+>;
+
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
     ArceOsRuntime,
     ArceOsWakerSet,
     ArceOsUartPort,
 >;
+#[cfg(feature = "lichee-d1-async-uart")]
+pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
+    ArceOsRuntime,
+    ArceOsWakerSet,
+    ArceOsD1UartPort,
+>;
 
-// ── Ring buffer 静态存储 ──────────────────────────────────────────
+// ── Ring buffer 静态存储 ─────────────────────────────────────────────
 
 static RX_RING: RingBuffer = RingBuffer::new();
 static TX_RING: RingBuffer = RingBuffer::new();
@@ -137,11 +186,10 @@ static TX_RING: RingBuffer = RingBuffer::new();
 static mut RX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
 static mut TX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
 
-// ── 驱动实例存储 ──────────────────────────────────────────────────
+// ── 驱动实例存储 ─────────────────────────────────────────────────────
 
 static DRIVER: Once<Arc<ArceOsDriver>> = Once::new();
 
-/// 获取驱动实例的 `Arc` 引用（用于创建 `AsyncUartReader`/`AsyncUartWriter`）。
 pub fn driver() -> Arc<ArceOsDriver> {
     DRIVER
         .get()
@@ -149,7 +197,6 @@ pub fn driver() -> Arc<ArceOsDriver> {
         .clone()
 }
 
-/// 获取驱动实例的 `&'static` 引用（用于 `start_rx_copier`/`start_tx_copier`）。
 fn driver_ref() -> &'static ArceOsDriver {
     DRIVER
         .get()
@@ -157,11 +204,9 @@ fn driver_ref() -> &'static ArceOsDriver {
         .as_ref()
 }
 
-// ── ISR 包装器 ────────────────────────────────────────────────────
+// ── QEMU: ISR 包装器 ─────────────────────────────────────────────────
 
-/// UART ISR 包装器 — 桥接 axhal IRQ hook 到 uart_16550 ISR handler。
-///
-/// 满足 ISR 极简原则：读 ISR / 禁中断 / wake / 返回。
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 fn uart_isr_wrapper(_irq: usize) {
     let base = NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap();
     uart_16550::async_::isr::uart_isr_handler(
@@ -171,24 +216,23 @@ fn uart_isr_wrapper(_irq: usize) {
     );
 }
 
-// ── 初始化 ────────────────────────────────────────────────────────
+// ── D1: ISR 包装器 ───────────────────────────────────────────────────
 
-/// 初始化 UART 硬件 + 异步驱动
-///
-/// 完成以下初始化步骤：
-/// 1. MMIO 映射验证
-/// 2. Ring buffer 初始化
-/// 3. `AsyncUartDriver` 创建
-/// 4. ISR 注册
-/// 5. RX/TX copier 任务启动
-///
-/// # When to Call
-///
-/// 在 `entry.rs::init()` 中调用，位于 Console 初始化之后。
+#[cfg(feature = "lichee-d1-async-uart")]
+fn uart_isr_wrapper(_irq: usize) {
+    d1_uart_isr_handler(
+        _irq,
+        &D1_UART_PORT,
+        || D1_UART_PORT.update_ier(IER::empty(), IER::DATA_READY),
+        || D1_UART_PORT.update_ier(IER::empty(), IER::THR_EMPTY),
+    );
+}
+
+// ── 初始化 ───────────────────────────────────────────────────────────
+
 pub fn init_uart_hardware() {
     ax_println!("[UART INIT] Phase 1: MMIO read-only verification");
 
-    // Step 1: Ensure UART MMIO is mapped with DEVICE|READ|WRITE
     let desc = platform::descriptor();
     match axmm::iomap(PhysAddr::from(desc.console.base_paddr), 0x1000) {
         Ok(vaddr) => {
@@ -202,33 +246,44 @@ pub fn init_uart_hardware() {
         }
     }
 
-    // Step 2: Direct raw pointer read test (bypass uart_16550 crate)
     let base_ptr = get_uart_mmio_virt().as_ptr();
     ax_println!("[UART INIT] base_ptr = {:?}", base_ptr);
 
-    // Try reading LSR register at stride 1 (offset 5), same offset Console uses
-    ax_println!("[UART INIT] Trying raw read at base+5 (stride 1, LSR)...");
-    let lsr_raw: u8 = unsafe { base_ptr.add(5).read_volatile() };
-    ax_println!("[UART INIT] ✅ Raw LSR read: {:#02x}", lsr_raw);
+    // ── QEMU: raw byte probe at stride 1 ──────────────────────────
+    #[cfg(not(feature = "lichee-d1-async-uart"))]
+    {
+        ax_println!("[UART INIT] Trying raw read at base+5 (stride 1, LSR)...");
+        let lsr_raw: u8 = unsafe { base_ptr.add(5).read_volatile() };
+        ax_println!("[UART INIT] ✅ Raw LSR read: {:#02x}", lsr_raw);
 
-    // Now try the uart_16550 crate path
-    ax_println!("[UART INIT] Trying uart_16550 crate access...");
-    let mut uart = uart_instance().lock();
-    log_uart_state(&mut uart);
-    // FCR threshold check: ISR bits 6-7 indicate FIFO status
-    let isr = uart.isr();
-    let fifo_enabled = isr.contains(ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1);
-    ax_println!(
-        "[UART INIT] FCR: FIFO enabled={}, trigger level via ISR bits 7-6",
-        fifo_enabled
-    );
-    drop(uart);
+        ax_println!("[UART INIT] Trying uart_16550 crate access...");
+        let mut uart = uart_instance().lock();
+        log_uart_state(&mut uart);
+        let isr = uart.isr();
+        let fifo_enabled = isr.contains(ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1);
+        ax_println!(
+            "[UART INIT] FCR: FIFO enabled={}, trigger level via ISR bits 7-6",
+            fifo_enabled
+        );
+        drop(uart);
+    }
+
+    // ── D1: skip byte probe, use 32-bit MMIO ───────────────────────
+    #[cfg(feature = "lichee-d1-async-uart")]
+    {
+        ax_println!(
+            "[UART INIT] D1 mode: stride {} / 32-bit MMIO, skipping byte probe",
+            desc.console.reg_stride
+        );
+        // D1 DW APB UART LSR verify via 32-bit read
+        let d1_port = &*D1_UART_PORT;
+        let lsr_val = d1_port.read_lsr_clear();
+        ax_println!("[UART INIT] ✅ D1 LSR (32-bit read): {:#010x}", lsr_val);
+    }
 
     ax_println!("[UART INIT] ✅ Phase 1 PASSED: UART registers readable");
 
     // Step 3: Initialize ring buffers
-    // SAFETY: called exactly once before any concurrent ring-buffer access.
-    // The backing `static mut` buffers live for the entire kernel lifetime.
     unsafe {
         RX_RING.init(addr_of_mut!(RX_BUF).cast::<u8>(), BUF_SIZE);
         TX_RING.init(addr_of_mut!(TX_BUF).cast::<u8>(), BUF_SIZE);
@@ -239,12 +294,14 @@ pub fn init_uart_hardware() {
     );
 
     // Step 4: Create async driver
-    // SAFETY: Ring buffers are initialized above, and we create exactly one
-    // RingBufRx/RingBufTx pair per ring.
     let rx = unsafe { RingBufRx::<ArceOsWakerSet>::new(&RX_RING) };
     let tx = unsafe { RingBufTx::<ArceOsWakerSet>::new(&TX_RING) };
 
+    #[cfg(not(feature = "lichee-d1-async-uart"))]
     let uart_port: &'static ArceOsUartPort = &UART_PORT;
+    #[cfg(feature = "lichee-d1-async-uart")]
+    let uart_port: &'static ArceOsD1UartPort = &D1_UART_PORT;
+
     let driver = Arc::new(ArceOsDriver::new(rx, tx, uart_port));
     DRIVER.call_once(|| driver);
     ax_println!("[UART INIT] ✅ AsyncUartDriver created");
@@ -259,8 +316,12 @@ pub fn init_uart_hardware() {
     ax_println!("[UART INIT] ✅ RX/TX copier tasks started");
 }
 
-/// 日志输出 UART 寄存器状态（调试验证）
+// ── QEMU: 寄存器状态日志 ──────────────────────────────────────────────
+
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 fn log_uart_state(uart: &mut Uart16550<MmioBackend>) {
+    use uart_16550::spec::registers::{ISR, LSR};
+
     let ier = uart.ier();
     let isr = uart.isr();
     let lsr = uart.lsr();
@@ -272,7 +333,6 @@ fn log_uart_state(uart: &mut Uart16550<MmioBackend>) {
         lsr.bits()
     );
 
-    // 检查关键配置
     if !ier.contains(IER::DATA_READY) {
         info!("[UART INIT] ⚠️ RX interrupt NOT enabled!");
     }
@@ -282,14 +342,12 @@ fn log_uart_state(uart: &mut Uart16550<MmioBackend>) {
         info!("[UART INIT] ✅ TX interrupt enabled (AsyncUart needs this)");
     }
 
-    // 检查 FIFO 状态（ISR 的 FIFOS_ENABLED0 和 FIFOS_ENABLED1 位）
     if isr.contains(ISR::FIFOS_ENABLED0 | ISR::FIFOS_ENABLED1) {
         info!("[UART INIT] ✅ FIFO enabled (16 bytes)");
     } else {
         info!("[UART INIT] ⚠️ FIFO NOT enabled!");
     }
 
-    // 检查 TX transmitter 状态
     if lsr.contains(LSR::TRANSMITTER_EMPTY) {
         info!("[UART INIT] ✅ TX transmitter empty (ready to send)");
     }

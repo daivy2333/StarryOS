@@ -68,7 +68,25 @@ lichee-d1 = [
     "dep:axplat-riscv64-lichee-d1",
     "dep:page_table_entry",
     "axplat-riscv64-lichee-d1/irq-if",
+    "axfeat/bus-mmio",
     "starry-kernel/lichee-d1",
+    "starry-kernel/lichee-d1-smoke",
+]
+lichee-d1-async-uart = [
+    "dep:axplat-riscv64-lichee-d1",
+    "dep:page_table_entry",
+    "axplat-riscv64-lichee-d1/irq",
+    "axfeat/bus-mmio",
+    "starry-kernel/lichee-d1",
+    "starry-kernel/lichee-d1-async-uart",
+]
+lichee-d1-kbench = [
+    "lichee-d1-async-uart",
+    "starry-kernel/lichee-d1-kbench",
+]
+lichee-d1-userbench = [
+    "lichee-d1-async-uart",
+    "starry-kernel/lichee-d1-userbench",
 ]
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
 
@@ -98,4 +116,6 @@ features = ["xuantie-c9xx"]
 
 [package.metadata.vendor-filter]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
-all-features = true
+
+[patch.crates-io]
+axfs-ng = { path = "crates/axfs-ng" }

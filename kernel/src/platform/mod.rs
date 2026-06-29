@@ -21,8 +21,8 @@ pub mod qemu;
 pub mod smoke;
 pub mod visionfive2;
 
-#[cfg(all(feature = "qemu", feature = "lichee-d1"))]
-compile_error!("features `qemu` and `lichee-d1` cannot be enabled together");
+#[cfg(all(feature = "qemu", any(feature = "lichee-d1", feature = "lichee-d1-async-uart")))]
+compile_error!("features `qemu` and lichee-d1 variants cannot be enabled together");
 
 /// Returns the build-time platform descriptor for the active target.
 pub fn descriptor() -> &'static PlatformDescriptor {

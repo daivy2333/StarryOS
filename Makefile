@@ -59,10 +59,26 @@ vf2:
 
 lichee:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
-	@echo "Packing Android boot image..."
+	@echo "Packing Android boot image (smoke)..."
 	@python3 tools/android_boot_image.py pack \
 		--kernel StarryOS_riscv64-lichee-d1.bin \
 		--output starry-lichee-boot.img
 	@python3 tools/android_boot_image.py inspect starry-lichee-boot.img
 
-.PHONY: build run justrun debug disasm clean lichee
+lichee-kbench:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1-kbench MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
+	@echo "Packing Android boot image (kbench)..."
+	@python3 tools/android_boot_image.py pack \
+		--kernel StarryOS_riscv64-lichee-d1.bin \
+		--output starry-lichee-kbench-boot.img
+	@python3 tools/android_boot_image.py inspect starry-lichee-kbench-boot.img
+
+lichee-userbench:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1-userbench MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
+	@echo "Packing Android boot image (userbench)..."
+	@python3 tools/android_boot_image.py pack \
+		--kernel StarryOS_riscv64-lichee-d1.bin \
+		--output starry-lichee-userbench-boot.img
+	@python3 tools/android_boot_image.py inspect starry-lichee-userbench-boot.img
+
+.PHONY: build run justrun debug disasm clean lichee lichee-kbench lichee-userbench
