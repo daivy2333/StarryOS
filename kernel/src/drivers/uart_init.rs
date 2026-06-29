@@ -287,6 +287,14 @@ pub fn init_uart_hardware() {
         );
         // D1 DW APB UART LSR verify via 32-bit read
         let d1_port = &*D1_UART_PORT;
+        d1_port.init_interrupt_mode();
+        let (ier, iir, lsr) = d1_port.debug_regs();
+        ax_println!(
+            "[UART INIT] D1 interrupt mode configured: IER={:#010x} IIR={:#010x} LSR={:#010x}",
+            ier,
+            iir,
+            lsr
+        );
         let lsr_val = d1_port.read_lsr_clear();
         ax_println!("[UART INIT] ✅ D1 LSR (32-bit read): {:#010x}", lsr_val);
     }

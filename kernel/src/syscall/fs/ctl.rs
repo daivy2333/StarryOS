@@ -56,9 +56,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             if !c.ring_empty || c.copier_active || c.staged_bytes > 0 {
                 driver.tx.register_waker(cx.waker());
             }
-            if c.staged_bytes == 0 && !c.copier_active && c.ring_empty {
-                DRAIN_WAKER.register(cx.waker());
-            }
+            DRAIN_WAKER.register(cx.waker());
 
             let c2 = driver.tx_completion();
             if c2.is_drained() {

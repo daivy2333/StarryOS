@@ -9,7 +9,7 @@
 
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
 use uart_16550::{async_::driver::UartPort, spec::registers::IER};
@@ -18,7 +18,8 @@ use uart_16550::{async_::driver::UartPort, spec::registers::IER};
 // Physical byte offset = offset * stride
 const UART_RBR_THR: usize = 0;
 const UART_IER: usize = 1;
-const UART_IIR: usize = 2;
+const UART_IIR_FCR: usize = 2;
+const UART_MCR: usize = 4;
 const UART_LSR: usize = 5;
 
 // LSR bit definitions (same as NS16550, but accessed as u32)
@@ -26,9 +27,22 @@ const LSR_DR: u32 = 1 << 0;
 const LSR_THRE: u32 = 1 << 5;
 const LSR_TEMT: u32 = 1 << 6;
 
+// FCR bit definitions.
+const FCR_FIFO_ENABLE: u32 = 1 << 0;
+const FCR_RX_FIFO_RESET: u32 = 1 << 1;
+const FCR_TX_FIFO_RESET: u32 = 1 << 2;
+const FCR_RX_TRIGGER_14: u32 = 0b11 << 6;
+
+// MCR bit definitions.
+const MCR_DTR: u32 = 1 << 0;
+const MCR_RTS: u32 = 1 << 1;
+const MCR_OUT2_INT_ENABLE: u32 = 1 << 3;
+
 // IIR interrupt IDs (bits 3:1)
 const IIR_RX_DATA: u32 = 0x04;
 const IIR_TX_EMPTY: u32 = 0x02;
+
+static D1_UART_IRQ_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 /// D1 UART port wraps raw MMIO base pointer with stride-aware 32-bit access.
 pub struct ArceOsD1UartPort {
@@ -77,13 +91,39 @@ impl ArceOsD1UartPort {
     /// Read IIR register (offset 2), extract interrupt ID from bits 3:1.
     #[inline(always)]
     pub fn read_iir(&self) -> u32 {
-        self.read_reg(UART_IIR) & 0x0e
+        self.read_reg(UART_IIR_FCR)
     }
 
     /// Read LSR register, clear line/modem interrupt sources.
     #[inline(always)]
     pub fn read_lsr_clear(&self) -> u32 {
         self.read_reg(UART_LSR)
+    }
+
+    /// Configure D1 DW APB UART for interrupt-driven async TX/RX.
+    ///
+    /// U-Boot already configures baud rate and pinmux, but the async driver
+    /// still needs the 16550-compatible FIFO and modem interrupt routing bits.
+    pub fn init_interrupt_mode(&self) {
+        self.ier_cache.store(0, Ordering::Relaxed);
+        self.write_reg(UART_IER, 0);
+        self.write_reg(
+            UART_IIR_FCR,
+            FCR_FIFO_ENABLE | FCR_RX_FIFO_RESET | FCR_TX_FIFO_RESET | FCR_RX_TRIGGER_14,
+        );
+        self.write_reg(UART_MCR, MCR_DTR | MCR_RTS | MCR_OUT2_INT_ENABLE);
+
+        // Clear latched status sources before enabling async copier tasks.
+        let _ = self.read_reg(UART_IIR_FCR);
+        let _ = self.read_reg(UART_LSR);
+    }
+
+    pub fn debug_regs(&self) -> (u32, u32, u32) {
+        (
+            self.read_reg(UART_IER),
+            self.read_reg(UART_IIR_FCR),
+            self.read_reg(UART_LSR),
+        )
     }
 }
 
@@ -122,6 +162,18 @@ impl UartPort for ArceOsD1UartPort {
         val &= !clear.bits();
         self.ier_cache.store(val, Ordering::Relaxed);
         self.write_reg(UART_IER, val as u32);
+
+        if set.contains(IER::THR_EMPTY) {
+            use uart_16550::async_::isr;
+
+            let lsr = self.read_reg(UART_LSR);
+            if lsr & LSR_THRE != 0 {
+                isr::TX_WAKER.wake();
+            }
+            if lsr & LSR_TEMT != 0 {
+                isr::DRAIN_WAKER.wake();
+            }
+        }
     }
 }
 
@@ -139,7 +191,31 @@ pub fn d1_uart_isr_handler(
 
     isr::IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    let iir = port.read_iir();
+    let iir_raw = port.read_iir();
+    let iir = iir_raw & 0x0e;
+    let no_pending = iir_raw & 0x01 != 0;
+    let lsr = port.read_lsr_clear();
+
+    let log_idx = D1_UART_IRQ_LOGS.fetch_add(1, Ordering::Relaxed);
+    if log_idx < 16 {
+        ax_println!(
+            "[d1-uart-irq] irq={} iir={:#010x} id={:#04x} lsr={:#010x}",
+            _irq,
+            iir_raw,
+            iir,
+            lsr
+        );
+    }
+
+    if no_pending {
+        if lsr & LSR_THRE != 0 {
+            isr::TX_WAKER.wake();
+        }
+        if lsr & LSR_TEMT != 0 {
+            isr::DRAIN_WAKER.wake();
+        }
+        return;
+    }
 
     match iir {
         IIR_RX_DATA => {

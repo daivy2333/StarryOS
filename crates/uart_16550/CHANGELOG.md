@@ -1,0 +1,222 @@
+# CHANGELOG
+
+## Unreleased
+
+### Breaking Changes
+- **`TtyWrite::write` now returns `usize`** — the trait method signature changed from
+  `fn write(&self, buf: &[u8])` to `fn write(&self, buf: &[u8]) -> usize`. All
+  implementors must return the actual number of bytes accepted. This corrects a
+  silent data loss bug where `Tty::write_at` claimed full acceptance when the
+  output buffer was full. echo paths in ldisc should use `let _ = writer.write(...)`.
+  (Q15 M3)
+- **Breaking:** Changed the return type of `Uart16550::config(&self)` from
+  `(&Config, &B::Address)` to `(&Config, &B)` (synced from upstream #61)
+
+### Added
+- **`async` feature gate** for interrupt-driven async UART support
+  - OS abstraction traits: `OsRuntime`, `OsIrq`, `OsMmio`, `OsSpinNoIrq`, `OsWakerSet`
+  - Async modules: ISR handler, ring buffer, copier driver, device ops
+  - `AsyncUartDriver` with NAPI-style interrupt coalescing
+  - `AsyncUartReader`/`AsyncUartWriter` implementing `TtyRead`/`TtyWrite` + `embedded_io_async`
+  - `UartPort` trait for interior mutability abstraction
+  - Batch operations: `push_batch`/`pop_batch` for reduced lock overhead
+  - `#[inline(always)]` on hot path functions
+  - Dependencies: `embassy-sync`, `embassy-hal-internal`, `embedded-io-async`
+
+### Changed
+- `#![no_std]` crate now optionally supports `alloc` via `async` feature (for `Arc` in device ops)
+
+### Performance (Q13.1)
+- 1B avg latency: 129.5µs (vs Q12 baseline 124µs, +4.4% for portability)
+- Overhead: 42.6µs (vs Q13 pre-optimization 53.3µs, -20%)
+- Ring buffer batch operations reduce per-byte lock acquisition
+- Hot path functions use `#[inline(always)]` for cross-crate inlining
+
+## 0.6.0 - 2026-03-28
+
+- Rename `Uart16550::try_send_bytes()` to `Uart16550::send_bytes()`
+- Rename `Uart16550::try_receive_bytes()` to `Uart16550::receive_bytes()`
+- New public methods:
+  - `Uart16550::ready_to_receive()`
+  - `Uart16550::ready_to_send()`
+- Documentation improvements
+- Internal safety fixes (there was no UB, just making the internal code more
+  robust)
+- `Uart16550::new_mmio()` and `Uart16550Ttty::new_mmio()` now accept a
+  `NonNull<u8>` instead of a `*mut u8`. The recommended way to construct the
+  MMIO address is to use:
+  ```rust
+  fn main() {
+    // External MMIO address.
+    let mmio_address = ptr::with_exposed_provenance_mut::<u8>(0x1000);
+    let mmio_address = NonNull::new(mmio_address).unwrap();
+    let mut uart = unsafe { Uart16550::new_mmio(mmio_address, 4).unwrap() };
+  }
+  ```
+
+## 0.5.0 - 2026-03-20
+
+- Complete rewrite of the crate
+- The crate is by no means "minimalist" anymore. Now, `uart_16550`, is a simple
+  yet highly configurable low-level driver for 16550 UART devices, typically
+  known and used as serial ports or COM ports. Easy integration into Rust while
+  providing fine-grained control where needed (e.g., for kernel drivers).
+- Changes were made to use this on **real hardware**
+- Common API for x86 port I/O and MMIO
+- 100% typed spec
+
+We thank all past contributors. We've decided to completely rewrite the crate
+to clean up technical debt from the past, maintain the highest possible coding
+and API standards, and to make this crate ready for usage on real hardware,
+while keeping it easy to use in virtual machines.
+
+### Special Thanks
+
+Special Thanks to Philipp Oppermann (@phil-opp) and Martin Kröning (@mkroening)
+for their very valuable review on the new crate!
+
+### Migration to v0.5.0
+
+**Old**
+
+```rust
+use uart_16550::SerialPort;
+
+const SERIAL_IO_PORT: u16 = 0x3F8;
+
+let mut serial_port = unsafe { SerialPort::new(SERIAL_IO_PORT) };
+serial_port.init();
+
+// Now the serial port is ready to be used. To send a byte:
+serial_port.send(42);
+
+// To receive a byte:
+let data = serial_port.receive();
+```
+
+**New (Minimalistic)**
+
+```rust
+use uart_16550::{Config, Uart16550Tty};
+use core::fmt::Write;
+
+fn main() {
+  // SAFETY: The address is valid and we have exclusive access.
+  let mut uart = unsafe { Uart16550Tty::new_mmio(0x1000 as *mut _, 4, Config::default()).expect("should initialize device") };
+  //                                    ^ or `new_port(0x3f8, Config::default())`
+  uart.write_str("hello world\nhow's it going?");
+}
+```
+
+**New (More low-level control)**
+
+```rust
+use uart_16550::{Config, Uart16550};
+
+fn main() {
+  // SAFETY: The address is valid and we have exclusive access.
+  let mut uart = unsafe { Uart16550::new_mmio(0x1000 as *mut _, 4).expect("should be valid port") };
+  //                                 ^ or `new_port(0x3f8)`
+  uart.init(Config::default()).expect("should init device successfully");
+  uart.test_loopback().expect("should have working loopback mode");
+  uart.check_connected().expect("should have physically connected receiver");
+  uart.send_bytes_exact(b"hello world!");
+}
+```
+
+## 0.4.0 – 2025-07-24
+
+- [Update `send` function to replace `\n` with `\r\n`](https://github.com/rust-osdev/uart_16550/pull/40)
+
+## 0.3.2 – 2024-11-13
+
+- Add `MmioSerialPort::new_with_stride` function ([#36](https://github.com/rust-osdev/uart_16550/pull/36))
+
+## 0.3.1 – 2024-07-11
+
+- Add `try_send_raw` and `try_receive` ([#34](https://github.com/rust-osdev/uart_16550/pull/34))
+- Update bitflags dependency to version 2 ([#33](https://github.com/rust-osdev/uart_16550/pull/33))
+
+## 0.3.0 – 2023-08-04
+
+- Internal rewrite of port operations to work on both `x86` and `x86_64` ([#29](https://github.com/rust-osdev/uart_16550/pull/29))
+
+## 0.2.19 – 2023-07-07
+
+- Make crate usable for 32-bit `x86` ([#28](https://github.com/rust-osdev/uart_16550/pull/28))
+
+## 0.2.18 – 2022-04-16
+
+- Remove use of `stable` and `nightly` features ([#24](https://github.com/rust-osdev/uart_16550/pull/24))
+
+## 0.2.17 – 2022-03-28
+
+- Remove stabilized nightly feature 'const_ptr_offset' ([#22](https://github.com/rust-osdev/uart_16550/pull/22))
+
+## 0.2.16 – 2022-01-08
+
+- Add `send_raw()` function to allow sending arbitrary binary data using the serial port ([#21](https://github.com/rust-osdev/uart_16550/pull/21))
+
+## 0.2.15 – 2021-06-06
+
+- Add support for memory mapped UARTs ([#15](https://github.com/rust-osdev/uart_16550/pull/15))
+- Improvements to new MMIO support ([#18](https://github.com/rust-osdev/uart_16550/pull/18))
+
+## 0.2.14 – 2021-05-14
+
+- `SerialPort::new()` no longer requires `nightly` feature ([#16](https://github.com/rust-osdev/uart_16550/pull/16))
+
+## 0.2.13 – 2021-04-30
+
+- Update x86_64 dependency and make it more robust ([#14](https://github.com/rust-osdev/uart_16550/pull/14))
+
+## 0.2.12 – 2021-02-02
+
+- Fix build on nightly by updating to x86_64 v0.13.2 ([#12](https://github.com/rust-osdev/uart_16550/pull/12))
+
+## 0.2.11 – 2021-01-15
+
+- Use stabilized `hint::spin_loop` instead of deprecated `atomic::spin_loop_hint`
+
+## 0.2.10 – 2020-10-01
+
+- Fix default feature breakage ([#11](https://github.com/rust-osdev/uart_16550/pull/11))
+
+## 0.2.9 – 2020-09-29
+
+- Update `x86_64` dependency to version `0.12.2`
+
+## 0.2.8 – 2020-09-24
+
+- Update `x86_64` dependency to version `0.12.1`
+
+## 0.2.7
+
+- Update `x86_64` dependency to version `0.11.0`
+
+## 0.2.6
+
+- Use `spin_loop_hint` while waiting for data ([#9](https://github.com/rust-osdev/uart_16550/pull/9))
+- Update `x86_64` dependency to version `0.10.2`
+
+## 0.2.5
+
+- Support receiving bytes from serial ports ([#8](https://github.com/rust-osdev/uart_16550/pull/8))
+
+## 0.2.4
+
+- Enable usage with non-nightly rust ([#7](https://github.com/rust-osdev/uart_16550/pull/7))
+
+## 0.2.3
+
+- Cargo.toml: update x86_64 dependency ([#5](https://github.com/rust-osdev/uart_16550/pull/5))
+- Switch CI to GitHub Actions ([#6](https://github.com/rust-osdev/uart_16550/pull/6))
+
+## 0.2.2
+
+- Update internal x86_64 dependency to version 0.8.3 ([#4](https://github.com/rust-osdev/uart_16550/pull/4))
+
+## 0.2.1
+
+- Update to x86_64 0.7.3 and bitflags 1.1.0 ([#1](https://github.com/rust-osdev/uart_16550/pull/1))
+- Document how serial port is configured by default ([#2](https://github.com/rust-osdev/uart_16550/pull/1))
