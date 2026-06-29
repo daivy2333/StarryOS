@@ -5,7 +5,12 @@ mod pty;
 pub mod terminal;
 
 use alloc::sync::{Arc, Weak};
-use core::{any::Any, ops::Deref, sync::atomic::{AtomicBool, Ordering}, task::Context};
+use core::{
+    any::Any,
+    ops::Deref,
+    sync::atomic::{AtomicBool, Ordering},
+    task::Context,
+};
 
 use axerrno::{AxError, AxResult};
 use axfs_ng_vfs::NodeFlags;
@@ -23,11 +28,7 @@ use self::terminal::{
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite},
     termios::{Termios, Termios2},
 };
-pub use self::{
-    ptm::Ptmx,
-    pts::PtsDir,
-    pty::PtyDriver,
-};
+pub use self::{ptm::Ptmx, pts::PtsDir, pty::PtyDriver};
 use crate::{
     pseudofs::{DeviceOps, SimpleFs},
     task::AsThread,

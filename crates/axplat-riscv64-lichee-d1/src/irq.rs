@@ -1,10 +1,11 @@
 use core::{
     num::NonZeroU32,
     ptr::NonNull,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
 use axplat::{
+    console,
     irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf},
     percpu::this_cpu_id,
 };
@@ -25,6 +26,7 @@ pub(super) const S_TIMER: usize = INTC_IRQ_BASE + 5;
 pub(super) const S_EXT: usize = INTC_IRQ_BASE + 9;
 
 static TIMER_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static TIMER_IRQ_MARKS: AtomicUsize = AtomicUsize::new(0);
 
 static IPI_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
@@ -41,17 +43,28 @@ fn this_context() -> usize {
     hart_id * 2 + 1
 }
 
+#[inline(always)]
+fn irq_mark(message: &str) {
+    console::write_bytes(message.as_bytes());
+}
+
 pub(super) fn init_percpu() {
+    PLIC.lock().init_by_context(this_context());
     unsafe {
         sie::set_ssoft();
         sie::set_stimer();
         sie::set_sext();
     }
-    PLIC.lock().init_by_context(this_context());
 }
 
 macro_rules! with_cause {
-    ($cause: expr, @S_TIMER => $timer_op: expr, @S_SOFT => $ipi_op: expr, @S_EXT => $ext_op: expr, @EX_IRQ => $plic_op: expr $(,)?) => {
+    (
+        $cause:expr, @S_TIMER =>
+        $timer_op:expr, @S_SOFT =>
+        $ipi_op:expr, @S_EXT =>
+        $ext_op:expr, @EX_IRQ =>
+        $plic_op:expr $(,)?
+    ) => {
         match $cause {
             S_TIMER => $timer_op,
             S_SOFT => $ipi_op,
@@ -104,7 +117,20 @@ impl IrqIf for IrqIfImpl {
     fn register(irq: usize, handler: IrqHandler) -> bool {
         with_cause!(
             irq,
-            @S_TIMER => TIMER_HANDLER.compare_exchange(core::ptr::null_mut(), handler as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok(),
+            @S_TIMER => {
+                if TIMER_HANDLER.compare_exchange(
+                    core::ptr::null_mut(),
+                    handler as *mut _,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ).is_ok() {
+                    irq_mark("[d1-irq] S_TIMER registered, arming first tick\n");
+                    sbi_rt::set_timer(0);
+                    true
+                } else {
+                    false
+                }
+            },
             @S_SOFT => IPI_HANDLER.compare_exchange(core::ptr::null_mut(), handler as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok(),
             @S_EXT => {
                 warn!("External IRQ should be got from PLIC, not scause");
@@ -154,6 +180,9 @@ impl IrqIf for IrqIfImpl {
             irq,
             @S_TIMER => {
                 trace!("IRQ: timer");
+                if TIMER_IRQ_MARKS.fetch_add(1, Ordering::Relaxed) < 4 {
+                    irq_mark("[d1-irq] timer tick\n");
+                }
                 let handler = TIMER_HANDLER.load(Ordering::Acquire);
                 if !handler.is_null() {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.

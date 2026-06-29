@@ -6,10 +6,10 @@
 extern crate alloc;
 use alloc::vec;
 
-use crate::drivers::uart_init::{self, BUF_SIZE};
-
 use axhal::time::monotonic_time_nanos;
 use uart_16550::async_::bench;
+
+use crate::drivers::uart_init::{self, BUF_SIZE};
 
 /// 启动时运行完整 benchmark。
 pub fn run_startup_benchmark() {
@@ -59,10 +59,7 @@ pub fn run_startup_benchmark() {
         "[BENCH] NAPI threshold: {} consecutive reads",
         bench::NAPI_THRESHOLD
     );
-    ax_println!(
-        "[BENCH] NAPI batch size: {} bytes",
-        bench::NAPI_BATCH_SIZE
-    );
+    ax_println!("[BENCH] NAPI batch size: {} bytes", bench::NAPI_BATCH_SIZE);
     ax_println!(
         "[BENCH] Copier buffer size: {} bytes",
         bench::COPIER_BUF_SIZE
@@ -88,8 +85,7 @@ pub fn run_startup_benchmark() {
     ax_println!("[BENCH] Note: actual throughput limited by UART line rate (11.52 KB/s)");
 }
 
-use uart_16550::async_::ring_buffer::RingBufRx;
-use uart_16550::os::OsWakerSet;
+use uart_16550::{async_::ring_buffer::RingBufRx, os::OsWakerSet};
 
 fn run_rx_throughput_test<W: OsWakerSet>(rx: &RingBufRx<W>) {
     ax_println!("[BENCH] Running RX ring buffer throughput test...");

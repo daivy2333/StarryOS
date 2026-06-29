@@ -7,11 +7,11 @@ use core::{
 
 use axerrno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
-use embassy_sync::waitqueue::AtomicWaker;
 use axtask::{
     current,
     future::{block_on, poll_io},
 };
+use embassy_sync::waitqueue::AtomicWaker;
 use spin::RwLock;
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};

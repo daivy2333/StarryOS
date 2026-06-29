@@ -11,9 +11,9 @@ mod tmp;
 use alloc::sync::Arc;
 
 use axerrno::LinuxResult;
-use axfs::{FS_CONTEXT, FsContext};
+use axfs::{FS_CONTEXT, FsContext, ROOT_FS_CONTEXT};
 use axfs_ng_vfs::{
-    DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry,
+    DirNodeOps, FileNodeOps, Filesystem, Mountpoint, NodePermission, WeakDirEntry,
     path::{Path, PathBuf},
 };
 pub use tmp::MemoryFs;
@@ -47,6 +47,14 @@ impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
 }
 
 const DIR_PERMISSION: NodePermission = NodePermission::from_bits_truncate(0o755);
+
+/// Initialize a memory-backed root filesystem for platforms without a block rootfs.
+#[cfg(feature = "lichee-d1-userbench")]
+pub fn init_memory_root() {
+    let fs = MemoryFs::new();
+    let mp = Mountpoint::new_root(&fs);
+    ROOT_FS_CONTEXT.call_once(|| FsContext::new(mp.root_location()));
+}
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
     if fs.resolve(path).is_err() {

@@ -8,10 +8,12 @@
 //! - Kernel load: 0x40200000 (Android boot image convention)
 //! - Console: DW APB UART 0 at 0x02500000, IRQ 18, stride 4, 32-bit MMIO
 
-use super::console::{ConsoleConfig, ConsoleKind, MmioAccessWidth};
-use super::descriptor::{
-    BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
-    PlatformDescriptor, TimerConfig,
+use super::{
+    console::{ConsoleConfig, ConsoleKind, MmioAccessWidth},
+    descriptor::{
+        BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
+        PlatformDescriptor, TimerConfig,
+    },
 };
 
 /// Lichee RV Dock / Allwinner D1 platform descriptor.
@@ -38,9 +40,7 @@ pub const LICHEE_D1: PlatformDescriptor = PlatformDescriptor {
     interrupt: InterruptConfig {
         plic_base_paddr: 0x10000000,
     },
-    timer: TimerConfig {
-        kind: "sbi",
-    },
+    timer: TimerConfig { kind: "sbi" },
     boot: BootImageConfig {
         kind: BootKind::AndroidImage,
     },

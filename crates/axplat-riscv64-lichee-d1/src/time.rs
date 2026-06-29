@@ -1,16 +1,12 @@
-use riscv::register::time;
-
 use axplat::time::{NANOS_PER_SEC, TimeIf};
+use riscv::register::time;
 
 const NANOS_PER_TICK: u64 = NANOS_PER_SEC / crate::config::devices::TIMER_FREQUENCY as u64;
 static mut RTC_EPOCHOFFSET_NANOS: u64 = 0;
 
 pub(super) fn init_early() {}
 
-pub(super) fn init_percpu() {
-    #[cfg(feature = "irq")]
-    sbi_rt::set_timer(0);
-}
+pub(super) fn init_percpu() {}
 
 struct TimeIfImpl;
 

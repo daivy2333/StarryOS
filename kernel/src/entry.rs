@@ -4,10 +4,6 @@ use alloc::{
     vec,
 };
 
-// ── D1 benchmark imports (kbench and userbench) ──────────────────────
-#[cfg(feature = "lichee-d1-async-uart")]
-use crate::drivers::{bench, uart_init};
-
 // ── D1 userbench imports (full set for user processes) ───────────────
 #[cfg(feature = "lichee-d1-userbench")]
 use {
@@ -21,10 +17,9 @@ use {
     axfs::FS_CONTEXT,
     axhal::uspace::UserContext,
     axsync::Mutex,
-    axtask::{spawn_task, AxTaskExt},
+    axtask::{AxTaskExt, spawn_task},
     starry_process::{Pid, Process},
 };
-
 // ── QEMU imports (no D1 feature at all) ──────────────────────────────
 #[cfg(not(feature = "lichee-d1"))]
 use {
@@ -38,9 +33,13 @@ use {
     axfs::FS_CONTEXT,
     axhal::uspace::UserContext,
     axsync::Mutex,
-    axtask::{spawn_task, AxTaskExt},
+    axtask::{AxTaskExt, spawn_task},
     starry_process::{Pid, Process},
 };
+
+// ── D1 benchmark imports (kbench and userbench) ──────────────────────
+#[cfg(feature = "lichee-d1-async-uart")]
+use crate::drivers::{bench, uart_init};
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
@@ -164,6 +163,11 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
     #[cfg(feature = "lichee-d1-userbench")]
     {
+        ax_println!("[starry-d1] Initializing memory rootfs...");
+        pseudofs::init_memory_root();
+        pseudofs::mount_all().expect("Failed to mount pseudofs");
+        spawn_alarm_task();
+
         ax_println!("[starry-d1] Loading embedded benchmark payload...");
 
         let mut uspace = new_user_aspace_empty()
@@ -173,19 +177,18 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
             })
             .expect("Failed to create user address space");
 
-        static EMBEDDED_BENCHMARK: &[u8] =
-            include_bytes!("../resources/benchmark.elf");
+        #[repr(align(8))]
+        struct AlignedBytes<const N: usize>([u8; N]);
 
-        let bench_args = vec![
-            String::from("benchmark"),
-        ];
+        const BENCHMARK_ELF_LEN: usize = include_bytes!("../resources/benchmark.elf").len();
+        static EMBEDDED_BENCHMARK: AlignedBytes<BENCHMARK_ELF_LEN> =
+            AlignedBytes(*include_bytes!("../resources/benchmark.elf"));
 
-        let (entry_vaddr, ustack_top) = load_embedded_user_app(
-            &mut uspace,
-            EMBEDDED_BENCHMARK,
-            &bench_args,
-            &[],
-        ).expect("Failed to load embedded benchmark");
+        let bench_args = vec![String::from("benchmark")];
+
+        let (entry_vaddr, ustack_top) =
+            load_embedded_user_app(&mut uspace, &EMBEDDED_BENCHMARK.0, &bench_args, &[])
+                .expect("Failed to load embedded benchmark");
 
         let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
         let mut task = new_user_task("benchmark", uctx, 0);

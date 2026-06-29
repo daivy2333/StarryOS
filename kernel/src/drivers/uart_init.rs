@@ -14,50 +14,56 @@
 //! - UartPort: 硬件访问抽象
 
 use alloc::sync::Arc;
-use core::ptr::{NonNull, addr_of_mut};
-use core::sync::atomic::AtomicU8;
-use core::sync::atomic::Ordering;
+use core::{
+    ptr::{NonNull, addr_of_mut},
+    sync::atomic::{AtomicU8, Ordering},
+};
 
-use axhal::mem::phys_to_virt;
 use axlog::info;
 use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use lazy_static::lazy_static;
-use memory_addr::{PhysAddr, VirtAddr};
+use memory_addr::VirtAddr;
 use spin::Once;
 use uart_16550::{
-    async_::driver::{AsyncUartDriver, UartPort},
-    async_::ring_buffer::{RingBufRx, RingBufTx},
+    async_::{
+        driver::{AsyncUartDriver, UartPort},
+        ring_buffer::{RingBufRx, RingBufTx},
+    },
     spec::registers::IER,
 };
-
-use crate::drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet};
-use crate::platform;
-
 // ── QEMU NS16550 path ────────────────────────────────────────────────
-
 #[cfg(not(feature = "lichee-d1-async-uart"))]
 use {
+    axhal::mem::phys_to_virt,
     core::sync::atomic::AtomicU8 as _,
     kspin::SpinNoIrq,
-    uart_16550::{
-        Uart16550,
-        backend::MmioBackend,
-        spec::registers::ISR,
-    },
+    memory_addr::PhysAddr,
+    uart_16550::{Uart16550, backend::MmioBackend, spec::registers::ISR},
 };
 
 // ── D1 DW APB UART path ──────────────────────────────────────────────
-
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
+use crate::{
+    drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet},
+    platform,
+};
 
 /// Ring buffer 大小（64 KB）
 pub const BUF_SIZE: usize = 64 * 1024;
 
 /// 获取 UART MMIO 虚拟地址（从 platform descriptor 读取）
+#[cfg(not(feature = "lichee-d1-async-uart"))]
 fn get_uart_mmio_virt() -> VirtAddr {
     let desc = platform::descriptor();
     phys_to_virt(PhysAddr::from(desc.console.base_paddr))
+}
+
+/// D1 UART 使用平台 direct-map VA，避免在应用入口阶段触发 axmm::iomap/kernel_aspace。
+#[cfg(feature = "lichee-d1-async-uart")]
+fn get_uart_mmio_virt() -> VirtAddr {
+    let desc = platform::descriptor();
+    VirtAddr::from(desc.console.base_paddr + axconfig::plat::PHYS_VIRT_OFFSET)
 }
 
 // ── QEMU: 全局 UART 实例 ─────────────────────────────────────────────
@@ -105,9 +111,10 @@ impl UartPort for ArceOsUartPort {
 
     #[inline(always)]
     fn transmitter_empty(&self) -> bool {
-        self.uart.lock().lsr().contains(
-            uart_16550::spec::registers::LSR::TRANSMITTER_EMPTY,
-        )
+        self.uart
+            .lock()
+            .lsr()
+            .contains(uart_16550::spec::registers::LSR::TRANSMITTER_EMPTY)
     }
 
     #[inline(always)]
@@ -153,11 +160,8 @@ pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsUar
 pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsD1UartPort>;
 
 #[cfg(not(feature = "lichee-d1-async-uart"))]
-pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
-    ArceOsRuntime,
-    ArceOsWakerSet,
-    ArceOsUartPort,
->;
+pub type ArceOsReader =
+    uart_16550::async_::device_ops::AsyncUartReader<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
 #[cfg(feature = "lichee-d1-async-uart")]
 pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
     ArceOsRuntime,
@@ -166,11 +170,8 @@ pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
 >;
 
 #[cfg(not(feature = "lichee-d1-async-uart"))]
-pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
-    ArceOsRuntime,
-    ArceOsWakerSet,
-    ArceOsUartPort,
->;
+pub type ArceOsWriter =
+    uart_16550::async_::device_ops::AsyncUartWriter<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
 #[cfg(feature = "lichee-d1-async-uart")]
 pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
     ArceOsRuntime,
@@ -191,17 +192,11 @@ static mut TX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
 static DRIVER: Once<Arc<ArceOsDriver>> = Once::new();
 
 pub fn driver() -> Arc<ArceOsDriver> {
-    DRIVER
-        .get()
-        .expect("UART driver not initialized")
-        .clone()
+    DRIVER.get().expect("UART driver not initialized").clone()
 }
 
 fn driver_ref() -> &'static ArceOsDriver {
-    DRIVER
-        .get()
-        .expect("UART driver not initialized")
-        .as_ref()
+    DRIVER.get().expect("UART driver not initialized").as_ref()
 }
 
 // ── QEMU: ISR 包装器 ─────────────────────────────────────────────────
@@ -210,7 +205,8 @@ fn driver_ref() -> &'static ArceOsDriver {
 fn uart_isr_wrapper(_irq: usize) {
     let base = NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap();
     uart_16550::async_::isr::uart_isr_handler(
-        _irq, base,
+        _irq,
+        base,
         || UART_PORT.update_ier(IER::empty(), IER::DATA_READY),
         || UART_PORT.update_ier(IER::empty(), IER::THR_EMPTY),
     );
@@ -228,22 +224,36 @@ fn uart_isr_wrapper(_irq: usize) {
     );
 }
 
+#[cfg(feature = "lichee-d1-async-uart")]
+fn d1_uart_irq_handler() {
+    uart_isr_wrapper(axconfig::devices::UART_IRQ);
+}
+
 // ── 初始化 ───────────────────────────────────────────────────────────
 
 pub fn init_uart_hardware() {
     ax_println!("[UART INIT] Phase 1: MMIO read-only verification");
 
     let desc = platform::descriptor();
-    match axmm::iomap(PhysAddr::from(desc.console.base_paddr), 0x1000) {
-        Ok(vaddr) => {
-            ax_println!("[UART INIT] ✅ iomap OK: UART MMIO at {:?}", vaddr);
+
+    #[cfg(not(feature = "lichee-d1-async-uart"))]
+    {
+        match axmm::iomap(PhysAddr::from(desc.console.base_paddr), 0x1000) {
+            Ok(vaddr) => {
+                ax_println!("[UART INIT] ✅ iomap OK: UART MMIO at {:?}", vaddr);
+            }
+            Err(e) => {
+                ax_println!(
+                    "[UART INIT] ⚠️ iomap returned: {:?} (mapping may already exist, continuing)",
+                    e
+                );
+            }
         }
-        Err(e) => {
-            ax_println!(
-                "[UART INIT] ⚠️ iomap returned: {:?} (mapping may already exist, continuing)",
-                e
-            );
-        }
+    }
+
+    #[cfg(feature = "lichee-d1-async-uart")]
+    {
+        ax_println!("[UART INIT] D1 mode: using platform direct-map UART VA");
     }
 
     let base_ptr = get_uart_mmio_virt().as_ptr();
@@ -307,7 +317,17 @@ pub fn init_uart_hardware() {
     ax_println!("[UART INIT] ✅ AsyncUartDriver created");
 
     // Step 5: Register ISR
+    #[cfg(not(feature = "lichee-d1-async-uart"))]
     axhal::irq::register_irq_hook(uart_isr_wrapper);
+    #[cfg(feature = "lichee-d1-async-uart")]
+    {
+        let registered = axhal::irq::register(axconfig::devices::UART_IRQ, d1_uart_irq_handler);
+        ax_println!(
+            "[UART INIT] D1 UART IRQ {} registered={}",
+            axconfig::devices::UART_IRQ,
+            registered
+        );
+    }
     ax_println!("[UART INIT] ✅ ISR registered");
 
     // Step 6: Start copier tasks

@@ -86,6 +86,7 @@ lichee-d1-kbench = [
 ]
 lichee-d1-userbench = [
     "lichee-d1-async-uart",
+    "axfeat/paging",
     "starry-kernel/lichee-d1-userbench",
 ]
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]

@@ -15,9 +15,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
 };
 
-use embassy_sync::waitqueue::AtomicWaker;
 use axsync::{Mutex, spin::SpinNoIrq};
 use axtask::{TaskExt, TaskInner};
+use embassy_sync::waitqueue::AtomicWaker;
 use extern_trait::extern_trait;
 use scope_local::{ActiveScope, Scope};
 use spin::RwLock;

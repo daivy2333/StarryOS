@@ -8,11 +8,11 @@ use core::{
 use axerrno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 use axsync::Mutex;
-use embassy_sync::waitqueue::AtomicWaker;
 use axtask::{
     current,
     future::{block_on, poll_io},
 };
+use embassy_sync::waitqueue::AtomicWaker;
 use linux_raw_sys::{general::S_IFIFO, ioctl::FIONREAD};
 use memory_addr::PAGE_SIZE_4K;
 use ringbuf::{

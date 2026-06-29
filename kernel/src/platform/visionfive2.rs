@@ -9,10 +9,12 @@
 //! - Kernel load: 0x40200000
 //! - Console: DW APB UART 0 at 0x10000000, IRQ 32, stride 4, 32-bit MMIO
 
-use super::console::{ConsoleConfig, ConsoleKind, MmioAccessWidth};
-use super::descriptor::{
-    BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
-    PlatformDescriptor, TimerConfig,
+use super::{
+    console::{ConsoleConfig, ConsoleKind, MmioAccessWidth},
+    descriptor::{
+        BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
+        PlatformDescriptor, TimerConfig,
+    },
 };
 
 /// VisionFive2 / StarFive JH7110 platform descriptor.
@@ -39,9 +41,7 @@ pub const VISIONFIVE2: PlatformDescriptor = PlatformDescriptor {
     interrupt: InterruptConfig {
         plic_base_paddr: 0x0c000000,
     },
-    timer: TimerConfig {
-        kind: "platform",
-    },
+    timer: TimerConfig { kind: "platform" },
     boot: BootImageConfig {
         kind: BootKind::UBootImage,
     },

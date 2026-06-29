@@ -367,8 +367,8 @@ pub fn load_embedded_user_app(
         .map_err(map_elf_error)?;
 
     // ELFParser::new handles ET_EXEC (base=0) vs ET_DYN/PIE (base=bias).
-    let elf_parser = ELFParser::new(&elf, crate::config::USER_SPACE_BASE)
-        .map_err(|_| AxError::InvalidData)?;
+    let elf_parser =
+        ELFParser::new(&elf, crate::config::USER_SPACE_BASE).map_err(|_| AxError::InvalidData)?;
 
     for ph in elf_parser
         .headers()

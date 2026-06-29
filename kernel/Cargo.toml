@@ -15,7 +15,7 @@ lichee-d1 = []
 lichee-d1-smoke = []
 lichee-d1-async-uart = []
 lichee-d1-kbench = ["lichee-d1-async-uart"]
-lichee-d1-userbench = ["lichee-d1-async-uart", "dep:axfs", "axfeat/task-ext"]
+lichee-d1-userbench = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
 memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
 qemu = [
     "dep:axdisplay",

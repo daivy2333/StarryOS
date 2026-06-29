@@ -1,13 +1,17 @@
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-use lazy_static::lazy_static;
+use alloc::{boxed::Box, sync::Arc};
 
-use uart_16550::async_::device_ops::{AsyncUartReader, AsyncUartWriter};
-use uart_16550::os::OsWakerSet;
-use crate::drivers::uart_init::{self, ArceOsReader, ArceOsWriter};
-use crate::pseudofs::dev::tty::{
-    Tty,
-    terminal::ldisc::{ProcessMode, TtyConfig},
+use lazy_static::lazy_static;
+use uart_16550::{
+    async_::device_ops::{AsyncUartReader, AsyncUartWriter},
+    os::OsWakerSet,
+};
+
+use crate::{
+    drivers::uart_init::{self, ArceOsReader, ArceOsWriter},
+    pseudofs::dev::tty::{
+        Tty,
+        terminal::ldisc::{ProcessMode, TtyConfig},
+    },
 };
 
 pub type AsyncTty = Tty<ArceOsReader, ArceOsWriter>;

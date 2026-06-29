@@ -21,13 +21,13 @@ use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
 
+#[cfg(not(feature = "lichee-d1"))]
+pub use self::net::Socket;
 pub use self::{
     fs::{Directory, File, resolve_at, with_fs},
     pidfd::PidFd,
     pipe::Pipe,
 };
-#[cfg(not(feature = "lichee-d1"))]
-pub use self::net::Socket;
 use crate::task::{AX_FILE_LIMIT, AsThread};
 
 #[derive(Debug, Clone, Copy)]

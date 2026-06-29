@@ -7,8 +7,7 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodePermission, NodeType, Refere
 use axtask::current;
 use bitflags::bitflags;
 use flatten_objects::FlattenObjects;
-use linux_raw_sys::general::*;
-use linux_raw_sys::ioctl::FIONBIO;
+use linux_raw_sys::{general::*, ioctl::FIONBIO};
 use spin::RwLock;
 
 use crate::{
@@ -86,8 +85,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         .session()
                         .terminal()
                         .ok_or(AxError::NotFound)?;
-                    let path = if term.is::<crate::drivers::AsyncTty>()
-                    {
+                    let path = if term.is::<crate::drivers::AsyncTty>() {
                         "/dev/console".to_string()
                     } else if let Some(pts) = term.downcast_ref::<tty::PtyDriver>() {
                         format!("/dev/pts/{}", pts.pty_number())
@@ -169,8 +167,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
         // Only copy when the table is actually shared between processes
         if Arc::strong_count(&*FD_TABLE.scope(&*scope)) > 1 {
             let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
-            let mut new_table =
-                FlattenObjects::<FileDescriptor, AX_FILE_LIMIT>::new();
+            let mut new_table = FlattenObjects::<FileDescriptor, AX_FILE_LIMIT>::new();
             {
                 let fd_item = FD_TABLE.scope(&*scope);
                 let table = fd_item.read();

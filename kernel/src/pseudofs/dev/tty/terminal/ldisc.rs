@@ -169,10 +169,18 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         // Echo is best-effort: output may be dropped if the output buffer
         // is full. We explicitly ignore short-write counts.
         match ch {
-            b'\n' => { let _ = self.writer.write(b"\n"); }
-            b'\r' => { let _ = self.writer.write(b"\r\n"); }
-            ch if ch == term.special_char(VERASE) => { let _ = self.writer.write(b"\x08 \x08"); }
-            ch if ch == b' ' || ch.is_ascii_graphic() => { let _ = self.writer.write(&[ch]); }
+            b'\n' => {
+                let _ = self.writer.write(b"\n");
+            }
+            b'\r' => {
+                let _ = self.writer.write(b"\r\n");
+            }
+            ch if ch == term.special_char(VERASE) => {
+                let _ = self.writer.write(b"\x08 \x08");
+            }
+            ch if ch == b' ' || ch.is_ascii_graphic() => {
+                let _ = self.writer.write(&[ch]);
+            }
             ch if ch.is_ascii_control() && term.has_lflag(ECHOCTL) => {
                 let _ = self.writer.write(&[b'^', (ch + 0x40)]);
             }
@@ -379,7 +387,11 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     poll_io(&pollable, IoEvents::IN, nonblocking, || {
                         total_read += self.buf_rx().pop_slice(&mut buf[total_read..]);
                         self.poll_tx.wake();
-                        if total_read > 0 { Ok(total_read) } else { Err(AxError::WouldBlock) }
+                        if total_read > 0 {
+                            Ok(total_read)
+                        } else {
+                            Err(AxError::WouldBlock)
+                        }
                     }),
                 )) {
                     Ok(Ok(n)) => Ok(n),

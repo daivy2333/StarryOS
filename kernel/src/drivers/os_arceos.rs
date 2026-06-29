@@ -5,10 +5,9 @@
 //! MMIO mapping, and lock acquisition are handled outside the driver
 //! (see ADR-036).
 
-use core::future::Future;
-use core::task::Waker;
-
 use alloc::string::ToString;
+use core::{future::Future, task::Waker};
+
 use uart_16550::os::{OsRuntime, OsWakerSet};
 
 // ── OsRuntime: task spawning and blocking ────────────────────────────

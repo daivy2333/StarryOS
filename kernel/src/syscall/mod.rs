@@ -11,6 +11,9 @@ mod sys;
 mod task;
 mod time;
 
+#[cfg(feature = "lichee-d1-userbench")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use axerrno::{AxError, LinuxError};
 use axhal::uspace::UserContext;
 use syscalls::Sysno;
@@ -18,9 +21,11 @@ use syscalls::Sysno;
 #[cfg(not(feature = "lichee-d1"))]
 pub use self::net::*;
 pub use self::{
-    fs::*, io_mpx::*, ipc::*, mm::*, resources::*, signal::*, sync::*, sys::*, task::*,
-    time::*,
+    fs::*, io_mpx::*, ipc::*, mm::*, resources::*, signal::*, sync::*, sys::*, task::*, time::*,
 };
+
+#[cfg(feature = "lichee-d1-userbench")]
+static D1_SYSCALL_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn handle_syscall(uctx: &mut UserContext) {
     let Some(sysno) = Sysno::new(uctx.sysno()) else {
@@ -653,6 +658,18 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             Err(AxError::Unsupported)
         }
     };
+    #[cfg(feature = "lichee-d1-userbench")]
+    if D1_SYSCALL_TRACE_COUNT.fetch_add(1, Ordering::Relaxed) < 120 {
+        ax_println!(
+            "[d1-sys] {:?}({:#x}, {:#x}, {:#x}) -> {:?}",
+            sysno,
+            uctx.arg0(),
+            uctx.arg1(),
+            uctx.arg2(),
+            result
+        );
+    }
+
     debug!("Syscall {sysno} return {result:?}");
 
     uctx.set_retval(result.unwrap_or_else(|err| -LinuxError::from(err).code() as _) as _);

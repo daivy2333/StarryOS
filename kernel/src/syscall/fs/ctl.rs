@@ -43,6 +43,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     // TCSBRK (0x5409): tcdrain — wait for all TX stages (ring → copier → FIFO → wire)
     if cmd == 0x5409 {
         use uart_16550::async_::isr::DRAIN_WAKER;
+
         use crate::drivers::uart_init;
         let result = block_on(poll_fn(|cx| {
             let driver = uart_init::driver();

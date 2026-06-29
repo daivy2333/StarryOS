@@ -4,10 +4,12 @@
 //! `kernel/src/drivers/uart_init.rs`. All values verified against
 //! `axplat-riscv64-qemu-virt/axconfig.toml`.
 
-use super::console::{ConsoleConfig, ConsoleKind, MmioAccessWidth};
-use super::descriptor::{
-    BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
-    PlatformDescriptor, TimerConfig,
+use super::{
+    console::{ConsoleConfig, ConsoleKind, MmioAccessWidth},
+    descriptor::{
+        BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
+        PlatformDescriptor, TimerConfig,
+    },
 };
 
 /// QEMU virt (riscv64) platform descriptor.
@@ -32,9 +34,7 @@ pub const QEMU_VIRT: PlatformDescriptor = PlatformDescriptor {
     interrupt: InterruptConfig {
         plic_base_paddr: 0x0c000000,
     },
-    timer: TimerConfig {
-        kind: "sbi",
-    },
+    timer: TimerConfig { kind: "sbi" },
     boot: BootImageConfig {
         kind: BootKind::DirectQemu,
     },

@@ -1,6 +1,11 @@
-use axplat::init::InitIf;
+use axplat::{console, init::InitIf};
 
 struct InitIfImpl;
+
+#[inline(always)]
+fn boot_mark(message: &str) {
+    console::write_bytes(message.as_bytes());
+}
 
 #[impl_plat_interface]
 impl InitIf for InitIfImpl {
@@ -16,9 +21,16 @@ impl InitIf for InitIfImpl {
     }
 
     fn init_later(_cpu_id: usize, _arg: usize) {
+        boot_mark("[d1-init] init_later enter\n");
         #[cfg(feature = "irq")]
-        crate::irq::init_percpu();
+        {
+            boot_mark("[d1-init] before irq init\n");
+            crate::irq::init_percpu();
+            boot_mark("[d1-init] after irq init\n");
+        }
+        boot_mark("[d1-init] before time init\n");
         crate::time::init_percpu();
+        boot_mark("[d1-init] after time init\n");
     }
 
     #[cfg(feature = "smp")]

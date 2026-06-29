@@ -1,0 +1,38 @@
+Boot at 1970-01-01 00:00:00.398064777 UTC
+
+[d1-init] init_later enter
+[d1-init] before irq init
+[d1-init] after irq init
+[d1-init] before time init
+[d1-init] after time init
+[starry-d1] Lichee D1 kbench mode
+[UART INIT] Phase 1: MMIO read-only verification
+[UART INIT] D1 mode: using platform direct-map UART VA
+[UART INIT] base_ptr = 0xffffffc002500000
+[UART INIT] D1 mode: stride 4 / 32-bit MMIO, skipping byte probe
+[UART INIT] ✅ D1 LSR (32-bit read): 0x00000000
+[UART INIT] ✅ Phase 1 PASSED: UART registers readable
+[UART INIT] ✅ Ring buffers initialized (64 KB each)
+[UART INIT] ✅ AsyncUartDriver created
+[UART INIT] ✅ ISR registered
+[UART INIT] ✅ RX/TX copier tasks started
+[kernel] Async UART driver initialized (D1)
+[BENCH] Running startup benchmark...
+[BENCH] Ring buffer write: 1175433.44 KB/s (102400 bytes in 0.09 ms)
+[BENCH] Hardware line rate: 11.52 KB/s (115200 bps)
+[BENCH] FIFO depth: 16 bytes
+[BENCH] Ring buffer: 64 KB × 2 = 128 KB total
+[BENCH] Driver struct: 152 bytes
+[BENCH] Total memory: 128 KB
+[BENCH] NAPI threshold: 16 consecutive reads
+[BENCH] NAPI batch size: 64 bytes
+[BENCH] Copier buffer size: 1024 bytes
+[BENCH] IRQ count: 0
+[BENCH] Running RX ring buffer throughput test...
+[BENCH] RX ring buffer read: 8483563.10 KB/s (65536 bytes in 0.01 ms)
+[BENCH] Running RX ring buffer latency test...
+[BENCH] RX latency (n=100): min=82ns avg=110ns P50=123ns P95=123ns P99=123ns
+[BENCH] Startup benchmark complete
+[BENCH] Note: actual throughput limited by UART line rate (11.52 KB/s)
+[starry-d1] kernel benchmark complete, halting.
+

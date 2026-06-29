@@ -135,12 +135,8 @@ fn check_null_terminated<T: PartialEq + Default>(
                     .as_usize()
                     .saturating_sub(validated_boundary.as_usize());
 
-                let valid_size = max_contiguous_valid(
-                    &aspace,
-                    validated_boundary,
-                    max_remaining,
-                    access_flags,
-                );
+                let valid_size =
+                    max_contiguous_valid(&aspace, validated_boundary, max_remaining, access_flags);
                 if valid_size == 0 {
                     return Err(AxError::BadAddress);
                 }

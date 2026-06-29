@@ -7,13 +7,12 @@
 //! The external `uart_16550::Uart16550<MmioBackend>` uses 8-bit byte access (stride 1),
 //! which is unsafe on D1 hardware.
 
-use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU8, Ordering};
-
-use uart_16550::{
-    async_::driver::UartPort,
-    spec::registers::IER,
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicU8, Ordering},
 };
+
+use uart_16550::{async_::driver::UartPort, spec::registers::IER};
 
 // DW APB UART register offsets (in units of stride):
 // Physical byte offset = offset * stride
