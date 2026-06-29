@@ -344,3 +344,103 @@ pub fn load_user_app(
 
     Ok((entry, user_sp))
 }
+
+/// Load an embedded ELF (from a byte slice) into the user address space.
+///
+/// Unlike `load_user_app` which reads the ELF from the filesystem, this
+/// function maps segments directly from the provided `elf_data` bytes.
+/// This is used for D1 `lichee-d1-userbench` mode where no rootfs exists.
+///
+/// # Returns
+/// - `(entry_vaddr, user_stack_top)` on success.
+#[cfg(feature = "lichee-d1-userbench")]
+pub fn load_embedded_user_app(
+    uspace: &mut AddrSpace,
+    elf_data: &[u8],
+    args: &[String],
+    envs: &[String],
+) -> AxResult<(VirtAddr, VirtAddr)> {
+    let builder = ELFHeadersBuilder::new(elf_data).map_err(map_elf_error)?;
+    let range = builder.ph_range();
+    let elf = builder
+        .build(&elf_data[range.start as usize..range.end as usize])
+        .map_err(map_elf_error)?;
+
+    // ELFParser::new handles ET_EXEC (base=0) vs ET_DYN/PIE (base=bias).
+    let elf_parser = ELFParser::new(&elf, crate::config::USER_SPACE_BASE)
+        .map_err(|_| AxError::InvalidData)?;
+
+    for ph in elf_parser
+        .headers()
+        .ph
+        .iter()
+        .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
+    {
+        let vaddr = ph.virtual_addr as usize + elf_parser.base();
+        let seg_pad = vaddr.align_offset_4k();
+        let seg_align_size =
+            (ph.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
+        let seg_start = VirtAddr::from_usize(vaddr);
+
+        uspace.map(
+            seg_start.align_down_4k(),
+            seg_align_size,
+            mapping_flags(ph.flags),
+            false,
+            Backend::new_alloc(seg_start.align_down_4k(), PageSize::Size4K),
+        )?;
+        uspace.populate_area(
+            seg_start.align_down_4k(),
+            seg_align_size,
+            mapping_flags(ph.flags),
+        )?;
+
+        if ph.file_size > 0 {
+            let file_start = ph.offset as usize;
+            let file_end = file_start + ph.file_size as usize;
+            let seg_data = &elf_data[file_start..file_end.min(elf_data.len())];
+            uspace.write(seg_start, seg_data)?;
+        }
+    }
+
+    let entry = elf_parser.entry();
+    let entry = VirtAddr::from_usize(entry);
+
+    let auxv = elf_parser
+        .aux_vector(PAGE_SIZE_4K, None)
+        .collect::<Vec<_>>();
+
+    let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+    let ustack_size = crate::config::USER_STACK_SIZE;
+    let ustack_start = ustack_top - ustack_size;
+
+    uspace.map(
+        ustack_start,
+        ustack_size,
+        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        false,
+        Backend::new_alloc(ustack_start, PageSize::Size4K),
+    )?;
+
+    let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
+    let user_sp = ustack_top - stack_data.len();
+    let user_sp_aligned = user_sp.align_down_4k();
+    uspace.populate_area(
+        user_sp_aligned,
+        (ustack_top - user_sp_aligned).align_up_4k(),
+        MappingFlags::READ | MappingFlags::WRITE,
+    )?;
+    uspace.write(user_sp, stack_data.as_slice())?;
+
+    let heap_start = VirtAddr::from_usize(crate::config::USER_HEAP_BASE);
+    let heap_size = crate::config::USER_HEAP_SIZE;
+    uspace.map(
+        heap_start,
+        heap_size,
+        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        true,
+        Backend::new_alloc(heap_start, PageSize::Size4K),
+    )?;
+
+    Ok((entry, user_sp))
+}
