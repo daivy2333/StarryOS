@@ -1,11 +1,10 @@
 use core::{
     num::NonZeroU32,
     ptr::NonNull,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
 use axplat::{
-    console,
     irq::{HandlerTable, IpiTarget, IrqHandler, IrqIf},
     percpu::this_cpu_id,
 };
@@ -26,7 +25,6 @@ pub(super) const S_TIMER: usize = INTC_IRQ_BASE + 5;
 pub(super) const S_EXT: usize = INTC_IRQ_BASE + 9;
 
 static TIMER_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-static TIMER_IRQ_MARKS: AtomicUsize = AtomicUsize::new(0);
 
 static IPI_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
@@ -41,11 +39,6 @@ static PLIC: SpinNoIrq<Plic> = SpinNoIrq::new(unsafe {
 fn this_context() -> usize {
     let hart_id = this_cpu_id();
     hart_id * 2 + 1
-}
-
-#[inline(always)]
-fn irq_mark(message: &str) {
-    console::write_bytes(message.as_bytes());
 }
 
 pub(super) fn init_percpu() {
@@ -124,7 +117,6 @@ impl IrqIf for IrqIfImpl {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ).is_ok() {
-                    irq_mark("[d1-irq] S_TIMER registered, arming first tick\n");
                     sbi_rt::set_timer(0);
                     true
                 } else {
@@ -180,9 +172,6 @@ impl IrqIf for IrqIfImpl {
             irq,
             @S_TIMER => {
                 trace!("IRQ: timer");
-                if TIMER_IRQ_MARKS.fetch_add(1, Ordering::Relaxed) < 4 {
-                    irq_mark("[d1-irq] timer tick\n");
-                }
                 let handler = TIMER_HANDLER.load(Ordering::Acquire);
                 if !handler.is_null() {
                     // SAFETY: The handler is guaranteed to be a valid function pointer.

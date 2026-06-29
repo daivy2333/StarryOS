@@ -9,7 +9,7 @@
 
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use uart_16550::{async_::driver::UartPort, spec::registers::IER};
@@ -41,8 +41,6 @@ const MCR_OUT2_INT_ENABLE: u32 = 1 << 3;
 // IIR interrupt IDs (bits 3:1)
 const IIR_RX_DATA: u32 = 0x04;
 const IIR_TX_EMPTY: u32 = 0x02;
-
-static D1_UART_IRQ_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 /// D1 UART port wraps raw MMIO base pointer with stride-aware 32-bit access.
 pub struct ArceOsD1UartPort {
@@ -195,17 +193,6 @@ pub fn d1_uart_isr_handler(
     let iir = iir_raw & 0x0e;
     let no_pending = iir_raw & 0x01 != 0;
     let lsr = port.read_lsr_clear();
-
-    let log_idx = D1_UART_IRQ_LOGS.fetch_add(1, Ordering::Relaxed);
-    if log_idx < 16 {
-        ax_println!(
-            "[d1-uart-irq] irq={} iir={:#010x} id={:#04x} lsr={:#010x}",
-            _irq,
-            iir_raw,
-            iir,
-            lsr
-        );
-    }
 
     if no_pending {
         if lsr & LSR_THRE != 0 {

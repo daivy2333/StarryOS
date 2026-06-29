@@ -1177,3 +1177,37 @@ StarryOS Lichee D1 benchmark features MUST NOT use a kbench-only runtime feature
 - **THEN** it MUST include D1 async UART and PLIC capability
 - **AND** it MUST keep the user/process/filesystem modules required by the benchmark runtime visible
 - **AND** it MUST NOT inherit a kbench-only feature that excludes `ASYNC_TTY`, `file`, `mm`, `pseudofs`, `task`, `syscall`, or `time`
+
+<!-- A051 -->
+### Requirement: ADR-051: D1 async UART drain 必须兼容 THRE 边沿丢失
+
+D1 DW APB UART async backend MUST treat THRE/TEMT readiness as both interrupt-driven and state-driven; drain waiters MUST NOT rely solely on future THRE interrupts.
+
+**日期**: 2026-06-29
+**状态**: ✅ 已落地（Q19B 真板 userbench）
+**决策**:
+- D1 `ArceOsD1UartPort` 在启用 `IER::THR_EMPTY` 后，如果 LSR 已显示 THRE/TEMT，必须立即软件 wake `TX_WAKER` / `DRAIN_WAKER`。
+- D1 ISR 读取 IIR 时必须识别 bit0=1 的 no-pending 状态；no-pending 不是有效中断类型，但可基于 LSR 的 THRE/TEMT 补一次 TX/drain wake。
+- `flush()` 与 `sys_ioctl(TCSBRK/tcdrain)` 必须注册 `DRAIN_WAKER`，不能只注册 TX ring waker；因为数据被 TX copier pop 出 ring 后，后续状态变化发生在 staged buffer 和 UART FIFO/TEMT。
+- TX copier 在最后一批数据送入 UART 且确认 transmitter empty 后必须 wake `DRAIN_WAKER`。
+
+**原因**:
+- QEMU NS16550 模型稳定产生 THRE 中断，曾掩盖“启用 THRE 时硬件已经 ready 但不再产生新边沿”的真板窗口。
+- Lichee RV Dock 真板日志显示 IRQ 18 可进入，但 IIR 多次为 `0xc1`（no pending），有效 THRE `0xc2` 只偶发。
+- userbench 首次卡在 64B write 后的 `tcdrain`，说明 `/dev/console`、write、TX ring 都成立，卡点在 staged/TEMT drain 唤醒。
+
+**影响**:
+- D1 userbench 已完整跑完 embedded benchmark，`tcdrain` 不再卡住。
+- 真板大包 TX 达 97.7%~99.0% 115200bps 线速，证明 drain 等待的是实际串口发送完成。
+- `uart_16550` 被本地化到 `crates/uart_16550`，以便 StarryOS 分支保存 async drain 修复；后续若回推上游，需要拆分为通用 drain 修复和 D1 backend 修复。
+
+**替代方案**:
+- ❌ 在 `tcdrain` 内轮询硬件：破坏原异步架构，且把硬件细节泄漏到 syscall 层。
+- ❌ 只依赖 PLIC/UART 中断：D1 no-pending/edge-loss 窗口已由真板日志证伪。
+- ✅ 保持 copier + waker 架构，在硬件 backend 和 drain 状态机补齐 ready-state wake：当前方案。
+
+#### Scenario: Porting async UART to a real board
+
+- **WHEN** a real UART backend enables THRE interrupts
+- **THEN** it MUST also check current LSR readiness and wake TX/drain waiters if THRE/TEMT is already true
+- **AND** `tcdrain` / `flush` waiters MUST be registered on the drain completion path, not only on the TX ring space path

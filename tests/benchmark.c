@@ -34,7 +34,7 @@ static long long get_time_ns(void) {
 
 /* ── TX throughput: 写 /dev/console + tcdrain ─────────────────────── */
 static void test_tx_throughput(void) {
-    printf("=== TX Throughput (to /dev/console + tcdrain) ===\n");
+    printf("=== TX Throughput (to /dev/console + tcdrain) ===\r\n");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -72,19 +72,19 @@ static void test_tx_throughput(void) {
         double kbps = (double)total / elapsed_s / 1024.0;
         double line_rate = kbps / 11.52 * 100.0;  /* 115200 bps = 11.52 KB/s */
 
-        printf("  size=%d  iters=%d | %.2f KB/s | %.1f%% line rate\n",
+        printf("  size=%d  iters=%d | %.2f KB/s | %.1f%% line rate\r\n",
                test_size, iterations, kbps, line_rate);
 
         free(buf);
     }
 
     close(fd);
-    printf("\n");
+    printf("\r\n");
 }
 
 /* ── TX latency: 单字节 write + tcdrain ─────────────────────────── */
 static void test_tx_latency(void) {
-    printf("=== TX Latency (single byte + tcdrain) ===\n");
+    printf("=== TX Latency (single byte + tcdrain) ===\r\n");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -102,7 +102,7 @@ static void test_tx_latency(void) {
         latencies[ok++] = (long)(end - start);
     }
 
-    if (ok == 0) { printf("  no data\n\n"); close(fd); return; }
+    if (ok == 0) { printf("  no data\r\n\r\n"); close(fd); return; }
 
     /* sort for percentiles */
     for (int i = 0; i < ok - 1; i++)
@@ -115,7 +115,7 @@ static void test_tx_latency(void) {
 
     long sum = 0;
     for (int i = 0; i < ok; i++) sum += latencies[i];
-    printf("  n=%d  avg=%.3f ms  P50=%.3f ms  P95=%.3f ms  P99=%.3f ms\n\n",
+    printf("  n=%d  avg=%.3f ms  P50=%.3f ms  P95=%.3f ms  P99=%.3f ms\r\n\r\n",
            ok,
            (double)sum / ok / 1000000.0,
            (double)latencies[ok * 50 / 100] / 1000000.0,
@@ -127,7 +127,7 @@ static void test_tx_latency(void) {
 
 /* ── TX latency FIFO boundary matrix ────────────────────────────── */
 static void test_tx_latency_matrix(void) {
-    printf("=== TX Latency FIFO Boundary Matrix ===\n");
+    printf("=== TX Latency FIFO Boundary Matrix ===\r\n");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -156,7 +156,7 @@ static void test_tx_latency_matrix(void) {
 
         free(buf);
 
-        if (ok == 0) { printf("  size=%d  no data\n\n", sz); continue; }
+        if (ok == 0) { printf("  size=%d  no data\r\n\r\n", sz); continue; }
 
         /* sort for percentiles (bubble — same as test_tx_latency) */
         for (int i = 0; i < ok - 1; i++)
@@ -169,7 +169,7 @@ static void test_tx_latency_matrix(void) {
 
         long sum = 0;
         for (int i = 0; i < ok; i++) sum += latencies[i];
-        printf("  size=%d  n=%d  avg=%.3f ms  P50=%.3f ms  P95=%.3f ms\n\n",
+        printf("  size=%d  n=%d  avg=%.3f ms  P50=%.3f ms  P95=%.3f ms\r\n\r\n",
                sz, ok,
                (double)sum / ok / 1000000.0,
                (double)latencies[ok * 50 / 100] / 1000000.0,
@@ -181,7 +181,7 @@ static void test_tx_latency_matrix(void) {
 
 /* ── non-blocking read test (FIONBIO) ───────────────────────────── */
 static void test_nonblock_read(void) {
-    printf("=== Non-blocking Read (FIONBIO) ===\n");
+    printf("=== Non-blocking Read (FIONBIO) ===\r\n");
 
     int fd = open(DEVICE_PATH, O_RDWR | O_NONBLOCK);
     if (fd < 0) { perror("open"); return; }
@@ -190,11 +190,11 @@ static void test_nonblock_read(void) {
     ssize_t n = read(fd, buf, sizeof(buf));
 
     if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        printf("  PASS: O_NONBLOCK read → EAGAIN (no data)\n");
+        printf("  PASS: O_NONBLOCK read → EAGAIN (no data)\r\n");
     } else if (n >= 0) {
-        printf("  INFO: read %zd bytes (data already in buffer)\n", n);
+        printf("  INFO: read %zd bytes (data already in buffer)\r\n", n);
     } else {
-        printf("  FAIL: errno=%d (%s)\n", errno, strerror(errno));
+        printf("  FAIL: errno=%d (%s)\r\n", errno, strerror(errno));
     }
 
     close(fd);
@@ -205,34 +205,36 @@ static void test_nonblock_read(void) {
 
     int on = 1;
     if (ioctl(fd, FIONBIO, &on) < 0) {
-        printf("  FAIL: ioctl FIONBIO: %s\n", strerror(errno));
+        printf("  FAIL: ioctl FIONBIO: %s\r\n", strerror(errno));
         close(fd);
         return;
     }
 
     n = read(fd, buf, sizeof(buf));
     if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        printf("  PASS: ioctl FIONBIO read → EAGAIN (no data)\n");
+        printf("  PASS: ioctl FIONBIO read → EAGAIN (no data)\r\n");
     } else if (n >= 0) {
-        printf("  INFO: read %zd bytes (data already in buffer)\n", n);
+        printf("  INFO: read %zd bytes (data already in buffer)\r\n", n);
     } else {
-        printf("  FAIL: errno=%d (%s)\n", errno, strerror(errno));
+        printf("  FAIL: errno=%d (%s)\r\n", errno, strerror(errno));
     }
 
     close(fd);
-    printf("\n");
+    printf("\r\n");
 }
 
 /* ── 主函数 ──────────────────────────────────────────────────────── */
 int main(void) {
-    printf("UART Async Benchmark (QEMU @ 115200 bps)\n");
-    printf("=========================================\n\n");
+    printf("UART Async Benchmark (D1RV @ 115200 bps)\r\n");
+    printf("=========================================\r\n\r\n");
 
     test_tx_throughput();
     test_tx_latency();
     test_tx_latency_matrix();
     test_nonblock_read();
 
-    printf("Done.\n");
+    printf("Done.\r\n");
+    fflush(stdout);
+    tcdrain(STDOUT_FILENO);
     return 0;
 }

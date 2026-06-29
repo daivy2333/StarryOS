@@ -232,8 +232,6 @@ fn d1_uart_irq_handler() {
 // ── 初始化 ───────────────────────────────────────────────────────────
 
 pub fn init_uart_hardware() {
-    ax_println!("[UART INIT] Phase 1: MMIO read-only verification");
-
     let desc = platform::descriptor();
 
     #[cfg(not(feature = "lichee-d1-async-uart"))]
@@ -253,11 +251,10 @@ pub fn init_uart_hardware() {
 
     #[cfg(feature = "lichee-d1-async-uart")]
     {
-        ax_println!("[UART INIT] D1 mode: using platform direct-map UART VA");
+        ax_println!("[UART INIT] D1 async UART init");
     }
 
     let base_ptr = get_uart_mmio_virt().as_ptr();
-    ax_println!("[UART INIT] base_ptr = {:?}", base_ptr);
 
     // ── QEMU: raw byte probe at stride 1 ──────────────────────────
     #[cfg(not(feature = "lichee-d1-async-uart"))]
@@ -281,35 +278,25 @@ pub fn init_uart_hardware() {
     // ── D1: skip byte probe, use 32-bit MMIO ───────────────────────
     #[cfg(feature = "lichee-d1-async-uart")]
     {
-        ax_println!(
-            "[UART INIT] D1 mode: stride {} / 32-bit MMIO, skipping byte probe",
-            desc.console.reg_stride
-        );
         // D1 DW APB UART LSR verify via 32-bit read
         let d1_port = &*D1_UART_PORT;
         d1_port.init_interrupt_mode();
         let (ier, iir, lsr) = d1_port.debug_regs();
         ax_println!(
-            "[UART INIT] D1 interrupt mode configured: IER={:#010x} IIR={:#010x} LSR={:#010x}",
+            "[UART INIT] D1 MMIO base={:?} stride={} IER={:#x} IIR={:#x} LSR={:#x}",
+            base_ptr,
+            desc.console.reg_stride,
             ier,
             iir,
             lsr
         );
-        let lsr_val = d1_port.read_lsr_clear();
-        ax_println!("[UART INIT] ✅ D1 LSR (32-bit read): {:#010x}", lsr_val);
     }
-
-    ax_println!("[UART INIT] ✅ Phase 1 PASSED: UART registers readable");
 
     // Step 3: Initialize ring buffers
     unsafe {
         RX_RING.init(addr_of_mut!(RX_BUF).cast::<u8>(), BUF_SIZE);
         TX_RING.init(addr_of_mut!(TX_BUF).cast::<u8>(), BUF_SIZE);
     }
-    ax_println!(
-        "[UART INIT] ✅ Ring buffers initialized ({} KB each)",
-        BUF_SIZE / 1024
-    );
 
     // Step 4: Create async driver
     let rx = unsafe { RingBufRx::<ArceOsWakerSet>::new(&RX_RING) };
@@ -322,7 +309,6 @@ pub fn init_uart_hardware() {
 
     let driver = Arc::new(ArceOsDriver::new(rx, tx, uart_port));
     DRIVER.call_once(|| driver);
-    ax_println!("[UART INIT] ✅ AsyncUartDriver created");
 
     // Step 5: Register ISR
     #[cfg(not(feature = "lichee-d1-async-uart"))]
@@ -331,17 +317,17 @@ pub fn init_uart_hardware() {
     {
         let registered = axhal::irq::register(axconfig::devices::UART_IRQ, d1_uart_irq_handler);
         ax_println!(
-            "[UART INIT] D1 UART IRQ {} registered={}",
+            "[UART INIT] D1 UART IRQ {} registered={}, buffers={}KBx2",
             axconfig::devices::UART_IRQ,
-            registered
+            registered,
+            BUF_SIZE / 1024
         );
     }
-    ax_println!("[UART INIT] ✅ ISR registered");
 
     // Step 6: Start copier tasks
     driver_ref().start_rx_copier();
     driver_ref().start_tx_copier();
-    ax_println!("[UART INIT] ✅ RX/TX copier tasks started");
+    ax_println!("[UART INIT] async UART ready");
 }
 
 // ── QEMU: 寄存器状态日志 ──────────────────────────────────────────────

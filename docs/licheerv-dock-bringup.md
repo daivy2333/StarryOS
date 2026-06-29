@@ -4,7 +4,7 @@
 >
 > 当前结论：Lichee RV Dock 适合作为真板流程演练板，但不适合作为 Q17 SMP / 多核内存序验证板。它使用 Allwinner D1 / XuanTie C906，属于单核 RISC-V 平台。
 
-> 2026-06-29 更新：StarryOS 已在 Lichee RV Dock 真板完成 early smoke test。官方 U-Boot 成功加载 StarryOS Android boot image，D1 axplat 进入 StarryOS payload，UART0 输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。Q19a 最小启动目标达成。Q19B 的 `kbench` / `userbench` host build gate 也已打通，下一步是分别烧录 `starry-lichee-kbench-boot.img` 与 `starry-lichee-userbench-boot.img` 采集真板串口证据。
+> 2026-06-29 更新：StarryOS 已在 Lichee RV Dock 真板完成 early smoke test 与 Q19B async UART userbench。官方 U-Boot 成功加载 StarryOS Android boot image，D1 axplat 进入 StarryOS payload；`starry-lichee-userbench-boot.img` 已完整运行 embedded `benchmark.elf`，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过。
 
 ## 1. 定位与边界
 
@@ -47,11 +47,11 @@ StarryOS 已经完成 Lichee RV Dock / Allwinner D1 的最小真板启动验证�
 | 目标 | 输出 | kernel_size | 目的 |
 |------|------|-------------|------|
 | `make lichee-kbench` | `starry-lichee-kbench-boot.img` | `188608` bytes | 验证 D1 async UART、PLIC IRQ 18、kernel ring-buffer benchmark |
-| `make lichee-userbench` | `starry-lichee-userbench-boot.img` | `876736` bytes | 运行 embedded `benchmark.elf`，验证 `/dev/console`、TTY、syscall、用户态 benchmark 输出 |
+| `make lichee-userbench` | `starry-lichee-userbench-boot.img` | `970944` bytes | 运行 embedded `benchmark.elf`，验证 `/dev/console`、TTY、syscall、`tcdrain`、FIONBIO、用户态 benchmark 输出 |
 
 这两个镜像都保持 Android boot header：`kernel_addr = 0x40200000`、`page_size = 2048`、`name = d1-nezha`，远小于当前约 `10.1M` boot 分区。
 
-真板串口验收输出：
+Q19a 真板串口验收输出：
 
 ```text
 arch = riscv64
@@ -71,6 +71,55 @@ sbi_version: 0.2
 ```
 
 历史 fault 仍保留为排障经验：`Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908` 的符号化结果是 `percpu::imp::init` 中的 `amoor.w.aqrl` 访问 `.bss` `percpu::imp::IS_INIT`，根因是 D1/C906 页表缺少 T-Head normal-memory 属性。这不是 USB、SD 卡、rootfs、benchmark 部署或官方 Linux 信息缺失。
+
+### Q19B async UART 真板结果（2026-06-29）
+
+`starry-lichee-userbench-boot.img` 已在 Lichee RV Dock 真板完整跑完 embedded user benchmark，输出 `benchmark exited with code: 0` 和 `Done.`。这证明以下链路已经打通：
+
+- D1 DW APB UART 32-bit MMIO async `UartPort`
+- PLIC UART IRQ 18 注册与 TX/RX waker 链路
+- `/dev/console` 通过 async TTY 输出
+- 用户态 ELF loader + embedded `benchmark.elf`
+- syscall 路径：`openat` / `write` / `writev` / `ioctl(TCSBRK/tcdrain)` / `clock_gettime` / `FIONBIO`
+
+真板性能参数（UART0 115200 bps）：
+
+| 测项 | 结果 |
+|------|------|
+| 理论线速 | `11.52 KB/s` |
+| TX throughput 64B | `1.01 KB/s`（每轮 tcdrain，小包固定开销主导） |
+| TX throughput 256B | `11.25 KB/s`，`97.7% line rate` |
+| TX throughput 1024B | `11.40 KB/s`，`98.9% line rate` |
+| TX throughput 4096B | `11.41 KB/s`，`99.0% line rate` |
+| TX latency 1B | avg `0.270 ms`，P50 `0.185 ms`，P95 `0.187 ms`，P99 `8.547 ms` |
+| FIFO boundary 16B | avg `1.564 ms`，P50 `1.513 ms` |
+| FIFO boundary 32B | avg `2.927 ms`，P50 `2.876 ms` |
+| FIFO boundary 48B | avg `4.293 ms`，P50 `4.242 ms` |
+| FIONBIO | `O_NONBLOCK` 与 `ioctl FIONBIO` 均返回 `EAGAIN`，PASS |
+
+结论：大包 TX 已接近 115200 bps 物理线速，`tcdrain` 等待的是实际串口发送完成；QEMU 上的高吞吐数据不能代表真实串口线速。
+
+Q19B 真板排障经验：
+
+| 症状 | 根因 | 修复 |
+|------|------|------|
+| userbench 最初停在 `Loading embedded benchmark payload` | embedded ELF 对齐和 rootfs context 未初始化 | `AlignedBytes` 包装 `include_bytes!`，D1 userbench 初始化 memory rootfs |
+| `No block device found!` | D1 userbench 误启用 axdriver/block 假设 | patch `axfs-ng -> axdriver(default-features=false, features=["block","bus-mmio"])` 并隔离 net/fb/display |
+| `tcdrain` 卡在第一轮 64B write 后 | drain waker 只覆盖 TX ring，不覆盖 staged/TEMT；D1 THRE 边沿可能丢失 | `tcdrain/flush` 同时注册 `DRAIN_WAKER`；TX copier 在 drain 完成时 wake；D1 `update_ier(THR_EMPTY)` 在 LSR 已 THRE/TEMT 时立即软件 wake |
+| PLIC 进入 UART handler 但 IIR=`0xc1` | IIR bit0=1 是 no-pending，不是有效 modem/status 中断 | D1 ISR 将 no-pending 单独处理，只在 LSR 显示 THRE/TEMT 时补 wake |
+| benchmark 输出斜行、内核日志插队 | 用户态输出只有 LF，串口终端未回到行首；用户态 stdout 未完全 drain 前内核打印退出日志 | `Tty::write_at()` 按默认 termios `OPOST|ONLCR` 执行 LF→CRLF；`tests/benchmark.c` 也改为 CRLF 输出，并在退出前 `fflush(stdout); tcdrain(STDOUT_FILENO);` |
+
+嵌入 benchmark ELF 的重编命令（在正常非沙箱环境执行；当前 Codex 沙箱运行 musl 交叉编译器会触发 `Bad system call`）。注意：当前内核 TTY 层已实现 ONLCR，因此即使暂未重编 embedded ELF，LF 输出也会在 `/dev/console` 路径转换为 CRLF：
+
+```bash
+export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH
+riscv64-linux-musl-gcc -static -no-pie -fno-pie -Os -s \
+  -o kernel/resources/benchmark.elf tests/benchmark.c
+file kernel/resources/benchmark.elf
+readelf -h kernel/resources/benchmark.elf | grep 'Type:'
+readelf -r kernel/resources/benchmark.elf
+make lichee-userbench
+```
 
 ### Roadmap 对齐（2026-06-28）
 

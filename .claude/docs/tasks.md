@@ -3,7 +3,7 @@
 > 由 assistant 维护，feat/uart-16550-async 分支。
 > 2026-06-25 Q15 M0~M4 增量重融合 + Manual QA 全部完成（QEMU benchmark 验证无 64B write+tcdrain 退化）。
 > 2026-06-28 基于 Lichee RV Dock 与 platform-parameter-decoupling 探索结果，roadmap 二次重排：Q17 不动，新增 Q18 平台参数解耦、Q19 荔枝派 early smoke test，原 VisionFive2/DMA/维护阶段顺延为 Q20~Q23。
-> 2026-06-29 Q19B Host Gate 完成: `make lichee-kbench` / `make lichee-userbench` 均生成可写入 boot 分区的 Android boot image；下一步是真板烧录采集 kbench/userbench 串口日志。
+> 2026-06-29 Q19B 真板 userbench 完成: `starry-lichee-userbench-boot.img` 在 Lichee RV Dock 完整跑完 embedded benchmark，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
 > 2026-06-29 Q19 完成：Lichee RV Dock 真板通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。
 > 2026-06-27 Q15 后 roadmap 首次重排：单一 Q6 拆分为原 Q16~Q22，按 Gate 类型分层推进（见 `.claude/analysis/optimization-milestone-replan.md`）。
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线（04f8920/60c5729），原代码保留在 feat/uart-16550-async-temp。
@@ -48,7 +48,7 @@
 | **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ✅ 真板 smoke complete |
-| **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | 🏗️ Host gate ✅ / 真板日志待采集 |
+| **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
@@ -59,7 +59,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25) Q16 ✅ Q18 ✅ (2026-06-28) Q19 ✅ (2026-06-29 真板 smoke complete) → Q17 ⏳ → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25) Q16 ✅ Q18 ✅ (2026-06-28) Q19 ✅ (2026-06-29 真板 smoke complete) Q19B ✅ (2026-06-29 真板 userbench complete) → Q17 ⏳ → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
 
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
 > 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
@@ -69,6 +69,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 > 2026-06-28 Q19 修正: D1 axplat crate 创建 + `MYPLAT`/`PLAT_CONFIG` 接入，ELF entry 0xffffffc040200000，`axplat_riscv64_lichee_d1::boot` 符号确认。`make lichee` 已强制 `DWARF=n`；当前沙箱完整重编被 `lwext4_rust` C 编译 `Bad system call` 阻断，需在正常环境复验 boot image size < boot 分区。
 > 2026-06-28 Q19 板测: U-Boot 已识别 StarryOS Android boot image 并进入 payload；当时 fault 为 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908`，已定位到 `percpu::imp::init` 对 `.bss` `IS_INIT` 的 AMO。根因是 D1/C906 early DDR PTE 缺少 T-Head normal-memory `SH|B|C` bits；该问题已在 2026-06-29 的 smoke test 中验证解决。
 > 2026-06-29 Q19 完成: 解决 final page table `xuantie-c9xx`、D1 virtio 空 MMIO、fs/block gate、PCI/task-ext feature gate 后，`make lichee` 生成 `kernel_size=118976` 的 Android boot image；真板串口完成 `[starry-d1] smoke complete, halting.`。
+> 2026-06-29 Q19B 完成: D1 async UART userbench 完整跑通，256B/1024B/4096B TX 吞吐分别为 11.25/11.40/11.41 KB/s（97.7%/98.9%/99.0% line rate），1B tcdrain latency avg 0.270ms，FIONBIO 双入口 PASS。
 > 2026-06-28 Q18 完成: platform descriptor + early console + QEMU 行为保持，提交 `941ad05`，归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`
 ```
 

@@ -20,6 +20,7 @@ use axtask::{
     current,
     future::{block_on, poll_io},
 };
+use linux_raw_sys::general::{ONLCR, OPOST};
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -104,7 +105,43 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
-        Ok(self.writer.write(buf))
+        let term = self.terminal.load_termios();
+        if !term.has_oflag(OPOST) || !term.has_oflag(ONLCR) {
+            return Ok(self.writer.write(buf));
+        }
+
+        let mut out = [0u8; 256];
+        let mut out_len = 0usize;
+        let mut consumed = 0usize;
+
+        for &byte in buf {
+            let mapped = if byte == b'\n' {
+                b"\r\n".as_slice()
+            } else {
+                core::slice::from_ref(&byte)
+            };
+
+            if out_len + mapped.len() > out.len() {
+                let written = self.writer.write(&out[..out_len]);
+                if written < out_len {
+                    return Ok(consumed);
+                }
+                out_len = 0;
+            }
+
+            out[out_len..out_len + mapped.len()].copy_from_slice(mapped);
+            out_len += mapped.len();
+            consumed += 1;
+        }
+
+        if out_len > 0 {
+            let written = self.writer.write(&out[..out_len]);
+            if written < out_len {
+                return Ok(consumed.saturating_sub(1));
+            }
+        }
+
+        Ok(consumed)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
