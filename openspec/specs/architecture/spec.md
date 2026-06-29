@@ -1050,3 +1050,130 @@ StarryOS Lichee RV Dock benchmark bring-up MUST first reach async UART benchmark
 - **THEN** it MUST run through a staged mode that has D1 async UART, PLIC IRQ, `/dev/console`, and a user benchmark payload
 - **AND** it SHOULD use an embedded benchmark ELF before SDMMC/rootfs is available
 - **AND** it MUST NOT count kernel ring benchmark alone as the final Q19B user benchmark gate
+
+<!-- A048 -->
+### Requirement: ADR-048: D1 先做平台专用 UartPort，后考虑 uart_16550 width-aware backend
+
+D1 DW APB UART (stride 4, 32-bit MMIO) 的异步栈入口 MUST 先通过 D1 专用 `ArceOsD1UartPort` 实现，禁止在当前阶段修改 `uart_16550::MmioBackend`（外部 crate 约束）。
+
+**日期**: 2026-06-29
+**状态**: 已落地（Q19B Phase 2）
+**决策**:
+- 在 `kernel/src/drivers/d1_uart.rs` 中实现 `ArceOsD1UartPort`，直接通过 32-bit `read_volatile`/`write_volatile` 访问 DW APB UART 寄存器（stride 4），实现 `uart_16550::async_::driver::UartPort` trait。
+- 同时提供 D1 专用 ISR handler (`d1_uart_isr_handler`)，在 IIR 读取时使用 stride-aware 32-bit access，复用 `uart_16550::async_::isr` 的全局 waker (`RX_WAKER`/`TX_WAKER`/`DRAIN_WAKER`)。
+- QEMU 路径的 `ArceOsUartPort`（封装 `Uart16550<MmioBackend>`，U8 byte access）完全保留不变。
+- D1 路径和 QEMU 路径通过 `#[cfg(feature = "lichee-d1-kbench")]` 条件编译互斥，共享相同的 `AsyncUartDriver` 类型系统但使用不同的 `UartPort` 实现。
+- 长期方案：VisionFive2 也有类似 access-width 需求，可在 D1 benchmark 验证后提取 width-aware backend 到 `uart_16550` crate。
+
+**原因**:
+- `uart_16550::Uart16550<MmioBackend>` 内部做 U8 `read_volatile`/`write_volatile`，这是 NS16550 的标准行为。D1 的 DW APB UART 要求 stride 4 + 32-bit MMIO，不兼容当前 backend。
+- 项目规则：「不修改任何外部 crate」— `uart_16550` 是外部 crate。当前阶段不适合改动 `MmioBackend`。
+- D1 专用实现风险最小：162 行自包含代码，不碰 uart_16550 内部，`UartPort` trait 只有 4 个方法（`receive_bytes`/`send_bytes`/`transmitter_empty`/`update_ier`），接口简洁。
+
+**影响**:
+- `kernel/src/drivers/uart_init.rs` 通过 feature gate 维护双路径（QEMU `ArceOsUartPort` + D1 `ArceOsD1UartPort`），各自有独立的类型别名 (`ArceOsDriver`/`ArceOsReader`/`ArceOsWriter`) 和 ISR wrapper。
+- `kernel/src/lib.rs` 和 `kernel/src/drivers/mod.rs` 的 feature gate 需要精确控制哪些模块在 kbench 模式下可用（排除 `file`/`pseudofs`/`mm`/`syscall`/`task`/`time`/`ntty_async`，因为它们依赖 `axfs`/`axdisplay`）。
+- `NonNull<u8>` 需要 `unsafe impl Send + Sync` 才能放入 `lazy_static!`（内核态下 MMIO base pointer 是 immutable constant）。
+
+**替代方案**:
+- ❌ 扩展 `uart_16550::MmioBackend` 支持 access width：违反「不修改外部 crate」规则。
+- ❌ 通过 uart_16550 的 `Backend` trait 添加 width-aware 实现：Backend trait 是 sealed，无法外部实现。
+- ❌ 在 QEMU 路径中也使用 32-bit MMIO：NS16550 在 QEMU 上 stride 1 / U8 access 已验证且性能良好，没有必要。
+- ✅ D1 专用 `UartPort` + 复用 `AsyncUartDriver`/waker 体系：当前方案。
+
+**参考**:
+- `kernel/src/drivers/d1_uart.rs`（新增，162 行）
+- `kernel/src/drivers/uart_init.rs`（重构，双路径 feature gate）
+- `kernel/src/platform/early_console.rs` — `DwApbUart32EarlyConsole::putchar`（DW APB UART 32-bit MMIO 参考）
+- `kernel/src/platform/lichee_d1.rs` — `LICHEE_D1` descriptor（stride 4 / U32）
+
+#### Scenario: D1 async UART register access
+
+- **WHEN** Lichee D1 benchmark mode initializes async UART
+- **THEN** it MUST use the D1-specific `ArceOsD1UartPort` for register access
+- **AND** it MUST access DW APB UART registers through stride-aware 32-bit volatile MMIO
+- **AND** it MUST NOT route D1 UART access through the QEMU `Uart16550<MmioBackend>` byte-MMIO path
+
+<!-- A049 -->
+### Requirement: ADR-049: Q19B Phase 5-6 通过最小 axfs-ng patch 解阻
+
+StarryOS D1 userbench 模式 (`lichee-d1-userbench`) 的 `/dev/console` TTY gate 和 embedded user benchmark payload 阶段 MUST 使用最小 D1 runtime 和 patched `axfs-ng`，避免重新引入 QEMU PCI/virtio/display/rootfs 假设。
+
+**日期**: 2026-06-29
+**状态**: ✅ 已落地（Q19B Host Gate）
+**决策**:
+- Q19B userbench 启用 `dep:axfs` 和 `axfeat/task-ext`，恢复 `pseudofs::mount_all()`、`ASYNC_TTY`、`FD_TABLE`、用户任务与 syscall 最小路径。
+- 不启用 QEMU `qemu` feature；D1 路径继续排除 net socket、fb/axdisplay、virtio/display 等硬件无关模块。
+- 通过 `[patch.crates-io] axfs-ng = { path = "crates/axfs-ng" }` 本地化 `axfs-ng`，仅修改其 `axdriver` 依赖为 `default-features = false, features = ["block", "bus-mmio"]`。
+- D1 userbench 通过 embedded `benchmark.elf` 获取首个用户态 benchmark 路径，不要求 SDMMC/rootfs parity。
+- `make lichee-userbench` 必须作为烧录前 gate，而不仅是 `cargo check`。
+
+**原因**:
+- `pseudofs::mount_all()` 与 `add_stdio()` 需要 `axfs::FS_CONTEXT`，完全绕开 `axfs` 会扩大重构面。
+- 原始 `axfs-ng` 依赖 `axdriver` 时未关闭默认 feature，而 `axdriver` default 是 `bus-pci`；D1 没有 `PCI_ECAM_BASE` / `PCI_RANGES` / `PCI_BUS_END`。
+- `axdriver` 的 `build.rs` 在未启用自身 `bus-mmio` feature 时会默认输出 `cfg(bus="pci")`，所以只在 root feature 添加 `axfeat/bus-mmio` 不足以影响 `axfs-ng` 的间接 `axdriver`。
+
+**影响**:
+- `make lichee-userbench` 已生成可写入 boot 分区的 `starry-lichee-userbench-boot.img` (`kernel_size=876736`)。
+- 本地 `crates/axfs-ng` 是 deliberate patch，不是无意 vendor 膨胀；后续升级 axfs-ng 时必须重新核对 `axdriver` feature。
+- 真板仍需验证 `/dev/console`、`tcdrain`、FIONBIO、用户态 benchmark 输出；host gate 通过不等于 Q19B 最终完成。
+
+**替代方案**:
+- ❌ 直接启用 `qemu` feature：会带入 PCI/virtio/display/net 假设，扩大排障面。
+- ❌ 给 D1 axconfig 填假 `PCI_*` 常量：只欺骗编译器，运行时可能访问不存在的 PCI ECAM。
+- ❌ 完全重写最小 devfs：短期可行但重构面大，偏离 benchmark 数据目标。
+- ✅ patch `axfs-ng` 的 `axdriver` 依赖并保持 embedded benchmark：当前方案。
+
+**参考**:
+- `crates/axfs-ng/Cargo.toml` — patched `axdriver` dependency
+- `kernel/src/pseudofs/mod.rs:61` — `mount_all()` 依赖 `axfs::FS_CONTEXT`
+- `kernel/src/entry.rs` — `lichee_d1_init()` 中 Phase 5-6 TODO
+- `openspec/changes/q19b-lichee-d1-benchmark/tasks.md` — Phase 5-6 deferred 标记
+
+#### Scenario: D1 userbench reaches devfs work
+
+- **WHEN** Q19B proceeds from kbench to userbench
+- **THEN** it MUST use a D1 feature set that includes `axfs` and `task-ext` without enabling QEMU PCI/virtio/display assumptions
+- **AND** patched `axfs-ng` MUST enable `axdriver/block` and `axdriver/bus-mmio` with `default-features = false`
+- **AND** `make lichee-userbench` MUST pass before board flashing
+
+<!-- A050 -->
+### Requirement: ADR-050: Q19B feature 必须区分硬件能力与运行模式
+
+StarryOS Lichee D1 benchmark features MUST NOT use a kbench-only runtime feature as the parent of userbench if that feature also excludes user/process/filesystem modules.
+
+**日期**: 2026-06-29
+**状态**: ✅ 已落地（Q19B-Next.1）
+**决策**:
+- 后续 Q19B 继续推进前，必须重新梳理 Lichee feature 语义，把 D1 async UART / PLIC 这类硬件能力与 smoke/kbench/userbench 这类运行模式分开。
+- `lichee-d1-userbench` 可以复用 D1 async UART 和 PLIC 能力，但不能继承会排除 `ASYNC_TTY`、`file`、`mm`、`pseudofs`、`task`、`syscall`、`time` 的 kbench-only feature。
+- userbench 的第一 host gate 是 `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench` 通过，且不得通过直接启用完整 QEMU PCI/virtio/display 假设来绕过。
+- `/dev/console` gate 必须先于 embedded benchmark ELF；只有 `/dev/console` 和 async TTY 通路成立后，才加载完整 `tests/benchmark.c` payload。
+
+**原因**:
+- 当前 `kernel/Cargo.toml` 定义 `lichee-d1-userbench = ["lichee-d1-kbench"]`。
+- 当前 `kernel/src/lib.rs` 和 `kernel/src/drivers/mod.rs` 用 `#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]` 排除用户态路径模块。
+- 实测 `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench` 失败，缺失 `crate::drivers::ASYNC_TTY`、`crate::file`、`crate::mm`、`crate::pseudofs`、`crate::task`、`axfs`、`axtask::AxTaskExt`。
+
+**影响**:
+- Q19B 当前 Phases 0-4 可以作为 kbench 交付继续保留；Phases 5-6 需要单独做 feature/runtime 边界修正。
+- 后续实现应优先新增或重命名 feature，使 kbench-only exclusion 不影响 userbench。
+- 这条 ADR 不要求立即实现 D1 SDMMC/rootfs；embedded benchmark 仍然是首个用户态数据路径的推荐方式。
+
+**替代方案**:
+- ❌ 继续让 userbench 继承 kbench-only feature：会持续排除 userbench 必需模块。
+- ❌ 直接启用 `qemu` feature：会重新带入 PCI/virtio/display/rootfs 假设，扩大排障面。
+- ✅ 拆分硬件能力 feature 与运行模式 feature，再构建最小 D1 userbench runtime：当前方案。
+
+**参考**:
+- `.claude/analysis/q19b-current-blockers.md`
+- `kernel/Cargo.toml`
+- `kernel/src/lib.rs`
+- `kernel/src/drivers/mod.rs`
+
+#### Scenario: D1 userbench feature selection
+
+- **WHEN** `lichee-d1-userbench` is enabled
+- **THEN** it MUST include D1 async UART and PLIC capability
+- **AND** it MUST keep the user/process/filesystem modules required by the benchmark runtime visible
+- **AND** it MUST NOT inherit a kbench-only feature that excludes `ASYNC_TTY`, `file`, `mm`, `pseudofs`, `task`, `syscall`, or `time`

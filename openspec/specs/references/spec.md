@@ -133,6 +133,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R6 --> `.claude/analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
 | <!-- R7 --> `.claude/analysis/d1-axplat-bringup-plan.md` | D1 正路径 axplat bring-up 方案：解释 U-Boot 已跳转但无 Starry 输出的根因，规划本地 `axplat-riscv64-lichee-d1`、链接/启动/MMIO console/build gate |
 | <!-- R8 --> `.claude/analysis/q19b-lichee-benchmark-plan.md` | Q19B Lichee benchmark 方案：从 smoke complete 推进到 D1 async UART、PLIC IRQ、`/dev/console`、嵌入式 benchmark ELF 与最终用户态 benchmark 数据采集 |
+| <!-- R9 --> `.claude/analysis/q19b-current-blockers.md` | Q19B 当前实现阻塞分析：确认 smoke/kbench host gate 通过、userbench compile gate 失败，定位到 feature 继承过粗、D1 userbench runtime 与 `/dev/console`/axfs/pseudofs 边界未拆清 |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

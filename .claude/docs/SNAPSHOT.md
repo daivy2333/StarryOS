@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-06-29
-> 分支：uart-16550-lichee — Q18 完成，Q19 Lichee RV Dock 真板 early smoke test 完成，Q17 待做
+> 分支：uart-16550-lichee — Q19 真板 smoke 完成，Q19B Host Gate 完成，Q17 待做
 
 ---
 
@@ -79,7 +79,8 @@
 - **Q23** 远期预研池：O1/O36、O54/O55、O58/O59、O37，按真板数据触发
 **Q19 D1 axplat 修正** (2026-06-28): 创建 `crates/axplat-riscv64-lichee-d1/`，接入 `MYPLAT`/`PLAT_CONFIG`，D1 ELF 引用 `axplat_riscv64_lichee_d1::boot` 而非 QEMU；修正 `make lichee` 强制 `DWARF=n`，并将 D1 UART IRQ 常量改回采集事实 `18`。链接阶段的 `IrqIf` undefined symbols 通过 `irq-if` + no-op `IrqIf` 解决，完整 PLIC 留给后续 `irq` feature。
 **Q19 真板 smoke test ✅** (2026-06-29): Lichee RV Dock 已通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。这标志着 D1 axplat、load/link 地址、Android boot image 打包、DW APB UART0 polling early console、C906 early/final page table 属性、Lichee smoke feature gate 均已通过最小真板验证。
-**下一步**: Q19a 已完成；后续不要继续从官方 Linux 泛采集。下一阶段按 roadmap 回到 Q17 SMP / 内存序修复，或启动新的 Lichee 扩展阶段（PLIC/Timer/SDMMC/rootfs/TTY/benchmark）前先单独立项。
+**Q19B Host Gate ✅** (2026-06-29): 模式拆分 + D1 DW APB UART 32-bit MMIO port + 真 PLIC IRQ 18 + kernel benchmark gate + embedded user benchmark host path 已打通。`make lichee-kbench` 生成 `starry-lichee-kbench-boot.img` (`kernel_size=188608`)；`make lichee-userbench` 生成 `starry-lichee-userbench-boot.img` (`kernel_size=876736`)。两者均为 Android boot image：`kernel_addr=0x40200000`、`page_size=2048`、`name=d1-nezha`。关键修复：D1 axplat extern crate 覆盖 `lichee-d1-async-uart`、本地 patch `axfs-ng -> axdriver(default-features=false, features=["block","bus-mmio"])`、`benchmark.elf` 改为 ET_EXEC/no relocation。
+**下一步**: Q19B-Next.5: D1 真板烧录验证。先烧 `starry-lichee-kbench-boot.img` 采集 D1 async UART / PLIC IRQ 18 / kernel ring-buffer 指标，再烧 `starry-lichee-userbench-boot.img` 采集 `UART Async Benchmark` 用户态输出。原始日志保存到 `.claude/analysis/lichee/q19b-YYYYMMDD-{mode}.txt`。Q17 SMP 待做。
 
 ### 关键发现
 
@@ -151,6 +152,7 @@
 | **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | D1 axplat crate + build wiring + Android boot image + UART0 smoke output | ✅ 真板 `[starry-d1] smoke complete` |
+| **Q19B** | Lichee D1 async UART benchmark | 模式拆分 + D1 32-bit MMIO UART port + PLIC IRQ + embedded user benchmark image | 🏗️ Host gate ✅ / 真板日志待采集 |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |

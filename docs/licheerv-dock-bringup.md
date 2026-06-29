@@ -4,7 +4,7 @@
 >
 > 当前结论：Lichee RV Dock 适合作为真板流程演练板，但不适合作为 Q17 SMP / 多核内存序验证板。它使用 Allwinner D1 / XuanTie C906，属于单核 RISC-V 平台。
 
-> 2026-06-29 更新：StarryOS 已在 Lichee RV Dock 真板完成 early smoke test。官方 U-Boot 成功加载 StarryOS Android boot image，D1 axplat 进入 StarryOS payload，UART0 输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。Q19a 最小启动目标达成。
+> 2026-06-29 更新：StarryOS 已在 Lichee RV Dock 真板完成 early smoke test。官方 U-Boot 成功加载 StarryOS Android boot image，D1 axplat 进入 StarryOS payload，UART0 输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。Q19a 最小启动目标达成。Q19B 的 `kbench` / `userbench` host build gate 也已打通，下一步是分别烧录 `starry-lichee-kbench-boot.img` 与 `starry-lichee-userbench-boot.img` 采集真板串口证据。
 
 ## 1. 定位与边界
 
@@ -19,7 +19,7 @@ Lichee RV Dock 的主要价值不是直接验证当前 StarryOS 的 Q17 SMP 修�
 
 当前 StarryOS 仓库默认面向 QEMU virt，并已有 `vf2` 构建入口。异步 UART 初始化仍使用 QEMU virt 的 UART MMIO 地址 `0x10000000`。Lichee RV Dock 是 Allwinner D1 平台，UART、PLIC、timer、内存布局、启动协议均不同，因此不能直接把当前 StarryOS 镜像烧进 TF 卡运行。
 
-当前适配入口已经验证：D1 platform + Android boot image + UART0 polling early console 可以在真板完成最小 smoke test。rootfs、USB、SD/MMC、Shell、async benchmark 仍属于后续阶段，不能和最小启动目标混在一起推进。
+当前适配入口已经验证：D1 platform + Android boot image + UART0 polling early console 可以在真板完成最小 smoke test。Q19B 进一步完成了 D1 async UART、真 PLIC IRQ 18、kernel benchmark image 与 embedded user benchmark image 的 host 构建闭环。SD/MMC rootfs parity 仍属于后续阶段，不能和当前 embedded benchmark 路线混在一起推进。
 
 ### StarryOS 当前板测状态（2026-06-29）
 
@@ -41,6 +41,15 @@ StarryOS 已经完成 Lichee RV Dock / Allwinner D1 的最小真板启动验证�
 | ramdisk_size | `12` bytes |
 | page_size | `2048` |
 | name | `d1-nezha` |
+
+8. Q19B 新增两个可烧录测试镜像：
+
+| 目标 | 输出 | kernel_size | 目的 |
+|------|------|-------------|------|
+| `make lichee-kbench` | `starry-lichee-kbench-boot.img` | `188608` bytes | 验证 D1 async UART、PLIC IRQ 18、kernel ring-buffer benchmark |
+| `make lichee-userbench` | `starry-lichee-userbench-boot.img` | `876736` bytes | 运行 embedded `benchmark.elf`，验证 `/dev/console`、TTY、syscall、用户态 benchmark 输出 |
+
+这两个镜像都保持 Android boot header：`kernel_addr = 0x40200000`、`page_size = 2048`、`name = d1-nezha`，远小于当前约 `10.1M` boot 分区。
 
 真板串口验收输出：
 
@@ -371,25 +380,40 @@ dtc -I fs -O dts /sys/firmware/devicetree/base > /mnt/exUDISK/lichee.dts
 
 ```bash
 PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH make lichee
+PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH make lichee-kbench
+PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH make lichee-userbench
 ls -lh starry-lichee-boot.img
+ls -lh starry-lichee-kbench-boot.img starry-lichee-userbench-boot.img
 python3 tools/android_boot_image.py inspect starry-lichee-boot.img
+python3 tools/android_boot_image.py inspect starry-lichee-kbench-boot.img
+python3 tools/android_boot_image.py inspect starry-lichee-userbench-boot.img
 ```
 
 写入前必须确认：
 
-- `starry-lichee-boot.img` 小于当前 boot 分区备份大小，经验值约 `10.1M`。
+- 待烧录的 `starry-lichee-*.img` 小于当前 boot 分区备份大小，经验值约 `10.1M`。
 - Android boot header 仍为 `name = d1-nezha`。
 - `kernel_addr = 0x40200000`。
 - `page_size = 2048`。
 - 当前已验证产物 `kernel_size = 118976` bytes。
+- Q19B 已验证产物：`kbench kernel_size = 188608` bytes，`userbench kernel_size = 876736` bytes。
 
-在官方 Linux 中备份并替换：
+在官方 Linux 中备份并替换。建议先测 `kbench`，成功后再测 `userbench`：
 
 ```bash
-ls -lh /mnt/exUDISK/starry-lichee-boot.img
+ls -lh /mnt/exUDISK/starry-lichee-kbench-boot.img
 dd if=/dev/by-name/boot of=/mnt/exUDISK/boot-official-backup.img bs=1M
 sync
-dd if=/mnt/exUDISK/starry-lichee-boot.img of=/dev/by-name/boot bs=1M conv=fsync
+dd if=/mnt/exUDISK/starry-lichee-kbench-boot.img of=/dev/by-name/boot bs=1M conv=fsync
+sync
+reboot -f
+```
+
+`kbench` 通过后，再进入官方 Linux 重复备份可省略（如果已经有 `boot-official-backup.img`），替换为 `userbench`：
+
+```bash
+ls -lh /mnt/exUDISK/starry-lichee-userbench-boot.img
+dd if=/mnt/exUDISK/starry-lichee-userbench-boot.img of=/dev/by-name/boot bs=1M conv=fsync
 sync
 reboot -f
 ```
@@ -406,8 +430,19 @@ reboot -f
 
 - 出现 D1 axplat / axruntime 早期日志：说明 boot image、D1 axplat 和 early mapping 正常。
 - 出现 `[starry-d1] smoke complete, halting.`：Q19 early smoke 成功。
+- 出现 `[starry-d1] Lichee D1 kbench mode`、`[kernel] Async UART driver initialized (D1)` 和 kernel benchmark 指标：Q19B kbench 路径成功。
+- 出现 `[starry-d1] Lichee D1 userbench mode`、`[starry-d1] benchmark process spawned`，并打印 `UART Async Benchmark` 各项结果：Q19B userbench 路径成功。
 - 再次出现 `Store/AMO access fault`，但 EPC/TVAL 已变化：先符号化，再判断是否进入最终页表阶段。
 - 如果 fault 指向最终 kernel address space，优先检查 final page table 是否也启用了 `xuantie-c9xx` / T-Head C9xx memory attributes。
+
+建议保存串口原始日志：
+
+```bash
+mkdir -p .claude/analysis/lichee
+# 在开发机串口工具中保存为：
+# .claude/analysis/lichee/q19b-20260629-kbench.txt
+# .claude/analysis/lichee/q19b-20260629-userbench.txt
+```
 
 ### Q19 排障链记录
 
@@ -423,6 +458,9 @@ reboot -f
 | `No block device found!` | smoke 阶段启用了 fs/block，但 D1 还没有 SDMMC/virtio block driver | Lichee smoke 禁用 fs/net/display/axdriver 依赖 |
 | `PCI_ECAM_BASE` / `PCI_RANGES` / `PCI_BUS_END` 编译缺失 | 无 PCI 平台仍把 `axdriver` 默认 PCI bus 编进来 | Lichee smoke 路径隔离 QEMU `axdriver`，`task-ext` 也只放到 QEMU feature |
 | fault VA `0xffffffc000000000` | `virtio-mmio-ranges = [[0,0]]` 被当作真实 MMIO range，访问 `phys_to_virt(0)` | D1 配置使用空数组 `virtio-mmio-ranges = []` |
+| Q19B `kbench/userbench` 链接缺 `__ConsoleIf_write_bytes` / `__PowerIf_system_off` / `__IrqIf_handle` | `src/main.rs` 只在 `feature = "lichee-d1"` 时 `extern crate axplat_riscv64_lichee_d1`，但 kbench/userbench 使用 `lichee-d1-async-uart` | `#[cfg(any(feature = "lichee-d1", feature = "lichee-d1-async-uart"))] extern crate axplat_riscv64_lichee_d1;` |
+| Q19B userbench 仍编译 `axdriver/src/bus/pci.rs` | `axdriver` 的 `build.rs` 在没有自身 `bus-mmio` feature 时默认输出 `cfg(bus="pci")`；`axfeat/bus-mmio` 不会转发到 `axfs-ng` 间接依赖的 `axdriver` | 本地 patch `crates/axfs-ng`，将 `axdriver` 改为 `default-features = false, features = ["block", "bus-mmio"]` |
+| embedded `benchmark.elf` 运行前存在 relocation 风险 | `riscv64-linux-musl-gcc -static` 产物可能是 `DYN` / static PIE，带 `R_RISCV_RELATIVE` relocation，而 `load_embedded_user_app()` 不做 relocation | 使用 `-static -no-pie -fno-pie -s` 编译为 `ET_EXEC`，确认 `readelf -r` 显示 no relocations |
 
 ### 后续扩展顺序
 
