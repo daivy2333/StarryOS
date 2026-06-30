@@ -2,11 +2,11 @@
 
 > **项目**：[StarryOS](https://github.com/daivy2333/StarryOS) + [uart_16550](https://github.com/daivy2333/uart_16550)
 > **分支**：`feat/uart-16550-async`（Q0~Q13 + LTO 完成，但 LTO 已 revert 参见 ADR-034）
-> **截稿日期**：2026-06-17
+> **截稿日期**：2026-06-30（补充 Q19B Lichee D1 真板数据状态）
 > **测试环境**：QEMU riscv64-virt · NS16550 @ 115200 bps · FIFO 16B
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/benchmark-report-async.md`（Async 详细数据） · `docs/manual-qa-report.md`（QA 验证） · `.claude/analysis/async-uart-module-boundary.md`（Q13 事后视角）
 >
-> **⚠️ QEMU 仿真限制声明**：QEMU 的 NS16550 不仿真串口线延迟（86.8 µs/byte）。用户态吞吐量在 QEMU 上**不可直接对比**——真板实测数据 ⏳ 待 Q6 验证后回填。本文讨论 QEMU 上**可信维度**：内核态速度、CPU 效率、write() 延迟、功能覆盖。
+> **⚠️ QEMU 仿真限制声明**：QEMU 的 NS16550 不仿真串口线延迟（86.8 µs/byte）。用户态吞吐量在 QEMU 上**不可直接对比**。Lichee RV Dock / D1 的真实 115200bps 数据已在 Q19B 回填；VisionFive2 多核真板仍待后续单独验证。本文讨论 QEMU 上**可信维度**：内核态速度、CPU 效率、write() 延迟、功能覆盖。
 >
 > **📐 物理定律**（100% 准确）：NS16550 @ 115200 bps 的线速上限 = 11,520 B/s（单字节 86.8 µs）。这是数学事实，但实测吞吐受调度/IRQ 延迟影响可能低于此值。
 >
@@ -27,7 +27,7 @@ Console（同步阻塞）与 Async（Q15 M0~M4 异步中断驱动）在 8 个对
 | 非阻塞读（FIONBIO）| ❌ | ✅ open / fcntl / ioctl 三入口 | 功能补全 |
 | 读超时（VTIME）| ❌ | ✅ axtask::future::timeout | 功能补全 |
 | 可移植性 | ❌（绑定 axplat）| ✅（5 OS trait 抽象，Q13）| 跨 OS 可复用 |
-| 真板吞吐量 | 📐 上限 11.52 KB/s | 📐 上限 11.52 KB/s | 持平（物理定律上限，⏳ Q6 实测后回填）|
+| 真板吞吐量 | 📐 上限 11.52 KB/s | D1: 11.25~11.41 KB/s | 大包达到 97.7%~99.0% 线速；VF2 待回填 |
 
 **小结**：Async 在所有可优化维度均显著优于 Console，**唯一不可优化的维度是真板吞吐量（受 115200 bps 波特率限制，📐 物理定律上限 11.52 KB/s）**。本节 8 维度数据为后续 §3~§7 的索引表，详细对比见对应章节。
 
@@ -35,7 +35,7 @@ Console（同步阻塞）与 Async（Q15 M0~M4 异步中断驱动）在 8 个对
 
 ## 1. 测量条件
 
-性能对比需在**统一测量条件**下进行。QEMU 仿真与真板硬件在串口时序上存在本质差异——QEMU 的 NS16550 不仿真真实串口线延迟（86.8 µs/byte），导致部分数据不可比。Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销，**两者在 QEMU 上无法公平对比**——真板实测数据 ⏳ 待 Q6 验证后回填。
+性能对比需在**统一测量条件**下进行。QEMU 仿真与真板硬件在串口时序上存在本质差异——QEMU 的 NS16550 不仿真真实串口线延迟（86.8 µs/byte），导致部分数据不可比。Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销，**两者在 QEMU 上无法公平对比**。Q19B 已回填 Lichee RV Dock / D1 真板数据；VisionFive2 数据仍需后续 Q20+ 采集。
 
 **测试环境**（QEMU riscv64-virt，Console 与 Async 共用）：
 
@@ -53,7 +53,7 @@ Console（同步阻塞）与 Async（Q15 M0~M4 异步中断驱动）在 8 个对
 **QEMU 性能数据可信维度**：
 
 - ✅ **可信**：内核态速度、CPU 效率、write() 延迟、功能覆盖
-- ❌ **不可信**：用户态吞吐（绝对值）——⏳ Q6 真板实测后回填
+- ❌ **不可信**：用户态吞吐（QEMU 绝对值）；D1 真板绝对值已在 Q19B 回填，VisionFive2 待回填
 
 **对比基线**：
 - **Console**：Q12 之前的同步阻塞实现，作为 Async 的对比基线
@@ -62,7 +62,7 @@ Console（同步阻塞）与 Async（Q15 M0~M4 异步中断驱动）在 8 个对
   - Async：`docs/benchmark-report-async.md`
   - Console：`docs/uart-performance-comparison-console.md`（如存在）/ 内部 benchmark
 
-**小结**：QEMU 实测适用于**相对性能对比**与**功能正确性验证**，绝对吞吐需以真板为准（Q6 待定）。本节明确了 §3~§7 所有性能数据的可比性边界。
+**小结**：QEMU 实测适用于**相对性能对比**与**功能正确性验证**，绝对吞吐需以真板为准。当前已有 Lichee D1 数据，VisionFive2 数据仍待后续回填。本节明确了 §3~§7 所有性能数据的可比性边界。
 
 ---
 
@@ -145,7 +145,7 @@ Console 与 Async 在架构上呈现**"同步轮询 vs 异步中断驱动"**的�
 
 ## 5. 用户态吞吐量（⚠️ QEMU 时序欺骗）
 
-Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销。**两者在 QEMU 上无法公平对比**——真板实测数据 ⏳ 待 Q6 验证后回填。本节标"⚠️"以提示数据可信度限制（详见 §1 测量条件）。
+Console 在 QEMU 上测的是纯 MMIO 速度（LSR 永远 THR_EMPTY），Async 测的是任务切换 + tcdrain 开销。**两者在 QEMU 上无法公平对比**。本节标"⚠️"以提示数据可信度限制（详见 §1 测量条件），并列出 Q19B 已得到的 Lichee D1 真板结果。
 
 **Async 端到端路径**（64B 写入示意，Q8 优化后约 4~6 次任务切换，Q8 前约 9 次）：
 
@@ -164,14 +164,14 @@ tcdrain   → poll: buf 非空 → 注册 tx.poll
 
 | 大小 | Async Q13.1（QEMU）| 硬件理论 📐 | 真板实测 |
 |------|------------------|----------|----------|
-| 64 B | 518.0 µs | 5,556 µs | ⏳ Q6 实测 |
-| 256 B | 1,305.6 µs | 22,222 µs | ⏳ Q6 实测 |
-| 1024 B | 4,922.5 µs | 88,889 µs | ⏳ Q6 实测 |
-| 4096 B | 9,852.0 µs | 355,556 µs | ⏳ Q6 实测 |
+| 64 B | 518.0 µs | 5,556 µs | D1: 1.01 KB/s（小包 drain 开销主导）|
+| 256 B | 1,305.6 µs | 22,222 µs | D1: 11.25 KB/s / 97.7% line rate |
+| 1024 B | 4,922.5 µs | 88,889 µs | D1: 11.40 KB/s / 98.9% line rate |
+| 4096 B | 9,852.0 µs | 355,556 µs | D1: 11.41 KB/s / 99.0% line rate |
 
-> **数据可信度**：QEMU 上的 Async 吞吐受 copier 任务切换开销影响；绝对吞吐需 Q6 真板实测确认。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），但实测值受调度/IRQ 延迟影响可能低于此值。
+> **数据可信度**：QEMU 上的 Async 吞吐受 copier 任务切换开销影响；绝对吞吐以真板为准。Q19B D1 数据证明大包已达 97.7%~99.0% 115200bps 线速；VisionFive2 仍需后续单独测。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），但实测值受调度/IRQ 延迟影响可能低于此值。
 
-**小结**：用户态吞吐在 QEMU 上**不可信**（§1 标注的"❌ 不可信维度"）。Async 端到端路径已经过 Q8 优化（9→4~6 次任务切换），但 QEMU 仿真限制决定绝对值需以真板（Q6）为准。
+**小结**：用户态吞吐在 QEMU 上**不可信**（§1 标注的"❌ 不可信维度"）。Async 端到端路径已经过 Q8 优化（9→4~6 次任务切换）；Q19B D1 真板结果说明大包发送已接近物理线速，VisionFive2 结果仍需后续回填。
 
 ---
 

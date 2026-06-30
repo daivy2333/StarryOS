@@ -3,7 +3,7 @@
 > **项目**：[StarryOS](https://github.com/daivy2333/StarryOS) + [uart_16550](https://github.com/daivy2333/uart_16550)
 > **测试分支**：`feat/uart-async-bench`（Q7 + O45 阶段快照，2026-06-02 测试）
 > **当前 state**：Q0~Q13 + LTO 全部完成（2026-06-16）；本文档为 Q7 阶段手动 QA 报告，**功能结论仍然有效**
-> **截稿日期**：2026-06-17（bettermd 新规范 17 规则全量重写）
+> **截稿日期**：2026-06-30（补充 Q19B Lichee D1 真板数据状态）
 > **测试方式**：交互式手动测试（QEMU 内 Shell + [`benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/tests/benchmark.c)）
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/benchmark-report-async.md`（性能数据） · `docs/uart-performance-comparison.md`（Console vs Async 对比）
 
@@ -11,7 +11,7 @@
 
 ## 0. TL;DR
 
-StarryOS 异步串口（Q7 + O45 阶段）通过 12 项手动 QA 测试，**全部 PASS**——稳定性、正确性、功能完整性三维度均无异常；性能（Q7 基线）软件开销 63.9 µs 已被 Q13.1 优化回收至 42.6 µs（↓33%）。Q7 修复的 yield storm / FIONBIO 传播 / tcdrain 真异步化三处问题在 QA 中均得到对应测试验证（T6 / T10 / T11），阻塞 + 异步 + 非阻塞三种模式共存无冲突。真板（VisionFive2）吞吐 ~11.5 KB/s @ 115200 bps 待 Q6 验证。
+StarryOS 异步串口（Q7 + O45 阶段）通过 12 项手动 QA 测试，**全部 PASS**——稳定性、正确性、功能完整性三维度均无异常；性能（Q7 基线）软件开销 63.9 µs 已被 Q13.1 优化回收至 42.6 µs（↓33%）。Q7 修复的 yield storm / FIONBIO 传播 / tcdrain 真异步化三处问题在 QA 中均得到对应测试验证（T6 / T10 / T11），阻塞 + 异步 + 非阻塞三种模式共存无冲突。Q19B 已在 Lichee RV Dock / D1 真板得到 115200bps 数据：大包 TX 达 97.7%~99.0% 线速；VisionFive2 多核真板仍待后续单独验证。
 
 | 维度 | 结果 | 关键证据 |
 |------|------|---------|
@@ -19,9 +19,9 @@ StarryOS 异步串口（Q7 + O45 阶段）通过 12 项手动 QA 测试，**全�
 | 正确性 | ✅ 数据完整性保持 | T3-T5（不同大小 TX）/ T5（RX 完整回显）/ T8（管道 TX）通过 |
 | 功能完整性 | ✅ 非阻塞三入口全生效 | T10（O_NONBLOCK + ioctl FIONBIO 双 PASS）|
 | 性能（Q7 基线）| ✅ 软件开销 63.9 µs | T11（avg 150.7 µs，含 QEMU 仿真）|
-| 吞吐量 e2e | ⏳ Q6 真板实测后回填 | T12（QEMU 不仿真串口线延迟，绝对吞吐不可信）|
+| 吞吐量 e2e | ✅ D1 已回填；VF2 待回填 | Q19B D1 大包 TX 97.7%~99.0% 线速；T12 的 QEMU 绝对吞吐仍不可信 |
 
-**小结**：12 项测试用例全 PASS 是异步串口功能正确性、稳定性、性能三维度达标的充分证据；Q6 真板验证是当前唯一待办（详见 `docs/async-uart-architecture.md` §0 与 `docs/benchmark-report-async.md` §0）。
+**小结**：12 项测试用例全 PASS 是异步串口功能正确性、稳定性、性能三维度达标的充分证据；D1 真板吞吐已经由 Q19B 回填，VisionFive2 仍是后续独立真板验证项（详见 `docs/benchmark-report-async.md` §0.1）。
 
 ---
 
@@ -43,7 +43,7 @@ QA 测试的结论严格依赖**测试环境**——本节明确所有测试用�
 | 测试方式 | 交互式手动 | 通过 QEMU 串口输入命令 + 观察输出 |
 
 **关键限制**：
-- QEMU 16550 模型不仿真真实串口线延迟。`./benchmark` 测得的"延迟"在 QEMU 上反映**软件开销**，硬件时间被算作 0。真板（VisionFive2）硬件时间 ~86.8 µs/byte @ 115200 bps。
+- QEMU 16550 模型不仿真真实串口线延迟。`./benchmark` 测得的"延迟"在 QEMU 上反映**软件开销**，硬件时间被算作 0。Lichee D1 真板已经测得大包 97.7%~99.0% 线速；VisionFive2 硬件时间仍需后续单独采集。
 - 12 项测试覆盖了主要场景，但**非穷尽**（无 DMA、无高速波特率、无多进程并发）。
 - 性能数字（avg 150.7 µs）对应 Q7 阶段，Q13.1 优化后已降至 129.5 µs（详见 `docs/benchmark-report-async.md` §0）。
 
@@ -55,7 +55,7 @@ QA 测试的结论严格依赖**测试环境**——本节明确所有测试用�
 - **端到端性能**：运行 `./benchmark` 中的延迟/吞吐测试段
 - **数据采集**：终端输出直接复制至本文档（无中间处理）
 
-**小结**：测试方法为**交互式手动** + benchmark 自动化，覆盖基础 Shell、TX 完整性、并发、非阻塞、e2e 性能五大维度；QEMU 限制决定绝对吞吐需以真板为准（Q6 待定）。
+**小结**：测试方法为**交互式手动** + benchmark 自动化，覆盖基础 Shell、TX 完整性、并发、非阻塞、e2e 性能五大维度；QEMU 限制决定绝对吞吐需以真板为准。D1 已回填，VisionFive2 待回填。
 
 ---
 
@@ -78,7 +78,7 @@ QA 测试的结论严格依赖**测试环境**——本节明确所有测试用�
 | T9 | 混合压力 | `for i in 1 2 3; do dd …; done &` + 交互命令 | 无 crash，Shell 正常 | ✅ |
 | T10 | FIONBIO (e2e) | `./benchmark` | O_NONBLOCK 和 ioctl 双 PASS | ✅ |
 | T11 | 端到端延迟 | `./benchmark` | avg 150.7 µs，P99 252.9 µs | ✅ |
-| T12 | 端到端吞吐量 | `./benchmark` | ⏳ Q6 真板实测后回填（QEMU 不仿真串口线延迟） | ⏳ |
+| T12 | 端到端吞吐量 | `./benchmark` | D1 真板已达大包 97.7%~99.0% 线速；QEMU 绝对吞吐不可信 | ✅ D1 / ⏳ VF2 |
 
 > **缩写说明**：`FIONBIO` = **F**ile **IO**ctl **N**on-**B**locking **I**/O；`O_NONBLOCK` = open 标志启用非阻塞 I/O；`EAGAIN` = POSIX 错误码"再试一次"；`e2e` = **E**nd-**t**o-**E**nd。
 
@@ -300,11 +300,11 @@ T11 / T12 测得的端到端性能数据反映**Q7 阶段**状态——单字节
 | — 其中硬件时间 | 0 µs（QEMU 瞬时）| 0 µs（QEMU 瞬时）|
 | P50 延迟 | 146.2 µs | 139.4 µs |
 | P99 延迟 | 252.9 µs | 238.8 µs |
-| 4096B 吞吐量 | ⏳ Q6 真板实测后回填 | ⏳ Q6 真板实测后回填 |
+| 4096B 吞吐量 | QEMU 绝对值不可信 | D1 真板 11.41 KB/s / 99.0% line rate |
 | FIONBIO O_NONBLOCK | ✅ PASS（EAGAIN）| ✅ |
 | FIONBIO ioctl | ✅ PASS（EAGAIN）| ✅ |
 
-> **数据可信度说明**：QEMU 上"延迟"反映软件开销（QEMU 硬件时间=0）。QEMU 不仿真串口线延迟，吞吐量绝对值**不可信**，需 Q6 真板实测。Q13.1 数据来自 `feat/uart-16550-bench` 分支（不同时刻测试），**不可直接对比**——仅作"阶段演进参考"。
+> **数据可信度说明**：QEMU 上"延迟"反映软件开销（QEMU 硬件时间=0）。QEMU 不仿真串口线延迟，吞吐量绝对值**不可信**。D1 绝对吞吐已由 Q19B 真板回填；VisionFive2 仍需后续单独测。Q13.1 数据来自 `feat/uart-16550-bench` 分支（不同时刻测试），**不可直接对比**——仅作"阶段演进参考"。
 >
 > **📐 物理定律**（100% 准确，不依赖真板验证）：NS16550 @ 115200 bps 的单字节传输时间 = 86.8 µs（10 bits/byte × 1/115200 s = 86.8 µs），对应线速上限 11,520 B/s。**这是数学事实**，但 QEMU 实测吞吐与此上限不可直接对比（QEMU 瞬时硬件时间 ≠ 86.8 µs）。
 

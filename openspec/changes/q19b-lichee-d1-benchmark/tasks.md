@@ -66,7 +66,7 @@
 - [x] Q19B.35 Planning document generated.
 - [x] Q19B.36 OpenSpec proposal/design/tasks/spec prepared.
 - [x] Q19B.37 User approves plan and requirements completeness.
-- [x] Q19B.38 Implementation begins: Phases 0-4 complete; Phases 5-6 deferred (require axfs dep + embedded ELF); Phase 7 pending.
+- [x] Q19B.38 Implementation completed: Phases 0-7 complete on board; SDMMC/rootfs parity deferred to a later separate milestone.
 
 ## Implementation Summary (2026-06-29, final)
 
