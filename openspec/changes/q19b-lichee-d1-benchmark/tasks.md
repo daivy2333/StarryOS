@@ -26,7 +26,7 @@
 
 - [x] Q19B.14 Enable `axplat-riscv64-lichee-d1/irq` for the IRQ benchmark mode instead of only `irq-if` stub.
 - [x] Q19B.15 Expose UART IRQ 18 to the async UART init path.
-- [ ] Q19B.16 Add temporary or permanent IRQ witness logging/counters for PLIC source 18.
+- [x] Q19B.16 Add temporary or permanent IRQ witness logging/counters for PLIC source 18.
 - [x] Q19B.17 Gate: PLIC claims and completes UART IRQ 18.
 - [x] Q19B.18 Gate: UART ISR wakes TX/RX paths through the interrupt path.
 
@@ -34,32 +34,32 @@
 
 - [x] Q19B.19 Run `drivers::bench::run_startup_benchmark()` in `lichee-kbench` mode after async UART init.
 - [x] Q19B.20 Ensure kernel benchmark output is visible on serial.
-- [ ] Q19B.21 Record D1 kernel ring-buffer metrics separately from QEMU data.
+- [x] Q19B.21 Record D1 kernel ring-buffer metrics separately from QEMU data.
 
 ## Phase 5: `/dev/console` TTY Gate
 
 - [x] Q19B.22 Re-enable the minimal modules required for `pseudofs::mount_all()` and `/dev/console` on D1.
 - [x] Q19B.23 Bind `ASYNC_TTY` to the process/stdout path needed by the benchmark mode.
-- [ ] Q19B.24 Verify `/dev/console` write reaches async UART.
-- [ ] Q19B.25 Verify `tcdrain` / transmitter-empty behavior is meaningful on D1.
+- [x] Q19B.24 Verify `/dev/console` write reaches async UART.
+- [x] Q19B.25 Verify `tcdrain` / transmitter-empty behavior is meaningful on D1.
 
 ## Phase 6: Embedded User Benchmark Payload
 
 - [x] Q19B.26 Add a build path that compiles `tests/benchmark.c` as static RISC-V musl ELF.
 - [x] Q19B.27 Embed the benchmark ELF or include it in a minimal initramfs-like blob for `lichee-userbench`.
 - [x] Q19B.28 Reuse existing user ELF loader logic where practical.
-- [ ] Q19B.29 Gate: user process starts and prints `UART Async Benchmark`.
-- [ ] Q19B.30 Gate: benchmark prints TX throughput, TX latency, FIFO boundary matrix, and nonblocking read sections.
+- [x] Q19B.29 Gate: user process starts and prints `UART Async Benchmark`.
+- [x] Q19B.30 Gate: benchmark prints TX throughput, TX latency, FIFO boundary matrix, and nonblocking read sections.
 
 ## Phase 7: Result Capture and Documentation
 
-- [ ] Q19B.31 Save raw board serial output under `.claude/analysis/lichee/q19b-YYYYMMDD-{mode}.txt`.
-- [ ] Q19B.32 Update `docs/benchmark-report-async.md` with a separate Lichee D1 result section.
-- [ ] Q19B.33 Update `.claude/docs/tasks.md`, `.claude/docs/SNAPSHOT.md`, `learned/spec.md`, and `optimization/spec.md` with the final Q19B result.
+- [x] Q19B.31 Save raw board serial output under `.claude/analysis/lichee/q19b-YYYYMMDD-{mode}.txt`.
+- [x] Q19B.32 Update `docs/benchmark-report-async.md` with a separate Lichee D1 result section.
+- [x] Q19B.33 Update `.claude/docs/tasks.md`, `.claude/docs/SNAPSHOT.md`, `learned/spec.md`, and `optimization/spec.md` with the final Q19B result.
 
 ## Phase 8: Optional SDMMC/rootfs Parity
 
-- [ ] Q19B.34 Decide whether to start a later Lichee rootfs parity milestone after embedded benchmark succeeds.
+- [x] Q19B.34 Decide whether to start a later Lichee rootfs parity milestone after embedded benchmark succeeds.
 
 ## Execution Hold
 
@@ -96,8 +96,15 @@ make lichee-userbench  # ✅ starry-lichee-userbench-boot.img, kernel_size=87673
 - `axfs-ng -> axdriver`: local patch disables axdriver defaults and explicitly enables `block + bus-mmio`, avoiding `cfg(bus="pci")` and missing `PCI_*` constants.
 - Embedded benchmark ELF: compiled as ET_EXEC (`-static -no-pie -fno-pie -s`) with no relocations.
 
-**Q19B-Next.5 (pending)**: Board evidence — requires D1 hardware
-- PLIC IRQ 18 claim/complete verification
-- D1 kernel ring-buffer metrics
-- Benchmark output sections (TX throughput, latency, FIFO matrix, nonblocking)
-- Save raw serial logs to `.claude/analysis/lichee/q19b-YYYYMMDD-{mode}.txt`
+**Q19B-Next.5 (completed on board)**:
+- PLIC IRQ 18 reached the D1 UART path; no-pending IIR and THRE edge-loss were handled by state-driven wakeups.
+- Kernel benchmark and user benchmark both ran from Android boot images on Lichee RV Dock.
+- User benchmark printed TX throughput, TX latency, FIFO boundary matrix, and nonblocking read sections.
+- Raw/latest board evidence is recorded in `.claude/analysis/lichee/kbench`, `.claude/analysis/lichee/userbench`, and summarized in `docs/licheerv-dock-bringup.md`.
+
+**Final D1 userbench result**:
+- `starry-lichee-userbench-boot.img` completed with `benchmark exited with code: 0` and `Done.`
+- 256B / 1024B / 4096B TX throughput reached 11.25 / 11.40 / 11.41 KB/s, or 97.7% / 98.9% / 99.0% of 115200bps line rate.
+- 1B `tcdrain` latency reached avg 0.270 ms, P50 0.185 ms, P95 0.187 ms, P99 8.547 ms.
+- FIONBIO nonblocking checks passed through both `open(O_NONBLOCK)` and `ioctl(FIONBIO)`.
+- Later SDMMC/rootfs parity is explicitly out of Q19B scope and should be started as a separate milestone if needed.

@@ -2,9 +2,9 @@
 
 > **项目**：StarryOS（[daivy2333/StarryOS](https://github.com/daivy2333/StarryOS)） + uart_16550（[daivy2333/uart_16550](https://github.com/daivy2333/uart_16550)）
 > **分支**：`feat/uart-16550-async`（Q0~Q13 + LTO 全部完成） · **测试分支**：`feat/uart-16550-bench`（独立 bench 模块）
-> **截稿日期**：2026-06-17（Q13.1 + LTO 完成后最终更新）
+> **截稿日期**：2026-06-29（Q19B Lichee RV Dock 真板 userbench 完成后更新）
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/uart-performance-comparison.md`（Console vs Async 对比） · `.claude/analysis/async-uart-module-boundary.md`（Q13 事后视角）
-> **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟，吞吐量数值偏高。本文 QEMU 实测数据仅供**相对性能对比**，绝对吞吐需以 Q6 真板实测为准（⏳ 待硬件到位）。
+> **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟，吞吐量数值偏高。本文 QEMU 实测数据仅供**相对性能对比**。Lichee RV Dock / Allwinner D1 真板数据已在 Q19B 回填；VisionFive2 多核真板数据仍需后续 Q20+ 单独采集。
 >
 > **📐 物理定律**（100% 准确，不依赖真板验证）：NS16550 @ 115200 bps 的单字节传输时间 = 86.8 µs（10 bits/byte × 1/115200 s），对应线速上限 11,520 B/s。这是**数学事实**，但 QEMU 实测值与此不可直接对比（QEMU 瞬时硬件时间 ≠ 86.8 µs）。
 
@@ -12,7 +12,7 @@
 
 ## 0. TL;DR
 
-Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演进——当前 `feat/uart-16550-bench` 分支状态（**未启用 LTO** per ADR-034）实测：**内核态 ring buffer 吞吐 456,205 KB/s**（TX，两次手动测试平均）/ **1,147,959 KB/s**（RX，**较 Q13+LTO 状态 897,616 KB/s 提升 +27.9%**），**用户态 1B e2e 延迟 134 µs avg / P50 118.5 µs**（n=100，单字节 write+tcdrain），**非阻塞三入口全 PASS**。**Q15 阶段在 RX 路径引入的 lock-free 改进使吞吐显著提升**（Q15-M0 telemetry + Q15-M4 IER single owner 等），TX 路径受 LTO 关闭影响较 Q13+LTO 状态下降 ~30%（符合 ADR-034 预期）。**e2e 延迟瓶颈仍在调度**（Q13 印证未变），Q15 未触及调度层。
+Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演进——当前 `feat/uart-16550-bench` 分支状态（**未启用 LTO** per ADR-034）实测：**内核态 ring buffer 吞吐 456,205 KB/s**（TX，两次手动测试平均）/ **1,147,959 KB/s**（RX，**较 Q13+LTO 状态 897,616 KB/s 提升 +27.9%**），**用户态 1B e2e 延迟 134 µs avg / P50 118.5 µs**（n=100，单字节 write+tcdrain），**非阻塞三入口全 PASS**。Q19B 在 Lichee RV Dock / Allwinner D1 真板完成了第一组真实 115200bps 数据：256B / 1024B / 4096B TX 吞吐达到 **11.25 / 11.40 / 11.41 KB/s**，即 **97.7% / 98.9% / 99.0%** 线速；FIONBIO 双入口 PASS。**Q15 阶段在 RX 路径引入的 lock-free 改进使吞吐显著提升**（Q15-M0 telemetry + Q15-M4 IER single owner 等），TX 路径受 LTO 关闭影响较 Q13+LTO 状态下降 ~30%（符合 ADR-034 预期）。**e2e 延迟瓶颈仍在调度**（Q13 印证未变），Q15 未触及调度层。
 
 | 维度 | 当前成绩（Q15, 无 LTO）| 测量条件 |
 |------|---------------------|---------|
@@ -20,9 +20,31 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 | 内核态 Ring Buffer RX | **1,147,959 KB/s** | [`bench.rs`](https://github.com/daivy2333/uart_16550/blob/feat/uart-16550-bench/src/async_/bench.rs) 读取 65,536 字节（两次手动测试平均 1,196,261.68 + 1,099,656.36）|
 | 用户态 1B e2e 延迟 | **134 µs avg / P50 118.5 µs** | [`benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-bench/tests/benchmark.c) n=100，write+tcdrain（两次平均 127/141 µs）|
 | 用户态 64B TX 吞吐 | **170 KB/s** | `benchmark.c` 100 次迭代（两次平均 169.68 + 170.28）|
+| D1 真板 1024B TX 吞吐 | **11.40 KB/s** | Q19B Lichee RV Dock，约 98.9% 115200bps 线速 |
 | 非阻塞模式 | ✅ 三入口（open / fcntl / ioctl）全 PASS | `EAGAIN` 行为正确 |
 
 **小结**：本节 5 维度最佳成绩是 §2~§7 各章节数据的索引表；详细测试方法、阶段演进、当前 state 综合见后续章节。
+
+### 0.1 Lichee D1 真板结果（Q19B，2026-06-29）
+
+Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-lichee-userbench-boot.img` 运行 embedded `benchmark.elf`。该路径覆盖 D1 32-bit MMIO UART port、PLIC IRQ 18、`/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO。
+
+| 指标 | D1 真板结果 | 说明 |
+|------|-------------|------|
+| 64B TX 吞吐 | 1.01 KB/s / 8.8% line rate | 每轮都 `tcdrain`，小包固定开销主导 |
+| 256B TX 吞吐 | 11.25 KB/s / 97.7% line rate | 接近 115200bps 理论上限 |
+| 1024B TX 吞吐 | 11.40 KB/s / 98.9% line rate | 接近线速 |
+| 4096B TX 吞吐 | 11.41 KB/s / 99.0% line rate | 接近线速 |
+| 1B `tcdrain` 延迟 | avg 0.270 ms / P50 0.185 ms / P95 0.187 ms / P99 8.547 ms | P99 受调度与中断尾延迟影响 |
+| FIONBIO | ✅ `open(O_NONBLOCK)` + `ioctl(FIONBIO)` PASS | 无输入时返回 `EAGAIN` |
+
+关键排障结论：
+
+- D1 DW APB UART 必须使用 stride 4 / 32-bit MMIO，不能复用 QEMU NS16550 byte MMIO raw probe。
+- D1 UART IRQ 18 可能出现 IIR=`0xc1` no-pending；THRE 边沿也可能丢失，因此 `tcdrain` 不能只依赖一次 THRE IRQ，必须由 LSR/TEMT 状态驱动补 wake。
+- `/dev/console` 输出必须处理 CRLF；内核 TTY 默认按 `OPOST|ONLCR` 做 LF→CRLF，benchmark 退出前执行 `fflush(stdout); tcdrain(STDOUT_FILENO);`。
+
+**小结**：Lichee D1 证明 async UART 在真实 115200bps 硬件上可以达到大包 97.7%~99.0% 线速。QEMU 数据仍用于相对优化判断，D1 数据用于绝对线速判断；VisionFive2 数据仍需后续独立回填。
 
 ---
 

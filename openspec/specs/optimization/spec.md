@@ -108,6 +108,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 
 > 2026-06-28 二次重排：基于 `.claude/analysis/platform-parameter-decoupling.md` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，在真板验证前新增 Q18 平台参数解耦和 Q19 Lichee RV Dock early smoke test。原 VisionFive2 / DMA / 维护 / 远期池顺延。
 > 2026-06-29 更新：Q19 / O76 已在 Lichee RV Dock 真板完成，串口输出 `[starry-d1] smoke complete, halting.`。
+> 2026-06-29 更新：Q19B / O77 已在 Lichee RV Dock 真板完成 async UART userbench，大包 TX 达 97.7%~99.0% 115200bps 线速。
 
 | Milestone | 目标 | 归属条目 | Gate |
 |-----------|------|----------|------|
@@ -115,6 +116,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 | **Q17** | SMP / 内存序正确性 | **O63** | cargo check + QEMU benchmark 无退化；真板到位后复验 SMP stress |
 | **Q18** | 平台参数解耦 / early console 基础 | **O74**, **O75** | QEMU 行为保持；`uart_init.rs` 不再新增板级 base/irq/stride/width 常量 |
 | **Q19** | Lichee RV Dock early smoke test | **O76**, L213-L216, L231-L235, ADR-043 | ✅ Lichee 串口输出 `[starry-d1] smoke complete, halting.` |
+| **Q19B** | Lichee RV Dock async UART benchmark | **O77**, ADR-047~ADR-051, L236-L258 | ✅ kbench/userbench 均在真板完成；`/dev/console`、TTY、`tcdrain`、FIONBIO 全链路通过 |
 | **Q20** | VisionFive2 UART 验证 | **O66**, **O64**, **O65**, **O71**, **O38**, **O39**, Q15 Manual QA 真板复跑 | VisionFive2 串口稳定运行，真板基线数据落档 |
 | **Q21** | DMA / 高波特率决策 | **O3**, **O40**, **O69**, **O41** | 用 Q20 真板数据决定实施或拒绝 |
 | **Q22** | 维护性清理 | **O48**, **O49**, **O50**, ADR-034 release LTO | 维护性债务有明确处理结论 |
@@ -125,6 +127,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 | **O74** | Platform descriptor 集中化 | 🔴 P0 | 抽出 QEMU/Lichee/VisionFive2 的 UART kind、base、irq、stride、MMIO access width、boot strategy；落实 ADR-044 |
 | **O75** | Early console 分层 | 🔴 P0 | 新增不依赖 IRQ / async task / rootfs 的 polling early console；QEMU 用 NS16550 U8，Lichee/VF2 用 DW APB U32 |
 | **O76** | Lichee Android boot image smoke test | ✅ 完成 | boot image 工具链 + D1 platform skeleton + UART0 polling 输出已在真板通过；最终验收输出为 `[starry-d1] smoke complete, halting.` |
+| **O77** | Lichee D1 async UART userbench | ✅ 完成 | D1 32-bit MMIO UART + PLIC IRQ 18 + embedded `benchmark.elf` 已在真板跑通；256B/1024B/4096B TX 达 11.25/11.40/11.41 KB/s，FIONBIO PASS |
 
 #### Scenario: Roadmap-driven scheduling
 
@@ -150,6 +153,14 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 - **THEN** Q19 MUST 优先做 Android boot image + D1 UART0 polling 输出
 - **AND** rootfs / USB / SDMMC / async TTY / benchmark MUST remain deferred until `[starry-d1] smoke complete, halting.` is visible on serial
 - **AND** after Q19 completion, further Lichee work MUST be planned as a new scoped stage instead of expanding O76
+
+#### Scenario: Lichee RV Dock async UART benchmark 收尾
+
+- **WHEN** Q19B claims Lichee async UART benchmark completion
+- **THEN** both `lichee-kbench` and `lichee-userbench` MUST have true-board serial evidence
+- **AND** the user benchmark MUST print TX throughput, TX latency, FIFO boundary matrix, and nonblocking read sections
+- **AND** `tcdrain` MUST be validated on real D1 UART state, including THRE no-pending / edge-loss behavior
+- **AND** later SDMMC/rootfs parity MUST be planned as a separate milestone, not folded back into Q19B
 
 #### Scenario: 真板启动失败或串口无输出
 
