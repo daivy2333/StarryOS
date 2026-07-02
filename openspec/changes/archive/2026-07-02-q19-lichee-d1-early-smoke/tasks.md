@@ -37,30 +37,37 @@
 ## Phase 5: Android Boot Image Packaging
 
 - [x] Q19.20 Keep Android boot image output using `page_size=2048`, `kernel_addr=0x40200000`, and name `d1-nezha`.
-- [ ] Q19.21 Ensure the generated raw payload and boot image stay below the current boot partition capacity.
+- [x] Q19.21 Ensure the generated raw payload and boot image stay below the current boot partition capacity. Final smoke image `kernel_size=118976` bytes.
 - [x] Q19.22 Keep build tooling from automatically writing board storage.
 
 ## Phase 6: Verification Gates
 
 - [x] Q19.23 Run QEMU default build and record output.
-- [ ] Q19.24 Run D1 build and record output.
+- [x] Q19.24 Run D1 build and record output.
 - [x] Q19.25 Inspect ELF entry and generated linker script; both must show `0xffffffc040200000`.
 - [x] Q19.26 Inspect disassembly/symbols; D1 artifact must reference `axplat_riscv64_lichee_d1::boot` and must not reference `axplat_riscv64_qemu_virt::boot`.
-- [ ] Q19.27 Inspect Android boot image; it must show `kernel_addr=0x40200000`, `page_size=2048`, and size below the boot partition limit.
+- [x] Q19.27 Inspect Android boot image; it must show `kernel_addr=0x40200000`, `page_size=2048`, and size below the boot partition limit.
 - [x] Q19.28 Run boot image tool tests.
 - [x] Q19.29 Run `openspec validate --changes q19-lichee-d1-early-smoke`.
 - [x] Q19.36 Fix linker undefined `IrqIf` symbols with `irq-if` no-op interface while keeping full PLIC bring-up out of Q19a.
 - [x] Q19.37 Localize board `Store/AMO access fault` to `percpu::imp::init` AMO on `.bss` and patch early DDR PTE with T-Head C9xx `SH|B|C`.
-- [ ] Q19.38 Rebuild and flash the post-PTE-fix boot image; if the next fault appears after final page table setup, inspect `xuantie-c9xx` attributes in the final kernel address space.
+- [x] Q19.38 Rebuild and flash the post-PTE-fix boot image; final page table `xuantie-c9xx` attributes were fixed and board smoke completed.
 
 ## Phase 7: Manual Board Gate
 
-- [ ] Q19.30 Stop after host verification and provide manual backup/flash/restore commands.
-- [ ] Q19.31 User flashes manually and captures serial output.
-- [ ] Q19.32 Q19a board success: serial shows D1 axplat early output or `[starry-d1] early boot`.
-- [ ] Q19.33 If no output appears, constrain diagnosis to U-Boot jump, pre-MMU UART, post-MMU mapping, D1 link/load address, and UART 32-bit MMIO access.
+- [x] Q19.30 Stop after host verification and provide manual backup/flash/restore commands.
+- [x] Q19.31 User flashes manually and captures serial output.
+- [x] Q19.32 Q19a board success: serial shows D1 axplat early output and `[starry-d1] early boot`.
+- [x] Q19.33 If no output appears, constrain diagnosis to U-Boot jump, pre-MMU UART, post-MMU mapping, D1 link/load address, and UART 32-bit MMIO access. Completed as diagnostic path; final board output reached smoke success.
 
 ## Execution Hold
 
 - [x] Q19.34 Planning updated for D1 axplat正路径.
-- [ ] Q19.35 Implementation complete (host side). D1 axplat crate created and build system wired; full D1 build / boot image size gate still needs normal environment verification because this sandbox blocks `lwext4_rust` C compilation with `Bad system call`.
+- [x] Q19.35 Implementation complete. D1 axplat crate created, build system wired, normal-environment D1 build and boot image size gate verified by 2026-06-29 board smoke.
+
+## Implementation Summary (2026-06-29, final)
+
+- Lichee RV Dock booted the StarryOS D1 Android boot image through the official U-Boot path.
+- Serial output reached `platform = riscv64-lichee-d1`, `sbi_version: 0.2`, `[starry-d1] early boot`, and `[starry-d1] smoke complete, halting.`
+- Final fixes included D1/C906 early DDR PTE `SH|B|C`, final page table `page_table_entry/xuantie-c9xx`, empty D1 virtio MMIO ranges, and Lichee smoke feature gating.
+- Follow-up async UART benchmark work continued in `q19b-lichee-d1-benchmark`.

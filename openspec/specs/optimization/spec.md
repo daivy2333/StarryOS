@@ -3,105 +3,7 @@
 ## Purpose
 
 汇总 StarryOS 异步串口项目各阶段（Q0~Q15 已完成；Q16~Q23 规划中）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
-
 ## Requirements
-
-### Requirement: Q5 内核态性能优化 — 已完成
-
-Q5 阶段（中断驱动 + NAPI 批量 I/O）所有优化 MUST 视为已落地且禁止回退；新增优化 MUST 在 Q5 基础上叠加，禁止重复造轮子。
-
-| 编号 | 内容 | 效果 |
-|------|------|------|
-| **O2/O34** | NAPI 中断合并 + TX interleave 修复 | 高吞吐减少 90%+ IRQ |
-| **O4/O35** | FCR 阈值日志 | FIFO 状态监控 |
-| **O7** | uart_16550 批量读写 API | 减少函数调用开销 |
-| **O25-O33** | 批量 I/O / IER 缓存 / ISR 合并 / 锁优化 | 热路径全面优化 |
-| **O24** | stride=4 修复 | LoadFault 根因修复 |
-
-#### Scenario: 优化热路径性能
-
-- **WHEN** 开发者要提升 ISR / copier 性能
-- **THEN** MUST 在 Q5 优化基础上叠加（IER 缓存、批量 I/O、waker skip、锁合并），禁止从零重写
-
-### Requirement: Q7 用户态性能修复 — 已完成
-
-Q7 优化 MUST 视为已落地；任何回退 MUST 附带 commit 证明性能回退可接受。
-
-**Q7 用户态性能修复（2026-06-01 已完成）**：
-
-| 编号 | 内容 | 优先级 | 影响 | 状态 |
-|------|------|--------|------|------|
-| **O42** | 修复 yield storm | 🔴 高 | 消除无数据时高频 yield-re-schedule | ✅ Manual→External |
-| **O43** | 传播 FIONBIO nonblocking | 🔴 高 | ioctl(FIONBIO) 对 TTY 读生效 | ✅ Tty+ldisc+ctl |
-| **O44** | 修正 benchmark | 🟡 中 | TX /dev/console + tcdrain + FIONBIO | ✅ 新建 benchmark.c |
-
-**O42 实施细节**：
-
-- `ntty_async.rs`：创建 `Arc<PollSet>`，传入 `ProcessMode::External(Box::new(move |waker| poll_rx.register(waker)))`
-- `ldisc.rs`：External 模式自动创建 tty-reader 任务，`register_rx_waker` 使用 PollSet（不再 `wake_by_ref`）
-- **代价**：多一个内核任务（与旧 Console 相同）
-
-**O43 实施细节**：
-
-- `tty/mod.rs`：Tty struct 加字段 `nonblocking: AtomicBool`，`read_at()` 内用 `self.nonblocking.load(Acquire)`
-- `tty/mod.rs`：DeviceOps ioctl 处理 FIONBIO → set nonblocking
-- `ldisc.rs`：`read()` 方法接受 `nonblocking: bool` 参数 → `block_on(poll_io(...))` 用该参数
-
-#### Scenario: 修改 ntty_async / ldisc 模式
-
-- **WHEN** 开发者要改 `ProcessMode` 或 tty-reader 行为
-- **THEN** MUST 保持 O42 的 External 模式（避免 yield storm），禁止回退到 Manual + `wake_by_ref`
-
-#### Scenario: 修 FIONBIO 相关逻辑
-
-- **WHEN** 开发者要改 nonblocking 状态传播
-- **THEN** MUST 同时检查 `tty/mod.rs` / `ldisc.rs` / `syscall/fs/ctl.rs` 三个入口（O43 + L140 教训）
-
-### Requirement: Q8 驱动引擎打磨 — 已完成
-
-Q8 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。
-
-**Wave 1 — 正确性修复**：
-
-| 编号 | 内容 | 优先级 | 说明 |
-|------|------|--------|------|
-| **Q8.1** | NAPI 退出修复 | 🔴 BugFix | `async_driver.rs` — `total==0` 时重置 `consecutive=0` + `enable_rx_intr()`，消除 NAPI 永不退出导致 CPU 空转问题 |
-| **Q8.2** | ISR 去锁化 | 🔴 BugFix | `isr.rs` — 消除 `SpinNoIrq` 锁，实现无锁 ISR 路径，符合 ISR 极简原则 |
-| **Q8.3** | IER 写路径规范化 | 🔴 BugFix | `uart_init.rs` — 用 `uart_16550::set_ier()` 替代裸 `write_volatile`，消除规则违规；`uart_16550` crate 新增 `set_ier()` 公共方法 |
-
-**Wave 2 — 热路径优化**：
-
-| 编号 | 内容 | 优先级 | 说明 |
-|------|------|--------|------|
-| **Q8.4** | copier waker 去重简化 | 🟡 优化 | `async_driver.rs` — 仅 `will_wake` 不同时才 `clone()+register`，减少 ~20-40ns/poll |
-| **Q8.5** | DRAIN_WAKER 条件唤醒 | 🟡 优化 | `isr.rs` — 仅在 tcdrain 活跃时 `DRAIN_WAKER.wake()`，减少无意义原子操作 |
-
-**Wave 3 — O46 AtomicWaker 推广**：
-
-| 编号 | 内容 | 说明 |
-|------|------|------|
-| **Q8.6** | signalfd PollSet→AtomicWaker | `signalfd.rs` — 1 PollSet → 1 AtomicWaker |
-| **Q8.7** | event PollSet→AtomicWaker | `event.rs` — 2 PollSet → 2 AtomicWaker |
-| **Q8.8** | pipe PollSet→AtomicWaker | `pipe.rs` — 3 PollSet → 3 AtomicWaker（交叉唤醒 read→TX / write→RX / close→close） |
-| **Q8.9** | pidfd PollSet→AtomicWaker | `pidfd.rs` + `task/mod.rs` + `task/ops.rs` — Arc 共享重构，进程退出时 AtomicWaker::wake() |
-
-**总收益**：唤醒延迟 ~200ns→~50ns（8 个唤醒点），ISR 延迟降低 ~200ns（去锁化），NAPI 空闲 CPU 归零，消除 2 处规则违规（IER 裸写 + ISR 锁）。
-
-#### Scenario: NAPI 模式下数据流停止
-
-- **WHEN** RX copier 在 NAPI 模式（consecutive ≥ NAPI_THRESHOLD）且 `receive_bytes()` 返回 0
-- **THEN** consecutive 重置为 0，enable_rx_intr() 被调用，下次 ISR 正常触发
-
-#### Scenario: ISR 无锁执行
-
-- **WHEN** UART 产生中断
-- **THEN** ISR 无锁读取 ISR 寄存器 → 禁用对应中断 → AtomicWaker::wake() → 返回（全流程 ~1.5 µs）
-
-#### Scenario: IER 通过安全 API 写入
-
-- **WHEN** copier 调用 enable/disable 中断函数
-- **THEN** IER 通过 `uart_16550::Uart16550::set_ier()` 写入，CACHED_IER 与硬件 IER 一致
-
 ### Requirement: Q16~Q23 后续优化 Roadmap — 已重排
 
 Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64/O66/O38/O39/O3/O40/O41/O48/O49/O50 等不同触发条件的条目塞进单一 Q6。O 编号保留历史身份，Q 编号代表当前执行 milestone。
@@ -292,24 +194,6 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 
 - **WHEN** 开发者发现标注 `#[allow(dead_code)]` 的预留接口超过 90 天未被使用
 - **THEN** MUST 评估是否彻底移除，禁止无限期保留
-
-### Requirement: Q12 Embassy 调研驱动的近期优化 — 已完成（路径 A）
-
-Q12 阶段（2026-06-11）MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。归档：2026-06-15（`openspec/changes/archive/2026-06-15-q12-embassy-path-a/`）。
-
-| 编号 | 内容 | 状态 | 关键收益 |
-|------|------|------|----------|
-| **O51** | `atomic_ring_buffer` 替换 `HeapRb + Mutex` | ✅ | overhead 53.9→37.1 µs（↓31%） |
-| **O52** | `embedded_io_async` trait 实现 | ✅ | 标准化接口，生态互通 |
-| **O53** | TC 硬件寄存器 tcdrain | ✅ | 删除 TCDRAIN_ACTIVE 软件状态 |
-
-**总收益**：software overhead ↓31%，1B avg latency 118→123.9 µs
-
-#### Scenario: 维护 Q12 Embassy 路径 A 优化成果
-
-- **WHEN** 考虑对 Q12 阶段已落地的 O51/O52/O53 优化做修改或回退
-- **THEN** MUST 在新 OpenSpec 变更中说明理由并附 commit 证明
-- **AND** MUST 保持 O51 的 lock-free SPSC 收益、O52 的 trait 标准化、O53 的 TC tcdrain 行为
 
 ### Requirement: 远期优化（路径 B — 未来评估）
 
@@ -625,70 +509,12 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 - **THEN** MUST 评估：(1) 可移植性损失是否可接受，(2) 维护负担是否可控，(3) 性能收益是否显著
 - **THEN** MUST 先创建 OpenSpec 变更，获得用户 approval 后才实施
 
-### Requirement: Q15 M0~M4 增量重融合 + Manual QA — 已完成（2026-06-25）
+---
 
-Q15 阶段（2026-06-21 开启，2026-06-25 完成）从 pre-M4 基线出发，将原 `feat/uart-16550-async-temp` 分支的 M4+ 正确性修复按最小可验证单元重新 apply，每步 QEMU benchmark 验证无退化。Q15 完成后 MUST 视为已落地；任何回退 MUST 附带 commit 证明无正确性/性能退化。
+<!-- tombstone: Q5 --> Archived 2026-07-02 — Q5 内核态性能优化段（原 L9-25）已归档至 `openspec/changes/archive/2026-07-02-ARC-202607021535/specs/optimization/spec.md` (ARC-202607021535)
+<!-- tombstone: Q7 --> Archived 2026-07-02 — Q7 用户态性能修复段（原 L26-58）已归档至 ARC-202607021535
+<!-- tombstone: Q8 --> Archived 2026-07-02 — Q8 驱动引擎打磨段（原 L60-104）已归档至 ARC-202607021535
+<!-- tombstone: Q12 --> Archived 2026-07-02 — Q12 Embassy 路径 A 段（原 L296-312）已归档至 ARC-202607021535
+<!-- tombstone: Q15 --> Archived 2026-07-02 — Q15 M0~M4 增量重融合段（原 L628-694）已归档至 ARC-202607021535
+<!-- arc: ARC-202607021535 --> 5 条已归档 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021535/proposal.md
 
-**O62 — Q15 增量重融合 5 个 milestone**：
-
-| 编号 | 内容 | 关键收益 | 状态 |
-|------|------|----------|------|
-| **O62-M0** | 见证层（RawMutex / per-port ISR / FIFO 边界矩阵 + telemetry） | 隔离验证基线，量化每次融合的退化 | ✅ (2026-06-23) |
-| **O62-M1** | 有界 TX fast retry（`TX_FAST_RETRY_LIMIT=32`） | 消除 16B FIFO refill 的 10ms tick 台阶 | ✅ (2026-06-23) |
-| **O62-M2** | TX completion 三阶段 drain（flush / tcdrain）| ring/copier/staged 检查，TEMT corner-case 修复 | ✅ (2026-06-23) |
-| **O62-M4** | IER 单 owner（`UartPort::update_ier()` 统一管理）| 删除 CACHED_IER / write_ier / enable_*，uart_16550 真正独立 | ✅ (2026-06-23) |
-| **O62-M3** | TtyWrite 短写契约（`write(&[u8]) -> usize`）| VFS/sys_write 层看到真实接受字节数，消除 silent data loss | ✅ (2026-06-23) |
-
-**关键约束**（增量融合过程中已严格执行）：
-
-- 不修改任何外部 crate（`axtask` / `axpoll` / `embassy-sync`）
-- 不提高调度 tick 频率
-- ISR 极简原则不变
-- 每步必须 `cargo check` 通过 + QEMU benchmark 验证无退化
-
-**Manual QA 验证结果（2026-06-25）**：
-
-| 指标 | Q13.1 基线 | Q15 后（无 LTO per ADR-034）| 趋势 | 备注 |
-|------|----------|----------------------------|------|------|
-| 内核态 Ring Buffer TX | 385 MB/s（LTO off）/ 652 MB/s（LTO on）| **456 MB/s** | ↑（较 LTO off）| Q15-M0 telemetry 开销抵消 + lock-free 改进 |
-| 内核态 Ring Buffer RX | 898 MB/s（LTO on）| **1,148 MB/s** | **↑27.9%** | Q15-M0/M4 lock-free 改进显著 |
-| 用户态 1B e2e 延迟（avg）| 129.5 µs | **134 µs** | +3.5% | 调度瓶颈未变，noise 范围内 |
-| 用户态 1B e2e 延迟（P50）| 125.5 µs | **118.5 µs** | -5.6% | 改善 |
-| 用户态 64B TX 吞吐 | 184 KB/s（M4 单测）| **170 KB/s** | -7.6% | QEMU 噪声范围内，无 TX backpressure 退化 |
-| 非阻塞三入口 | ✅ | **✅** | 不变 | FIONBIO 行为正确 |
-
-**结论**：
-
-- ✅ **无 64B write+tcdrain 退化**（TX backpressure 风险解除）
-- ✅ **用户态延迟与 Q13.1 基线持平**（e2e 瓶颈在调度，不在驱动层）
-- ✅ **内核态 Ring Buffer RX 显著提升**（Q15-M0/M4 lock-free 改进）
-- ✅ **IER 单 owner 达成**（uart_16550 crate 真正独立可复用）
-- ✅ **TtyWrite 短写契约落地**（VFS 契约正确，消除 silent data loss）
-
-**Q16~Q23 触发条件**（Q15 后 roadmap）：
-
-- Q16 文档/规格收敛 MUST 先完成，确保 tasks / SNAPSHOT / optimization / capability specs 的 roadmap 一致
-- Q17 / O63 MUST 在真板前优先修复（QEMU 单 hart 掩盖 SMP 内存序问题）
-- Q18 / O74-O75 MUST 先完成平台参数解耦和 early console 基础，避免继续把板级参数写入 driver init
-- Q19 / O76 使用 Lichee RV Dock 演练 Android boot image + D1 polling early console；2026-06-29 已确认 U-Boot 能加载 StarryOS D1 payload，并完成 `[starry-d1] smoke complete, halting.` 真板验收
-- VisionFive2 真板到位 → Q20 O66/O64/O65 观测与 trust-u-boot 验证 → O38（时钟适配）→ O39（真板 FIFO 深度验证）→ Q15 Manual QA 真板复跑
-- Q21 O3/O40/O69（DMA 探索）与 O41（高速波特率）MUST 依赖 Q20 真板数据，禁止在 QEMU 上直接下结论
-- **📐 物理定律**：真板 NS16550 硬件时间 86.8 µs/byte @ 115200 bps（10 bits/byte × 1/115200 s）与 QEMU 0 µs 硬件时间形成本质差异
-
-#### Scenario: Q15 后再次合并 async-uart 优化
-
-- **WHEN** 开发者从 `feat/uart-16550-async-temp` 或其他临时分支再次提取优化 commit
-- **THEN** MUST 遵循 Q15 增量融合策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
-- **AND** 禁止一次性大批量 apply（避免 Q13 M4 Sync 退化的 73.9x 性能灾难复现）
-
-#### Scenario: 评估 Q15 后新优化方向
-
-- **WHEN** 开发者发现新的 async-uart 优化方向（如 IRQ affinity、零拷贝 RX、DMA）
-- **THEN** MUST 先创建 OpenSpec 变更提案，量化预期收益与风险
-- **AND** MUST 在 Q20 真板验证完成后启动硬件依赖方向（QEMU 仿真限制决定绝对吞吐无法在 QEMU 上验证）
-
-#### Scenario: 回退 Q15 任一 milestone
-
-- **WHEN** 开发者考虑回退 O62-M0/M1/M2/M3/M4 任一项
-- **THEN** MUST 附带 commit 证明：(1) 当前存在正确性 bug 或可量化的性能退化，(2) 回退后其他 milestone 不受影响
-- **AND** 禁止以"未来可重做"为由回退（Q15 已验证状态机，回归成本高于保留）

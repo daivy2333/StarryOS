@@ -2,17 +2,17 @@
 
 ## 项目概览
 
-StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，基于 ArceOS 组件化架构。核心目标是**实现高性能异步串口通信**。当前活跃分支：`feat/uart-16550-async`。
+StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，基于 ArceOS 组件化架构。核心目标是**实现高性能异步串口通信**。当前活跃分支：`uart-16550-lichee`。
 
 ## 技术栈
 
 - **语言**：Rust（nightly-2026-02-25，edition 2024）
-- **目标平台**：RISC-V 64-bit（qemu-riscv64），四架构支持（RISC-V / LoongArch / AArch64 / x86_64）
+- **目标平台**：RISC-V 64-bit（QEMU virt + Lichee RV Dock D1 已验证），四架构支持（RISC-V / LoongArch / AArch64 / x86_64）
 - **OS 内核框架**：ArceOS 0.3.0-preview.2（axfeat / axalloc / axconfig / axdisplay / axdriver / axfs-ng / axhal / axinput / axlog / axmm / axnet-ng / axruntime / axsync / axtask）
 - **异步框架**：`axtask::future` + `embassy_sync::AtomicWaker`（**不引入** embassy-executor）
-- **串口驱动**：`uart_16550`（本地 path 依赖，v0.6.0）
+- **串口驱动**：`uart_16550`（本仓库 `crates/uart_16550`，含 async feature）
 - **构建**：Make + Cargo
-- **测试**：QEMU 模拟 + 内核态 / 用户态 benchmark（`kernel/src/drivers/benchmark.rs` + `tests/benchmark.c`）
+- **测试**：QEMU 模拟 + 内核态 / 用户态 benchmark（`kernel/src/drivers/bench.rs` + `tests/benchmark.c`）
 - **格式化 / 静态分析**：`rustfmt` + `clippy`
 - **工具链**：RISC-V musl 工具链 `/opt/musl/riscv64-linux-musl-cross`
 
@@ -28,8 +28,8 @@ StarryOS/
 ├── .axconfig.toml          # MMIO 范围、内存布局
 ├── kernel/                 # starry-kernel crate（核心实现）
 │   └── src/
-│       ├── drivers/        # 串口、GPU、输入等驱动
-│       │   └── serial/     # 异步串口实现（Q1~Q7 落地处）
+│       ├── drivers/        # 串口适配、D1 UART、benchmark、OS glue
+│       ├── platform/       # platform descriptor / early console / QEMU / D1 / VF2
 │       ├── file/           # VFS 文件抽象
 │       │   └── pipe.rs     # 异步 I/O 模式参考
 │       ├── pseudofs/       # 伪文件系统
@@ -56,7 +56,10 @@ StarryOS/
 │   ├── skills/             # OpenSpec skills
 │   ├── commands/           # OpenSpec slash commands
 │   └── settings.local.json
-└── ../uart_16550/          # 串口驱动子项目（独立 crate）
+├── crates/
+│   ├── uart_16550/         # 本仓库串口驱动 crate（async 栈）
+│   └── axplat-riscv64-lichee-d1/ # Lichee RV Dock D1 axplat
+└── ../uart_16550/          # 历史串口驱动引用（如存在）
 ```
 
 ## 项目约束
@@ -65,13 +68,13 @@ StarryOS/
 
 - 提交信息格式：`feat(uart-async): / fix(uart-async): / refactor(uart-async): / docs(uart-async):`
 - 分支策略：`main ← feat/uart-async-*`（PR 合并）
-- 当前活跃分支：`feat/uart-16550-async`
+- 当前活跃分支：`uart-16550-lichee`
 - **禁止把 Claude 列为 co-author / 共同创作者**（任何形式 `Co-Authored-By: Claude`）
 
 ### 编码约束
 
-- 不修改任何外部 crate（`axfeat` / `axhal` / `axplat` / `axtask` / `axpoll` / `embassy-sync` / `uart_16550`）— 全部实现在 `kernel/src/drivers/serial/`
-- NS16550 寄存器 stride **必须为 1**（范围 0x00-0x07）
+- 不修改 registry 外部 crate（`axfeat` / `axhal` / `axplat` / `axtask` / `axpoll` / `embassy-sync` 等）；本仓库 `crates/` 下的本地 crate 可随 OpenSpec change 修改
+- QEMU NS16550 寄存器 stride **必须为 1**（范围 0x00-0x07）；D1 DW APB UART 使用 32-bit MMIO / stride 4
 - ISR 必须极简：读 ISR → 禁用中断 → `AtomicWaker::wake()` → 返回
 - 数据搬运必须由单一后台协程完成，ISR 禁止直接操作 ring buffer
 - `unsafe` 块必须有 `// SAFETY:` 注释
@@ -101,18 +104,21 @@ StarryOS/
 
 ## 跨项目引用
 
-- **uart_16550**：`../uart_16550/` — 串口驱动子项目，独立 crate，独立 CLAUDE.md
+- **uart_16550**：`crates/uart_16550/` — 当前串口驱动本地 crate
+- **历史 uart_16550**：`../uart_16550/` — 旧跨项目引用（如存在）
 - **父项目索引**：`../CLAUDE.md` — 跨子项目文档索引
 
 ## 关键文件速查
 
 | 用途 | 路径 |
 |------|------|
-| 异步串口实现 | `kernel/src/drivers/serial/` |
-| ISR 入口 | `kernel/src/drivers/isr.rs` |
+| 异步串口核心实现 | `crates/uart_16550/src/async_/` |
+| StarryOS UART 适配 | `kernel/src/drivers/uart_init.rs`, `kernel/src/drivers/d1_uart.rs`, `kernel/src/drivers/os_arceos.rs` |
+| ISR 入口 | `crates/uart_16550/src/async_/isr.rs`, `kernel/src/drivers/d1_uart.rs` |
 | TTY / ldisc | `kernel/src/pseudofs/dev/tty/` |
-| 内核 benchmark | `kernel/src/drivers/benchmark.rs` |
+| 内核 benchmark | `kernel/src/drivers/bench.rs` |
 | 用户态 benchmark | `tests/benchmark.c` |
 | 启动入口 | `src/main.rs` |
-| 设备 MMIO 范围 | `.axconfig.toml` |
+| 平台描述符 | `kernel/src/platform/descriptor.rs`, `kernel/src/platform/qemu.rs`, `kernel/src/platform/lichee_d1.rs` |
+| 设备 MMIO 范围 | `.axconfig.toml`, `crates/axplat-riscv64-lichee-d1/axconfig.toml` |
 | QEMU 平台配置 | `~/.cargo/registry/.../axplat-riscv64-qemu-virt-0.3.1-pre.6/src/` |

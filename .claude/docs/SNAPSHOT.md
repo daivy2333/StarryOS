@@ -1,14 +1,14 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-06-29
-> 分支：uart-16550-lichee — Q19 真板 smoke 完成，Q19B D1 async UART userbench 完成，Q17 待做
+> Last updated: 2026-07-02
+> 分支：uart-16550-lichee — Q19/Q19B 已完成并归档，Q17 待做
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（基于 benchmark 分支，用于 Lichee RV Dock 适配规划与后续 smoke test；主线异步串口路线仍承接 feat/uart-16550-async）
-**前分支**: asyncuart-dev（Q0~Q12 全部完成，已切换到 feat/uart-16550-async）
+**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q19/Q19B 真板验证已完成，下一主线任务为 Q17）
+**前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
 - **OpenSpec 文档体系建立**（2026-06-03）：4 个 spec 域（architecture / learned / references / optimization），全部通过 `openspec validate --specs`；rules 已整合到 CLAUDE.md（迁移墓碑见 `openspec/changes/archive/rules-domain-2026-06-03/`）
@@ -80,6 +80,7 @@
 **Q19 D1 axplat 修正** (2026-06-28): 创建 `crates/axplat-riscv64-lichee-d1/`，接入 `MYPLAT`/`PLAT_CONFIG`，D1 ELF 引用 `axplat_riscv64_lichee_d1::boot` 而非 QEMU；修正 `make lichee` 强制 `DWARF=n`，并将 D1 UART IRQ 常量改回采集事实 `18`。链接阶段的 `IrqIf` undefined symbols 通过 `irq-if` + no-op `IrqIf` 解决，完整 PLIC 留给后续 `irq` feature。
 **Q19 真板 smoke test ✅** (2026-06-29): Lichee RV Dock 已通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。这标志着 D1 axplat、load/link 地址、Android boot image 打包、DW APB UART0 polling early console、C906 early/final page table 属性、Lichee smoke feature gate 均已通过最小真板验证。
 **Q19B 真板 userbench ✅** (2026-06-29): D1 async UART userbench 已完整跑完 embedded `benchmark.elf`，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过。大包 TX 达 97.7%~99.0% 115200bps 线速：256B=11.25KB/s，1024B=11.40KB/s，4096B=11.41KB/s；1B tcdrain latency avg=0.270ms / P50=0.185ms / P95=0.187ms。关键修复：D1 32-bit MMIO UART init(FCR/MCR/IER)、THRE no-pending/edge-loss wake、`DRAIN_WAKER` 覆盖 staged/TEMT、userbench CRLF/drain 清理。
+**Q19/Q19B 归档 ✅** (2026-07-02): OpenSpec changes `q19-lichee-d1-early-smoke` 与 `q19b-lichee-d1-benchmark` 已归档为 `openspec/changes/archive/2026-07-02-q19-lichee-d1-early-smoke/` 和 `openspec/changes/archive/2026-07-02-q19b-lichee-d1-benchmark/`；主 specs 新增 `lichee-d1-early-smoke` 与 `lichee-d1-benchmark`。
 **下一步**: Q17 SMP / 内存序正确性仍待做；Lichee 侧如继续推进，应进入 Q19C（SDMMC/rootfs parity 或 clean benchmark packaging），不要再把官方 Linux 泛采集作为阻塞项。
 
 ### 关键发现
@@ -200,14 +201,19 @@ Tty<AsyncUartReader, AsyncUartWriter> → /dev/console
 StarryOS/
 ├── kernel/src/
 │   ├── config/           # 内核配置
-│   ├── drivers/          # 异步串口驱动模块
-│   │   ├── mod.rs         # 模块声明（19 行）
-│   │   ├── uart_init.rs   # UART 初始化 + IER 缓存（155 行）✅
-│   │   ├── isr.rs         # ISR handler + AtomicWaker（22 行）✅
-│   │   ├── ring_buffer.rs # RingBufRx/Tx + PollSet（58 行）✅
-│   │   ├── async_driver.rs# AsyncUartDriver + RX/TX copier（99 行）✅
-│   │   ├── device_ops.rs  # AsyncUartReader/Writer + TtyRead/TtyWrite（33 行）✅
-│   │   └── ntty_async.rs  # AsyncTty 类型别名 + lazy_static（21 行）✅
+│   ├── drivers/          # StarryOS UART 适配 + benchmark
+│   │   ├── mod.rs
+│   │   ├── uart_init.rs   # QEMU / platform descriptor UART 初始化
+│   │   ├── d1_uart.rs     # D1 DW APB UART 32-bit MMIO + IRQ 18 路径
+│   │   ├── os_arceos.rs   # uart_16550 async OS runtime glue
+│   │   ├── bench.rs       # 内核态 benchmark 入口
+│   │   └── ntty_async.rs  # AsyncTty 类型别名 + lazy_static
+│   ├── platform/         # platform descriptor + early console + QEMU/D1/VF2 facts
+│   │   ├── descriptor.rs
+│   │   ├── early_console.rs
+│   │   ├── qemu.rs
+│   │   ├── lichee_d1.rs
+│   │   └── visionfive2.rs
 │   ├── entry.rs          # 内核入口
 │   ├── file/             # 文件系统核心
 │   │   ├── pipe.rs       # 异步管道（参考实现）
@@ -224,7 +230,6 @@ StarryOS/
 │   ├── project.md        # 项目上下文（技术栈、约束、约定）
 │   ├── config.yaml       # schema: spec-driven
 │   ├── specs/            # core domains + archived capability specs
-│   │   ├── rules/spec.md         # 三大规则 + ISR/MMIO/Git 项目特定
 │   │   ├── architecture/spec.md  # ADR-001~031（按主题分组）
 │   │   ├── learned/spec.md       # API/文件/踩坑/技巧/性能/测试
 │   │   ├── references/spec.md    # 依赖/子项目/规范/Embassy/Linux/分析
@@ -240,6 +245,9 @@ StarryOS/
 │   │   ├── *.md.bak (×5) # 迁移源备份
 │   │   └── superpowers/  # 设计文档和实现计划
 │   └── settings.local.json
+├── crates/
+│   ├── uart_16550/       # 本仓库 async UART crate
+│   └── axplat-riscv64-lichee-d1/ # Lichee RV Dock D1 axplat
 └── CLAUDE.md             # 项目入口（OpenSpec + .claude/docs/ 双索引）
 ```
 
