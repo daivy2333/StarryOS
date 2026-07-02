@@ -28,8 +28,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 |----------|------|--------|------|
 | **O74** | Platform descriptor 集中化 | 🔴 P0 | 抽出 QEMU/Lichee/VisionFive2 的 UART kind、base、irq、stride、MMIO access width、boot strategy；落实 ADR-044 |
 | **O75** | Early console 分层 | 🔴 P0 | 新增不依赖 IRQ / async task / rootfs 的 polling early console；QEMU 用 NS16550 U8，Lichee/VF2 用 DW APB U32 |
-| **O76** | Lichee Android boot image smoke test | ✅ 完成 | boot image 工具链 + D1 platform skeleton + UART0 polling 输出已在真板通过；最终验收输出为 `[starry-d1] smoke complete, halting.` |
-| **O77** | Lichee D1 async UART userbench | ✅ 完成 | D1 32-bit MMIO UART + PLIC IRQ 18 + embedded `benchmark.elf` 已在真板跑通；256B/1024B/4096B TX 达 11.25/11.40/11.41 KB/s，FIONBIO PASS |
+<!-- tombstone: O76/O77 --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 已完成并归档，active roadmap 不再保留已完成 Lichee 条目。
 
 #### Scenario: Roadmap-driven scheduling
 
@@ -132,13 +131,9 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 | **O64** | arceos ADR-004（PIT-007 / TIP-004） | **trust u-boot 模式（仅 PLIC + Clock）**：VisionFive2 启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树，OS 不应"重新初始化一切"。**不含 UART**：arceos starfive 的 UART 走 SBI console，无 MMIO init 先例；NS16550 寄存器（FCR/IER/波特率）重复设置无害（ADR-040 Revised）。arceos 反复失败 7+ 次后 commit `4334e41` "revolution" 锁定此决策。**Q20 真板观测必备**。 | 🔴 P0 | VisionFive2 硬件到位 |
 | **O65** | arceos ADR-002（PIT-003） | **PLIC init_primary / init_percpu 防御性分离**：当前 StarryOS 使用的 axplat crates（0.3.1-pre.6 / 0.1.0-pre.2）已采用 `static PLIC: SpinNoIrq<Plic>`（编译时初始化）+ 幂等 `init_by_context()`，**当前代码安全**。旧 arceos 的 `LazyInit<Plic>` + `init_percpu()` 内调 `init_plic()` 反模式**不存在于当前代码中**，但作为防御性设计模式保留（ADR-041 Revised）。降至 P1。 | 🟡 P1（防御性） | Q20 平台切换时验证 |
 | **O66** | arceos TIP-004 | **`print_preserved_status()` 验证函数**：UART / PLIC / Clock init 前后 dump 当前寄存器状态，与 U-Boot/Linux 预期对比。arceos `DwmacHalImpl::configure_platform` 实现此模式。**Q20 真板观测必备**（O64 的前置依赖）。 | 🔴 P0 | VisionFive2 硬件到位 |
-| **O67** | arceos axasync::waker::wake_at | **timer-based waker 抽象**：通过 BinaryHeap<TimerEventEntry> + set_oneshot_timer 实现定时唤醒。**✅ 已等价采纳**：`axtask::future::timeout(fut, dur)`（Q9）通过 `axtask::ax_wait_timer` + waker 实现相同语义。不引入新依赖。 | ✅ 已采纳 | — |
-| **O68** | arceos axasync::executor | **Init Flag + Waker Future 模式**：异步 future 不变量 — Pending 时必须 register waker。**✅ 已蕴含**：我们 ISR 极简（read_isr + 禁中断 + wake + 返回）+ AtomicWaker 直接 wake（O17 教训）已蕴含此不变量，无需新条目。 | ✅ 已蕴含 | — |
 | **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q21 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q21 决策 | Q20 真板数据 + O3 评估 |
-| **O70** | arceos TIP-001 / 已采纳 | **CodeGraph 优先探索**：用 `codegraph_explore` 而非 grep/Read 探索代码。**✅ 已采纳**：项目 house rule（CLAUDE.md §五.5）。 | ✅ 已采纳 | — |
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q20 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q20 真板驱动开发 |
-| **O72** | arceos TIP-007 | **调试硬件中断标准日志序列**：handler 入口 log → claim → handler → EOI；EOI 必须在 wake 之前。**✅ 部分采纳**：已记录于 SNAPSHOT §关键发现，Q8 ISR 去锁化已实施。 | ✅ 部分采纳 | — |
-| **O73** | arceos OPT-005 | **benchmark 框架与基线数据**：arceos 无统一 benchmark 框架。**✅ 我们领先**：已有 `tests/benchmark.c` + `docs/benchmark-report-async.md` + 自动化脚本 + 完整 QEMU 基线（1B 134µs / 64B 170 KB/s / TX 456 MB/s / RX 1.1 GB/s）。 | ✅ 已领先 | — |
+<!-- tombstone: O67/O68/O70/O72/O73 --> Archived 2026-07-02 in ARC-202607021648 — 已采纳/已蕴含/已领先项从 active optimization 清单移除。
 
 #### Scenario: Q17-Q20 真板启动顺序（O63 + O74/O75/O76 + O64/O66 协同，Revised 2026-06-28）
 
@@ -429,9 +424,7 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 
 | 编号 | 内容 | 预期收益 | 实际收益 | 可移植性影响 | 状态 |
 |------|------|----------|----------|-------------|------|
-| **O56** | `#[inline(always)]` 热路径内联 | -5~10µs | ~-5µs | ✅ 无影响 | ✅ Q13.1 (2026-06-16) |
-| **O57** | 批量 push/pop 接口 | -10~20µs | ~-5µs | ✅ 无影响 | ✅ Q13.1 (2026-06-16) |
-| **O61** | `lto = true` 跨 crate 内联 | 0（e2e）| 0（e2e） | ✅ 无影响 | ✅ 2026-06-16 |
+<!-- tombstone: O56/O57/O61 --> Archived 2026-07-02 in ARC-202607021648 — Q13.1/LTO 短期优化已完成，active 表仅保留中长期候选。
 
 **Q13.1 性能验证结果**（2026-06-16）：
 
@@ -517,4 +510,4 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 <!-- tombstone: Q12 --> Archived 2026-07-02 — Q12 Embassy 路径 A 段（原 L296-312）已归档至 ARC-202607021535
 <!-- tombstone: Q15 --> Archived 2026-07-02 — Q15 M0~M4 增量重融合段（原 L628-694）已归档至 ARC-202607021535
 <!-- arc: ARC-202607021535 --> 5 条已归档 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021535/proposal.md
-
+<!-- arc: ARC-202607021648 --> 4 组 optimization 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md

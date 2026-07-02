@@ -1,87 +1,33 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-07-02
-> 分支：uart-16550-lichee — Q19/Q19B 已完成并归档，Q17 待做
+> 分支：uart-16550-lichee — Q19/Q19B 已完成并归档，Q19C 规范完整，Q17 待做
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q19/Q19B 真板验证已完成，下一主线任务为 Q17）
+**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q19/Q19B 真板验证已完成，Q19C fullbench 规范完整，Q17 仍待做）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
 - **OpenSpec 文档体系建立**（2026-06-03）：4 个 spec 域（architecture / learned / references / optimization），全部通过 `openspec validate --specs`；rules 已整合到 CLAUDE.md（迁移墓碑见 `openspec/changes/archive/rules-domain-2026-06-03/`）
 - 原 `.claude/docs/{architecture,learned,references,optimization,rules}.md` 已迁移至 `openspec/specs/`，源文件以 `.bak` 保留
-**Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常
-**Q5.2 已完成**: 用户态自动化测试（O21）+ 非阻塞模式（O43 via Q7）
-**Q7 已完成**: yield storm 修复（O42）、FIONBIO 传播（O43）、benchmark 修正（O44）、tcdrain 真异步化（O45）
-**Q13 Phase 1 ✅** (2026-06-16): TtyRead/TtyWrite trait 提取到 uart_16550 crate（`src/tty.rs` +27 行），StarryOS ldisc.rs 改为 `pub use uart_16550::{TtyRead, TtyWrite};`。ProcessMode/TtyConfig 遗留 StarryOS（含 alloc/OS 依赖）
-**Q13 Phase 2-3 ✅** (2026-06-16): 异步串口完整提取到 uart_16550 crate
-- 5 个 OS 抽象 trait（OsRuntime, OsIrq, OsMmio, OsSpinNoIrq, OsWakerSet）
-- 核心异步逻辑迁移：ISR handler, ring buffer, copier driver, device_ops
-- ArceOS 适配层实现（os_arceos.rs）
-- StarryOS 删除 4 个本地文件（isr.rs, ring_buffer.rs, async_driver.rs, device_ops.rs）
-- 9 个原子提交，`cargo check` + `cargo clippy` 0 错误/警告
-- uart_16550 新增 `async` feature gate，成为可复用异步 UART crate
-- **QEMU 验证通过**：Shell 正常、benchmark 运行、FIONBIO PASS
-- **性能**：1B avg 140.1µs / P50 138.8µs / overhead 53.3µs（与 Q12 基线相近）
-- **修复**：RingBufTx::push() 缺少 wake 调用导致 Shell 挂起（de8cd8b）
-- **OS trait 清理 ✅** (2026-06-19): ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq，接口从 5→2
-  - uart_16550 `os/mod.rs`: 112→61 行（↓45%），StarryOS `os_arceos.rs`: 123→63 行（↓49%）
-  - `cargo build` 0 warning（消除 3 个 dead_code）
-**M4 Sync ⟲ 已回退** (2026-06-21): M4 优化因 TX backpressure + 100Hz tick 导致 64B write+tcdrain 退化 73.9x（406µs→29.99ms），决定回退到 pre-M4 基线（StarryOS `04f8920` / uart_16550 `60c5729`），通过 Q15 阶段增量重新融合。原 M4+ 代码保留在 `feat/uart-16550-async-temp` 分支。
-- 回退原因：`unblock_task(task, false)` + 100Hz tick → 每 16B refill ~10ms 调度台阶
-- 修复策略：Q15 增量融合，每步 Manual QA 验证，一旦退化立即定位
-**Q13.1 ✅** (2026-06-16): Trait 抽象开销优化（inline + batch）
-- `#[inline(always)]` 添加到 ring buffer push/pop + ArceOsUartPort 方法
-- 批量 push_batch/pop_batch 接口，减少锁获取次数
-- 3 个提交，`cargo check` + `cargo clippy` 0 错误/警告
-- **benchmark 验证通过**：1B avg 129.5µs ≤ 130µs ✅
-- **性能对比**：overhead 53.3→42.6µs（↓20%），1B avg 140.1→129.5µs（↓7.6%）
-- **与 Q12 差距**：+5.5µs（129.5 vs 124），为可移植性合理代价
-**LTO ✅** (2026-06-16): 启用 `lto = true` 跨 crate 内联优化
-- uart_16550 + StarryOS 双 repo 均添加 `[profile.release] lto = true`
-- **内核态 ring buffer 性能飞跃**：TX 385→652 MB/s（↑69%），RX P50 200ns→<100ns（低于计时器分辨率）
-- **e2e 延迟不变**：129.4µs（瓶颈在调度，不在函数调用）
-- 副作用：release build 时间增加（内核规模小，影响可控）
-**Q15 M1 ✅** (2026-06-23): 有界 TX fast retry（TX_FAST_RETRY_LIMIT=32），消除 16B FIFO refill 的 10ms tick 台阶
-**Q15 M2 ✅**: TX completion 三阶段 drain（flush/tcdrain 正确等待），TxCompletion API + TEMT corner-case fix. 性能基线 M2: 64B 169KB/s | 256B 181KB/s | 1024B 189KB/s | 4096B 190KB/s | 1B avg 0.132ms P95 0.143ms
-**Q15 M4 ✅** (2026-06-23): IER 单 owner — CACHED_IER/write_ier/enable_* 全部删除，UartPort::update_ier() 统一管理。uart_16550 真正独立可复用
-- **性能基线 M4 (QEMU)**: 64B 184KB/s | 1B 0.129ms | FIFO 无台阶
-**Q15 M3 ✅** (2026-06-23): TtyWrite 短写契约 — `write(&[u8]) -> usize`，5 文件穿透 uart_16550 + StarryOS，benchmark 增加短写循环。uart_16550 54 tests PASS，StarryOS cargo check PASS。Manual QA ✅ (2026-06-25)。
-**Q15 增量重融合 ✅** (2026-06-25 全部 M0~M4 + Manual QA 完成): 从 pre-M4 基线出发，将 M4 及之后的正确性修复按最小可验证单元重新 apply，每步 Manual QA。
-- 源分支：`feat/uart-16550-async-temp`（保留原 M4+ 全部代码，参考用）
-- 策略：摘取原子 commit → cargo check → QEMU benchmark → 无退化才继续
-- 目标：融合所有方向正确的修复（RawMutex、per-port ISR、yield_now、IER 规范、flush 正确性等），同时避免 TX backpressure 退化
-- **关键约束**：不修改外部 axtask/axpoll/embassy-sync；不提高 tick；ISR 极简
-- **5 个 milestone 全部 commit 落地**：M0 见证层 → M1 有界 TX fast retry → M2 TX completion 三阶段 drain → M4 IER 单 owner → M3 TtyWrite 短写契约
-- **Manual QA Gate ✅** (2026-06-25): QEMU benchmark 验证无 64B write+tcdrain 退化，性能数据见 `docs/benchmark-report-async.md` §0
-  - 用户态 1B e2e 134µs avg / P50 118.5µs（与 Q13.1 基线 129.5µs 相近）
-  - 用户态 64B TX 170 KB/s（与 M4 基线 184 KB/s 同级，无 TX backpressure 退化）
-  - 内核态 Ring Buffer TX 456,205 KB/s / RX 1,147,959 KB/s（RX 较 Q13+LTO ↑27.9%）
-  - 非阻塞三入口全 PASS（FIONBIO）
-**Q16 Roadmap rebaseline ✅** (2026-06-27): 根据 `.claude/analysis/optimization-milestone-replan.md` 将 Q15 后优化项从单一 Q6 拆为原 Q16~Q22：
-- **Q16** 文档与规格收敛（已完成）：同步 tasks / SNAPSHOT / optimization / stale capability specs；`openspec validate --specs` 的已知 parser 噪音不阻塞后续开发
-- **Q17** SMP / 内存序正确性：O63，先在 QEMU 可验证范围内修复，再真板复验
-- **Q18** 真板观测与 bring-up 工具：O66 + O64/O65 验证脚手架
-- **Q19** VisionFive2 UART 验证：O38/O39 + Q15 Manual QA 真板复跑
-- **Q20** DMA / 高波特率决策：O3/O40/O69 + O41，原计划依赖 Q19 真板数据
-- **Q21** 维护性清理：O48/O49/O50 + release LTO 检查
-- **Q22** 远期预研池：O1/O36、O54/O55、O58/O59、O37，按真板数据触发
-**Q16.1 Roadmap 二次重排 ✅** (2026-06-28): 根据 `.claude/analysis/platform-parameter-decoupling.md` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，新增平台解耦与 Lichee smoke test 阶段：
-- **Q17** SMP / 内存序正确性保持不变：O63，先修跨 hart 风险
-- **Q18** 平台参数解耦 / early console 基础：platform descriptor、QEMU 行为保持、early console 抽象
-- **Q19** Lichee RV Dock early smoke test：Android boot image、D1 platform skeleton、UART0 polling 输出 `[starry-d1] early boot`
-- **Q20** VisionFive2 UART 验证：O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑
-- **Q21** DMA / 高波特率决策：O3/O40/O69 + O41，依赖 Q20 真板数据
-- **Q22** 维护性清理：O48/O49/O50 + release LTO 检查
-- **Q23** 远期预研池：O1/O36、O54/O55、O58/O59、O37，按真板数据触发
-**Q19 D1 axplat 修正** (2026-06-28): 创建 `crates/axplat-riscv64-lichee-d1/`，接入 `MYPLAT`/`PLAT_CONFIG`，D1 ELF 引用 `axplat_riscv64_lichee_d1::boot` 而非 QEMU；修正 `make lichee` 强制 `DWARF=n`，并将 D1 UART IRQ 常量改回采集事实 `18`。链接阶段的 `IrqIf` undefined symbols 通过 `irq-if` + no-op `IrqIf` 解决，完整 PLIC 留给后续 `irq` feature。
-**Q19 真板 smoke test ✅** (2026-06-29): Lichee RV Dock 已通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。这标志着 D1 axplat、load/link 地址、Android boot image 打包、DW APB UART0 polling early console、C906 early/final page table 属性、Lichee smoke feature gate 均已通过最小真板验证。
-**Q19B 真板 userbench ✅** (2026-06-29): D1 async UART userbench 已完整跑完 embedded `benchmark.elf`，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过。大包 TX 达 97.7%~99.0% 115200bps 线速：256B=11.25KB/s，1024B=11.40KB/s，4096B=11.41KB/s；1B tcdrain latency avg=0.270ms / P50=0.185ms / P95=0.187ms。关键修复：D1 32-bit MMIO UART init(FCR/MCR/IER)、THRE no-pending/edge-loss wake、`DRAIN_WAKER` 覆盖 staged/TEMT、userbench CRLF/drain 清理。
-**Q19/Q19B 归档 ✅** (2026-07-02): OpenSpec changes `q19-lichee-d1-early-smoke` 与 `q19b-lichee-d1-benchmark` 已归档为 `openspec/changes/archive/2026-07-02-q19-lichee-d1-early-smoke/` 和 `openspec/changes/archive/2026-07-02-q19b-lichee-d1-benchmark/`；主 specs 新增 `lichee-d1-early-smoke` 与 `lichee-d1-benchmark`。
-**下一步**: Q17 SMP / 内存序正确性仍待做；Lichee 侧如继续推进，应进入 Q19C（SDMMC/rootfs parity 或 clean benchmark packaging），不要再把官方 Linux 泛采集作为阻塞项。
+**Shell**: stdin/stdout 双向异步，`ls`/`cd`/`pwd` 全部正常。
+
+**历史压缩**:
+- Q5~Q15 的详细实现、性能数据与回退历史已压缩到 tasks milestone、architecture ADR、learned 和 archived changes；本快照只保留当前状态。恢复入口见 `openspec/changes/archive/2026-07-02-ARC-202607021648/` 与 `openspec/changes/archive/2026-07-02-ARC-202607021535/`。
+- Q13 的 active OS abstraction 已由 ADR-036 修正为 `OsRuntime` + `OsWakerSet` 两个 trait；旧 5-trait 设计归档为历史。
+
+**近期完成**:
+- **Q18 ✅**: platform descriptor + early console 分层，QEMU 行为保持。
+- **Q19 ✅**: Lichee RV Dock Android boot image + D1 axplat + UART0 polling early console 真板 smoke complete。
+- **Q19B ✅**: D1 async UART userbench 真板完成；`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
+- **Q19/Q19B 归档 ✅**: archived changes 位于 `openspec/changes/archive/2026-07-02-q19-lichee-d1-early-smoke/` 与 `openspec/changes/archive/2026-07-02-q19b-lichee-d1-benchmark/`。
+
+**当前待推进**:
+- **Q19C 📝**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 规范完整，目标是 memory-root path loader → shell/script parity → SDMMC/block rootfs → true rootfs benchmark；尚未进入源码实现。
+- **Q17 ⏳**: SMP / 内存序正确性仍待做，重点为 O63：`ier_cache` RMW + TX completion 原子序。
 
 ### 关键发现
 
@@ -154,6 +100,7 @@
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | D1 axplat crate + build wiring + Android boot image + UART0 smoke output | ✅ 真板 `[starry-d1] smoke complete` |
 | **Q19B** | Lichee D1 async UART benchmark | 模式拆分 + D1 32-bit MMIO UART port + PLIC IRQ + embedded user benchmark image | ✅ 真板 userbench complete |
+| **Q19C** | Lichee full StarryOS benchmark | memory-root path loader + shell/script parity + SDMMC/rootfs 探索 | 📝 规范完整 / 待实施 |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |

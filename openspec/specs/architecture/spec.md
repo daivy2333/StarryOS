@@ -434,66 +434,7 @@ LTO MUST be re-enabled before production release; during active development comp
 - **THEN** LTO MUST be re-enabled in Cargo.toml before the production build
 - **AND** the ring buffer throughput regression against LTO baseline SHALL be verified
 
-<!-- A035 -->
-### Requirement: ADR-035: 异步 UART 通过 5 个 OS 抽象 trait 跨 OS 可移植
-
-The async UART stack MUST NOT call any concrete OS API directly; all OS dependencies SHALL go through abstraction traits.
-
-**日期**: 2026-06-17
-**状态**: 已接受
-**决策**: `uart_16550` 异步栈不直接调用任何具体 OS 服务，而是定义 5 个 OS 抽象 trait（`OsRuntime` / `OsIrq` / `OsMmio` / `OsSpinNoIrq` / `OsWakerSet`），由目标 OS 实现这些 trait 后即可复用异步栈。
-
-**背景**:
-- Q13（2026-06-16）将异步串口从 StarryOS 提取至 `uart_16550` crate
-- 提取后必须解决"具体 OS 调用在哪一层做"的问题
-- 候选方案：(a) 适配层写在 `uart_16550` 内（绑定 ArceOS，违反通用性）；(b) `cfg_os!` 宏分叉（不优雅）；(c) 抽象 trait 边界（最终采用）
-- Q13 事后分析（`.claude/analysis/async-uart-module-boundary.md`）确认 5 trait 设计合理
-
-**决策内容**:
-- 5 个 trait 共同构成异步 UART 的**最小完备接口集**，每个 trait 对应一种"不可绕过"的 OS 能力：
-  - `OsRuntime`：异步任务生成 + 同步等待（copier 任务 + 初始化时 block_on）
-  - `OsIrq`：中断处理函数注册（ISR 必须由硬件中断控制器调度）
-  - `OsMmio`：物理地址到虚拟地址映射（UART 寄存器必须 MMIO 访问）
-  - `OsSpinNoIrq<T>`：关中断自旋锁（ISR 与进程上下文互斥）
-  - `OsWakerSet`：多 waker 集合（多个 task 等待同一事件）
-- `OsSpinNoIrq` 使用**回调模式**（`with_lock(f)`）而非 guard 模式，避免 `Guard::drop` 与 IRQ 恢复的耦合问题
-- `OsWakerSet::wake()` 返回**通知计数**而非布尔，支持上层做日志统计
-
-**影响**:
-- 5 trait 在 `uart_16550/src/os/mod.rs` 中定义，**无默认实现**（避免隐式 OS 假设）
-- `uart_16550/src/async_/` 下 5 个模块（isr / ring_buffer / driver / device_ops / mod）合计约 400 行**完全无具体 OS 符号泄漏**
-- StarryOS 适配层 `os_arceos.rs`（~123 行）实现 5 个 trait，桥接到 ArceOS 原语（`axtask` / `axhal` / `axmm` / `kspin` / `axpoll`）
-- 通用层 65% / OS 适配层 35% 的拆分比例与 Linux 子系统、Zephyr 驱动模型接近
-- 对其他 OS 接入成本约 80~150 行 trait 实现代码（详见分析文档 §6.2 通用性矩阵）
-
-**替代方案**:
-- (a) `cfg_os!` 宏分叉：`uart_16550` 内置 ArceOS / Linux / RTOS 分支；维护成本高、组合爆炸
-- (b) feature flag 多 crate：`uart_16550-arceos` / `uart_16550-linux` / ...；多 crate 生态，编译复杂
-- (c) 直接接受 OS 耦合：仅 StarryOS 使用，不通用；放弃 Q13 提取目标
-- 采用 (d) trait 抽象：单 crate，OS 无关，可扩展
-
-**扩展点（Q20 真板数据决策后可能新增）**:
-- `OsDma` trait：DMA 通道管理（Q20 决定启用 DMA 提升吞吐时）
-- `OsTimer` trait：高精度定时器（波特率自动检测、未来协议支持）
-- `OsPm` trait：电源管理（suspend/resume 场景）
-
-**参考**:
-- 详细分析：`.claude/analysis/async-uart-module-boundary.md`（事后视角，2026-06-17）
-- 5 trait 定义：`uart_16550/src/os/mod.rs`
-- StarryOS 适配：`StarryOS/kernel/src/drivers/os_arceos.rs`
-- L-188~L200：API 路径速查
-- 关联 ADR：A033（uart_16550 成为完整异步 UART crate，Q13 决策）
-
-#### Scenario: New OS trait required
-
-- **WHEN** a new OS capability (e.g., DMA, timer) is needed by the async stack
-- **THEN** a new trait SHALL be added to the OS abstraction layer
-- **AND** it MUST NOT break existing OS adapter implementations
-
-**重新启用时机**:
-- 开发冻结 → 发布构建前
-- 仅需在 StarryOS `Cargo.toml` 加回一行（uart_16550 作为依赖自动继承）
-- 预期效果：ring buffer 吞吐量 ↑69%，e2e 延迟不变
+<!-- tombstone: A035 --> Archived 2026-07-02 in ARC-202607021648 — 被 ADR-036 替代；5-trait 设计仅作为历史 rationale 保留。
 
 <!-- A036 -->
 ### Requirement: ADR-036: OS abstraction 缩减至 2-trait 最小接口
@@ -1211,3 +1152,38 @@ D1 DW APB UART async backend MUST treat THRE/TEMT readiness as both interrupt-dr
 - **WHEN** a real UART backend enables THRE interrupts
 - **THEN** it MUST also check current LSR readiness and wake TX/drain waiters if THRE/TEMT is already true
 - **AND** `tcdrain` / `flush` waiters MUST be registered on the drain completion path, not only on the TX ring space path
+
+<!-- A052 -->
+### Requirement: ADR-052: Q19C 完整 StarryOS benchmark 先走 memory-root path loader，再做 SDMMC/rootfs parity
+
+Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/path-based user loading path with a populated memory root before treating real SDMMC/rootfs bring-up as the blocking requirement.
+
+**日期**: 2026-07-02
+**状态**: 🔍 探究结论（待 Q19C change 落地）
+**决策**:
+- 保留 Q19B embedded `benchmark.elf` 作为 D1 async UART/userland regression gate。
+- 新增 Q19C fullbench runtime mode 时，先在 D1 memory root 中提供 `/bin/benchmark`，通过 `load_user_app()` 和 `FS_CONTEXT.resolve()` 启动 benchmark，而不是继续调用 `load_embedded_user_app()`。
+- 只有 memory-root path loading 通过后，才进入真实 SDMMC/block rootfs parity；SDMMC bring-up 失败不得回归为 UART/TTY benchmark 阻塞。
+- D1 fullbench 不得启用 `qemu` feature；必须保持独立 feature set，继承 D1 async UART/PLIC 能力但排除 QEMU PCI/virtio/display 假设。
+
+**原因**:
+- Q19B 已证明 `/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO，但 embedded ELF 绕过了 rootfs/path loader。
+- QEMU 完整路径依赖 `load_user_app()` 从 `FS_CONTEXT` 解析 `/bin/sh` 或 benchmark 路径；这是 Q19B 尚未覆盖的差距。
+- 真实 SDMMC/rootfs 需要 D1 block driver、clock/reset/pinmux/cache 等硬件 bring-up，排障面大，不能作为验证 normal loader path 的第一步。
+
+**影响**:
+- Q19C 可以拆成两个可验证阶段：memory-root fullbench 和 SDMMC/rootfs parity。
+- benchmark 数据仍按 QEMU / D1 embedded / D1 fullbench 分栏记录，避免覆盖不同测试条件。
+- 后续 OpenSpec change 应新增 `lichee-d1-fullbench` 或等价 make target，并保留 `make lichee-userbench` 不退化。
+
+**替代方案**:
+- ❌ 直接做 SDMMC/rootfs：工程价值高，但会把 block bring-up 和 user loader parity 绑在一起，降低定位效率。
+- ❌ 复用 QEMU feature：会重新引入 PCI/virtio/display/rootfs 假设，不符合 D1 硬件事实。
+- ✅ memory-root path loader -> shell/script optional -> SDMMC/rootfs parity：当前推荐路线。
+
+#### Scenario: D1 fullbench path loading
+
+- **WHEN** Q19C starts full StarryOS benchmark work on Lichee RV Dock
+- **THEN** the first fullbench gate MUST run benchmark through `load_user_app()` from a VFS-visible `/bin/benchmark`
+- **AND** `load_embedded_user_app()` MUST remain only the Q19B regression path
+- **AND** real SDMMC/rootfs parity MUST be a later gate after memory-root path loading succeeds

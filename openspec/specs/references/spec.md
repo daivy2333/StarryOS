@@ -132,8 +132,8 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R5 --> `.claude/analysis/lichee-rv-dock-adaptation-plan.md` | Lichee RV Dock 适配方案：方向、技术路线、milestone、风险与下一步工程清单 |
 | <!-- R6 --> `.claude/analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
 | <!-- R7 --> `.claude/analysis/d1-axplat-bringup-plan.md` | D1 正路径 axplat bring-up 方案：解释 U-Boot 已跳转但无 Starry 输出的根因，规划本地 `axplat-riscv64-lichee-d1`、链接/启动/MMIO console/build gate |
-| <!-- R8 --> `.claude/analysis/q19b-lichee-benchmark-plan.md` | Q19B Lichee benchmark 方案：从 smoke complete 推进到 D1 async UART、PLIC IRQ、`/dev/console`、嵌入式 benchmark ELF 与最终用户态 benchmark 数据采集 |
-| <!-- R9 --> `.claude/analysis/q19b-current-blockers.md` | Q19B 当前实现阻塞分析：确认 smoke/kbench host gate 通过、userbench compile gate 失败，定位到 feature 继承过粗、D1 userbench runtime 与 `/dev/console`/axfs/pseudofs 边界未拆清 |
+<!-- tombstone: R8/R9 --> Archived 2026-07-02 in ARC-202607021648 — Q19B plan/blockers 已完成，当前入口为 `lichee-d1-benchmark` spec、Q19B archived change 与 R10 Q19C。
+| <!-- R10 --> `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` | Q19C 完整 StarryOS benchmark 探究：从 Q19B embedded userbench 推进到 D1 memory-root path loading、可选 shell parity、SDMMC/rootfs parity 与完整 benchmark gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
@@ -150,3 +150,5 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 <!-- 添加时格式: <!-- R{编号} --> | 子项目 | 路径 | 文档体系 | 摘要 | 最近更新 | -->
 
 <!-- R1 --> | `uart_16550` | `../uart_16550` | OpenSpec✓ config✓ specs✓ changes✗ cg✓ | 16550 UART 驱动库 v0.6.0，StarryOS 串口底层模块（path 依赖）。OpenSpec 4-domain 已建立（architecture / learned / optimization / references），`openspec/changes/` 仅 archive 无活跃变更，CodeGraph 索引 729KB 已建；旧 `.claude/docs/` 仍含 SNAPSHOT/tasks 与 4 份 `.bak` 备份。 | 2026-06-03 |
+
+<!-- arc: ARC-202607021648 --> 1 组 references 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md

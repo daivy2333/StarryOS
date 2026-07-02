@@ -37,11 +37,7 @@
 
 | 路径 | 用途 | 备注 |
 |------|------|------|
-| <!-- L160 --> | `uart_16550::os::OsRuntime` | Task spawning abstraction | `spawn<F>(future, name)` + `block_on<F>(future)` |
-| <!-- L161 --> | `uart_16550::os::OsIrq` | IRQ registration abstraction | `register_handler(irq_number, handler)` |
-| <!-- L162 --> | `uart_16550::os::OsMmio` | MMIO mapping abstraction | `map_mmio(phys, size)` + `phys_to_virt(phys)` |
-| <!-- L163 --> | `uart_16550::os::OsSpinNoIrq<T>` | IRQ-safe spinlock abstraction | `new(val)` + `with_lock(f)` (callback pattern) |
-| <!-- L164 --> | `uart_16550::os::OsWakerSet` | Waker registration abstraction | `new()` + `register(waker)` + `wake() -> u32` |
+<!-- tombstone: L161-L164 --> Archived 2026-07-02 in ARC-202607021648 — Q13 旧 5-trait OS abstraction 已被 ADR-036 缩减为 2-trait；当前 API 见 L188-L200。
 | <!-- L165 --> | `uart_16550::async_::driver::UartPort` | UART hardware access trait | `receive_bytes(&self, buf)` + `send_bytes(&self, buf)` |
 | <!-- L166 --> | `uart_16550::async_::driver::AsyncUartDriver<R,W,U>` | Async UART driver | `new(rx, tx, uart)` + `start_rx/tx_copier(enable_intr)` |
 | <!-- L167 --> | `uart_16550::async_::device_ops::AsyncUartReader<R,W,U>` | Async UART reader | `impl TtyRead + embedded_io_async::Read` |
@@ -876,14 +872,10 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | 编号 | 名称 | 路径 | 用途 |
 |------|------|------|------|
 | <!-- L188 --> | `OsRuntime` trait | `uart_16550::os::OsRuntime` | 任务生成 `spawn(future, name)` + 同步等待 `block_on(future)` |
-| <!-- L189 --> | `OsIrq` trait | `uart_16550::os::OsIrq` | 中断处理函数注册 `register_handler(irq_number, handler)` |
-| <!-- L190 --> | `OsMmio` trait | `uart_16550::os::OsMmio` | MMIO 映射 `unsafe map_mmio(phys, size)` + `phys_to_virt(phys)` |
-| <!-- L191 --> | `OsSpinNoIrq<T>` trait | `uart_16550::os::OsSpinNoIrq` | 关中断自旋锁 `with_lock(\|T\| -> R)` 回调模式 |
 | <!-- L192 --> | `OsWakerSet` trait | `uart_16550::os::OsWakerSet` | waker 集合 `new()` + `register(waker)` + `wake() -> u32` |
 | <!-- L193 --> | `ArceOsRuntime` 适配 | `StarryOS::drivers::os_arceos::ArceOsRuntime` | 桥接 `axtask::spawn_with_name` + `axtask::future::block_on` |
-| <!-- L194 --> | `ArceOsMmio` 适配 | `StarryOS::drivers::os_arceos::ArceOsMmio` | 桥接 `axmm::iomap`（失败 fallback 到 `axhal::mem::phys_to_virt`） |
-| <!-- L195 --> | `ArceOsSpinNoIrq` 适配 | `StarryOS::drivers::os_arceos::ArceOsSpinNoIrq<T>` | 桥接 `kspin::SpinNoIrq<T>` |
 | <!-- L196 --> | `ArceOsWakerSet` 适配 | `StarryOS::drivers::os_arceos::ArceOsWakerSet` | 桥接 `axpoll::PollSet`（register/wake） |
+<!-- tombstone: L189-L191/L194-L195 --> Archived 2026-07-02 in ARC-202607021648 — 旧 5-trait API/adapters 已删除，当前保留 OsRuntime + OsWakerSet。
 | <!-- L197 --> | 异步栈模块入口 | `uart_16550::async_::*` | `isr` / `ring_buffer` / `driver` / `device_ops` 4 子模块 |
 | <!-- L198 --> | `AsyncUartDriver<R, W, P>` | `uart_16550::async_::driver::AsyncUartDriver` | 异步驱动主类型，3 泛型参数：Runtime / WakerSet / UartPort |
 | <!-- L199 --> | `TtyRead` / `TtyWrite` | `uart_16550::tty::{TtyRead, TtyWrite}` | 通用 TTY 抽象 trait（Q13 Phase 1 提取） |
@@ -920,18 +912,14 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L233 --> | D1 virtio 空 MMIO 修复 | D1 没有 virtio-mmio。`virtio-mmio-ranges` 必须写成空数组 `[]`，不能写成 `[[0,0]]` 占位；后者会让 `axdriver_virtio::probe_mmio_device` 访问 `phys_to_virt(0)`，fault VA 表现为 `0xffffffc000000000`。 | Q19 runtime fault 修复 |
 | <!-- L234 --> | Lichee smoke feature gate | Lichee Q19a 只验证 boot + early console，必须把 fs/net/display/axdriver/PCI/task-ext 从 smoke 路径隔离。否则会出现 `No block device found!`、`PCI_ECAM_BASE`/`PCI_RANGES`/`PCI_BUS_END` 缺失，或 `TaskExt` extern_trait 链接符号缺失。QEMU 完整用户态路径通过 `starry-kernel/qemu` 保持这些特性。 | Q19 feature gate 修复 |
 | <!-- L235 --> | D1 最小启动后扩展顺序 | Q19a 完成后不要回到官方 Linux 泛采集；后续按 PLIC/timer → SDMMC/block → rootfs/VFS → TTY/async UART → benchmark 顺序单独立项，避免把 benchmark 或 rootfs 问题误当成 early boot 阻塞。 | Q19 后续路线 |
-| <!-- L236 --> | Q19B benchmark 依赖链 | QEMU 用户态 benchmark 路径是 `entry::init -> init_uart_hardware -> run_startup_benchmark -> pseudofs::mount_all -> load_user_app -> add_stdio(/dev/console) -> benchmark.c`。D1 当前 `entry.rs` 仍在 `lichee-d1` 下直接进入 `run_lichee_d1_smoke() -> !`，所以 Q19B 必须先拆 staged mode，再恢复完整路径。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
-| <!-- L237 --> | Q19B async UART 首要阻塞 | `kernel/src/drivers/uart_init.rs` 的 QEMU 路径仍按 byte MMIO 做 raw LSR `base+5` 读取，并通过 `uart_16550::MmioBackend` 做 U8 volatile；D1/DW APB UART 必须用 stride 4 + 32-bit MMIO。Q19B-M1 要先做 D1-safe `UartPort` 或扩展 `uart_16550` width-aware backend。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
-| <!-- L238 --> | D1 PLIC 代码已存在但未启用 | `crates/axplat-riscv64-lichee-d1/src/irq.rs` 已有 PLIC claim/complete 与 handler table，feature 为 `irq`；当前顶层 `lichee-d1` 只启用 `irq-if`，走 `irq_stub`。Q19B-M2 应显式启用 `axplat-riscv64-lichee-d1/irq` 并验证 UART IRQ 18。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
-| <!-- L239 --> | Q19B 用户 benchmark 推荐先嵌入 ELF | 为了尽快得到 D1 async UART 数据，Q19B 推荐先把 `tests/benchmark.c` 编译为静态 RISC-V ELF 并嵌入内核/小 initramfs，复用用户 ELF loader，避免先被 SDMMC/rootfs bring-up 阻塞。SDMMC/rootfs parity 可放后续阶段。 | `.claude/analysis/q19b-lichee-benchmark-plan.md` |
+<!-- tombstone: L236-L239 --> Archived 2026-07-02 in ARC-202607021648 — Q19B 计划期路线已执行；最终事实见 L240-L258、ADR-047~051、Q19B archived change。
 | <!-- L240 --> | Q19B 三模式 feature 拆分方案 | Q19B 落地了 `lichee-d1`（smoke 回归，保持向后兼容）+ `lichee-d1-kbench`（内核 benchmark）+ `lichee-d1-userbench`（用户态 benchmark）三层 feature。`lichee-d1-kbench` 在 root Cargo.toml 中启用 `axplat-riscv64-lichee-d1/irq`（真 PLIC）替代 `irq-if`（no-op stub）；`lichee-d1-kbench` 通过 kernel Cargo.toml 的 `lichee-d1-kbench = []` 独立 feature gate 控制。模式拆分在 `kernel/src/entry.rs` 中通过 `#[cfg(feature = "lichee-d1-kbench")]` 条件编译实现，`lichee_d1_init()` 函数负责 kbench/userbench 共用初始化路径。 | Q19B Phase 1 |
 | <!-- L241 --> | D1 DW APB UART 32-bit MMIO UartPort 实现 | `kernel/src/drivers/d1_uart.rs`（162 行新文件）实现 `ArceOsD1UartPort`：内部通过 stride-aware `read_reg(offset)`/`write_reg(offset, val)` 做 `base_ptr.add(offset * stride).cast::<u32>().read_volatile()`，实现了 `UartPort` trait 的 `receive_bytes`/`send_bytes`/`transmitter_empty`/`update_ier`。寄存器偏移：RBR/THR=0, IER=1, IIR=2, LSR=5（物理字节偏移 = offset × stride）。LSR 位定义与 NS16550 相同（bit0=DR, bit5=THRE, bit6=TEMT），但必须通过 u32 volatile 访问。`NonNull<u8>` 需要 `unsafe impl Send + Sync` 才能放入 `lazy_static!`。D1 ISR handler (`d1_uart_isr_handler`) 通过 IIR 的 stride-aware 32-bit 读取分派中断，复用 `uart_16550::async_::isr` 的 `RX_WAKER`/`TX_WAKER`/`DRAIN_WAKER`。 | Q19B Phase 2 |
 | <!-- L242 --> | uart_init.rs 双路径 feature gate 模式 | `kernel/src/drivers/uart_init.rs` 通过 `#[cfg(not(feature = "lichee-d1-kbench"))]` 和 `#[cfg(feature = "lichee-d1-kbench")]` 维护 QEMU/D1 两条完全独立的硬件访问路径：不同的 `UartPort` 实现、不同的类型别名（`ArceOsDriver`/`ArceOsReader`/`ArceOsWriter` 各自做 cfg）和不同的 ISR wrapper。`init_uart_hardware()` 中的 raw `base+5` byte probe 被 `#[cfg(not(feature = "lichee-d1-kbench"))]` gate 排除在 D1 路径之外。common 部分（ring buffer 初始化、AsyncUartDriver 创建、ISR 注册、copier 启动）不做 feature gate。这是在不修改外部 crate 的前提下支持异构 UART 硬件的最小侵入模式。 | Q19B Phase 2 |
-| <!-- L243 --> | Q19B Phases 5-6 axfs 阻塞（已解） | 历史阻塞：`lichee-d1-userbench` 的 Phase 5 (`/dev/console` TTY gate) 需要 `pseudofs::mount_all()` → `axfs::{FS_CONTEXT, FsContext}` 和 `axfs_ng_vfs`，引入 `axfs` 会连带引入 block device/virtio/PCI 假设。最终解决：拆分 `lichee-d1-async-uart` 硬件能力与 kbench/userbench 运行模式；D1 userbench 只启用最小 `axfs` / `pseudofs` / `syscall` / `task` 路径，并通过本地 `axfs-ng` patch 强制 `axdriver` 使用 `block + bus-mmio`，避免 PCI fallback。详见 ADR-049。 | Q19B Phase 5-6 历史阻塞 |
+<!-- tombstone: L243 --> Archived 2026-07-02 in ARC-202607021648 — Q19B axfs 阻塞已解，最终约束见 ADR-049 与 L249/L252/L253。
 | <!-- L244 --> | Q19B cargo check 三模式验证 | Q19B 开发中建立了 `cargo check --features lichee-d1 --target riscv64gc-unknown-none-elf`（smoke）、`cargo check --features lichee-d1-kbench --target riscv64gc-unknown-none-elf`（kbench）、`cargo check --features qemu --target riscv64gc-unknown-none-elf`（QEMU）三模式并行验证工作流。三模式全部通过 `cargo check` + `cargo clippy` 后才能声明 Phase 完成。`Makefile` 新增 `make lichee-kbench` 和 `make lichee-userbench` 目标，输出独立命名的 Android boot image。 | Q19B 验证模式 |
 | <!-- L245 --> | Q19B userbench feature 继承陷阱 | 当前 `lichee-d1-userbench = ["lichee-d1-kbench"]`，而 `kernel/src/lib.rs` / `kernel/src/drivers/mod.rs` 又用 `feature = "lichee-d1-kbench"` 排除 `file`/`mm`/`pseudofs`/`task`/`ASYNC_TTY`。因此 userbench 编译会报 unresolved imports。经验：硬件能力 feature（D1 async UART/PLIC）和运行模式 feature（kbench-only halt）必须拆开，不能让 userbench 继承会排除用户态 runtime 的 kbench gate。 | `.claude/analysis/q19b-current-blockers.md` |
-| <!-- L246 --> | Q19B 五个阻塞点全景（已解） | 历史阻塞：(1) userbench 继承 kbench 导致模块排除；(2) `/dev/console` 需要 TTY/devfs/syscall 全路径而非仅 UART；(3) `pseudofs::mount_all()` 假设 `axfs` 存在但 D1 不启用 qemu feature；(4) embedded benchmark ELF 必须先编译为 ET_EXEC/no relocation；(5) 真板证据缺失。当前状态：这些阻塞均已在 Q19B 收尾阶段解决，真板已得到 PLIC IRQ 18、RX/TX wake、ring-buffer 指标、`tcdrain` 行为和 userbench 完整输出。该条保留为历史问题地图。 | `.claude/analysis/q19b-current-blockers.md` §Blockers |
-| <!-- L247 --> | Q19B-Next 五步路线（已执行） | 已执行路线：Next.1 规范化 feature 语义（hw capability ≠ runtime mode）；Next.2 `cargo check lichee-d1-userbench` host gate 通过；Next.3 `/dev/console` 先于 ELF payload bring up；Next.4 嵌入 `tests/benchmark.c` 静态 RISC-V ELF；Next.5 采集真板串口日志并回填文档。保留约束：禁止通过启用 QEMU PCI/virtio feature 绕过 D1 userbench；后续 SDMMC/rootfs parity 必须另立 milestone。 | `.claude/analysis/q19b-current-blockers.md` §Recommended Next Plan |
+<!-- tombstone: L246-L247 --> Archived 2026-07-02 in ARC-202607021648 — Q19B 阻塞图与 Next 路线已执行；最终结果见 L248-L258。
 | <!-- L248 --> | Q19B feature 规范化实战 | 实现后的 feature 布局：`lichee-d1-async-uart`（DW APB UART stride 4 + 真 PLIC — 硬件能力）→ `lichee-d1-kbench`（内核 benchmark 后 halt — 运行模式）和 `lichee-d1-userbench`（含 axfs/pseudofs/syscall 的最小白用户态 runtime — 运行模式）各自独立继承。关键约束：kbench 的模块排除（`file`/`mm`/`pseudofs`/`task`/`ASYNC_TTY`）绝不能影响 userbench。net socket/fb/axdisplay 模块通过 `#[cfg(not(feature = "lichee-d1"))]` 从 D1 路径完全排除。四模式 `cargo check` 全通过。 | Q19B-Next.1 实现 |
 | <!-- L249 --> | D1 userbench 最小依赖集 | `lichee-d1-userbench` kernel feature 需要 `dep:axfs`（FS_CONTEXT 与伪文件系统操作）+ `axfeat/task-ext`（AxTaskExt 用户任务扩展）。明确不需要的：`axdisplay`（无 framebuffer）、`axdriver`（无 virtio block）、`axnet`（无网络）、PCI 相关常量。net/fb 子模块在父 mod.rs 中通过 `#[cfg(not(feature = "lichee-d1"))]` gate 排除；syscall 中的 socket 分派函数逐项加 `#[cfg(not(feature = "lichee-d1"))]`。 | Q19B-Next.2 实现 |
 | <!-- L250 --> | D1 嵌入式 benchmark ELF 加载 | `kernel/resources/benchmark.elf`（约 38KB）通过 `include_bytes!` 嵌入 kernel binary。新函数 `load_embedded_user_app()` 在 `kernel/src/mm/loader.rs` 中实现（`#[cfg(feature = "lichee-d1-userbench")]`），绕过文件系统直接从 `&[u8]` 解析 ELF → 分配用户映射 → `uspace.write()` 复制段数据，并复用与 `load_user_app()` 相同的 AUXV、堆栈、heap 初始化模式。benchmark 进程以 `Process::new_init()` + `ASYNC_TTY::bind_to()` + `add_stdio()` 启动。重要限制：当前 loader 不处理 relocation，embedded ELF 必须是 `ET_EXEC` / no relocation，不能是 static PIE (`DYN`)。 | Q19B-Next.4 实现 |
@@ -943,11 +931,16 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L256 --> | tcdrain/flush 必须覆盖 staged/TEMT 状态变化 | Q19B 真板第一次卡在 64B write 后的 `tcdrain`，根因是等待者只注册 TX ring waker，未覆盖 TX copier 已 pop 到 staged buffer 后的 `staged_bytes -> 0` 和 UART TEMT 变化。修复：`flush()`/`sys_ioctl(TCSBRK)` 始终注册 `DRAIN_WAKER`，TX copier 在最后一批数据送完且 TEMT 后主动 wake drain。 | Q19B 真板 tcdrain 修复 |
 | <!-- L257 --> | D1 async UART 真板性能基线 | Lichee RV Dock UART0 @115200bps：256B TX 11.25KB/s (97.7% line rate)、1024B TX 11.40KB/s (98.9%)、4096B TX 11.41KB/s (99.0%)；64B TX 1.01KB/s（每轮 tcdrain，小包固定开销主导）；1B tcdrain latency avg 0.270ms / P50 0.185ms / P95 0.187ms / P99 8.547ms；FIONBIO open/ioctl 双入口 PASS。 | `docs/licheerv-dock-bringup.md` Q19B |
 | <!-- L258 --> | 串口 benchmark 输出必须 CRLF + exit drain | 真板串口终端只输出 LF 会出现“斜行”：光标下移但不回行首；用户态 stdout 未 drain 前内核打印退出日志会插队。内核 `Tty::write_at()` 应按默认 termios `OPOST\|ONLCR` 做 LF→CRLF；`tests/benchmark.c` 也应使用 `\r\n`，并在 main 末尾执行 `fflush(stdout); tcdrain(STDOUT_FILENO);`。如果修改 C 源后要更新 embedded payload，需在正常环境用 musl 工具链重编 `kernel/resources/benchmark.elf`；当前 Codex 沙箱运行该 gcc 会 `Bad system call`。 | Q19B 输出清理 |
+| <!-- L259 --> | Q19C 完整 benchmark 路径差异 | QEMU 完整路径通过 `entry::init -> pseudofs::mount_all -> FS_CONTEXT.resolve(args[0]) -> load_user_app -> add_stdio(/dev/console)` 启动；D1 Q19B userbench 当前通过 `init_memory_root -> include_bytes!(benchmark.elf) -> load_embedded_user_app` 绕过 rootfs/path loading。Q19C 应先让 D1 从 memory root 的 `/bin/benchmark` 走 `load_user_app()`，再做 SDMMC/rootfs parity。 | `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` |
+| <!-- L260 --> | D1 fullbench feature 边界 | 后续完整 StarryOS benchmark 不应启用 `qemu` feature；应新增独立 `lichee-d1-fullbench` 或等价 runtime mode，继承 D1 async UART/PLIC、paging、task-ext、axfs 和选定 rootfs provider，同时继续排除 QEMU PCI/virtio/display 假设。 | Q19C 探究 |
+| <!-- L261 --> | D1 rootfs provider 分层 | D1 完整 benchmark 有两层 rootfs gate：先用 populated memory root 提供 `/bin/benchmark` 证明 VFS path loader，再实现真实 SDMMC/block rootfs 让 `axfs::init_filesystems(block_devs)` 接管。不要把 SDMMC bring-up 作为 path loading 的第一 blocker。 | Q19C 探究 |
 
 #### Scenario: 新增 Q13 层级 API
 
 - **WHEN** 开发者在 uart_16550 async 栈中添加新类型或 trait
 - **THEN** MUST 同时更新本速查表（上方 L176-L200 区域），标注文件路径与用途
+
+<!-- arc: ARC-202607021648 --> 5 组 learned 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md
 
 #### Scenario: 应用 Q15 增量融合策略
 
