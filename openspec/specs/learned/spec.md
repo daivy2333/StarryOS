@@ -935,6 +935,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L260 --> | D1 fullbench feature 边界 | 后续完整 StarryOS benchmark 不应启用 `qemu` feature；应新增独立 `lichee-d1-fullbench` 或等价 runtime mode，继承 D1 async UART/PLIC、paging、task-ext、axfs 和选定 rootfs provider，同时继续排除 QEMU PCI/virtio/display 假设。 | Q19C 探究 |
 | <!-- L261 --> | D1 rootfs provider 分层 | D1 完整 benchmark 有两层 rootfs gate：先用 populated memory root 提供 `/bin/benchmark` 证明 VFS path loader，再实现真实 SDMMC/block rootfs 让 `axfs::init_filesystems(block_devs)` 接管。不要把 SDMMC bring-up 作为 path loading 的第一 blocker。 | Q19C 探究 |
 | <!-- L262 --> | Q19C benchmark 证据口径 | Q19C 进入源码变更前应先规划 `benchmark.c` manifest：benchmark version、mode/startup chain、root provider、payload sizes、iteration counts、drain policy、timer source、nonblocking entries、RX test mode。QEMU、Q19B embedded、memory-root、shell/rootfs 的参数不同就分组解释，不能直接混成一条横向性能曲线。 | Q19C 重新探索 |
+| <!-- L263 --> | Q17 当前分支复核边界 | `kernel/src/drivers/d1_uart.rs` 的 `ArceOsD1UartPort::update_ier()` 也有 `ier_cache` load/store RMW 形态，但 D1/C906 是单核平台；Q17 SMP 结论仍以 QEMU/VisionFive2 多 hart 语义为准。实施时要么同步收敛 QEMU/D1 两个 `UartPort::update_ier()` 契约，要么在 change 中明确 D1 单核暂不作为 SMP 风险。旧 tasks 中 active store 数量按旧行号估算，当前 `tx_copier_loop()` 以源码为准。 | `.claude/analysis/q17-smp-memory-ordering.md` 2026-07-03 复核 |
 
 #### Scenario: 新增 Q13 层级 API
 

@@ -42,3 +42,23 @@ TX copier 对 `tx_staged_bytes` 的 `fetch_add`/`fetch_sub` MUST 使用 `AcqRel`
 
 - **WHEN** telemetry 计数器使用 Relaxed
 - **THEN** `tx_completion()` 和 `is_drained()` 的控制流判断 MUST 不依赖任何 telemetry 字段的值
+
+### Requirement: UartPort implementations have explicit Q17 boundary
+
+所有实现 `UartPort::update_ier()` 的平台路径 MUST 在 Q17 中有明确处理结论：同步满足 IER cache/MMIO 原子更新契约，或记录该平台路径不属于当前 SMP 风险的原因。
+
+#### Scenario: D1 单核路径不被误用为 SMP 证据
+
+- **WHEN** Q17 评估 `kernel/src/drivers/d1_uart.rs` 的 `ArceOsD1UartPort::update_ier()`
+- **THEN** Q17 MUST NOT use Lichee RV Dock / D1 single-core board results as evidence for SMP correctness
+- **AND** Q17 MUST either update this implementation to the same `UartPort` contract or document why it is excluded from the SMP fix scope
+
+### Requirement: Phase 3 requires current-state witness
+
+进入源码实现前 MUST 建立 fresh current-state witness，至少包含 CodeGraph impact、当前 Relaxed/control-flow 字段清单、以及将要运行的 cargo/check/benchmark 验证命令。
+
+#### Scenario: Implementation starts only after witness
+
+- **WHEN** Phase 3 begins
+- **THEN** the implementer MUST have current-state evidence for `update_ier`, `tx_completion`, and `tx_copier_loop`
+- **AND** MUST NOT rely on stale line numbers from older Q17 analysis

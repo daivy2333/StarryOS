@@ -766,6 +766,7 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 **影响**:
 - `tx_copier_active`、`tx_staged_bytes` 的内存序选择可在 `uart_16550` crate 内保持平台无关。
 - StarryOS `ArceOsUartPort::update_ier()` 的 IER cache 必须和 UART MMIO 写入形成单一同步边界。
+- Q19B 后新增的 D1 `ArceOsD1UartPort::update_ier()` 也实现同一 `UartPort` 契约；D1 单核结果不能证明 SMP 正确性，但实施 Q17 时应明确是否同步收敛该路径。
 - QEMU 单 hart 通过不再作为 SMP 内存序正确性的充分证据；真板或 QEMU SMP 仍需复验。
 
 **替代方案**:

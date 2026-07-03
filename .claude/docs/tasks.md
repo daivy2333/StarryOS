@@ -103,10 +103,11 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 ### Q17: SMP / 内存序正确性 ⏳ 待做
 
 <!-- Q17.1 --> - [ ] O63-P0: 修复 `ArceOsUartPort::update_ier()` 的 `ier_cache` RMW 竞争
+<!-- Q17.1a --> - [ ] Q17 当前分支补充：处理 D1 `ArceOsD1UartPort::update_ier()` 同形态 RMW 边界，优先同步收敛同一 `UartPort` 契约；若不改，必须记录 D1 单核非 SMP 风险
 <!-- Q17.2 --> - [ ] O63-P1: `tx_copier_active` 改为 Release/Acquire 语义
 <!-- Q17.3 --> - [ ] O63-P1: `tx_staged_bytes` 改为 AcqRel/Acquire 语义
 <!-- Q17.4 --> - [ ] 评估 QEMU SMP 配置是否可作为真板前预检
-<!-- Q17.5 --> - [ ] Gate Q17: cargo check + QEMU benchmark 无性能退化；真板到位后复验 SMP stress
+<!-- Q17.5 --> - [ ] Gate Q17: Phase 3 前建立 current-state witness；实施后 cargo check + QEMU benchmark 无性能退化；真板到位后复验 SMP stress
 
 ### Q18: 平台参数解耦 / early console 基础 ✅ (2026-06-28)
 
