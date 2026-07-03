@@ -47,3 +47,54 @@ mod critical_impl {
         axhal::asm::enable_irqs();
     }
 }
+
+// Minimal libc ABI shims required by lwext4's C code in the no-std kernel link.
+mod libc_abi_shims {
+    use core::ffi::c_void;
+
+    #[unsafe(no_mangle)]
+    static mut stdout: *mut c_void = core::ptr::null_mut();
+
+    #[unsafe(no_mangle)]
+    extern "C" fn fflush(_stream: *mut c_void) -> i32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn qsort(
+        base: *mut c_void,
+        nmemb: usize,
+        size: usize,
+        compar: Option<unsafe extern "C" fn(*const c_void, *const c_void) -> i32>,
+    ) {
+        let Some(compar) = compar else {
+            return;
+        };
+        if base.is_null() || nmemb < 2 || size == 0 {
+            return;
+        }
+
+        let base = base.cast::<u8>();
+        for end in (1..nmemb).rev() {
+            for idx in 0..end {
+                let left = unsafe { base.add(idx * size) };
+                let right = unsafe { base.add((idx + 1) * size) };
+                if unsafe { compar(left.cast::<c_void>(), right.cast::<c_void>()) } > 0 {
+                    unsafe { swap_bytes(left, right, size) };
+                }
+            }
+        }
+    }
+
+    unsafe fn swap_bytes(left: *mut u8, right: *mut u8, len: usize) {
+        for offset in 0..len {
+            let left_byte = unsafe { left.add(offset) };
+            let right_byte = unsafe { right.add(offset) };
+            let tmp = unsafe { left_byte.read() };
+            unsafe {
+                left_byte.write(right_byte.read());
+                right_byte.write(tmp);
+            }
+        }
+    }
+}

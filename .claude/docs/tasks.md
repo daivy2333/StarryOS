@@ -5,7 +5,8 @@
 > 2026-06-28 基于 Lichee RV Dock 与 platform-parameter-decoupling 探索结果，roadmap 二次重排：Q17 不动，新增 Q18 平台参数解耦、Q19 荔枝派 early smoke test，原 VisionFive2/DMA/维护阶段顺延为 Q20~Q23。
 > 2026-06-29 Q19B 真板 userbench 完成: `starry-lichee-userbench-boot.img` 在 Lichee RV Dock 完整跑完 embedded benchmark，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
 > 2026-06-29 Q19 完成：Lichee RV Dock 真板通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。
-> 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17。
+> 2026-07-03 Q17 QEMU 修复完成：`ier_cache` RMW 纳入临界区，TX completion 控制流内存序升级，QEMU rootfs benchmark 通过；多 hart / 真板 SMP stress 尚未实测，作为 Q20 前置复验项保留。
+> 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
 > 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
 > 2026-07-02 Q19C 规范已完整：目标是在 Lichee RV Dock 上像 QEMU 一样通过 StarryOS path loader/rootfs 链路运行 benchmark；当前 OpenSpec change 已具备可实施的 proposal/design/tasks/spec，尚未进入源码实现。
 > 2026-06-27 Q15 后 roadmap 首次重排：单一 Q6 拆分为原 Q16~Q22，按 Gate 类型分层推进（见 `.claude/analysis/optimization-milestone-replan.md`）。
@@ -48,7 +49,7 @@
 | **M4 Sync** | async-uart-1 优化合并 | waker race + TX backpressure + ring/copier 诊断计数器 | ⟲ 已回退 (2026-06-21) |
 | **Q15** | M4+ 增量重融合 | 从 pre-M4 基线按最小单元重新 apply，每步 Manual QA | ✅ (2026-06-25 M0~M4 + Manual QA 全部完成) |
 | **Q16** | Roadmap / spec rebaseline | 任务重排 + stale spec 标注 + validate 已知噪音记录 | ✅ (2026-06-27) |
-| **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ⏳ 待做 |
+| **Q17** | SMP / 内存序正确性 | O63：ier_cache RMW + tx completion 原子序 | ✅ QEMU 修复完成 / ⚠️ 多 hart stress 待验证 |
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ✅ 真板 smoke complete |
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
@@ -63,7 +64,7 @@
 ## 最终状态
 
 ```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25) Q16 ✅ Q18 ✅ (2026-06-28) Q19 ✅ (2026-06-29 真板 smoke complete) Q19B ✅ (2026-06-29 真板 userbench complete) → Q19C 📝(规范完整 / 待实施) → Q17 ⏳ → Q20 ⏳(VisionFive2 硬件) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
+Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25) Q16 ✅ Q18 ✅ (2026-06-28) Q19 ✅ (2026-06-29 真板 smoke complete) Q19B ✅ (2026-06-29 真板 userbench complete) Q17 ✅ (2026-07-03 QEMU 修复完成 / 多 hart stress 待验证) → Q19C 📝(规范完整 / 待实施) → Q20 ⏳(VisionFive2 硬件 + Q17 SMP 复验) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
 
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
 > 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
@@ -75,6 +76,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 > 2026-06-29 Q19 完成: 解决 final page table `xuantie-c9xx`、D1 virtio 空 MMIO、fs/block gate、PCI/task-ext feature gate 后，`make lichee` 生成 `kernel_size=118976` 的 Android boot image；真板串口完成 `[starry-d1] smoke complete, halting.`。
 > 2026-06-29 Q19B 完成: D1 async UART userbench 完整跑通，256B/1024B/4096B TX 吞吐分别为 11.25/11.40/11.41 KB/s（97.7%/98.9%/99.0% line rate），1B tcdrain latency avg 0.270ms，FIONBIO 双入口 PASS。
 > 2026-07-02 Q19C-M0 工作流进入 Phase 1/2：已细化 benchmark evidence cleanup 的 manifest、RX witness、64B 小包实验矩阵与 Phase 3 前见证要求；当前停止在 Phase 3 执行之前，未修改源码。
+> 2026-07-03 Q17 完成 QEMU gate: `make run` 默认 `BUS=mmio` 修正后，rootfs `/bin/benchmark` 完整通过；64B TX 159.25 KB/s，1B latency avg 0.177ms，FIONBIO 双入口 PASS。多 hart / 真板 SMP stress 未执行，需在 Q20 阶段复验。
 > 2026-06-28 Q18 完成: platform descriptor + early console + QEMU 行为保持，提交 `941ad05`，归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`
 ```
 
@@ -100,14 +102,15 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 <!-- Q16.5 --> - [x] 标注或修订 stale capability specs（`async-uart-traits` / `arceos-adapter`）
 <!-- Q16.6 --> - [x] Gate Q16: roadmap 与分析文档一致；`openspec validate --specs` 的已知 parser 噪音不阻塞后续开发
 
-### Q17: SMP / 内存序正确性 ⏳ 待做
+### Q17: SMP / 内存序正确性 ✅ QEMU 修复完成 / ⚠️ 多 hart stress 待验证
 
-<!-- Q17.1 --> - [ ] O63-P0: 修复 `ArceOsUartPort::update_ier()` 的 `ier_cache` RMW 竞争
-<!-- Q17.1a --> - [ ] Q17 当前分支补充：处理 D1 `ArceOsD1UartPort::update_ier()` 同形态 RMW 边界，优先同步收敛同一 `UartPort` 契约；若不改，必须记录 D1 单核非 SMP 风险
-<!-- Q17.2 --> - [ ] O63-P1: `tx_copier_active` 改为 Release/Acquire 语义
-<!-- Q17.3 --> - [ ] O63-P1: `tx_staged_bytes` 改为 AcqRel/Acquire 语义
-<!-- Q17.4 --> - [ ] 评估 QEMU SMP 配置是否可作为真板前预检
-<!-- Q17.5 --> - [ ] Gate Q17: Phase 3 前建立 current-state witness；实施后 cargo check + QEMU benchmark 无性能退化；真板到位后复验 SMP stress
+<!-- Q17.1 --> - [x] O63-P0: 修复 `ArceOsUartPort::update_ier()` 的 `ier_cache` RMW 竞争，cache RMW 与 MMIO IER 写入同锁保护
+<!-- Q17.1a --> - [x] Q17 当前分支补充：D1 `ArceOsD1UartPort::update_ier()` 同形态 RMW 已纳入 IRQ-off 临界区；软件 wake 在 IRQ 恢复后执行
+<!-- Q17.2 --> - [x] O63-P1: `tx_copier_active` 改为 Release/Acquire 语义
+<!-- Q17.3 --> - [x] O63-P1: `tx_staged_bytes` 改为 AcqRel/Acquire 语义
+<!-- Q17.4 --> - [x] 评估 QEMU SMP 配置是否可作为真板前预检：当前 QEMU 默认单 hart，只能作为功能/性能回归；多 hart stress 仍需后置
+<!-- Q17.5 --> - [x] Gate Q17: current-state witness、cargo check、QEMU benchmark 已完成；`cargo test/clippy` 的既有阻塞已记录为非 Q17 回归
+<!-- Q17.6 --> - [ ] Deferred: VisionFive2 或等价多 hart 环境复验 UART 并发读写、flush/tcdrain 与 IER enable/disable，无数据丢失或 hang
 
 ### Q18: 平台参数解耦 / early console 基础 ✅ (2026-06-28)
 

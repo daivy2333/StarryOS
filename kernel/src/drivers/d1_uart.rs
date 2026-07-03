@@ -155,11 +155,18 @@ impl UartPort for ArceOsD1UartPort {
     }
 
     fn update_ier(&self, set: IER, clear: IER) {
+        let irq_enabled = axhal::asm::irqs_enabled();
+        axhal::asm::disable_irqs();
+
         let mut val = self.ier_cache.load(Ordering::Relaxed);
         val |= set.bits();
         val &= !clear.bits();
         self.ier_cache.store(val, Ordering::Relaxed);
         self.write_reg(UART_IER, val as u32);
+
+        if irq_enabled {
+            axhal::asm::enable_irqs();
+        }
 
         if set.contains(IER::THR_EMPTY) {
             use uart_16550::async_::isr;

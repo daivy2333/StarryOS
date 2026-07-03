@@ -35,7 +35,6 @@ use uart_16550::{
 #[cfg(not(feature = "lichee-d1-async-uart"))]
 use {
     axhal::mem::phys_to_virt,
-    core::sync::atomic::AtomicU8 as _,
     kspin::SpinNoIrq,
     memory_addr::PhysAddr,
     uart_16550::{Uart16550, backend::MmioBackend, spec::registers::ISR},
@@ -119,11 +118,12 @@ impl UartPort for ArceOsUartPort {
 
     #[inline(always)]
     fn update_ier(&self, set: IER, clear: IER) {
+        let mut uart = self.uart.lock();
         let mut val = self.ier_cache.load(Ordering::Relaxed);
         val |= set.bits();
         val &= !clear.bits();
         self.ier_cache.store(val, Ordering::Relaxed);
-        self.uart.lock().set_ier(IER::from_bits_truncate(val));
+        uart.set_ier(IER::from_bits_truncate(val));
     }
 }
 

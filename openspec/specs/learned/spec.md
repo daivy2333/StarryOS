@@ -659,10 +659,12 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 #### QEMU benchmark 交叉编译 → 部署流程
 
 <!-- L201 -->
-- **交叉编译**：`export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH && riscv64-linux-musl-gcc -static -o tests/benchmark tests/benchmark.c`
+- **交叉编译**：`export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH && make tests/benchmark`
 - **挂载部署**：`sudo mount -o loop make/disk.img /mnt && sudo cp tests/benchmark /mnt/bin/benchmark && sudo umount /mnt`
 - **运行**：`make run` → QEMU 内 `./benchmark`
-- **关键约束**：`make/disk.img` 是 `rootfs-riscv64.img` 的副本（ext4），benchmark 二进制路径为 `/bin/benchmark`
+- **关键约束**：`make/disk.img` 是 `rootfs-riscv64.img` 的副本（ext4），benchmark 二进制路径为 `/bin/benchmark`；重新执行 `make rootfs` 会覆盖 `make/disk.img`，需要重新部署 benchmark
+- **QEMU 总线约束**：riscv64-qemu-virt 内核探测 virtio-mmio block device，QEMU 参数必须使用 `BUS=mmio BLK=y`；顶层 `Makefile` 已将默认 `BUS` 固定为 `mmio`，否则会挂成 `virtio-blk-pci` 并在 `axfs-ng` 初始化时报 `No block device found`
+- **QEMU/D1 benchmark 编译边界**：`Makefile` 已固化 `tests/benchmark.c` 的两套编译产物和 manifest 宏。QEMU 用 `make tests/benchmark` 生成 rootfs 版，仍需手动挂载复制到 `make/disk.img:/bin/benchmark`；D1 用 `make lichee-userbench`，该 target 依赖 `kernel/resources/benchmark.elf`，会自动重编 embedded 版并打包 `starry-lichee-userbench-boot.img`。不要再手写整串 `riscv64-linux-musl-gcc -D...`，除非是在排查 Makefile 本身。
 
 #### benchmark 测试代码设计原则
 
@@ -936,6 +938,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L261 --> | D1 rootfs provider 分层 | D1 完整 benchmark 有两层 rootfs gate：先用 populated memory root 提供 `/bin/benchmark` 证明 VFS path loader，再实现真实 SDMMC/block rootfs 让 `axfs::init_filesystems(block_devs)` 接管。不要把 SDMMC bring-up 作为 path loading 的第一 blocker。 | Q19C 探究 |
 | <!-- L262 --> | Q19C benchmark 证据口径 | Q19C 进入源码变更前应先规划 `benchmark.c` manifest：benchmark version、mode/startup chain、root provider、payload sizes、iteration counts、drain policy、timer source、nonblocking entries、RX test mode。QEMU、Q19B embedded、memory-root、shell/rootfs 的参数不同就分组解释，不能直接混成一条横向性能曲线。 | Q19C 重新探索 |
 | <!-- L263 --> | Q17 当前分支复核边界 | `kernel/src/drivers/d1_uart.rs` 的 `ArceOsD1UartPort::update_ier()` 也有 `ier_cache` load/store RMW 形态，但 D1/C906 是单核平台；Q17 SMP 结论仍以 QEMU/VisionFive2 多 hart 语义为准。实施时要么同步收敛 QEMU/D1 两个 `UartPort::update_ier()` 契约，要么在 change 中明确 D1 单核暂不作为 SMP 风险。旧 tasks 中 active store 数量按旧行号估算，当前 `tx_copier_loop()` 以源码为准。 | `.claude/analysis/q17-smp-memory-ordering.md` 2026-07-03 复核 |
+| <!-- L264 --> | Q17 收尾验证边界 | Q17 已完成 QEMU 单 hart修复与回归：QEMU `update_ier()` cache RMW 与 MMIO IER 写同锁，D1 `update_ier()` 用 IRQ-off 临界区，`tx_copier_active` 为 Release/Acquire，`tx_staged_bytes` 为 AcqRel/Acquire；`make run` 默认 `BUS=mmio` 后 rootfs `/bin/benchmark` 通过（64B TX 159.25KB/s、1B latency avg 0.177ms、FIONBIO PASS）。这不等于多 hart 内存序已实测，Q20/VisionFive2 或等价 SMP stress 仍必须复验。 | Q17 2026-07-03 收尾 |
 
 #### Scenario: 新增 Q13 层级 API
 

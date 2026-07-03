@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-07-02
-> 分支：uart-16550-lichee — Q19/Q19B 已完成并归档，Q19C 重新探索完成，Q17 待做
+> Last updated: 2026-07-03
+> 分支：uart-16550-lichee — Q17 QEMU 修复完成，Q19/Q19B 已完成并归档，Q19C 重新探索完成；多 hart / 真板 SMP stress 待 Q20 复验
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q19/Q19B 真板验证已完成，Q19C fullbench 重新探索完成，Q17 仍待做）
+**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q17 QEMU 修复完成，Q19/Q19B 真板验证已完成，Q19C fullbench 重新探索完成；多 hart / 真板 SMP stress 待 Q20 复验）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
@@ -20,6 +20,7 @@
 - Q13 的 active OS abstraction 已由 ADR-036 修正为 `OsRuntime` + `OsWakerSet` 两个 trait；旧 5-trait 设计归档为历史。
 
 **近期完成**:
+- **Q17 ✅/⚠️**: QEMU 修复完成；`ier_cache` RMW 临界区化，TX completion 控制流原子序升级，QEMU rootfs benchmark 通过。多 hart / 真板 SMP stress 尚未实测。
 - **Q18 ✅**: platform descriptor + early console 分层，QEMU 行为保持。
 - **Q19 ✅**: Lichee RV Dock Android boot image + D1 axplat + UART0 polling early console 真板 smoke complete。
 - **Q19B ✅**: D1 async UART userbench 真板完成；`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
@@ -27,7 +28,7 @@
 
 **当前待推进**:
 - **Q19C 📝**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 重新探索完成，先做 benchmark evidence cleanup（`benchmark.c` manifest/参数对齐、真板 RX witness、64B 小包优化探索），再推进 memory-root path loader → shell/script parity → SDMMC/block rootfs → true rootfs benchmark；尚未进入源码实现。
-- **Q17 ⏳**: SMP / 内存序正确性仍待做，重点为 O63：`ier_cache` RMW + TX completion 原子序。
+- **Q20 ⏳**: VisionFive2 / 等价多 hart 环境到位后，复验 Q17 O63：并发 UART read/write、flush/tcdrain 与 IER enable/disable 无数据丢失或 hang。
 
 ### 关键发现
 
@@ -73,6 +74,7 @@
 | **D1 final page table 属性** | `page_table_entry/xuantie-c9xx` 必须在 `lichee-d1` feature 下启用；否则最终页表切换后可能在 `.bss`/全局数据访问上 fault |
 | **D1 virtio 空 MMIO** | D1 无 virtio-mmio，`virtio-mmio-ranges` 必须是空数组 `[]`，不能写成 `[[0,0]]`；否则会访问 `phys_to_virt(0)` |
 | **D1 smoke feature gate** | Lichee smoke 阶段必须禁用 fs/net/display/axdriver/PCI/task-ext，直到真实 block/PLIC/TTY 路径实现；否则会触发 `No block device found` 或 PCI 常量缺失 |
+| **Q17 QEMU 收尾** | `make run` 默认 `BUS=mmio` 后，rootfs `/bin/benchmark` 通过；64B TX 159.25 KB/s，1B latency avg 0.177ms，FIONBIO 双入口 PASS。该结果只证明单 hart QEMU 功能/性能无明显退化，不证明多 hart 内存序。 |
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
