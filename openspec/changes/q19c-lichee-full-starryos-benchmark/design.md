@@ -31,7 +31,7 @@ lichee_d1_init()
   -> spawn and join benchmark
 ```
 
-Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable。设计上分成两段：Part A 解决 StarryOS 内部启动链路，Part B 解决真实块设备/rootfs。
+Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable。实施上先做 M0 benchmark evidence cleanup，让后续数据可比较；工程上仍分成两段：Part A 解决 StarryOS 内部启动链路，Part B 解决真实块设备/rootfs。
 
 ## Goals / Non-Goals
 
@@ -40,6 +40,7 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 - Lichee 能通过 VFS path 解析运行 `/bin/benchmark`。
 - Lichee 能通过 `/bin/sh -c /init.sh` 或等价脚本入口运行 benchmark。
 - Q19B embedded benchmark 继续作为 regression baseline。
+- Q19C-M0 先让 benchmark 输出包含参数 manifest，并规划真板 RX witness 与 64B 小包优化实验。
 - 真板 rootfs 探索有明确采集项、接入点、失败输出和验收标准。
 - benchmark 证据能区分启动链路：QEMU、Q19B embedded、Q19C memory-root path、Q19C shell/script、Q19C rootfs path。
 
@@ -64,6 +65,48 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 | `lichee-d1-fullbench-rootfs` | SDMMC/block rootfs | rootfs `/bin/sh` / `/bin/benchmark` | `load_user_app()` | full board parity |
 
 Implementation can expose these as separate features, make targets, or one feature with compile-time mode selection. The observable contract is the important part: each image logs its mode and does not silently fall back to a weaker mode.
+
+### M0: Benchmark Evidence Cleanup
+
+M0 does not change the loader/rootfs architecture. It prepares the benchmark payload and evidence format so QEMU, Q19B embedded and later Q19C modes can be compared without guessing hidden parameters.
+
+Current `tests/benchmark.c` facts from CodeGraph:
+
+| Area | Current state |
+|------|---------------|
+| TX throughput | sizes `{64, 256, 1024, 4096}`, `iterations = 100`, `write()` loop, `tcdrain()` after every iteration |
+| TX latency | single byte, `LAT_N = 100`, reports avg/P50/P95/P99 |
+| FIFO matrix | sizes `{1, 15, 16, 17, 31, 32, 33, 48, 49}`, `MAT_N = 100`, per-write `tcdrain()` |
+| RX | no-input nonblocking read only: `open(O_NONBLOCK)` and `ioctl(FIONBIO)` |
+| Missing evidence | no benchmark version, no startup-chain label, no root-provider label, no explicit timer/source manifest, no fixed-payload RX measurement |
+
+Planned M0 benchmark manifest:
+
+```text
+benchmark_version=q19c-m0
+target_mode=<qemu-rootfs-shell|lichee-embedded-userbench|...>
+startup_chain=<embedded|memory-root-path|memory-root-shell|rootfs-shell>
+root_provider=<qemu-rootfs|memory-root|sdmmc-rootfs|none>
+timer_source=CLOCK_MONOTONIC
+tx_sizes=64,256,1024,4096
+tx_iters=100
+tx_drain_policy=tcdrain-per-iteration
+latency_iters=100
+fifo_matrix_sizes=1,15,16,17,31,32,33,48,49
+rx_mode=<no-input-eagain|manual-fixed-payload|loopback-fixed-payload>
+```
+
+M0 RX work is an evidence plan, not a claim that TX proves RX performance. The minimum board witness remains no-input `EAGAIN`; the next useful witness is a fixed-payload read mode using manual serial injection or loopback if available.
+
+M0 also keeps the 64B D1 result visible: `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`. Small-packet optimization experiments should be reported separately from the baseline:
+
+| Experiment | Purpose | Must label |
+|------------|---------|------------|
+| baseline drain-per-iteration | Preserve existing semantics | `tx_drain_policy=tcdrain-per-iteration` |
+| no-drain enqueue throughput | Separate enqueue cost from physical drain | `tx_drain_policy=no-drain` |
+| batch-N then drain | Amortize drain/scheduler overhead | batch size and drain count |
+| `writev` fragments | Test syscall-side aggregation | fragment count and total payload |
+| 64/128/256 break-even | Find size where line-rate behavior begins | same iters and drain policy |
 
 ### Part A: Memory-root Fullbench
 
@@ -159,10 +202,21 @@ Reason:
 - QEMU does not model physical UART line delay.
 - Embedded, memory-root and real rootfs results prove different things.
 
+### D6: M0 benchmark evidence is a pre-implementation gate
+
+Before changing Q19C loader/rootfs code, M0 should establish the benchmark output contract and current-state witness commands.
+
+Reason:
+
+- `benchmark.c` is the payload used by both QEMU-style and Lichee-style runs, so hidden parameter drift makes performance comparisons misleading.
+- The current C payload already prints `size` and `iters` for TX throughput, but it does not print enough context to compare QEMU and board runs after Q19C adds new startup chains.
+- RX currently has correctness evidence (`EAGAIN`) but not fixed-payload board measurement, so RX performance claims must wait for a dedicated witness.
+
 ## Requirements Traceability Matrix
 
 | Requirement | Tasks | Coverage | Simplification | Status |
 |-------------|-------|----------|----------------|--------|
+| R0 Benchmark evidence cleanup | 1.1-1.14, 6.1-6.7 | 100% | RX fixed-payload may start as manual-input before loopback | Covered |
 | R1 Preserve embedded regression | 1.1-1.5, 6.1 | 100% | None | Covered |
 | R2 Memory-root path loader | 2.1-2.8, 6.2 | 100% | Uses memory-root, not physical rootfs | Covered |
 | R3 Shell/script benchmark parity | 3.1-3.7, 6.3 | 100% | Static shell or documented equivalent allowed | Covered |
@@ -176,6 +230,7 @@ Reason:
 
 - `openspec validate --changes`
 - `openspec validate --specs`
+- `git diff -- tests/benchmark.c kernel/resources/benchmark.elf` before Phase 3, proving no implementation changed during planning
 - `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1`
 - `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench`
 - fullbench feature cargo check for each implemented mode

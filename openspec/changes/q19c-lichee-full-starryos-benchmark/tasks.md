@@ -1,10 +1,19 @@
-## 1. Baseline Preservation — Q19B 不退化
+## 1. Benchmark Evidence and Baseline Preservation — Q19B 不退化
 
 - [ ] 1.1 记录当前 Q19B `lichee-d1-userbench` 的 feature 组合、make target、boot image 名称和串口成功 marker
 - [ ] 1.2 确认 Q19B 仍使用 `load_embedded_user_app()`，Q19C fullbench 不复用该路径作为成功条件
 - [ ] 1.3 保留 `make lichee-userbench` 或既有等价目标的行为和输出命名
 - [ ] 1.4 建立 host regression：`lichee-d1`、`lichee-d1-userbench`、`qemu` feature 的 cargo check 不退化
 - [ ] 1.5 建立 board regression：Q19B embedded benchmark 仍输出 TX throughput、TX latency、FIFO boundary、FIONBIO 和 exit code 0
+- [ ] 1.6 梳理 QEMU 与 Q19B `benchmark.c` 当前参数差异：binary revision、payload sizes、iteration counts、drain policy、timer source、startup chain、root provider
+- [ ] 1.7 在 `benchmark.c` 增加 manifest 输出：benchmark version、target mode、startup chain、root provider、timer source、TX sizes/iters/drain policy、latency iters、FIFO matrix sizes、RX mode
+- [ ] 1.8 保持现有 TX baseline 不退化：sizes `{64,256,1024,4096}`、iters=100、每轮 `tcdrain()`、输出 `size`/`iters`/KB/s/line rate
+- [ ] 1.9 保留并解释 64B 小包数据：`size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`
+- [ ] 1.10 增加或规划 fixed-payload RX witness：保留无输入 `EAGAIN` regression，新增 manual-input 或 loopback 模式的 N bytes read summary
+- [ ] 1.11 规划 64B 小包延迟优化实验：baseline drain-per-iteration、no-drain enqueue、batch-N then drain、`writev` fragments、64/128/256B break-even
+- [ ] 1.12 建立 M0 host witness：`git diff -- tests/benchmark.c kernel/resources/benchmark.elf`、OpenSpec validate、必要 cargo check 命令清单
+- [ ] 1.13 建立 M0 board witness 模板：raw serial log、manifest、TX baseline、RX witness、64B small-packet section、exit code
+- [ ] 1.14 Phase 3 前停止并等待用户确认，不修改 `tests/benchmark.c`、`kernel/resources/benchmark.elf` 或 loader/rootfs 代码
 
 ## 2. Part A / M1 — Memory-root path loader fullbench
 
@@ -57,6 +66,7 @@
 - [ ] 6.3 建立 Q19C memory-root shell/script result 表：image、mode、startup chain、benchmark summary、raw log
 - [ ] 6.4 建立 Q19C SDMMC probe 表：controller facts、probe steps、block read result、blocker or success
 - [ ] 6.5 建立 Q19C rootfs result 表：rootfs format、block device、startup chain、benchmark summary、raw log
-- [ ] 6.6 更新 `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` 或追加后续分析文档，记录最终方案和证据
-- [ ] 6.7 更新 `openspec/specs/learned/spec.md`、`openspec/specs/architecture/spec.md`、`.claude/docs/tasks.md`
-- [ ] 6.8 归档 OpenSpec change，并将 `lichee-d1-fullbench` capability 合入主 specs
+- [ ] 6.6 建立 Q19C-M0 benchmark evidence 表：manifest fields、QEMU/Q19B 参数差异、RX witness mode、64B small-packet experiment matrix
+- [ ] 6.7 更新 `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` 或追加后续分析文档，记录最终方案和证据
+- [ ] 6.8 更新 `openspec/specs/learned/spec.md`、`openspec/specs/architecture/spec.md`、`.claude/docs/tasks.md`
+- [ ] 6.9 归档 OpenSpec change，并将 `lichee-d1-fullbench` capability 合入主 specs

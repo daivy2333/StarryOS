@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-07-02
-> 分支：uart-16550-lichee — Q19/Q19B 已完成并归档，Q19C 规范完整，Q17 待做
+> 分支：uart-16550-lichee — Q19/Q19B 已完成并归档，Q19C 重新探索完成，Q17 待做
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q19/Q19B 真板验证已完成，Q19C fullbench 规范完整，Q17 仍待做）
+**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q19/Q19B 真板验证已完成，Q19C fullbench 重新探索完成，Q17 仍待做）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
@@ -26,7 +26,7 @@
 - **Q19/Q19B 归档 ✅**: archived changes 位于 `openspec/changes/archive/2026-07-02-q19-lichee-d1-early-smoke/` 与 `openspec/changes/archive/2026-07-02-q19b-lichee-d1-benchmark/`。
 
 **当前待推进**:
-- **Q19C 📝**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 规范完整，目标是 memory-root path loader → shell/script parity → SDMMC/block rootfs → true rootfs benchmark；尚未进入源码实现。
+- **Q19C 📝**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 重新探索完成，先做 benchmark evidence cleanup（`benchmark.c` manifest/参数对齐、真板 RX witness、64B 小包优化探索），再推进 memory-root path loader → shell/script parity → SDMMC/block rootfs → true rootfs benchmark；尚未进入源码实现。
 - **Q17 ⏳**: SMP / 内存序正确性仍待做，重点为 O63：`ier_cache` RMW + TX completion 原子序。
 
 ### 关键发现
@@ -100,7 +100,7 @@
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | D1 axplat crate + build wiring + Android boot image + UART0 smoke output | ✅ 真板 `[starry-d1] smoke complete` |
 | **Q19B** | Lichee D1 async UART benchmark | 模式拆分 + D1 32-bit MMIO UART port + PLIC IRQ + embedded user benchmark image | ✅ 真板 userbench complete |
-| **Q19C** | Lichee full StarryOS benchmark | memory-root path loader + shell/script parity + SDMMC/rootfs 探索 | 📝 规范完整 / 待实施 |
+| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + shell/script parity + SDMMC/rootfs 探索 | 📝 重新探索 / 待实施 |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |

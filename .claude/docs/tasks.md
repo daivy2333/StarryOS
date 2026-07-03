@@ -74,7 +74,7 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 > 2026-06-28 Q19 板测: U-Boot 已识别 StarryOS Android boot image 并进入 payload；当时 fault 为 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908`，已定位到 `percpu::imp::init` 对 `.bss` `IS_INIT` 的 AMO。根因是 D1/C906 early DDR PTE 缺少 T-Head normal-memory `SH|B|C` bits；该问题已在 2026-06-29 的 smoke test 中验证解决。
 > 2026-06-29 Q19 完成: 解决 final page table `xuantie-c9xx`、D1 virtio 空 MMIO、fs/block gate、PCI/task-ext feature gate 后，`make lichee` 生成 `kernel_size=118976` 的 Android boot image；真板串口完成 `[starry-d1] smoke complete, halting.`。
 > 2026-06-29 Q19B 完成: D1 async UART userbench 完整跑通，256B/1024B/4096B TX 吞吐分别为 11.25/11.40/11.41 KB/s（97.7%/98.9%/99.0% line rate），1B tcdrain latency avg 0.270ms，FIONBIO 双入口 PASS。
-> 2026-07-02 Q19C 规范完整: OpenSpec change `q19c-lichee-full-starryos-benchmark` 已补齐 proposal/design/tasks/spec，计划按 memory-root path loader → shell/script parity → SDMMC/block rootfs → true rootfs benchmark 分层推进；当前未修改源码。
+> 2026-07-02 Q19C-M0 工作流进入 Phase 1/2：已细化 benchmark evidence cleanup 的 manifest、RX witness、64B 小包实验矩阵与 Phase 3 前见证要求；当前停止在 Phase 3 执行之前，未修改源码。
 > 2026-06-28 Q18 完成: platform descriptor + early console + QEMU 行为保持，提交 `941ad05`，归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`
 ```
 
@@ -131,13 +131,16 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 <!-- Q19C.1 --> - [x] Phase 1: 需求探索 + CodeGraph 路径追踪，确认 QEMU full path 为 `mount_all()` → `FS_CONTEXT.resolve()` → `load_user_app()`，Q19B Lichee 当前为 embedded `load_embedded_user_app()`
 <!-- Q19C.2 --> - [x] BDD 缺口扫描：区分 Happy Path（memory-root/rootfs benchmark）、Sad Path（无 block device / path missing）、Edge（Q19B regression 不退化）
 <!-- Q19C.3 --> - [x] 创建 OpenSpec change：`proposal.md`、`design.md`、`tasks.md`、`specs/lichee-d1-fullbench/spec.md`
-<!-- Q19C.4 --> - [x] Phase 2: 方案拆分为 M1 memory-root path loader、M2 shell/script parity、M3 SDMMC/block rootfs、M4 真板 full rootfs benchmark
-<!-- Q19C.5 --> - [ ] 实施入口：开始 Part A / M1 前建立 Q19B regression witness、`codegraph_impact` 与 Verify Current State
-<!-- Q19C.6 --> - [ ] M0: 保留 Q19B embedded userbench regression path，确认 async UART/TTY/syscall/benchmark 基线不退化
-<!-- Q19C.7 --> - [ ] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()` + `load_user_app()` 启动 benchmark
-<!-- Q19C.8 --> - [ ] M2: 通过 `/bin/sh`、脚本或等价命令入口触发 benchmark，验证 stdio/TTY/argv/envp/exit/join
-<!-- Q19C.9 --> - [ ] M3: 探索并接入 D1 SDMMC/block device，使 `axfs-ng::init_filesystems()` 有真实 `AxBlockDevice` 后再进入 rootfs path
-<!-- Q19C.10 --> - [ ] M4: 真板运行 rootfs path benchmark，分别记录 embedded、memory-root path、shell/script、rootfs path benchmark 数据
+<!-- Q19C.4 --> - [x] Phase 2: 方案拆分为 M0 benchmark evidence cleanup、M1 memory-root path loader、M2 shell/script parity、M3 SDMMC/block rootfs、M4 真板 full rootfs benchmark
+<!-- Q19C.5 --> - [ ] 实施入口：开始源码变更前建立 Q19B regression witness、`codegraph_impact` 与 Verify Current State
+<!-- Q19C.6 --> - [x] M0 Phase 1/2: 梳理并规划 `benchmark.c` 参数/manifest，使 QEMU、Q19B embedded、Q19C memory-root/shell/rootfs 数据可按配置横向解释
+<!-- Q19C.7 --> - [x] M0 Phase 1/2: 补齐真板 RX 测试方案，至少保留无输入 `EAGAIN` regression，并规划 fixed-payload/manual-input 或 loopback witness
+<!-- Q19C.8 --> - [x] M0 Phase 1/2: 保留 64B 小包结果 `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`，探索批量 drain、no-drain enqueue、`writev`、TX wake/drain path、64/128/256B break-even 优化方向
+<!-- Q19C.8a --> - [ ] M0 Phase 3 执行入口：修改 `tests/benchmark.c` 前先跑 current-state witness，并等待用户确认进入实施
+<!-- Q19C.9 --> - [ ] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()` + `load_user_app()` 启动 benchmark
+<!-- Q19C.10 --> - [ ] M2: 通过 `/bin/sh`、脚本或等价命令入口触发 benchmark，验证 stdio/TTY/argv/envp/exit/join
+<!-- Q19C.11 --> - [ ] M3: 探索并接入 D1 SDMMC/block device，使 `axfs-ng::init_filesystems()` 有真实 `AxBlockDevice` 后再进入 rootfs path
+<!-- Q19C.12 --> - [ ] M4: 真板运行 rootfs path benchmark，分别记录 embedded、memory-root path、shell/script、rootfs path benchmark 数据
 
 ### Q20: VisionFive2 UART 验证 ⏳ 等待硬件
 

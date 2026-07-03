@@ -1172,14 +1172,14 @@ Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/p
 - 真实 SDMMC/rootfs 需要 D1 block driver、clock/reset/pinmux/cache 等硬件 bring-up，排障面大，不能作为验证 normal loader path 的第一步。
 
 **影响**:
-- Q19C 可以拆成两个可验证阶段：memory-root fullbench 和 SDMMC/rootfs parity。
+- Q19C 可以拆成一个前置证据清理 gate 加两个可验证工程阶段：benchmark evidence cleanup、memory-root fullbench 和 SDMMC/rootfs parity。
 - benchmark 数据仍按 QEMU / D1 embedded / D1 fullbench 分栏记录，避免覆盖不同测试条件。
 - 后续 OpenSpec change 应新增 `lichee-d1-fullbench` 或等价 make target，并保留 `make lichee-userbench` 不退化。
 
 **替代方案**:
 - ❌ 直接做 SDMMC/rootfs：工程价值高，但会把 block bring-up 和 user loader parity 绑在一起，降低定位效率。
 - ❌ 复用 QEMU feature：会重新引入 PCI/virtio/display/rootfs 假设，不符合 D1 硬件事实。
-- ✅ memory-root path loader -> shell/script optional -> SDMMC/rootfs parity：当前推荐路线。
+- ✅ benchmark evidence cleanup -> memory-root path loader -> shell/script optional -> SDMMC/rootfs parity：当前推荐路线。
 
 #### Scenario: D1 fullbench path loading
 

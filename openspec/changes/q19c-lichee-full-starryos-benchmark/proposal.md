@@ -36,7 +36,6 @@ Q19C 分成两个工程部分。
 - 在 memory-root 中提供 `/bin/benchmark`，通过 VFS 路径解析启动 benchmark。
 - 复用 `load_user_app()`，覆盖 `FS_CONTEXT.resolve()`、`CachedFile`、ELF path loader、argv/envp、stdio、process exit/join。
 - 在 memory-root 中提供 `/bin/sh`、`/init.sh` 或明确等价的脚本入口，让 benchmark 可通过 shell/script 触发。
-- 保留 Q19B embedded userbench 作为 regression baseline，用于判断 async UART/TTY/syscall 是否退化。
 
 ### Part B: 真板 rootfs / SDMMC 探索
 

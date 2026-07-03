@@ -133,7 +133,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R6 --> `.claude/analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
 | <!-- R7 --> `.claude/analysis/d1-axplat-bringup-plan.md` | D1 正路径 axplat bring-up 方案：解释 U-Boot 已跳转但无 Starry 输出的根因，规划本地 `axplat-riscv64-lichee-d1`、链接/启动/MMIO console/build gate |
 <!-- tombstone: R8/R9 --> Archived 2026-07-02 in ARC-202607021648 — Q19B plan/blockers 已完成，当前入口为 `lichee-d1-benchmark` spec、Q19B archived change 与 R10 Q19C。
-| <!-- R10 --> `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` | Q19C 完整 StarryOS benchmark 探究：从 Q19B embedded userbench 推进到 D1 memory-root path loading、可选 shell parity、SDMMC/rootfs parity 与完整 benchmark gate |
+| <!-- R10 --> `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` | Q19C 完整 StarryOS benchmark 探究：先补 benchmark evidence cleanup（`benchmark.c` manifest、QEMU/真板参数对齐、RX witness、64B 小包优化探索），再从 Q19B embedded userbench 推进到 D1 memory-root path loading、可选 shell parity、SDMMC/rootfs parity 与完整 benchmark gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

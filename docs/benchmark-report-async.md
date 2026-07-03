@@ -1,8 +1,8 @@
 # Async 异步串口性能测试报告
 
 > **项目**：StarryOS（[daivy2333/StarryOS](https://github.com/daivy2333/StarryOS)） + uart_16550（[daivy2333/uart_16550](https://github.com/daivy2333/uart_16550)）
-> **分支**：`feat/uart-16550-async`（Q0~Q13 + LTO 全部完成） · **测试分支**：`feat/uart-16550-bench`（独立 bench 模块）
-> **截稿日期**：2026-06-29（Q19B Lichee RV Dock 真板 userbench 完成后更新）
+> **分支**：`feat/uart-16550-async` / `feat/uart-16550-bench`（QEMU 基线） · `uart-16550-lichee`（Q19B D1 真板 userbench）
+> **截稿日期**：2026-07-02（补充 Q19B Lichee RV Dock 真板 userbench 采集信息）
 > **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/uart-performance-comparison.md`（Console vs Async 对比） · `.claude/analysis/async-uart-module-boundary.md`（Q13 事后视角）
 > **重要声明**：QEMU riscv64-virt 不仿真真实串口线延迟，吞吐量数值偏高。本文 QEMU 实测数据仅供**相对性能对比**。Lichee RV Dock / Allwinner D1 真板数据已在 Q19B 回填；VisionFive2 多核真板数据仍需后续 Q20+ 单独采集。
 >
@@ -21,21 +21,25 @@ Async 异步串口在 QEMU riscv64-virt 上经过 Q7~Q15 M0~M4 共 12 阶段演�
 | 用户态 1B e2e 延迟 | **134 µs avg / P50 118.5 µs** | [`benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-bench/tests/benchmark.c) n=100，write+tcdrain（两次平均 127/141 µs）|
 | 用户态 64B TX 吞吐 | **170 KB/s** | `benchmark.c` 100 次迭代（两次平均 169.68 + 170.28）|
 | D1 真板 1024B TX 吞吐 | **11.40 KB/s** | Q19B Lichee RV Dock，约 98.9% 115200bps 线速 |
+| D1 真板 1B tcdrain 延迟 | **0.270 ms avg / 0.185 ms P50** | Q19B Lichee RV Dock，真实 UART0 @115200bps |
 | 非阻塞模式 | ✅ 三入口（open / fcntl / ioctl）全 PASS | `EAGAIN` 行为正确 |
 
-**小结**：本节 5 维度最佳成绩是 §2~§7 各章节数据的索引表；详细测试方法、阶段演进、当前 state 综合见后续章节。
+**小结**：本节汇总 QEMU 当前基线与 D1 真板关键成绩，是 §2~§7 各章节数据的索引表；详细测试方法、阶段演进、当前 state 综合见后续章节。
 
 ### 0.1 Lichee D1 真板结果（Q19B，2026-06-29）
 
-Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-lichee-userbench-boot.img` 运行 embedded `benchmark.elf`。该路径覆盖 D1 32-bit MMIO UART port、PLIC IRQ 18、`/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO。
+Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `make lichee-userbench` 生成的 `starry-lichee-userbench-boot.img` 运行 embedded `benchmark.elf`。该镜像保持 Android boot image 格式（`kernel_addr = 0x40200000`、`page_size = 2048`、`name = d1-nezha`），实测 `kernel_size = 970944` bytes，远小于当前约 10.1 MiB boot 分区。该路径覆盖 D1 32-bit MMIO UART port、PLIC IRQ 18、`/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO。
 
 | 指标 | D1 真板结果 | 说明 |
 |------|-------------|------|
-| 64B TX 吞吐 | 1.01 KB/s / 8.8% line rate | 每轮都 `tcdrain`，小包固定开销主导 |
+| 64B TX 吞吐 | size=64 / iters=100 / 1.01 KB/s / 8.8% line rate | 每轮都 `tcdrain`，小包固定开销主导 |
 | 256B TX 吞吐 | 11.25 KB/s / 97.7% line rate | 接近 115200bps 理论上限 |
 | 1024B TX 吞吐 | 11.40 KB/s / 98.9% line rate | 接近线速 |
 | 4096B TX 吞吐 | 11.41 KB/s / 99.0% line rate | 接近线速 |
 | 1B `tcdrain` 延迟 | avg 0.270 ms / P50 0.185 ms / P95 0.187 ms / P99 8.547 ms | P99 受调度与中断尾延迟影响 |
+| FIFO boundary 16B | avg 1.564 ms / P50 1.513 ms | 正好 1 个 16B FIFO |
+| FIFO boundary 32B | avg 2.927 ms / P50 2.876 ms | 正好 2 个 16B FIFO |
+| FIFO boundary 48B | avg 4.293 ms / P50 4.242 ms | 正好 3 个 16B FIFO |
 | FIONBIO | ✅ `open(O_NONBLOCK)` + `ioctl(FIONBIO)` PASS | 无输入时返回 `EAGAIN` |
 
 关键排障结论：
@@ -43,6 +47,7 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 - D1 DW APB UART 必须使用 stride 4 / 32-bit MMIO，不能复用 QEMU NS16550 byte MMIO raw probe。
 - D1 UART IRQ 18 可能出现 IIR=`0xc1` no-pending；THRE 边沿也可能丢失，因此 `tcdrain` 不能只依赖一次 THRE IRQ，必须由 LSR/TEMT 状态驱动补 wake。
 - `/dev/console` 输出必须处理 CRLF；内核 TTY 默认按 `OPOST|ONLCR` 做 LF→CRLF，benchmark 退出前执行 `fflush(stdout); tcdrain(STDOUT_FILENO);`。
+- Q19B 是 embedded benchmark 路径，不等同 QEMU 的 rootfs/shell path loader；完整 StarryOS shell/rootfs benchmark 已拆到 Q19C。
 
 **小结**：Lichee D1 证明 async UART 在真实 115200bps 硬件上可以达到大包 97.7%~99.0% 线速。QEMU 数据仍用于相对优化判断，D1 数据用于绝对线速判断；VisionFive2 数据仍需后续独立回填。
 
@@ -66,7 +71,7 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 
 **QEMU 仿真限制**：
 
-- QEMU 16550 模型不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），但真板实测吞吐受调度/IRQ 延迟影响可能低于此值，需 Q6 实测确认。
+- QEMU 16550 模型不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs）。Q19B Lichee D1 实测大包 TX 已达到 97.7%~99.0% 线速，证明 `tcdrain` 在真板上等待的是实际串口发送完成。
 - QEMU RISC-V `monotonic_time_nanos` 分辨率约 100ns，单字节延迟测量下限为 100ns（小于 100ns 的值均显示为 `<100ns`）。
 
 **优化阶段对照**（Q7~Q13.1 + LTO 共 9 个阶段）：
@@ -83,7 +88,7 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 | **Q13.1** | 2026-06-16 | #[inline(always)] + push_batch/pop_batch | overhead ↓20%（53.3→42.6µs），1B avg ↓7.6% |
 | **LTO** | 2026-06-16 | `lto = true`，跨 crate 内联（**已 revert**，参见 ADR-034）| 内核态 ring buffer ↑69% (385→652 MB/s)，e2e 不变（瓶颈在调度）|
 
-**小结**：测试环境与构建配置直接影响性能数据可比性。QEMU 实测适用于**阶段间相对对比**与**功能正确性验证**，**绝对吞吐需以真板为准**（Q6 待定）。
+**小结**：测试环境与构建配置直接影响性能数据可比性。QEMU 实测适用于**阶段间相对对比**与**功能正确性验证**；绝对串口线速以真板为准。Q19B 已提供 Lichee D1 单核真板基线，VisionFive2 多核基线仍需后续 Q20+ 采集。
 
 ---
 
@@ -148,31 +153,31 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 
 ---
 
-## 3. 用户态测试结果（Q13.1 + LTO 最新）
+## 3. 用户态测试结果（QEMU + D1 真板）
 
-用户态测试由 [`tests/benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/tests/benchmark.c)（Q7 修正后，**主分支有效**）提供，测量端到端 write/read/tcdrain 性能。Q13 + Q13.1 + LTO 三个阶段累计优化是当前 state——**用户态性能呈现"内核态快 4 数量级、e2e 受调度瓶颈制约"的双重特征**。
+用户态测试由 [`tests/benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/tests/benchmark.c)（Q7 修正后，**主分支有效**）提供，测量端到端 write/read/tcdrain 性能。QEMU 基线用于阶段间相对比较，Q19B D1 真板用于真实 115200bps 线速判断；两者共同呈现"内核态快 4 数量级、e2e 受调度与真实串口线速制约"的双重特征。
 
 **TX 吞吐量测试**：写 `/dev/console`，每次后 `tcdrain()`，100 次迭代，4 种数据大小。
 
-| 数据大小 | 实测/次（QEMU）| 硬件理论/次 📐 | 真板实测 |
+| 数据大小 | 实测/次（QEMU）| 硬件理论/次 📐 | D1 真板实测（Q19B） |
 |----------|-------------|------------|----------|
-| 64 bytes | 518.0 µs | 5,555.6 µs | ⏳ Q6 实测后回填 |
-| 256 bytes | 1,305.6 µs | 22,222.2 µs | ⏳ Q6 实测后回填 |
-| 1024 bytes | 4,922.5 µs | 88,888.9 µs | ⏳ Q6 实测后回填 |
-| 4096 bytes | 9,852.0 µs | 355,555.6 µs | 365.4 ms |
+| 64 bytes | 518.0 µs | 5,555.6 µs | size=64 / iters=100 / 1.01 KB/s / 8.8% line rate（每轮 tcdrain，小包固定开销主导） |
+| 256 bytes | 1,305.6 µs | 22,222.2 µs | 11.25 KB/s / 97.7% line rate |
+| 1024 bytes | 4,922.5 µs | 88,888.9 µs | 11.40 KB/s / 98.9% line rate |
+| 4096 bytes | 9,852.0 µs | 355,555.6 µs | 11.41 KB/s / 99.0% line rate（约 365 ms/次） |
 
 > **缩写说明**：`tcdrain()` 是 POSIX termios 函数，等待所有输出传输完毕；`/dev/console` 是 Linux 风格的 console 设备节点。
 > **Q13 性能说明**：Q12→Q13 引入 trait 抽象（5 个 OS trait），带来约 5.5 µs 软件 overhead 增加（129.5 vs 124 µs，Q12 无 trait 抽象）。这是为可移植性付出的合理代价——`uart_16550` 现在可复用于任何 OS。Q13.1 通过 `#[inline(always)]` + `push_batch`/`pop_batch` 将 overhead 从 53.3 µs 降到 42.6 µs（↓20%）。
 
-**TX 单字节延迟**（write + tcdrain，n=200）：
+**TX 单字节延迟**（write + tcdrain）：
 
-| 指标 | 值（QEMU）| 说明 |
-|------|----------|------|
-| P50 | 139.4 µs | 中位数 |
-| P95 | 171.2 µs | 95 分位 |
-| P99 | 238.8 µs | 99 分位 |
-| 平均 | 143.7 µs | 总平均 |
-| 软件 overhead | 56.9 µs | 平均减硬件理论 86.8 µs |
+| 指标 | QEMU | D1 真板（Q19B）| 说明 |
+|------|------|----------------|------|
+| P50 | 139.4 µs | 0.185 ms | 中位数 |
+| P95 | 171.2 µs | 0.187 ms | 95 分位 |
+| P99 | 238.8 µs | 8.547 ms | D1 P99 受调度/中断尾延迟影响 |
+| 平均 | 143.7 µs | 0.270 ms | 总平均 |
+| 软件 overhead | 56.9 µs | 约 0.183 ms | 平均减硬件理论 86.8 µs |
 
 > **方法学说明**：硬件理论 86.8 µs/byte @ 115200 bps（8N1 = 10 bit/byte = 86.8 µs）；软件 overhead = 实测 - 硬件理论。
 
@@ -186,7 +191,7 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 
 > **缩写说明**：FIONBIO = **F**ile **IO**ctl **N**on-**B**locking **I**/O；`EAGAIN` = "再试一次" POSIX 错误码；`O_NONBLOCK` = open 标志；`F_SETFL` = fcntl 设置文件状态标志。
 
-**小结**：当前 Q15 状态（无 LTO）下用户态延迟 134 µs avg / 118.5 µs P50。Q13.1 + LTO 状态 42.6 µs 软件 overhead 是历史最优（已归档），开发期暂不复用 per ADR-034。
+**小结**：当前 Q15 状态（无 LTO）下 QEMU 用户态延迟 134 µs avg / 118.5 µs P50。D1 真板单字节平均 0.270 ms，明显高于 QEMU，但大包吞吐接近物理线速，说明真板主要受串口线速和短包固定开销支配。Q13.1 + LTO 状态 42.6 µs 软件 overhead 是历史最优（已归档），开发期暂不复用 per ADR-034。
 
 ---
 
@@ -214,15 +219,25 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 
 **小结**：FIFO 边界对延迟的影响是非线性的。NAPI 阈值 16 正好等于 FIFO 深度，存在耦合（详见 §5 演进历史）。
 
+**D1 真板 FIFO 边界（Q19B）**：
+
+| 字节数 | D1 avg（ms）| D1 P50（ms）| 说明 |
+|--------|-------------|-------------|------|
+| 16 | 1.564 | 1.513 | 1 个 FIFO，已接近 16B 物理发送时间 1.389 ms |
+| 32 | 2.927 | 2.876 | 2 个 FIFO，约 2× 线性增长 |
+| 48 | 4.293 | 4.242 | 3 个 FIFO，约 3× 线性增长 |
+
+**小结**：QEMU FIFO 边界主要反映调度和 ISR 模拟行为；D1 真板 FIFO 边界更接近物理线速线性增长，额外开销约 0.17~0.40 ms，来自 syscall、调度、IRQ 和 drain 状态机。
+
 ---
 
 ## 4. 用户态 RX 测试说明
 
 **当前状态**：用户态 RX 测试在内核 benchmark 模块中完成（直接操作 Ring Buffer），**绕过 TTY 回显问题**——RX Ring Buffer 读取 ~864 MB/s，RX 延迟 P50 200 ns，**Ring Buffer 不是瓶颈**（864 MB/s >> 串口线速 11.52 KB/s）。
 
-**未来方向**：设置终端 raw mode + 禁用 echo，可实现用户态 RX 测试。**Q6 真板验证后**可获得真实 RX 性能数据。
+**未来方向**：设置终端 raw mode + 禁用 echo，可实现用户态 RX 测试。Q19B 已验证 FIONBIO 无输入时 `EAGAIN` 行为，但尚未形成真板 RX 吞吐数据；后续 Q19C/Q20 可补全真实 RX 基线。
 
-**小结**：用户态 RX 测试当前**未在主分支启用**（依赖 raw mode 终端配置）。Q6 真板验证后可补全。
+**小结**：用户态 RX 吞吐测试当前**未在主分支启用**（依赖 raw mode 终端配置）。Q19B 已证明 D1 `/dev/console` 非阻塞读链路正确；真实 RX 吞吐仍待后续补全。
 
 ---
 
@@ -245,9 +260,17 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 - **非阻塞测试**：`open(O_NONBLOCK)` / `ioctl(FIONBIO)` / `fcntl(F_SETFL)` 三种入口
 - **编译命令**：`riscv64-linux-musl-gcc -static`
 
-**QEMU 时序说明**：QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs），实测值受调度/IRQ 延迟影响，需 Q6 实测确认。
+**Lichee D1 真板用户态（Q19B）**：
 
-**小结**：内核态测吞吐/延迟细节（启动时自动），用户态测 e2e 性能与 FIONBIO 行为（benchmark.sh 自动化）——两套互补。
+- **镜像**：`make lichee-userbench` → `starry-lichee-userbench-boot.img`
+- **payload**：`kernel/resources/benchmark.elf` embedded static RISC-V ELF
+- **启动链**：D1 axplat → async UART + PLIC IRQ 18 → memory root → `/dev/console` → embedded benchmark process
+- **覆盖 syscall**：`openat` / `write` / `writev` / `ioctl(TCSBRK/tcdrain)` / `clock_gettime` / FIONBIO
+- **限制**：Q19B 仍是 embedded benchmark，不覆盖 rootfs path resolve 或 shell/script；该部分进入 Q19C
+
+**QEMU 时序说明**：QEMU 16550 模拟不仿真真实串口线延迟。`tcdrain()` 的 TCSBRK 实现正确（poll ring buffer + LSR.TRANSMITTER_EMPTY），但 QEMU 内部 UART 数据处理为瞬时。**📐 物理定律**：真板 NS16550 @ 115200 bps 线速上限 = 11,520 B/s（单字节 86.8 µs）。Q19B D1 大包实测已接近该上限。
+
+**小结**：内核态测吞吐/延迟细节（启动时自动），用户态测 e2e 性能与 FIONBIO 行为（benchmark.sh/Q19B embedded payload）——两套互补。QEMU 用于相对优化，Lichee D1 用于真实 115200bps 线速判断。
 
 ---
 
@@ -298,11 +321,11 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 
 ---
 
-## 7. 性能综合（QEMU 最新）
+## 7. 性能综合（QEMU + D1 真板）
 
-当前 state（Q13.1 + LTO）在 QEMU riscv64-virt 上的综合性能数据如下——**QEMU 实测综合性能达 651 MB/s 内核态 TX 吞吐与 139.4 µs P50 用户态延迟**，e2e 受调度瓶颈制约。Q6 真板验证后将获得真实环境数据。
+当前 QEMU 基线与 Q19B D1 真板基线分工明确：QEMU riscv64-virt 用于验证相对优化趋势，D1 真板用于校准真实 UART0 @115200bps 线速。QEMU 实测综合性能达 651 MB/s 历史内核态 TX 峰值与 139.4 µs P50 用户态延迟，e2e 受调度瓶颈制约；D1 真板大包 TX 已达到 97.7%~99.0% 物理线速。
 
-**综合性能表**（Q13.1 + LTO state）：
+**QEMU 综合性能表**（Q15 当前 state；历史 LTO 峰值作为对照保留）：
 
 | 维度 | 结果 | 测量方法 |
 |------|------|---------|
@@ -314,13 +337,26 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 | Ring Buffer RX（Q15 当前）| **1,147,959 KB/s** | `bench.rs` 65,536 字节 |
 | Ring Buffer RX P50 | <100 ns（计时器分辨率限制）| `bench.rs` 100 次单字节 |
 
-**待验证**（真板 VisionFive2，Q6 待办）：
+**Lichee D1 真板综合表（Q19B）**：
 
-- 真实串口吞吐量（受调度/IRQ 延迟影响，📐 物理定律上限 11.52 KB/s）
+| 维度 | 结果 | 测量方法 |
+|------|------|---------|
+| Board / SoC | Lichee RV Dock / Allwinner D1 / C906 | `starry-lichee-userbench-boot.img` |
+| UART | UART0 @115200bps, DW APB UART stride 4 / 32-bit MMIO | D1 platform path |
+| 256B / 1024B / 4096B TX | 11.25 / 11.40 / 11.41 KB/s | embedded `benchmark.elf`, `/dev/console + tcdrain` |
+| 1B tcdrain latency | avg 0.270 ms / P50 0.185 ms / P95 0.187 ms / P99 8.547 ms | embedded `benchmark.elf` |
+| FIFO 16/32/48B | avg 1.564 / 2.927 / 4.293 ms | embedded `benchmark.elf` |
+| FIONBIO | ✅ `O_NONBLOCK` + `ioctl FIONBIO` PASS | 无输入时 `EAGAIN` |
+| Exit | `benchmark exited with code: 0` / `Done.` | 用户进程完整退出 |
+
+**待验证**（后续真板 / Q19C / Q20+）：
+
+- rootfs/path-loader/shell 触发 benchmark（Q19C）
+- 用户态 RX 真板吞吐（raw mode + 禁 echo）
 - DMA 可行性（O3 / O40）
 - 高速波特率支持（230400+，O41）
 
-**小结**：QEMU 实测综合性能达 651 MB/s 内核态 TX 吞吐与 139.4 µs P50 用户态延迟，e2e 受调度瓶颈制约。Q6 真板验证后将获得真实环境数据。
+**小结**：QEMU 实测综合性能达 651 MB/s 内核态 TX 吞吐与 139.4 µs P50 用户态延迟，e2e 受调度瓶颈制约。Lichee D1 真板已给出真实 115200bps 线速基线，大包 TX 可达 97.7%~99.0% 线速；完整 rootfs/shell benchmark 进入 Q19C。
 
 ---
 
@@ -332,9 +368,9 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 2. **e2e 瓶颈在调度而非函数调用**——LTO 跨 crate 内联使内核态 ↑69% 但 e2e 不变，**调度优化是下一个突破点**（详见 §6）
 3. **Q13 提取使 `uart_16550` 跨 OS 可复用**——5 OS trait 抽象 + 5.5 µs 软件 overhead（已被 Q13.1 回收至 Q12 同等水平）
 4. **非阻塞三入口全 PASS**——open / fcntl / ioctl 三个入口 FIONBIO 行为正确（Q7 O43 修复，详见 §3）
-5. **Q6 真板验证是当前唯一待办**——QEMU 仿真限制决定绝对吞吐需以真板为准
+5. **真板数据已分层**——Lichee D1 已提供单核 115200bps 线速基线；VisionFive2 多核、高速波特率、DMA 和 rootfs/shell benchmark 仍需后续阶段
 
-**小结**：Q7~Q13.1 + LTO 9 个阶段累计优化验证了"内核态中断驱动 + ring buffer 中转 + 跨 OS trait 抽象"的技术路线在 QEMU 上可行；下一步突破需在真板（Q6）+ 调度优化两个方向。
+**小结**：Q7~Q15 累计优化验证了"内核态中断驱动 + ring buffer 中转 + 跨 OS trait 抽象"的技术路线；Q19B 进一步证明该路线在 D1 真实 UART0 @115200bps 上可以接近物理线速。下一步突破集中在 Q19C rootfs/shell path、VisionFive2 多核真板和调度优化。
 
 **已知排除的反优化方案**（OE1~OE5，避免重复探索）：
 
@@ -388,5 +424,5 @@ Q19B 使用 Lichee RV Dock / Allwinner D1 / UART0 @115200bps，通过 `starry-li
 
 ---
 
-**报告版本**：7.0 · **最后更新**：2026-06-17（bettermd 新规范 17 规则全量重写：H1/H2 only + 核心论点=首段 + 小结=**小结**：末段 + 结论=5 条短句 + 信息去重）
-**主要变更**：移除 36 处 H3 子节 → 段落合并 + 粗体小节；§8 结论从 5 个 H3 + 3 个表压缩至 5 条核心判断（**禁止复述数据**）；首/末段统一为核心论点/小结；§0 TL;DR 5 维度作为后续章节索引，避免数据在 §6/§7 重复出现。
+**报告版本**：7.1 · **最后更新**：2026-07-02（补充 Q19B Lichee RV Dock 真板 userbench 采集信息）
+**主要变更**：补充 D1 真板镜像/启动链、TX 吞吐、1B tcdrain 延迟、FIFO boundary、FIONBIO 与排障结论；将旧 “Q6 真板待回填” 表述更新为 Q19B D1 已回填、VisionFive2/Q19C 后续采集。
