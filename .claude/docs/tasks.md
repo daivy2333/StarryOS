@@ -61,37 +61,12 @@
 
 ---
 
-## 最终状态
+## 当前执行态
 
-```
-Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅ Q10 ✅ Q9 ✅ Q11 ✅ Q12 ✅ Q13 ✅ Q13-cleanup ✅ LTO ✅ M4 Sync ⟲ Q15 ✅ (2026-06-25) Q16 ✅ Q18 ✅ (2026-06-28) Q19 ✅ (2026-06-29 真板 smoke complete) Q19B ✅ (2026-06-29 真板 userbench complete) Q17 ✅ (2026-07-03 QEMU 修复完成 / 多 hart stress 待验证) → Q19C 📝(规范完整 / 待实施) → Q20 ⏳(VisionFive2 硬件 + Q17 SMP 复验) → Q21 ⏳(硬件数据) → Q22 ⏳ → Q23 🧊
-
-> 2026-06-21 M4 Sync 已回退到 pre-M4 基线 (04f8920/60c5729)，原代码保留在 temp 分支
-> 2026-06-21 Q15: M4+ 增量重融合，每步 Manual QA
-> 2026-06-25 Q15 完成: M0~M4 全部 commit 落地 + QEMU Manual QA 验证无退化
-> 2026-06-27 Roadmap 首次重排: Q6 单一真板桶拆为原 Q16~Q22，Q16 文档/规格收敛完成，下一站 Q17 内存序修复
-> 2026-06-28 Roadmap 二次重排: 新增 Q18 平台参数解耦和 Q19 Lichee RV Dock smoke test，VisionFive2 阶段顺延到 Q20
-> 2026-06-28 Q19 修正: D1 axplat crate 创建 + `MYPLAT`/`PLAT_CONFIG` 接入，ELF entry 0xffffffc040200000，`axplat_riscv64_lichee_d1::boot` 符号确认。`make lichee` 已强制 `DWARF=n`；当前沙箱完整重编被 `lwext4_rust` C 编译 `Bad system call` 阻断，需在正常环境复验 boot image size < boot 分区。
-> 2026-06-28 Q19 板测: U-Boot 已识别 StarryOS Android boot image 并进入 payload；当时 fault 为 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908`，已定位到 `percpu::imp::init` 对 `.bss` `IS_INIT` 的 AMO。根因是 D1/C906 early DDR PTE 缺少 T-Head normal-memory `SH|B|C` bits；该问题已在 2026-06-29 的 smoke test 中验证解决。
-> 2026-06-29 Q19 完成: 解决 final page table `xuantie-c9xx`、D1 virtio 空 MMIO、fs/block gate、PCI/task-ext feature gate 后，`make lichee` 生成 `kernel_size=118976` 的 Android boot image；真板串口完成 `[starry-d1] smoke complete, halting.`。
-> 2026-06-29 Q19B 完成: D1 async UART userbench 完整跑通，256B/1024B/4096B TX 吞吐分别为 11.25/11.40/11.41 KB/s（97.7%/98.9%/99.0% line rate），1B tcdrain latency avg 0.270ms，FIONBIO 双入口 PASS。
-> 2026-07-02 Q19C-M0 工作流进入 Phase 1/2：已细化 benchmark evidence cleanup 的 manifest、RX witness、64B 小包实验矩阵与 Phase 3 前见证要求；当前停止在 Phase 3 执行之前，未修改源码。
-> 2026-07-03 Q17 完成 QEMU gate: `make run` 默认 `BUS=mmio` 修正后，rootfs `/bin/benchmark` 完整通过；64B TX 159.25 KB/s，1B latency avg 0.177ms，FIONBIO 双入口 PASS。多 hart / 真板 SMP stress 未执行，需在 Q20 阶段复验。
-> 2026-06-28 Q18 完成: platform descriptor + early console + QEMU 行为保持，提交 `941ad05`，归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`
-```
-
-**2026-06-11 阶段重规划**：基于 4 个并行 agent 的优化审计（`.claude/analysis/optimization-opportunity-audit.md`），将原有 Q8（仅 O46）扩展为驱动引擎打磨（含 3 项正确性修复 + 热路径优化 + O46），新增 Q10（数据路径优化）和 Q11（内核通用优化）。
-
-**已实现**: kernel 层独立异步串口栈，不修改 registry 外部 crate（axplat/axhal/axtask 等）。
-- Shell stdin: ISR → RX copier → ring buffer → AsyncUartReader → Tty → Shell
-- Shell stdout: Shell → Tty → AsyncUartWriter → ring buffer → TX copier → UART
-- 内核日志: ax_println! → Console polling TX（共存）
-- /dev/async_uart: DeviceOps + Pollable，用户态可 open/read/write/poll
-- 性能优化: IER 缓存、ISR 合并、批量 I/O、rx/tx 独立锁、waker skip、NAPI 中断合并、批量 API
-- 性能测试: Console vs Async 统一数据量对比，Async CPU 效率高 14.3 倍
-- 性能分析: 完成用户态异步效率低下的根因分析（5 层瓶颈），FIONBIO 未传播的详细诊断
+Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通用测试代码设计暂留到 19C 正式实施；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
+<!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
 
 ### Q16: Roadmap / spec rebaseline ✅ (2026-06-27)
 
@@ -184,57 +159,4 @@ Q0 ✅ Q1 ✅ Q2 ✅ Q3 ✅ Q4 ✅ Q5 ✅ Q5.1 ✅ Q5.2 ✅ Q7 ✅ P0 ✅ Q8 ✅
 <!-- tombstone: Q8-Q11 archive pointers --> Archived 2026-07-02 in ARC-202607021648 — Q8~Q11 已在 Milestone 表与 archive 目录中可定位，删除重复小节。
 
 <!-- arc: ARC-202607021648 --> Q18/Q19 详细任务与 Q8-Q11 重复指针已归档/压缩 (2026-07-02) → ../../openspec/changes/archive/2026-07-02-ARC-202607021648/proposal.md
-
----
-
-## 关键经验
-
-### 已验证的模式
-
-1. Ring Buffer + 中断 + copier 任务模型 ✅
-2. DeviceOps + 设备注册 + poll/epoll 支持 ✅
-3. uart_16550 本地 path 依赖 + embassy-sync 集成 ✅
-4. Tty<R,W> 泛型绑定：实现 reader/writer trait 即可替换终端栈 ✅
-5. NAPI 中断合并：连续成功 ≥16 次后切轮询模式，高吞吐时减少 90%+ IRQ ✅
-6. 批量 API：receive_bytes/send_bytes 替代逐字节操作 ✅
-7. TX interleave 修复：本地 cursor 追踪已发位置，避免与 ax_println! 输出交错 ✅
-8. AtomicWaker 直接唤醒：ISR 中 O(1) 唤醒，无需 BTreeMap 分发（O17 不需要） ✅
-9. Console 组件清理：删除 ntty.rs + ConsoleWriter，ASYNC_TTY 成为唯一串口实现 ✅
-
-### 已解决的问题（Q7 修复）
-
-1. ~~三重 yield storm~~ → Q7 O42 修复（Manual→External）
-2. ~~Manual 模式缺陷~~ → Q7 O42 修复
-3. ~~Benchmark 不测 UART~~ → Q7 O44 修正
-4. ~~FIONBIO 不传播到 TTY~~ → Q7 O43 修复
-
-### 新发现的待解决问题（2026-06-11 审计）
-
-1. **NAPI 模式永不退出** — consecutive 在 NAPI 模式只增不减，零字节时无重置 → Q8.1
-2. **ISR 获取 SpinNoIrq 锁** — 违反 ISR 极简原则 → Q8.2
-3. **IER 裸 write_volatile** — 绕过 uart_16550 API → Q8.3
-4. **读路径 5 次拷贝** — UART FIFO→copier→driver→InputReader→ldisc→user → Q10
-5. **ldisc 锁跨 async wait 持有** — 阻塞并发 poll/select → Q10.3
-6. **copier waker 去重过度** — 每 poll 周期 2 次 Waker::clone() → Q8.4
-7. **PollSet→AtomicWaker** — pipe/signalfd/pidfd/event 共 8 个 PollSet 替换 → Q8.6~9
-
-### 已修正的误判
-
-1. **LoadFault 根因**: stride=4 越界，非"MMIO 权限阻塞"
-2. **Console 能访问的原因**: 页表映射正常（mmio-ranges 中），非"初始化时机"
-3. **无需修改 axplat**: kernel 层独立实现完全可行
-4. **copier/Console 竞争**: RX copier 不能与 Console tty-reader 共用 FIFO
-
-### 方向 A M3 的真正失败原因
-
-IRQ 风暴 + TX busy-loop — Console + AsyncUart 共享 UART 时的 IER 冲突和 stride=4 错误
-
-### 新发现的架构问题（2026-06-01 性能分析）— 全部已解决
-
-> 💡 以下问题已于 Q7~Q11 全部修复，保留为历史参考。
-
-1. **用户态性能上限是波特率**：115200 bps = 11.52 KB/s（硬件约束，非软件问题）
-2. ~~**Async RX 多一次拷贝**~~ → Q10 合并 C3/C4 拷贝
-3. ~~**ProcessMode::Manual yield storm**~~ → Q7 O42 External 模式修复
-4. ~~**FIONBIO 对 TTY 不生效**~~ → Q7 O43 三入口传播
-5. ~~**benchmark.c 不测真实 UART 吞吐量**~~ → Q7 O44 修正
+<!-- arc: ARC-202607031929 --> tasks `最终状态` / `关键经验` 历史小节已压缩归档 (2026-07-03) → ../../openspec/changes/archive/2026-07-03-ARC-202607031929/proposal.md

@@ -658,7 +658,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 #### QEMU benchmark 交叉编译 → 部署流程
 
-<!-- L201 -->
+<!-- L265 -->
 - **交叉编译**：`export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH && make tests/benchmark`
 - **挂载部署**：`sudo mount -o loop make/disk.img /mnt && sudo cp tests/benchmark /mnt/bin/benchmark && sudo umount /mnt`
 - **运行**：`make run` → QEMU 内 `./benchmark`
@@ -668,29 +668,29 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 #### benchmark 测试代码设计原则
 
-<!-- L202 -->
+<!-- L266 -->
 - **填充字节用 `\0`**：`memset(buf, 0, sz)`。UART 正常传输，终端零显示。禁止用可见字符（`'A'`）或不可打印字符（`0xFF`），前者刷屏、后者显示乱码 `�`
 - **新增测试尺寸不与现有重叠**：`test_tx_throughput` 已覆盖 64/256/1024/4096B，新增矩阵只测 FIFO 边界尺寸 1/15/16/17/31/32/33/48/49
 - **排序算法匹配现有风格**：新函数用 bubble sort（与 `test_tx_latency` 一致），不引入 `qsort` + 独立 comparator
 - **输出格式对齐**：缩进 + 单位标注（`ms`），匹配 `test_tx_latency` 的 `n=X avg=Y ms P50=Z ms` 格式
 
-<!-- L203 -->
+<!-- L267 -->
 - **数据量意识**：QEMU 115200 bps 下每 KB 数据 ≈ 87ms 传输时间。FIFO 边界矩阵 9 尺寸 × 100 迭代 ≈ 24KB（~2s）。避免尺寸重复导致数据量翻倍（曾因 64/256/1024/4096 重复导致 ~572KB → ~50s）
 
 #### ArceOS 借鉴参考（DMA / HAL / async 模式）
 
-<!-- L204 -->
+<!-- L268 -->
 | `axdma::alloc_coherent` | `others/arceos/modules/axdma/src/lib.rs:46` | DMA 一致性内存分配（返回 `DMAInfo { cpu_addr, bus_addr }` 二元组）。**仅模式参考**：NS16550 16 字节 FIFO 不需要 DMA，引入对齐约束 + cache flush 复杂度反而过度设计。未来做高速外设（NIC/块设备）可强借鉴。 | 2026-06-26 |
-<!-- L205 -->
+<!-- L269 -->
 | `axdriver_net::dwmac::DwmacHal` | `others/arceos/axdriver_crates/axdriver_net/src/dwmac/mod.rs:32-54` | DWMAC HAL trait（7 方法：`dma_alloc` / `dma_dealloc` / `mmio_phys_to_virt` / `mmio_virt_to_phys` / `wait_until` / `configure_platform` / `cache_flush_range`）。我们 `UartPort`（4 方法）+ `OsRuntime`/`OsWakerSet`（2 trait）= 6 接口，比 DwmacHal 7 方法**更精简且正交性更好**（ADR-036 已印证）。 | 2026-06-26 |
-<!-- L206 -->
+<!-- L270 -->
 | `axasync::waker::wake_at` | `others/arceos/modules/axasync/src/waker.rs:102` | timer-based waker（`BinaryHeap<TimerEventEntry>` + `set_oneshot_timer`）。**等价实现**：我们 `axtask::future::timeout(fut, dur)`（Q9）通过 `axtask::ax_wait_timer` + waker 实现相同语义，不引入 BinaryHeap/oneshot_timer。 | 2026-06-26 |
-<!-- L207 -->
+<!-- L271 -->
 | `axnet::smoltcp_impl::RecvFuture::poll` | `others/arceos/modules/axnet/src/smoltcp_impl/future.rs:31-64` | "Init Flag + Waker" Future 模式：首次 poll 做一次性初始化（连接状态检查），主循环注册 waker + Pending。**PIT-006 教训**：AcceptFuture 遗漏 `register_accept_waker` → 永久 Pending。我们 ISR 极简（read_isr + 禁中断 + wake + 返回）+ AtomicWaker 直接 wake（O17 教训）已蕴含此不变量。 | 2026-06-26 |
 
 #### 内存序踩坑（2026-06-26 O63 代码验证）
 
-<!-- L208 -->
+<!-- L272 -->
 **[ier_cache RMW 竞争 — Q6 SMP P0 阻塞]**
 
 - **症状**：真板 4 核下 ISR (hart 0) 和 copier (hart N) 并发调用 `update_ier()` 时，IER 中断使能位可能被对端覆盖丢失，导致 RX 或 TX 彻底停滞
@@ -698,7 +698,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **解决**：把 `ier_cache` RMW 搬进 `SpinNoIrq::lock()` 内，或改用 `AtomicU8::fetch_or`/`fetch_and` 配合 `AcqRel` 排序
 - **预防**：跨 hart 访问的 Atomic 变量做 RMW 时，如用 load+store 两步，必须将两步放在同一个锁临界区内；或直接用 `fetch_*` 原子操作
 
-<!-- L209 -->
+<!-- L273 -->
 **[tx_copier_active / tx_staged_bytes 跨 hart 读写排序 — Q6 SMP P1]**
 
 - **症状**：真板多核下 flush/tcdrain （user task on hart N）可能看到 TX copier (hart M) 的陈旧 active/staged 值，导致 tcdrain 过早返回或 hang
@@ -706,7 +706,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **解决**：写端 → `Ordering::Release`；读端 → `Ordering::Acquire`；`fetch_add/sub` → `Ordering::AcqRel`
 - **预防**：SMP 场景下，跨 hart 共享的 flag/counter 必须建立 happens-before 边。rule of thumb：store 用 Release，load 用 Acquire
 
-<!-- L210 -->
+<!-- L274 -->
 **[QEMU 单核掩盖 SMP 内存序问题]**
 
 - **现象**：Q15 全部 Relaxed 用法在 QEMU (max-cpu-num=1) 下完全正常，`cargo check` + benchmark 0 问题
