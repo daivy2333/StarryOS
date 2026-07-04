@@ -6,6 +6,7 @@
 > 2026-06-29 Q19B 真板 userbench 完成: `starry-lichee-userbench-boot.img` 在 Lichee RV Dock 完整跑完 embedded benchmark，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
 > 2026-06-29 Q19 完成：Lichee RV Dock 真板通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。
 > 2026-07-03 Q17 QEMU 修复完成：`ier_cache` RMW 纳入临界区，TX completion 控制流内存序升级，QEMU rootfs benchmark 通过；多 hart / 真板 SMP stress 尚未实测，作为 Q20 前置复验项保留。
+> 2026-07-04 Q19C review 后新增 Q19D 方向：Q19C 只做 memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆到 Q19D，避免把完整块设备驱动混入 Q19C。
 > 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
 > 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
 > 2026-07-02 Q19C 规范已完整：目标是在 Lichee RV Dock 上像 QEMU 一样通过 StarryOS path loader/rootfs 链路运行 benchmark；当前 OpenSpec change 已具备可实施的 proposal/design/tasks/spec，尚未进入源码实现。
@@ -53,7 +54,8 @@
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ✅ 真板 smoke complete |
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
-| **Q19C** | Lichee full StarryOS benchmark | memory-root path loader + shell/script parity + SDMMC/rootfs 探索 | 📝 规范完整 / 待实施 |
+| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + optional shell/script + SDMMC probe-only | 📝 规范完整 / 待实施 |
+| **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧭 后续方向 / 待建 change |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
@@ -63,7 +65,7 @@
 
 ## 当前执行态
 
-Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通用测试代码设计暂留到 19C 正式实施；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
+Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通用测试代码设计暂留到 19C 正式实施；Q19D 已登记为真实 D1 SDMMC/rootfs 后续方向；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
@@ -105,12 +107,13 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通�
 ### Q19C: Lichee full StarryOS benchmark 📝 规范完整 / 待实施
 
 > 来源：OpenSpec change `q19c-lichee-full-starryos-benchmark`，`.claude/analysis/q19c-lichee-full-starryos-benchmark.md`，ADR-052，learned L259-L261。
-> 当前状态：规范、设计与实施任务已完整；尚未进入源码实现。
+> 当前状态：2026-07-04 review 已吸收进 OpenSpec change；Q19C 范围收敛为 M0 benchmark evidence cleanup + M1 memory-root path loader，M2 shell/script 为有静态 shell或等价入口时的可选验证，SDMMC/rootfs 在 Q19C 内只做 probe-only / SKIPPED blocker evidence。尚未进入源码实现。
 
 <!-- Q19C.1 --> - [x] Phase 1: 需求探索 + CodeGraph 路径追踪，确认 QEMU full path 为 `mount_all()` → `FS_CONTEXT.resolve()` → `load_user_app()`，Q19B Lichee 当前为 embedded `load_embedded_user_app()`
 <!-- Q19C.2 --> - [x] BDD 缺口扫描：区分 Happy Path（memory-root/rootfs benchmark）、Sad Path（无 block device / path missing）、Edge（Q19B regression 不退化）
 <!-- Q19C.3 --> - [x] 创建 OpenSpec change：`proposal.md`、`design.md`、`tasks.md`、`specs/lichee-d1-fullbench/spec.md`
-<!-- Q19C.4 --> - [x] Phase 2: 方案拆分为 M0 benchmark evidence cleanup、M1 memory-root path loader、M2 shell/script parity、M3 SDMMC/block rootfs、M4 真板 full rootfs benchmark
+<!-- Q19C.4 --> - [x] Phase 2: 方案拆分为 M0 benchmark evidence cleanup、M1 memory-root path loader、M2 optional shell/script parity、M3 SDMMC/block probe-only、future rootfs deferred
+<!-- Q19C.4a --> - [x] Review 修订: 补齐 `FsContext::create_dir/write` 注入 API、feature/Makefile/entry 脚手架任务、mode feature/log label 映射、显式 benchmark section gate、ELF/boot image size 检查与 SKIPPED evidence 规则
 <!-- Q19C.5 --> - [ ] 实施入口：开始源码变更前建立 Q19B regression witness、`codegraph_impact` 与 Verify Current State
 <!-- Q19C.6 --> - [x] M0 Phase 1/2: 梳理并规划 `benchmark.c` 参数/manifest，使 QEMU、Q19B embedded、Q19C memory-root/shell/rootfs 数据可按配置横向解释
 <!-- Q19C.7 --> - [x] M0 Phase 1/2: 补齐真板 RX 测试方案，至少保留无输入 `EAGAIN` regression，并规划 fixed-payload/manual-input 或 loopback witness
@@ -118,8 +121,20 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通�
 <!-- Q19C.8a --> - [ ] M0 Phase 3 执行入口：修改 `tests/benchmark.c` 前先跑 current-state witness，并等待用户确认进入实施
 <!-- Q19C.9 --> - [ ] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()` + `load_user_app()` 启动 benchmark
 <!-- Q19C.10 --> - [ ] M2: 通过 `/bin/sh`、脚本或等价命令入口触发 benchmark，验证 stdio/TTY/argv/envp/exit/join
-<!-- Q19C.11 --> - [ ] M3: 探索并接入 D1 SDMMC/block device，使 `axfs-ng::init_filesystems()` 有真实 `AxBlockDevice` 后再进入 rootfs path
-<!-- Q19C.12 --> - [ ] M4: 真板运行 rootfs path benchmark，分别记录 embedded、memory-root path、shell/script、rootfs path benchmark 数据
+<!-- Q19C.11 --> - [ ] M3: 采集 D1 SDMMC/block probe-only evidence；无可用 block device 时记录 `SKIPPED: <blocker summary>`，不得触发 `No block device found!` panic
+<!-- Q19C.12 --> - [ ] Future rootfs: 仅当后续有真实 block device/rootfs 时运行 rootfs path benchmark；否则 rootfs result 表记录 SKIPPED，不阻塞 Q19C M1 完成
+
+### Q19D: Lichee SDMMC/rootfs implementation 🧭 后续方向 / 待建 change
+
+> 来源：Q19C review（`.claude/analysis/q19c-plan-review.md`）与 Q19C revised design。Q19D 承接 Q19C 的 SDMMC probe evidence，目标是把真实 D1 SDMMC/block/rootfs 实施从 Q19C 中拆出，单独管理风险和验收。
+> 当前状态：仅登记方向，尚未创建 OpenSpec change；必须等 Q19C M1 memory-root path loader 和 SDMMC probe evidence 明确后再正式 propose。
+
+<!-- Q19D.1 --> - [ ] 创建 OpenSpec change：`q19d-lichee-sdmmc-rootfs` 或等价名称，明确不与 Q20 VisionFive2 混合
+<!-- Q19D.2 --> - [ ] 基于 Q19C SDMMC probe 表确认 D1 SDMMC controller base/IRQ/clock/reset/pinmux/card-detect/U-Boot inheritance 状态
+<!-- Q19D.3 --> - [ ] 设计 D1 SDMMC 最小 PIO-first block read 路径，先证明可读 LBA0 或已知 block，再评估 IRQ/DMA/cache
+<!-- Q19D.4 --> - [ ] 将可用块设备注册为 `AxBlockDevice` / axdriver 设备容器，防止空 block list 调用 `axfs-ng::init_filesystems()`
+<!-- Q19D.5 --> - [ ] 准备 ext4/FAT rootfs 镜像，记录分区/偏移、benchmark ELF、可选 shell/init script 和动态依赖
+<!-- Q19D.6 --> - [ ] 真板运行 real rootfs path benchmark：通过 `load_user_app()` 从真实 rootfs 解析 `/bin/benchmark` 或 shell/script 入口，记录 raw serial log 与 benchmark summary
 
 ### Q20: VisionFive2 UART 验证 ⏳ 等待硬件
 

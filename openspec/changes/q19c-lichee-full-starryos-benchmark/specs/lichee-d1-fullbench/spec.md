@@ -8,7 +8,7 @@ Q19C MUST provide explicit Lichee fullbench runtime modes that are distinguishab
 
 - **WHEN** any Q19C fullbench image boots
 - **THEN** the serial log MUST print the active startup chain label before user application launch
-- **AND** the label MUST be one of `lichee-memory-root-path`, `lichee-memory-root-shell`, or `lichee-rootfs-path`.
+- **AND** the label MUST be one of `lichee-memory-root-path`, `lichee-memory-root-shell`, `lichee-rootfs-probe`, or `lichee-rootfs-path`.
 
 #### Scenario: No silent fallback to embedded loader
 
@@ -24,6 +24,7 @@ Q19C MUST preserve the Q19B embedded benchmark path as an explicit regression ba
 
 - **WHEN** the existing Lichee userbench target is built and booted
 - **THEN** it MUST run the embedded benchmark ELF path without requiring a rootfs or block device
+- **AND** the embedded benchmark MUST exit with code 0 before it is accepted as a regression pass
 - **AND** its output MUST remain distinguishable from Q19C fullbench output.
 
 #### Scenario: Regression failure is isolated
@@ -48,6 +49,12 @@ Lichee fullbench MUST provide a memory-root path mode in which `/bin/benchmark` 
 - **WHEN** `/bin/benchmark` cannot be resolved in memory-root path mode
 - **THEN** the system MUST report root provider, requested path, and resolve error
 - **AND** it MUST NOT report benchmark success.
+
+#### Scenario: Loaded process fails before printing
+
+- **WHEN** `load_user_app()` returns successfully but the spawned init process exits or aborts before printing any benchmark section
+- **THEN** the system MUST report spawn exit status and stage reached
+- **AND** it MUST NOT classify the run as a successful path-loader proof.
 
 #### Scenario: Memory-root still mounts pseudo filesystems
 
@@ -79,7 +86,7 @@ Q19C MUST provide a shell/script-triggered benchmark path after memory-root path
 
 ### Requirement: Rootfs mode requires real block device witness
 
-Q19C rootfs mode MUST only call `axfs-ng::init_filesystems()` after a real Lichee block device is available to the filesystem layer.
+Q19C rootfs path mode MUST only call `axfs-ng::init_filesystems()` after a real Lichee block device is available to the filesystem layer. Q19C MAY stop at `lichee-rootfs-probe` evidence when SDMMC/block support is not yet implemented.
 
 #### Scenario: No block device is present
 
@@ -87,6 +94,12 @@ Q19C rootfs mode MUST only call `axfs-ng::init_filesystems()` after a real Liche
 - **THEN** the system MUST avoid the `No block device found!` panic path
 - **AND** it MUST report that rootfs benchmark is blocked by missing block device support
 - **AND** it MUST include SDMMC/block probe summary in the serial log or captured evidence.
+
+#### Scenario: Rootfs proof is skipped after probe
+
+- **WHEN** SDMMC/block probe identifies that no usable block device exists yet
+- **THEN** Q19C evidence MUST record `SKIPPED` with a blocker summary for `lichee-rootfs-path`
+- **AND** the skipped rootfs path MUST NOT block acceptance of memory-root path loader proof.
 
 #### Scenario: Block device is present
 
@@ -97,7 +110,7 @@ Q19C rootfs mode MUST only call `axfs-ng::init_filesystems()` after a real Liche
 
 ### Requirement: SDMMC exploration records hardware facts
 
-Q19C Part B MUST record enough D1 SDMMC/block facts to distinguish hardware bring-up blockers from StarryOS filesystem or loader bugs.
+Q19C Part B MUST record enough D1 SDMMC/block facts to distinguish hardware bring-up blockers from StarryOS filesystem or loader bugs. It MUST NOT require a full D1 SDMMC driver implementation inside Q19C.
 
 #### Scenario: SDMMC probe runs
 
@@ -108,7 +121,7 @@ Q19C Part B MUST record enough D1 SDMMC/block facts to distinguish hardware brin
 #### Scenario: PIO-first path is used
 
 - **WHEN** DMA/cache behavior is not yet proven
-- **THEN** Q19C MAY use a PIO-first read path
+- **THEN** Q19C MAY use a PIO-first probe path if implementation effort is acceptable
 - **AND** the serial log MUST identify that DMA is not part of the current rootfs proof.
 
 ### Requirement: Rootfs image content is specified
@@ -134,6 +147,12 @@ Q19C MUST record benchmark evidence with enough context to compare QEMU, Q19B em
 
 - **WHEN** a benchmark result is documented
 - **THEN** the record MUST include board/target, image name, git revision, feature set, startup chain, root provider, loader, benchmark output summary, exit code, and raw serial log reference.
+
+#### Scenario: Recording skipped board evidence
+
+- **WHEN** a board-dependent Q19C result cannot be produced because a gate was not reached
+- **THEN** the evidence record MUST contain `SKIPPED` and a concrete blocker summary
+- **AND** it MUST NOT fabricate benchmark or rootfs data.
 
 #### Scenario: Comparing results
 

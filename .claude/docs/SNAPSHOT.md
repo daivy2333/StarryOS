@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-07-03
-> 分支：uart-16550-lichee — Q17 QEMU 修复完成，Q19/Q19B 已完成并归档，Q19C 重新探索完成；多 hart / 真板 SMP stress 待 Q20 复验
+> Last updated: 2026-07-04
+> 分支：uart-16550-lichee — Q17 QEMU 修复完成，Q19/Q19B 已完成并归档，Q19C review 后范围收敛；Q19D 已登记为 D1 SDMMC/rootfs 后续方向
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q17 QEMU 修复完成，Q19/Q19B 真板验证已完成，Q19C fullbench 重新探索完成；多 hart / 真板 SMP stress 待 Q20 复验）
+**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q17 QEMU 修复完成，Q19/Q19B 真板验证已完成，Q19C fullbench review 后范围收敛；Q19D 已登记为 D1 SDMMC/rootfs 后续方向）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
@@ -27,7 +27,8 @@
 - **Q19/Q19B 归档 ✅**: archived changes 位于 `openspec/changes/archive/2026-07-02-q19-lichee-d1-early-smoke/` 与 `openspec/changes/archive/2026-07-02-q19b-lichee-d1-benchmark/`。
 
 **当前待推进**:
-- **Q19C 📝**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 重新探索完成，先做 benchmark evidence cleanup（`benchmark.c` manifest/参数对齐、真板 RX witness、64B 小包优化探索），再推进 memory-root path loader → shell/script parity → SDMMC/block rootfs → true rootfs benchmark；尚未进入源码实现。
+- **Q19C 📝**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 已按 2026-07-04 review 修订；先做 benchmark evidence cleanup，再推进 memory-root path loader。shell/script 为可选/等价入口验证，SDMMC/rootfs 在 Q19C 内只做 probe-only 或 SKIPPED blocker evidence；尚未进入源码实现。
+- **Q19D 🧭**: 后续独立方向，承接 Q19C SDMMC probe evidence，目标是真实 D1 SDMMC/block/rootfs 实施和 real rootfs path benchmark；尚未创建 OpenSpec change。
 - **Q20 ⏳**: VisionFive2 / 等价多 hart 环境到位后，复验 Q17 O63：并发 UART read/write、flush/tcdrain 与 IER enable/disable 无数据丢失或 hang。
 
 ## 最小关键事实
@@ -37,7 +38,7 @@
 | QEMU benchmark | `BUS=mmio BLK=y make run` 或当前默认 `make run` 可进入 rootfs；`/bin/benchmark` 已通过，适合做功能/回归验证，不适合声明真板线速。 |
 | D1 userbench | Lichee RV Dock 已正常运行 userbench，说明 Q17 改动未破坏 D1 单板基本路径；但它不是多 hart stress。 |
 | Q17 限制 | 当前只证明 QEMU 单 hart 与 D1 已运行路径无明显功能/性能问题，不能证明跨 hart 内存序彻底关闭。 |
-| Q19C 边界 | 通用、可横向对比的测试代码设计留到 Q19C；本轮仅记录 QEMU/D1 均达到预期。 |
+| Q19C/Q19D 边界 | Q19C = benchmark manifest + memory-root path loader + SDMMC probe-only；Q19D = 真实 D1 SDMMC/block/rootfs 实施和 real rootfs benchmark。 |
 
 <!-- tombstone: SNAPSHOT-history-blocks --> Archived 2026-07-03 in ARC-202607031929 — 旧关键发现表、阶段表、架构图、项目结构、技术栈、文档索引与代码路径速查已压缩归档，active SNAPSHOT 只保留当前态。
 <!-- arc: ARC-202607031929 --> SNAPSHOT 历史结构/技术栈/路径表已压缩归档 (2026-07-03) → ../../openspec/changes/archive/2026-07-03-ARC-202607031929/proposal.md

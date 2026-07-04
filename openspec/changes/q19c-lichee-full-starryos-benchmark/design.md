@@ -41,30 +41,32 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 - Lichee 能通过 `/bin/sh -c /init.sh` 或等价脚本入口运行 benchmark。
 - Q19B embedded benchmark 继续作为 regression baseline。
 - Q19C-M0 先让 benchmark 输出包含参数 manifest，并规划真板 RX witness 与 64B 小包优化实验。
-- 真板 rootfs 探索有明确采集项、接入点、失败输出和验收标准。
+- 真板 SDMMC/rootfs 探针有明确采集项、失败输出和后续接入标准；完整 D1 SDMMC 驱动/rootfs benchmark 不作为 Q19C 必达项。
 - benchmark 证据能区分启动链路：QEMU、Q19B embedded、Q19C memory-root path、Q19C shell/script、Q19C rootfs path。
 
 **Non-Goals:**
 
 - 不把 `qemu` feature 复用到 D1。
 - 不把 memory-root 称为真实 rootfs。
-- 不把 SDMMC/rootfs 探索和 memory-root shell 闭环绑成一个不可拆任务。
+- 不把 SDMMC/rootfs 探针和 memory-root shell 闭环绑成一个不可拆任务。
+- 不在 Q19C 内承诺完成 D1 SDMMC 完整驱动移植。
 - 不删除或弱化 Q19B 的真板回归路径。
 
 ## Architecture
 
 ### Runtime Modes
 
-| Mode | Root provider | User entry | Loader | Purpose |
-|------|---------------|------------|--------|---------|
-| `lichee-d1` | none | smoke marker | none | D1 boot smoke |
-| `lichee-d1-kbench` | none | kernel benchmark | none | async UART kernel benchmark |
-| `lichee-d1-userbench` | memory root for devfs only | embedded benchmark bytes | `load_embedded_user_app()` | Q19B regression |
-| `lichee-d1-fullbench-mem` | populated memory root | `/bin/benchmark` | `load_user_app()` | path loader proof |
-| `lichee-d1-fullbench-shell` | populated memory root | `/bin/sh -c /init.sh` or equivalent | `load_user_app()` | shell/script proof |
-| `lichee-d1-fullbench-rootfs` | SDMMC/block rootfs | rootfs `/bin/sh` / `/bin/benchmark` | `load_user_app()` | full board parity |
+| Mode | Feature name | Log label | Root provider | User entry | Loader | Purpose |
+|------|--------------|-----------|---------------|------------|--------|---------|
+| smoke | `lichee-d1` | `lichee-smoke` | none | smoke marker | none | D1 boot smoke |
+| kbench | `lichee-d1-kbench` | `lichee-kbench` | none | kernel benchmark | none | async UART kernel benchmark |
+| embedded | `lichee-d1-userbench` | `lichee-embedded-userbench` | memory root for devfs only | embedded benchmark bytes | `load_embedded_user_app()` | Q19B regression |
+| M1 | `lichee-d1-fullbench` + mode `mem` or `lichee-d1-fullbench-mem` | `lichee-memory-root-path` | populated memory root | `/bin/benchmark` | `load_user_app()` | path loader proof |
+| M2 | `lichee-d1-fullbench` + mode `shell` or `lichee-d1-fullbench-shell` | `lichee-memory-root-shell` | populated memory root | `/bin/sh -c /init.sh` or equivalent | `load_user_app()` | shell/script proof |
+| M3 probe | `lichee-d1-fullbench` + mode `rootfs-probe` or equivalent | `lichee-rootfs-probe` | SDMMC/block probe only | none unless block exists | none or `load_user_app()` only after block exists | rootfs readiness evidence |
+| future rootfs | future milestone | `lichee-rootfs-path` | SDMMC/block rootfs | rootfs `/bin/sh` / `/bin/benchmark` | `load_user_app()` | full board parity |
 
-Implementation can expose these as separate features, make targets, or one feature with compile-time mode selection. The observable contract is the important part: each image logs its mode and does not silently fall back to a weaker mode.
+Implementation SHOULD prefer one `lichee-d1-fullbench` capability feature with a compile-time mode selector (for example `--cfg fullbench_mode="mem"`), or separate feature names if that is simpler for the Makefile. The observable contract is fixed: each image logs its label and does not silently fall back to a weaker mode.
 
 ### M0: Benchmark Evidence Cleanup
 
@@ -129,19 +131,32 @@ Required layout:
 
 M1 uses `/bin/benchmark` directly. M2 uses `/bin/sh -c /init.sh` or a documented equivalent script command. Direct benchmark launch is not enough for M2 unless the equivalent command entry exercises the same argv/envp/stdio/exit path that shell/script would exercise.
 
-### Part B: Real Rootfs Fullbench
+The memory-root injection path MUST use filesystem-level APIs rather than direct `MemoryNode` writes. `MemoryNode::read_at()` / `write_at()` / `append()` are page-cache backed and direct use can panic. The intended sequence is:
 
-Part B replaces the memory-root provider with a real block-backed rootfs:
+```rust
+init_memory_root();
+FS_CONTEXT.lock().create_dir("/bin", DIR_PERMISSION)?;
+FS_CONTEXT.lock().write("/bin/benchmark", include_bytes!("../resources/benchmark.elf"))?;
+// Optional M2 payloads only if available:
+FS_CONTEXT.lock().write("/init.sh", b"/bin/benchmark\n")?;
+// mount_all() happens after injection; it mounts /dev, /proc, /sys, /tmp and does not replace /bin.
+pseudofs::mount_all();
+```
+
+After injection, M1 MUST verify `FS_CONTEXT.lock().resolve("/bin/benchmark")` succeeds before calling `load_user_app()`. The benchmark ELF MUST be checked as static/no interpreter (`readelf -l kernel/resources/benchmark.elf | grep INTERP` returns empty), because `load_user_app()` follows `PT_INTERP` for dynamic ELF.
+
+M2 is optional unless a known-good static `/bin/sh` is available. Busybox may depend on `/proc/self/exe`; if that dependency is not resolved, Q19C may use a documented equivalent command entry instead of busybox, but the evidence must still cover argv/envp/stdio/exit/join.
+
+### Part B: SDMMC / Rootfs Probe
+
+Part B records whether a future real rootfs mode is feasible. Q19C does not require implementing the complete D1 SDMMC initialization sequence. If a block device is already available, Q19C may continue into rootfs proof; otherwise it records `SKIPPED` with a blocker summary.
 
 ```text
 Allwinner D1 SDMMC
-  -> D1 block driver or reused initialized block device
-  -> AxBlockDevice
-  -> AxDeviceContainer<AxBlockDevice>
-  -> axfs_ng::init_filesystems(block_devs)
-  -> FS_CONTEXT root
-  -> mount_all()
-  -> load_user_app("/bin/sh" or "/bin/benchmark")
+  -> probe MMIO / clock / reset / pinmux / card-detect facts
+  -> classify inherited U-Boot state vs required StarryOS init sequence
+  -> if a real block device exists: AxBlockDevice -> axfs_ng::init_filesystems(block_devs)
+  -> otherwise: SKIPPED rootfs path with blocker summary
 ```
 
 Rootfs mode must not call `init_filesystems()` with an empty block device list. A missing block device is a hardware bring-up blocker, not a filesystem success or benchmark failure.
@@ -178,7 +193,7 @@ Reason:
 
 ### D4: Real rootfs requires hardware witness first
 
-Rootfs mode starts only after SDMMC/block device facts are collected and at least one real block device is available.
+Rootfs benchmark starts only after SDMMC/block device facts are collected and at least one real block device is available. In Q19C, SDMMC work is allowed to stop at probe evidence.
 
 Reason:
 
@@ -195,6 +210,7 @@ Required labels:
 - `lichee-embedded-userbench`
 - `lichee-memory-root-path`
 - `lichee-memory-root-shell`
+- `lichee-rootfs-probe`
 - `lichee-rootfs-path`
 
 Reason:
@@ -218,11 +234,11 @@ Reason:
 |-------------|-------|----------|----------------|--------|
 | R0 Benchmark evidence cleanup | 1.1-1.14, 6.1-6.7 | 100% | RX fixed-payload may start as manual-input before loopback | Covered |
 | R1 Preserve embedded regression | 1.1-1.5, 6.1 | 100% | None | Covered |
-| R2 Memory-root path loader | 2.1-2.8, 6.2 | 100% | Uses memory-root, not physical rootfs | Covered |
-| R3 Shell/script benchmark parity | 3.1-3.7, 6.3 | 100% | Static shell or documented equivalent allowed | Covered |
-| R4 SDMMC/block witness | 4.1-4.9, 6.4 | 100% | PIO-first allowed before DMA | Covered |
-| R5 Real rootfs benchmark | 5.1-5.8, 6.5 | 100% | ext4 or FAT accepted, selected by feature | Covered |
-| R6 Evidence separation | 6.1-6.7 | 100% | None | Covered |
+| R2 Memory-root path loader | 2.1-2.12, 6.2 | 100% | Uses memory-root, not physical rootfs | Covered |
+| R3 Shell/script benchmark parity | 3.1-3.8, 6.3 | Optional after M1 | Static shell or documented equivalent allowed | Covered |
+| R4 SDMMC/block probe witness | 4.1-4.6, 6.4 | 100% | Probe-only, no full driver promise | Covered |
+| R5 Future real rootfs benchmark | 5.1-5.5, 6.5 | Conditional | SKIPPED unless block device exists | Deferred/Conditional |
+| R6 Evidence separation | 6.1-6.8 | 100% | Board-only rows may be SKIPPED with blocker | Covered |
 
 ## Verification Plan
 
@@ -273,13 +289,14 @@ Part B board probes must capture:
 | script fails | script path, argv, exit code | shell/script behavior issue |
 | no block device | device list count and SDMMC probe summary | Part B hardware blocker |
 | rootfs mount fails | fs type, first block read status, mount error | block/fs integration issue |
+| process exits before first benchmark section | exit code, loader stage, first section reached = none | path-loader proof failed |
 | benchmark exits nonzero | exit code and benchmark section reached | userland/app issue |
 
 ## Risks / Trade-offs
 
 - **Memory-root can mask rootfs bugs**: mitigated by chain-specific labels and separate rootfs mode.
 - **Static shell availability**: if no static shell is available, M2 may use a documented equivalent command runner, but the spec still requires argv/envp/stdio/exit coverage.
-- **SDMMC scope**: D1 SDMMC may require clock/reset/pinmux work outside current UART scope. This is isolated in Part B.
+- **SDMMC scope**: D1 SDMMC may require clock/reset/pinmux work outside current UART scope. Q19C isolates this as probe-only evidence; full driver work is deferred.
 - **Boot image growth**: embedding benchmark, shell and scripts may increase image size. Every image build records size.
 - **Dynamic ELF dependencies**: dynamic shell or benchmark requires interpreter and libraries in the same root provider; static binaries reduce early risk.
 
@@ -290,6 +307,6 @@ Q19C is complete when:
 - Q19B embedded userbench remains runnable.
 - Lichee memory-root path mode runs `/bin/benchmark` through `load_user_app()`.
 - Lichee shell/script mode runs benchmark from shell or documented equivalent script entry.
-- SDMMC/block exploration either produces a working rootfs path or documents a concrete hardware blocker with captured probe data.
-- If block rootfs works, benchmark runs from real rootfs and is recorded separately from memory-root data.
+- SDMMC/block exploration documents a concrete hardware blocker with captured probe data, or, if a block device is already available, proceeds to rootfs proof.
+- If block rootfs works, benchmark runs from real rootfs and is recorded separately from memory-root data; otherwise rootfs evidence is marked SKIPPED, not failed.
 - OpenSpec specs, analysis, learned notes and task status contain the final evidence.
