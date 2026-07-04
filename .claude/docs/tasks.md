@@ -7,6 +7,7 @@
 > 2026-06-29 Q19 完成：Lichee RV Dock 真板通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。
 > 2026-07-03 Q17 QEMU 修复完成：`ier_cache` RMW 纳入临界区，TX completion 控制流内存序升级，QEMU rootfs benchmark 通过；多 hart / 真板 SMP stress 尚未实测，作为 Q20 前置复验项保留。
 > 2026-07-04 Q19C review 后新增 Q19D 方向：Q19C 只做 memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆到 Q19D，避免把完整块设备驱动混入 Q19C。
+> 2026-07-04 analysis 文档归档：Q18/Q19/Q19B 历史分析和 Lichee 原始采集日志移至 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/`；原路径保留 tombstone。
 > 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
 > 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
 > 2026-07-02 Q19C 规范已完整：目标是在 Lichee RV Dock 上像 QEMU 一样通过 StarryOS path loader/rootfs 链路运行 benchmark；当前 OpenSpec change 已具备可实施的 proposal/design/tasks/spec，尚未进入源码实现。
@@ -126,7 +127,7 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通�
 
 ### Q19D: Lichee SDMMC/rootfs implementation 🧭 后续方向 / 待建 change
 
-> 来源：Q19C review（`.claude/analysis/q19c-plan-review.md`）与 Q19C revised design。Q19D 承接 Q19C 的 SDMMC probe evidence，目标是把真实 D1 SDMMC/block/rootfs 实施从 Q19C 中拆出，单独管理风险和验收。
+> 来源：Q19C OpenSpec change `q19c-lichee-full-starryos-benchmark` 的 2026-07-04 review（Q19C review 已吸收进该 change 的 design/tasks；不再有独立的 q19c-plan-review.md 文件）。Q19D 承接 Q19C 的 SDMMC probe evidence，目标是把真实 D1 SDMMC/block/rootfs 实施从 Q19C 中拆出，单独管理风险和验收。
 > 当前状态：仅登记方向，尚未创建 OpenSpec change；必须等 Q19C M1 memory-root path loader 和 SDMMC probe evidence 明确后再正式 propose。
 
 <!-- Q19D.1 --> - [ ] 创建 OpenSpec change：`q19d-lichee-sdmmc-rootfs` 或等价名称，明确不与 Q20 VisionFive2 混合

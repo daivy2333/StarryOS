@@ -8,7 +8,7 @@
 
 Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64/O66/O38/O39/O3/O40/O41/O48/O49/O50 等不同触发条件的条目塞进单一 Q6。O 编号保留历史身份，Q 编号代表当前执行 milestone。
 
-> 2026-06-28 二次重排：基于 `.claude/analysis/platform-parameter-decoupling.md` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md`，在真板验证前新增 Q18 平台参数解耦和 Q19 Lichee RV Dock early smoke test。原 VisionFive2 / DMA / 维护 / 远期池顺延。
+> 2026-06-28 二次重排：基于 `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/]` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/]`，在真板验证前新增 Q18 平台参数解耦和 Q19 Lichee RV Dock early smoke test。原 VisionFive2 / DMA / 维护 / 远期池顺延。
 > 2026-06-29 更新：Q19 / O76 已在 Lichee RV Dock 真板完成，串口输出 `[starry-d1] smoke complete, halting.`。
 > 2026-06-29 更新：Q19B / O77 已在 Lichee RV Dock 真板完成 async UART userbench，大包 TX 达 97.7%~99.0% 115200bps 线速。
 > 2026-07-03 更新：Q17 / O63 已完成 QEMU 修复与回归验证；多 hart / 真板 SMP stress 尚未执行，不能声明跨 hart 内存序已被实测证明。
@@ -149,7 +149,7 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 
 从 arceos（`/home/daivy/projects/serial/others/arceos/`，明扬异步化工作）已识别可借鉴的设计模式、踩坑教训、抽象机制。本节 MUST 集中登记真正需要新增工作的项；已等价实现的项标注 "✅ 已采纳"。
 
-> 完整分析见 `.claude/analysis/arceos-borrowable-experience.md`。本节是该分析的优化待办部分。
+> 完整分析见 `.claude/analysis/arceos-borrowable-experience.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/]`。本节是该分析的优化待办部分。
 >
 > **背景**：StarryOS 脱胎于 arceos，明扬在 arceos 上做 DWMAC/网络/启动等模块的异步化推进，我们从其工作获取经验后应用到 StarryOS 异步串口后续阶段开发。
 

@@ -126,12 +126,12 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 |------|------|
 | `architecture-overview.md` | 架构概览：仓库结构、构建系统、启动链、任务/进程模型、中断框架 |
 | `arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA 待 Q6 重新评估（O3/O40）、HAL trait 我们更精简（Q13 + ADR-036）、Q6 真板待采纳 trust u-boot（ADR-004）+ PLIC init_primary/percpu 分离（ADR-002）、arceos 自身未做异步 UART（OPT-001 我们是行业先例）。配套 optimization/spec.md O64~O73 借鉴清单 |
-| <!-- R2 --> `.claude/analysis/optimization-milestone-replan.md` | Q15 后优化项 milestone 重规划：将 Q6 过载项拆分为 Q16 文档收敛、Q17 SMP 内存序、Q18 真板观测、Q19 VisionFive2 验证、Q20 DMA/高波特率决策、Q21 维护性清理、Q22 远期预研池 |
+| <!-- R2 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/optimization-milestone-replan.md` | Q15 后优化项 milestone 重规划：将 Q6 过载项拆分为 Q16 文档收敛、Q17 SMP 内存序、Q18 真板观测、Q19 VisionFive2 验证、Q20 DMA/高波特率决策、Q21 维护性清理、Q22 远期预研池 |
 | <!-- R3 --> `.claude/analysis/q17-smp-memory-ordering.md` | Q17 / O63 SMP 内存序实施前分析：`ier_cache` RMW 竞争、TX completion Release/Acquire 语义、无需按架构分叉的 Rust 原子模型依据、验证 Gate；2026-07-03 复核补充 D1 `UartPort` 边界与当前源码行号漂移 |
-| <!-- R4 --> `.claude/analysis/lichee/public-platform-notes.md` | Lichee RV Dock 公开资料与真板采集对照：D1 UART/PLIC/timer/boot image/RAM/启动链事实基线 |
-| <!-- R5 --> `.claude/analysis/lichee-rv-dock-adaptation-plan.md` | Lichee RV Dock 适配方案：方向、技术路线、milestone、风险与下一步工程清单 |
-| <!-- R6 --> `.claude/analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
-| <!-- R7 --> `.claude/analysis/d1-axplat-bringup-plan.md` | D1 正路径 axplat bring-up 方案：解释 U-Boot 已跳转但无 Starry 输出的根因，规划本地 `axplat-riscv64-lichee-d1`、链接/启动/MMIO console/build gate |
+| <!-- R4 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee/public-platform-notes.md` | Lichee RV Dock 公开资料与真板采集对照：D1 UART/PLIC/timer/boot image/RAM/启动链事实基线 |
+| <!-- R5 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md` | Lichee RV Dock 适配方案：方向、技术路线、milestone、风险与下一步工程清单 |
+| <!-- R6 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
+| <!-- R7 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md` | D1 正路径 axplat bring-up 方案：解释 U-Boot 已跳转但无 Starry 输出的根因，规划本地 `axplat-riscv64-lichee-d1`、链接/启动/MMIO console/build gate |
 <!-- tombstone: R8/R9 --> Archived 2026-07-02 in ARC-202607021648 — Q19B plan/blockers 已完成，当前入口为 `lichee-d1-benchmark` spec、Q19B archived change 与 R10 Q19C。
 | <!-- R10 --> `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` | Q19C 完整 StarryOS benchmark 探究：先补 benchmark evidence cleanup（`benchmark.c` manifest、QEMU/真板参数对齐、RX witness、64B 小包优化探索），再从 Q19B embedded userbench 推进到 D1 memory-root path loading、可选 shell parity、SDMMC/rootfs parity 与完整 benchmark gate |
 

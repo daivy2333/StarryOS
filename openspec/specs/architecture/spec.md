@@ -589,7 +589,7 @@ This contract MUST report the number of bytes accepted by the output sink so VFS
 - **AND** `Tty::write_at` MUST propagate that count to VFS/sys_write callers
 
 **参考**:
-- `.claude/analysis/q15-m3-tty-short-write-contract.md`
+- `.claude/analysis/q15-m3-tty-short-write-contract.md` `[ARCHIVED 2026-07-04 → _archive/2026-06-24-q0-q15-analysis/q15-m3-tty-short-write-contract.md]`
 - learned/spec.md L202/L204
 - uart_16550: `src/tty.rs`, `src/async_/device_ops.rs`, `src/async_/ring_buffer.rs`
 - StarryOS: `kernel/src/pseudofs/dev/tty/mod.rs`, `kernel/src/pseudofs/dev/tty/pty.rs`, `kernel/src/pseudofs/dev/tty/terminal/ldisc.rs`
@@ -697,7 +697,7 @@ VisionFive2 真板启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树�
 - `others/arceos/modules/axdriver/src/dwmac.rs:101` "U-Boot has already initialized everything"
 - `others/arceos/modules/axhal/src/platform/riscv64_starfive/console.rs` — SBI console，无 UART MMIO init
 - `others/arceos/openspec/specs/learned/spec.md` PIT-007 / TIP-004
-- `.claude/analysis/arceos-borrowable-experience.md` §3.4（已标注 UART 不适用）
+- `.claude/analysis/arceos-borrowable-experience.md` §3.4 `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/arceos-borrowable-experience.md]`（已标注 UART 不适用）
 - 2026-06-26 探索验证：bg_27a805e6 确认 arceos starfive 无 UART MMIO init
 
 #### Scenario: VisionFive2 bring-up preserves bootloader state
@@ -815,8 +815,8 @@ StarryOS Lichee RV Dock bring-up MUST start from an Android boot image smoke tes
 - ✅ Android boot image + D1 polling early console + milestone gate：当前方案。
 
 **参考**:
-- `.claude/analysis/lichee-rv-dock-adaptation-plan.md`
-- `.claude/analysis/lichee/public-platform-notes.md`
+- `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md]`
+- `.claude/analysis/lichee/public-platform-notes.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee/public-platform-notes.md]`
 - `docs/licheerv-dock-bringup.md`
 - `openspec/specs/learned/spec.md` L213-L216
 
@@ -859,8 +859,8 @@ StarryOS board-specific constants MUST be centralized behind a build-time platfo
 - ✅ build-time platform descriptor + early console + 分阶段接回 async UART：当前方案。
 
 **参考**:
-- `.claude/analysis/platform-parameter-decoupling.md`
-- `.claude/analysis/lichee-rv-dock-adaptation-plan.md`
+- `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]`
+- `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md]`
 - `openspec/specs/learned/spec.md` L217-L220
 
 #### Scenario: Board constants are centralized
@@ -899,8 +899,8 @@ StarryOS Lichee RV Dock bring-up MUST replace the QEMU axplat boot path with a D
 - ✅ 本地 `axplat-riscv64-lichee-d1` + artifact inspection + Android boot smoke：当前方案。
 
 **参考**:
-- `.claude/analysis/d1-axplat-bringup-plan.md`
-- `.claude/analysis/platform-parameter-decoupling.md`
+- `.claude/analysis/d1-axplat-bringup-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md]`
+- `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]`
 - `openspec/specs/learned/spec.md` L221-L222
 
 #### Scenario: D1 boot path verification
@@ -941,7 +941,7 @@ StarryOS Lichee RV Dock early boot page table MUST mark DDR mappings with T-Head
 **参考**:
 - `crates/axplat-riscv64-lichee-d1/src/boot.rs`
 - `openspec/specs/learned/spec.md` L229-L230
-- `.claude/analysis/d1-axplat-bringup-plan.md`
+- `.claude/analysis/d1-axplat-bringup-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md]`
 
 #### Scenario: D1/C906 AMO fault diagnosis
 
@@ -972,7 +972,7 @@ StarryOS Lichee RV Dock benchmark bring-up MUST first reach async UART benchmark
 **影响**:
 - Q19B milestone 必须按 mode split → D1 async UART backend → PLIC/UART IRQ → kernel benchmark → `/dev/console` → embedded user benchmark → optional SDMMC/rootfs 的顺序推进。
 - `tests/benchmark.c` 应保持与 QEMU source-compatible；差异应在 payload delivery 和平台 feature 中处理。
-- 文档和结果保存路径应区分 `lichee-kbench` 与 `lichee-userbench`，原始串口日志建议保存到 `.claude/analysis/lichee/q19b-*.txt`。
+- 文档和结果保存路径应区分 `lichee-kbench` 与 `lichee-userbench`，原始串口日志建议保存到 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee/q19b-*.txt`（当前为归档目录，活跃采集可走此路径或新建 `_archive/<日期>-新批次>/lichee/`）。
 
 **替代方案**:
 - ❌ 直接启用完整 qemu feature set：会重新引入 block/PCI/virtio 假设，已经导致 `No block device found` 与 PCI 常量缺失。
@@ -981,7 +981,7 @@ StarryOS Lichee RV Dock benchmark bring-up MUST first reach async UART benchmark
 - ✅ 嵌入 benchmark ELF，先得到 D1 用户态 `/dev/console` 数据，再补 SDMMC/rootfs parity：当前方案。
 
 **参考**:
-- `.claude/analysis/q19b-lichee-benchmark-plan.md`
+- `.claude/analysis/q19b-lichee-benchmark-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/q19b-lichee-benchmark-plan.md]`
 - `openspec/specs/learned/spec.md` L236-L239
 - `tests/benchmark.c`
 - `kernel/src/entry.rs`
@@ -1108,7 +1108,7 @@ StarryOS Lichee D1 benchmark features MUST NOT use a kbench-only runtime feature
 - ✅ 拆分硬件能力 feature 与运行模式 feature，再构建最小 D1 userbench runtime：当前方案。
 
 **参考**:
-- `.claude/analysis/q19b-current-blockers.md`
+- `.claude/analysis/q19b-current-blockers.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/q19b-current-blockers.md]`
 - `kernel/Cargo.toml`
 - `kernel/src/lib.rs`
 - `kernel/src/drivers/mod.rs`
