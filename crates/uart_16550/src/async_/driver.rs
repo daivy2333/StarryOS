@@ -48,6 +48,14 @@ const TX_SLOW_POLL_SPINS: u32 = 256;
 /// waiting for a possibly-lost IRQ. Must NOT be replaced by
 /// `TX_FAST_RETRY_LIMIT=0` + drain-side `TX_WAKER` (disproven, see learned L266).
 const TX_SLOW_POLL_LIMIT: u32 = 4096;
+/// Q19C.8e: max self-wake yield retries before falling back to pure ISR wait.
+///
+/// When slow-poll exhausts `TX_SLOW_POLL_LIMIT` without progress, the copier
+/// self-wakes (`cx.waker().wake_by_ref()`) to let the scheduler run other tasks
+/// and retry slow-poll. This covers the 1% case where slow-poll alone is
+/// insufficient (scheduler starvation or transient THRE glitch). After this many
+/// yield retries, the copier falls back to pure `TX_WAKER` ISR wait.
+const TX_YIELD_RETRIES: u32 = 4;
 
 /// UART hardware access abstraction for copier tasks.
 ///
@@ -128,6 +136,10 @@ pub struct TxDebugSnapshot {
     pub hw_send_max_chunk: u64,
     /// Times the TX copier exhausted its no-progress retry budget.
     pub no_progress_budget_exhausted: u64,
+    /// Q19C.8e: times slow-poll ran the full `TX_SLOW_POLL_LIMIT` without progress.
+    pub slow_poll_exhausted: u64,
+    /// Q19C.8e: times yield-retries exhausted and copier fell back to pure ISR wait.
+    pub yield_retries_exhausted: u64,
     /// Whether the TX ring was empty in the snapshot.
     pub ring_empty: u64,
     /// Whether the TX copier was active in the snapshot.
@@ -151,6 +163,8 @@ struct TxDebugCounters {
     hw_send_zero: AtomicU64,
     hw_send_max_chunk: AtomicU64,
     no_progress_budget_exhausted: AtomicU64,
+    slow_poll_exhausted: AtomicU64,
+    yield_retries_exhausted: AtomicU64,
 }
 
 #[cfg(feature = "telemetry")]
@@ -167,6 +181,8 @@ impl TxDebugCounters {
             hw_send_zero: AtomicU64::new(0),
             hw_send_max_chunk: AtomicU64::new(0),
             no_progress_budget_exhausted: AtomicU64::new(0),
+            slow_poll_exhausted: AtomicU64::new(0),
+            yield_retries_exhausted: AtomicU64::new(0),
         }
     }
 
@@ -181,6 +197,9 @@ impl TxDebugCounters {
         self.hw_send_zero.store(0, Ordering::Relaxed);
         self.hw_send_max_chunk.store(0, Ordering::Relaxed);
         self.no_progress_budget_exhausted
+            .store(0, Ordering::Relaxed);
+        self.slow_poll_exhausted.store(0, Ordering::Relaxed);
+        self.yield_retries_exhausted
             .store(0, Ordering::Relaxed);
     }
 }
@@ -328,6 +347,14 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                 .tx_debug
                 .no_progress_budget_exhausted
                 .load(Ordering::Relaxed),
+            slow_poll_exhausted: self
+                .tx_debug
+                .slow_poll_exhausted
+                .load(Ordering::Relaxed),
+            yield_retries_exhausted: self
+                .tx_debug
+                .yield_retries_exhausted
+                .load(Ordering::Relaxed),
             ring_empty: c.ring_empty as u64,
             copier_active: c.copier_active as u64,
             staged_bytes: c.staged_bytes as u64,
@@ -434,6 +461,7 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
         let mut write_buf = [0u8; COPIER_BUF_SIZE];
         let mut pending = 0usize;
         let mut cursor = 0usize;
+        let mut yield_retries = 0u32;
 
         loop {
             poll_fn(|cx| {
@@ -618,10 +646,28 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
 
                     if made_progress {
                         retries = 0;
+                        yield_retries = 0;
                         continue;
                     }
 
-                    // Slow-poll exhausted — fall back to ISR wait
+                    // Q19C.8e: slow-poll exhausted — self-wake yield retry
+                    #[cfg(feature = "telemetry")]
+                    self.tx_debug
+                        .slow_poll_exhausted
+                        .fetch_add(1, Ordering::Relaxed);
+
+                    yield_retries += 1;
+                    if yield_retries <= TX_YIELD_RETRIES {
+                        cx.waker().wake_by_ref();
+                        self.tx_copier_active.store(false, Ordering::Release);
+                        return Poll::Pending;
+                    }
+
+                    // Yield retries exhausted — pure ISR wait
+                    #[cfg(feature = "telemetry")]
+                    self.tx_debug
+                        .yield_retries_exhausted
+                        .fetch_add(1, Ordering::Relaxed);
                     self.tx_copier_active.store(false, Ordering::Release);
                     return Poll::Pending;
                 }

@@ -83,6 +83,8 @@ typedef struct {
     uint64_t hw_send_zero;
     uint64_t hw_send_max_chunk;
     uint64_t no_progress_budget_exhausted;
+    uint64_t slow_poll_exhausted;
+    uint64_t yield_retries_exhausted;
     uint64_t ring_empty;
     uint64_t copier_active;
     uint64_t staged_bytes;
@@ -136,7 +138,7 @@ static int txdbg_snapshot(int fd, txdbg_snapshot_t *snapshot) {
 }
 
 static void print_txdbg_snapshot(const char *phase, int size, const txdbg_snapshot_t *s, int rc) {
-    printf("  diag=s11-txdbg phase=%s size=%d ioctl_rc=%d user_calls=%llu user_req=%llu user_acc=%llu ring_pop_calls=%llu ring_pop_bytes=%llu hw_send_calls=%llu hw_send_bytes=%llu hw_send_zero=%llu hw_send_max_chunk=%llu no_progress_budget=%llu ring_empty=%llu copier_active=%llu staged_bytes=%llu transmitter_empty=%llu\r\n",
+    printf("  diag=s11-txdbg phase=%s size=%d ioctl_rc=%d user_calls=%llu user_req=%llu user_acc=%llu ring_pop_calls=%llu ring_pop_bytes=%llu hw_send_calls=%llu hw_send_bytes=%llu hw_send_zero=%llu hw_send_max_chunk=%llu no_progress_budget=%llu slow_poll_exh=%llu yield_exh=%llu ring_empty=%llu copier_active=%llu staged_bytes=%llu transmitter_empty=%llu\r\n",
            phase, size, rc,
            (unsigned long long)s->user_push_calls,
            (unsigned long long)s->user_push_requested_bytes,
@@ -148,6 +150,8 @@ static void print_txdbg_snapshot(const char *phase, int size, const txdbg_snapsh
            (unsigned long long)s->hw_send_zero,
            (unsigned long long)s->hw_send_max_chunk,
            (unsigned long long)s->no_progress_budget_exhausted,
+           (unsigned long long)s->slow_poll_exhausted,
+           (unsigned long long)s->yield_retries_exhausted,
            (unsigned long long)s->ring_empty,
            (unsigned long long)s->copier_active,
            (unsigned long long)s->staged_bytes,
@@ -335,31 +339,6 @@ static void test_tx_throughput(void) {
         free(buf);
     }
 
-    char *recheck = malloc(TX_THROUGHPUT_SIZES[0]);
-    if (recheck) {
-        memset(recheck, 0, TX_THROUGHPUT_SIZES[0]);
-        long latencies[TX_THROUGHPUT_ITERS];
-        int ok = 0;
-        int short_writes = 0;
-        drain_stats_t drain_stats = {0};
-        long long start = get_time_ns();
-        size_t total = run_write_drain_iters(
-            fd, recheck, TX_THROUGHPUT_SIZES[0], TX_THROUGHPUT_ITERS,
-            latencies, &ok, &short_writes, &drain_stats);
-        long long end = get_time_ns();
-        double elapsed_s = (double)(end - start) / 1000000000.0;
-        double kbps = (double)total / elapsed_s / 1024.0;
-        double line_rate = kbps / UART_LINE_RATE_KBPS * 100.0;
-        printf("  policy=drain-each-recheck size=%d iters=%d bytes=%zu short_writes=%d drain_calls=%d drain_errors=%d last_drain_errno=%d elapsed_ms=%ld line_time_ms=%.1f kbps=%.2f line_rate_pct=%.1f\r\n",
-               TX_THROUGHPUT_SIZES[0], TX_THROUGHPUT_ITERS, total, short_writes,
-               drain_stats.calls, drain_stats.errors, drain_stats.last_errno,
-               elapsed_ms(start, end), line_time_ms(total), kbps, line_rate);
-        print_tx_latency_diag("drain-each-recheck-size-64", latencies, ok, TX_THROUGHPUT_SIZES[0]);
-        free(recheck);
-    } else {
-        perror("malloc");
-    }
-
     close(fd);
     printf("\r\n");
 }
@@ -386,7 +365,6 @@ static void test_tx_enqueue_no_drain(void) {
 #ifdef BENCH_D1_DIAG
         txdbg_snapshot_t txdbg_enqueue;
         txdbg_snapshot_t txdbg_final;
-        txdbg_snapshot_t txdbg_second;
         fflush(stdout);
         checked_tcdrain(STDOUT_FILENO, NULL);
         int txdbg_reset_rc = txdbg_reset(fd);
@@ -409,28 +387,20 @@ static void test_tx_enqueue_no_drain(void) {
 #ifdef BENCH_D1_DIAG
         int txdbg_final_rc = txdbg_snapshot(fd, &txdbg_final);
 #endif
-        int second_drain_rc = checked_tcdrain(fd, &drain_stats);
-        int second_drain_errno = second_drain_rc < 0 ? errno : 0;
-        long long second_drain_end = get_time_ns();
-#ifdef BENCH_D1_DIAG
-        int txdbg_second_rc = txdbg_snapshot(fd, &txdbg_second);
-#endif
 
         double elapsed_s = (double)(enqueue_end - start) / 1000000000.0;
         double kbps = elapsed_s > 0.0 ? (double)total / elapsed_s / 1024.0 : 0.0;
 
-        printf("  policy=no-drain size=%d iters=%d bytes=%zu short_writes=%d enqueue_ms=%ld final_drain_ms=%ld second_drain_ms=%ld final_drain_rc=%d final_drain_errno=%d second_drain_rc=%d second_drain_errno=%d drain_calls=%d drain_errors=%d last_drain_errno=%d line_time_ms=%.1f enqueue_kbps=%.2f\r\n",
+        printf("  policy=no-drain size=%d iters=%d bytes=%zu short_writes=%d enqueue_ms=%ld final_drain_ms=%ld final_drain_rc=%d final_drain_errno=%d drain_calls=%d drain_errors=%d last_drain_errno=%d line_time_ms=%.1f enqueue_kbps=%.2f\r\n",
                test_size, TX_THROUGHPUT_ITERS, total, short_writes,
                elapsed_ms(start, enqueue_end), elapsed_ms(enqueue_end, drain_end),
-               elapsed_ms(drain_end, second_drain_end), final_drain_rc,
-               final_drain_errno, second_drain_rc, second_drain_errno,
+               final_drain_rc, final_drain_errno,
                drain_stats.calls, drain_stats.errors, drain_stats.last_errno,
                line_time_ms(total), kbps);
 #ifdef BENCH_D1_DIAG
         printf("  diag=s11-txdbg-reset size=%d ioctl_rc=%d\r\n", test_size, txdbg_reset_rc);
         print_txdbg_snapshot("enqueue", test_size, &txdbg_enqueue, txdbg_enqueue_rc);
         print_txdbg_snapshot("final-drain", test_size, &txdbg_final, txdbg_final_rc);
-        print_txdbg_snapshot("second-drain", test_size, &txdbg_second, txdbg_second_rc);
 #endif
 
         free(buf);

@@ -1,12 +1,12 @@
 ## 1. Benchmark Evidence and Baseline Preservation — Q19B 不退化
 
-- [ ] 1.1 记录当前 Q19B `lichee-d1-userbench` 的 feature 组合、make target、boot image 名称和串口成功 marker
-- [ ] 1.2 确认 Q19B 仍使用 `load_embedded_user_app()`，Q19C fullbench 不复用该路径作为成功条件
-- [ ] 1.3 保留 `make lichee-userbench` 或既有等价目标的行为和输出命名
-- [ ] 1.4 建立 host regression：`lichee-d1`、`lichee-d1-userbench`、`qemu` feature 的 cargo check 不退化
-- [ ] 1.5 建立 board regression：Q19B embedded benchmark 仍输出 TX throughput、TX latency、FIFO boundary、FIONBIO 和 exit code 0
-- [ ] 1.5a 记录当前 `lichee-d1-userbench` Android boot image size baseline：`kernel_size`、`kernel_addr`、image name、`DWARF=n`
-- [ ] 1.6 梳理 QEMU 与 Q19B `benchmark.c` 当前参数差异：binary revision、payload sizes、iteration counts、drain policy、timer source、startup chain、root provider
+- [x] 1.1 记录当前 Q19B `lichee-d1-userbench` 的 feature 组合、make target、boot image 名称和串口成功 marker → feature=`lichee-d1-userbench`、`make lichee-userbench`、`starry-lichee-userbench-boot.img` (kernel_size=983232)、marker `[starry-d1] benchmark exited with code: 0`
+- [x] 1.2 确认 Q19B 仍使用 `load_embedded_user_app()`，Q19C fullbench 不复用该路径作为成功条件 → design.md 确认 Q19B embedded 路径不变
+- [x] 1.3 保留 `make lichee-userbench` 或既有等价目标的行为和输出命名 → 用户手动编译成功，行为保留
+- [x] 1.4 建立 host regression：`lichee-d1`、`lichee-d1-userbench`、`qemu` feature 的 cargo check 不退化 → `lichee-d1` ✅、`qemu` ✅；`lichee-d1-kbench`/`lichee-d1-userbench` 报 `UART_IRQ not found`（pre-existing，git stash 验证非 Q19C 引入）
+- [x] 1.5 建立 board regression：Q19B embedded benchmark 仍输出 TX throughput、TX latency、FIFO boundary、FIONBIO 和 exit code 0 → S10/S11/S20/S21/S30 全通过，exit code 0
+- [x] 1.5a 记录当前 `lichee-d1-userbench` Android boot image size baseline：`kernel_size=983232`、`kernel_addr=0x40200000`、name=`d1-nezha`、`DWARF=n`
+- [x] 1.6 梳理 QEMU 与 Q19B `benchmark.c` 当前参数差异：binary revision、payload sizes、iteration counts、drain policy、timer source、startup chain、root provider → S00 manifest 已输出全部字段
 - [x] 1.7 在 `benchmark.c` 增加 manifest 输出：benchmark version、target mode、startup chain、root provider、timer source、TX sizes/iters/drain policy、latency iters、FIFO matrix sizes、RX mode
 - [x] 1.8 保持现有 TX baseline 不退化：sizes `{64,256,1024}`、iters=100、每轮 `tcdrain()`、输出 `size`/`iters`/KB/s/line rate；4096B 默认测试已移除以缩短 QEMU/userbench 真板运行时间
 - [x] 1.9 保留并解释 64B 小包数据：旧 `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate` 主要来自 section 前 stdout backlog 测量污染；pre-section drain 隔离后 D1 64B 接近线速
@@ -18,7 +18,7 @@
 - [x] 1.15 默认移除 4096B TX/FIFO 测试，避免 QEMU 和 D1 userbench 运行时间过长
 - [x] 1.16 D1 gated TX debug snapshot 已用于暴露 `user_push`、ring pop、HW send、zero-send、max chunk、drain state，不对 QEMU 输出造成噪声
 - [x] 1.17 已验证修复：D1 THRE 后一次填最多 16B FIFO；TTY OPOST/ONLCR short-write 计数修复，S11 1024B 正确发送恢复
-- [ ] 1.18 剩余优化：D1 TX `hw_send_zero` / `no_progress_budget_exhausted` 和 P99 长尾仍需低风险方案；`TX_FAST_RETRY_LIMIT=0` + drain 注册 `TX_WAKER` 会导致 benchmark 进程启动后卡住，已证伪
+- [x] 1.18 Q19C.8e 已完成：slow-poll（`TX_SLOW_POLL_LIMIT=4096`）+ yield 重试（`TX_YIELD_RETRIES=4`）已实施；真板 `slow_poll_exh=0` `yield_exh=0` 证明 slow-pool 100% 成功；P99 长尾（50.86ms）根因未探明，当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 复验时再探明（O77/L275 已记录）；`TX_FAST_RETRY_LIMIT=0` 证伪，不得作为默认
 
 ## 2. Part A / M1 — Memory-root path loader fullbench
 

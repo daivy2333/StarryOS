@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-07-07
-> 分支：uart-16550-lichee — Q17 QEMU 修复完成，Q19/Q19B 已完成并归档，Q19C-M0 benchmark evidence/真板 TX 诊断推进中；Q19D 已登记为 D1 SDMMC/rootfs 后续方向
+> 分支：uart-16550-lichee — Q17 QEMU 修复完成，Q19/Q19B 已完成并归档，Q19C-M0 已完成（slow-pool + yield 重试已实施，P99 长尾接受为 known limitation），下一步 M1 memory-root path loader；Q19D 已登记为 D1 SDMMC/rootfs 后续方向
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q17 QEMU 修复完成，Q19/Q19B 真板验证已完成，Q19C fullbench review 后范围收敛，当前聚焦 Q19C-M0 benchmark evidence 与 D1 TX 诊断；Q19D 已登记为 D1 SDMMC/rootfs 后续方向）
+**分支**: uart-16550-lichee（Lichee RV Dock 适配与验证分支；Q17 QEMU 修复完成，Q19/Q19B 真板验证已完成，Q19C-M0 已完成（slow-pool + yield 重试 + P99 known limitation），下一步 M1 memory-root path loader；Q19D 已登记为 D1 SDMMC/rootfs 后续方向）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层（~50 行），uart_16550 提供完整异步栈（~400 行）
@@ -26,11 +26,11 @@
 - **Q19 ✅**: Lichee RV Dock Android boot image + D1 axplat + UART0 polling early console 真板 smoke complete。
 - **Q19B ✅**: D1 async UART userbench 真板完成；`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
 - **Q19/Q19B 归档 ✅**: archived changes 位于 `openspec/changes/archive/2026-07-02-q19-lichee-d1-early-smoke/` 与 `openspec/changes/archive/2026-07-02-q19b-lichee-d1-benchmark/`。
-- **Q19C-M0 进行中**: `tests/benchmark.c` 已统一 QEMU/D1 manifest 和测试项，默认移除 4096B 长耗时项；真板数据证明旧 64B 小包约 1KB/s 主要是 section 前 stdout backlog 测量污染，加入 pre-section drain 后 64B 可达约 93%~97% 线速。
-- **D1 TX 修复/诊断进展**: D1 `send_bytes()` 已改为 THRE 后最多一次填 16B FIFO，TTY OPOST/ONLCR short-write 计数已修复，S11 1024B 正确发送恢复；`TX_FAST_RETRY_LIMIT=0` + drain 注册 `TX_WAKER` 的优化尝试会在 benchmark 进程启动后卡住，已回退并记录为证伪方案。
+- **Q19C-M0 ✅ 已完成**: `tests/benchmark.c` 统一 QEMU/D1 manifest，移除 4096B 长耗时项，移除 S10 recheck/S11 second-drain 无信息量诊断；64B 小包 pre-section drain 后达 93%~97% 线速。
+- **Q19C.8e ✅ 已完成**: slow-pool（`TX_SLOW_POLL_LIMIT=4096`）+ yield 重试（`TX_YIELD_RETRIES=4`）已实施；真板 `slow_poll_exh=0` 证明 slow-pool 100% 成功；P99 长尾（50.86ms）根因未探明，当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 复验时再探明（O77/L275）；Q19B regression 全通过（exit code 0、`hw_send_max_chunk=16`、FIONBIO PASS）。
 
 **当前待推进**:
-- **Q19C 🧪**: OpenSpec change `q19c-lichee-full-starryos-benchmark` 已按 2026-07-04 review 修订；M0 benchmark evidence cleanup 已进入源码与真板验证阶段。下一步不是继续加调试风暴，而是围绕 D1 TX zero-send/P99 长尾设计低风险优化：必须保持启动进展和 Q19B embedded regression，再压低 `hw_send_zero` / `no_progress_budget_exhausted`。
+- **Q19C 🧪**: M0 benchmark evidence cleanup 已完成（Q19C.8e slow-pool + yield 重试 + P99 known limitation，O77/L275 已记录）；M1 memory-root path loader 是下一步核心工作（`/bin/benchmark` 通过 `FS_CONTEXT.resolve()` + `load_user_app()`）。
 - **Q19D 🧭**: 后续独立方向，承接 Q19C SDMMC probe evidence，目标是真实 D1 SDMMC/block/rootfs 实施和 real rootfs path benchmark；尚未创建 OpenSpec change。
 - **Q20 ⏳**: VisionFive2 / 等价多 hart 环境到位后，复验 Q17 O63：并发 UART read/write、flush/tcdrain 与 IER enable/disable 无数据丢失或 hang。
 

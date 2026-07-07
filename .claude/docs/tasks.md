@@ -56,7 +56,7 @@
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ✅ 真板 smoke complete |
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
-| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + optional shell/script + SDMMC probe-only | 🧪 M0 真板诊断进行中 |
+| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + optional shell/script + SDMMC probe-only | 🧪 M0 完成 / M1 待做 |
 | **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧭 后续方向 / 待建 change |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
@@ -67,7 +67,7 @@
 
 ## 当前执行态
 
-Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0 已进入 benchmark 代码统一、真板数据采集与 D1 TX 诊断阶段；Q19D 已登记为真实 D1 SDMMC/rootfs 后续方向；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
+Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0 已完成（slow-pool + yield 重试 + P99 known limitation），下一步 M1 memory-root path loader；Q19D 已登记为真实 D1 SDMMC/rootfs 后续方向；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
@@ -106,7 +106,7 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0 已进入 benchm
 <!-- tombstone: Q19.1-Q19.13 --> Archived 2026-07-02 in ARC-202607021648 — Q19 子任务已收敛为摘要；完整任务见 Q19 archived change、`lichee-d1-early-smoke` spec 和 carrier spec。
 <!-- Q19.summary --> - [x] 完成 D1 axplat、Android boot image、DW APB UART0 polling early console、C906 PTE 属性、feature gate 与真板 smoke 输出 `[starry-d1] smoke complete, halting.`
 
-### Q19C: Lichee full StarryOS benchmark 🧪 M0 真板诊断进行中
+### Q19C: Lichee full StarryOS benchmark 🧪 M0 完成 / M1 待做
 
 > 来源：OpenSpec change `q19c-lichee-full-starryos-benchmark`，`.claude/analysis/q19c-lichee-full-starryos-benchmark.md`，ADR-052，learned L259-L261。
 > 当前状态：2026-07-04 review 已吸收进 OpenSpec change；Q19C 范围收敛为 M0 benchmark evidence cleanup + M1 memory-root path loader，M2 shell/script 为有静态 shell或等价入口时的可选验证，SDMMC/rootfs 在 Q19C 内只做 probe-only / SKIPPED blocker evidence。2026-07-07 M0 已进入源码与真板验证阶段：统一 benchmark、采集 QEMU/D1 数据、修复 D1 FIFO burst/TTY short-write；剩余 D1 TX zero-send/P99 长尾需继续探索低风险优化。
@@ -124,7 +124,7 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0 已进入 benchm
 <!-- Q19C.8b --> - [x] M0 实施：统一 QEMU/userbench benchmark manifest 与 section 输出，默认移除 4096B 测试，补齐 section pre-drain/latency 相对线时诊断和 D1 gated TX debug snapshot
 <!-- Q19C.8c --> - [x] M0 真板数据分析：确认 64B 小包旧异常主要来自 stdout backlog 测量污染；隔离后 D1 64B `write+tcdrain` 接近线速
 <!-- Q19C.8d --> - [x] D1 TX 已验证修复：`send_bytes()` 在 THRE 后一次填最多 16B FIFO，TTY OPOST/ONLCR short-write 计数修复；S11 1024B 正确发送恢复
-<!-- Q19C.8e --> - [ ] D1 TX 剩余优化：在不破坏启动进展的前提下压低 `hw_send_zero` / `no_progress_budget_exhausted` 与 P99 长尾；`TX_FAST_RETRY_LIMIT=0` + drain 注册 `TX_WAKER` 已证伪，不得作为默认修复
+<!-- Q19C.8e --> - [x] Q19C.8e 已完成：slow-pool（`TX_SLOW_POLL_LIMIT=4096`）+ yield 重试（`TX_YIELD_RETRIES=4`）已实施；真板 `slow_poll_exh=0` `yield_exh=0` 证明 slow-pool 100% 成功；P99 长尾（50.86ms）根因未探明，当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 复验时再探明（O77/L275 已记录）
 <!-- Q19C.9 --> - [ ] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()` + `load_user_app()` 启动 benchmark
 <!-- Q19C.10 --> - [ ] M2: 通过 `/bin/sh`、脚本或等价命令入口触发 benchmark，验证 stdio/TTY/argv/envp/exit/join
 <!-- Q19C.11 --> - [ ] M3: 采集 D1 SDMMC/block probe-only evidence；无可用 block device 时记录 `SKIPPED: <blocker summary>`，不得触发 `No block device found!` panic
