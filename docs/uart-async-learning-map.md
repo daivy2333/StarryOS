@@ -1,8 +1,8 @@
 # StarryOS 异步串口学习地图
 
-> 范围：Q0~Q19B + Q17 SMP/内存序。
-> 日期：2026-07-04。
-> 关联：docs/async-uart-architecture.md、benchmark-report-async.md、licheerv-dock-bringup.md、lichee-q19b-benchmark-problems-solutions.md。
+> 范围：Q0~Q19C-M0 + Q17 SMP/内存序。
+> 日期：2026-07-07。
+> 关联：docs/async-uart-architecture.md、benchmark-report-async.md、licheerv-dock-bringup.md、lichee-q19b-benchmark-problems-solutions.md、`.claude/analysis/q19c-d1-tx-optimization.md`。
 
 ## 概览
 
@@ -30,9 +30,12 @@
 | L0 D1 | DW APB UART stride 4 | `kernel/src/drivers/d1_uart.rs:45-176` |
 | L1 抽象 | `UartPort` trait | `crates/uart_16550/src/async_/driver.rs` |
 | L2 驱动 | `AsyncUartDriver<R, W, U>` | `crates/uart_16550/src/async_/driver.rs` |
+| L2 诊断 | `TxDebugSnapshot` + slow-pool 计数器 | `crates/uart_16550/src/async_/driver.rs:95-124` |
+| L2 诊断桥接 | `UartTxDebugSnapshot` ioctl | `kernel/src/syscall/fs/ctl.rs:31-69` |
 | L3 适配 | `AsyncUartReader/Writer` | `crates/uart_16550/src/async_/device_ops.rs` |
 | L4 TTY | `/dev/console` + ONLCR + FIONBIO | `kernel/src/pseudofs/dev/tty/mod.rs:90-147` |
 | L5 用户态 | embedded benchmark ELF | `kernel/src/mm/loader.rs:348-445` |
+| L5 诊断 | benchmark.c gated TX debug snapshot | `tests/benchmark.c:64-156` |
 | L6 启动 | Android boot image targets | `Makefile:60-82` |
 | L6 平台参数 | RAM/UART/PLIC/boot | `kernel/src/platform/lichee_d1.rs:19-47` |
 
@@ -52,6 +55,8 @@ D1 通过 `read_reg(offset)` 以 `offset × stride` 的 U32 volatile 访问 RBR/
 
 `write` / `writev` → `Tty::write_at` → `AsyncUartWriter::write` → TX ring → TX copier → `send_bytes` → THR。
 
+TX copier 四阶段重试：fast retry（32 次 spin）→ final recheck → slow-pool（4096 × 256 spin）→ yield 重试（4 次自唤醒）→ 纯 ISR 等待。证据：`crates/uart_16550/src/async_/driver.rs:460-672`。
+
 D1 需在 `init_interrupt_mode()` 开 FIFO、清状态、设 `MCR_OUT2_INT_ENABLE`。证据：`kernel/src/drivers/d1_uart.rs:101-117`。
 
 ### Drain
@@ -68,6 +73,7 @@ QEMU 稳定产生 THRE 中断。D1 THRE 边沿可能丢失，靠 `update_ier(THR
 | SPSC ring buffer | RX/TX 各 64 KiB 解耦用户态与硬件 | `crates/uart_16550/src/async_/ring_buffer.rs` |
 | AtomicWaker | `RX_WAKER` / `TX_WAKER` / `DRAIN_WAKER` 跨任务事件槽 | `crates/uart_16550/src/async_/isr.rs` |
 | 四阶段 drain | ring / copier / staged / TEMT 全满足才完成 | `crates/uart_16550/src/async_/driver.rs` |
+| slow-pool + yield 重试 | budget exhausted 后 bounded slow-poll → yield 自唤醒 → 纯 ISR 等待 | `crates/uart_16550/src/async_/driver.rs:578-672` |
 | 跨 hart 内存序按角色选序 | 非原子 RMW 用锁隔离；flag Release/Acquire；计数 RMW AcqRel | `uart_init.rs:120`、`d1_uart.rs:157`、`driver.rs:167-171` |
 | 硬件能力与运行模式拆分 | `lichee-d1-async-uart` 不等同 kbench/userbench | `kernel/src/entry.rs:145-239` |
 | embedded payload | 无 SDMMC/rootfs 时内嵌 `benchmark.elf` | `kernel/src/mm/loader.rs:348-445` |
@@ -85,6 +91,7 @@ QEMU 稳定产生 THRE 中断。D1 THRE 边沿可能丢失，靠 `update_ier(THR
 | Q18 | 平台参数解耦、early console | platform descriptor、early console 分层 |
 | Q19 | Lichee early smoke | Android boot image、D1 axplat、C906 PTE 修复 |
 | Q19B | D1 async UART benchmark | kbench/userbench、PLIC IRQ 18、embedded benchmark |
+| Q19C-M0 | benchmark evidence cleanup + TX copier slow-pool | manifest 统一、gated TX debug snapshot、slow-pool + yield 重试、P99 长尾根因未探明 |
 
 Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与 benchmark 路径。两者不能混为一个验收标准。
 
@@ -107,8 +114,9 @@ Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与
 | 11 | Q19B D1 `UartPort` + PLIC IRQ 18 | ⬜ |
 | 12 | Q19B embedded userbench + TTY/ELF | ⬜ |
 | 13 | Q17 跨 hart 内存序 | ⬜ |
+| 14 | Q19C-M0 slow-pool + yield + gated TX debug | ⬜ |
 
-下一轮按顺序：6 → 7 → 8 → 9 → 10 → 11 → 12 → 13。
+下一轮按顺序：6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14。
 
 ## ADR 与经验索引
 
@@ -130,6 +138,9 @@ Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与
 | L236-L258 | Q19B benchmark 阶段经验 |
 | L263 | Q17 当前分支复核边界 |
 | L264 | Q17 收尾验证边界 |
+| L265 | Q19C 64B 小包测量污染边界 |
+| L266 | Q19C TX drain/THRE 长尾排查经验 |
+| L275 | Q19C.8e slow-pool + yield 真板验证结果 |
 
 QEMU benchmark 仍用于相对优化和回归测试。D1 真板数据用于验证真实 115200 bps 线速。VisionFive2 后续需单独采集多核真板数据。
 
