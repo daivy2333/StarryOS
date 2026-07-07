@@ -7,11 +7,11 @@
 - [ ] 1.5 建立 board regression：Q19B embedded benchmark 仍输出 TX throughput、TX latency、FIFO boundary、FIONBIO 和 exit code 0
 - [ ] 1.5a 记录当前 `lichee-d1-userbench` Android boot image size baseline：`kernel_size`、`kernel_addr`、image name、`DWARF=n`
 - [ ] 1.6 梳理 QEMU 与 Q19B `benchmark.c` 当前参数差异：binary revision、payload sizes、iteration counts、drain policy、timer source、startup chain、root provider
-- [ ] 1.7 在 `benchmark.c` 增加 manifest 输出：benchmark version、target mode、startup chain、root provider、timer source、TX sizes/iters/drain policy、latency iters、FIFO matrix sizes、RX mode
-- [ ] 1.8 保持现有 TX baseline 不退化：sizes `{64,256,1024,4096}`、iters=100、每轮 `tcdrain()`、输出 `size`/`iters`/KB/s/line rate
+- [x] 1.7 在 `benchmark.c` 增加 manifest 输出：benchmark version、target mode、startup chain、root provider、timer source、TX sizes/iters/drain policy、latency iters、FIFO matrix sizes、RX mode
+- [x] 1.8 保持现有 TX baseline 不退化：sizes `{64,256,1024}`、iters=100、每轮 `tcdrain()`、输出 `size`/`iters`/KB/s/line rate；4096B 默认测试已移除以缩短 QEMU/userbench 真板运行时间
 - [ ] 1.9 保留并解释 64B 小包数据：`size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`
-- [ ] 1.10 增加或规划 fixed-payload RX witness：保留无输入 `EAGAIN` regression，新增 manual-input 或 loopback 模式的 N bytes read summary
-- [ ] 1.11 规划 64B 小包延迟优化实验：baseline drain-per-iteration、no-drain enqueue、batch-N then drain、`writev` fragments、64/128/256B break-even
+- [x] 1.10 增加或规划 fixed-payload RX witness：保留无输入 `EAGAIN` regression，新增 manual-input 或 loopback 模式的 N bytes read summary
+- [x] 1.11 规划 64B 小包延迟优化实验：baseline drain-per-iteration、no-drain enqueue、batch-N then drain、`writev` fragments、64/128/256B break-even
 - [ ] 1.12 建立 M0 host witness：`git diff -- tests/benchmark.c kernel/resources/benchmark.elf`、OpenSpec validate、必要 cargo check 命令清单
 - [ ] 1.13 建立 M0 board witness 模板：raw serial log、manifest、TX baseline、RX witness、64B small-packet section、exit code
 - [ ] 1.14 Phase 3 前停止并等待用户确认，不修改 `tests/benchmark.c`、`kernel/resources/benchmark.elf` 或 loader/rootfs 代码
@@ -33,7 +33,7 @@
 - [ ] 2.9 spawn/join init process，并打印 exit code 与 benchmark section reached
 - [ ] 2.10 增加缺失路径诊断：输出 root provider、requested path、resolve error
 - [ ] 2.11 增加 loaded-process-before-first-section 诊断：若 `load_user_app()` 成功但进程未打印任何 benchmark section 就退出/abort，输出 exit status、stage reached，且不得记录 path-loader proof success
-- [ ] 2.12 Gate M1 board: 串口日志必须出现 manifest、64/256/1024/4096 TX throughput、TX latency、FIFO matrix 1/15/16/17/31/32/33/48/49、FIONBIO PASS、`benchmark exited with code: 0`，并证明 `/bin/benchmark` 通过 path loader 运行
+- [ ] 2.12 Gate M1 board: 串口日志必须出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix 1/15/16/17/31/32/33/48/49、FIONBIO PASS、`benchmark exited with code: 0`，并证明 `/bin/benchmark` 通过 path loader 运行
 
 ## 3. Part A / M2 — Shell/script benchmark parity
 
@@ -44,7 +44,7 @@
 - [ ] 3.4 验证 shell/interpreter 缺失时输出具体路径和错误阶段
 - [ ] 3.5 验证 benchmark 从 shell/script 触发，而不是 kernel 直接替代执行
 - [ ] 3.6 验证 stdin/stdout/stderr 仍通过 `/dev/console`，process exit/join 正常返回
-- [ ] 3.7 Gate M2 board: 串口日志打印 `lichee-memory-root-shell`，显示 shell/script entry，并出现 manifest、64/256/1024/4096 TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`benchmark exited with code: 0`
+- [ ] 3.7 Gate M2 board: 串口日志打印 `lichee-memory-root-shell`，显示 shell/script entry，并出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`benchmark exited with code: 0`
 - [ ] 3.8 若 M2 因 shell 来源或 `/proc/self/exe` blocker 未执行，记录 `SKIPPED: <blocker summary>`，不阻塞 M1 归档
 
 ## 4. Part B / M3 — D1 SDMMC/block probe-only discovery

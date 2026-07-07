@@ -119,7 +119,7 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C 规范完整但通�
 <!-- Q19C.6 --> - [x] M0 Phase 1/2: 梳理并规划 `benchmark.c` 参数/manifest，使 QEMU、Q19B embedded、Q19C memory-root/shell/rootfs 数据可按配置横向解释
 <!-- Q19C.7 --> - [x] M0 Phase 1/2: 补齐真板 RX 测试方案，至少保留无输入 `EAGAIN` regression，并规划 fixed-payload/manual-input 或 loopback witness
 <!-- Q19C.8 --> - [x] M0 Phase 1/2: 保留 64B 小包结果 `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`，探索批量 drain、no-drain enqueue、`writev`、TX wake/drain path、64/128/256B break-even 优化方向
-<!-- Q19C.8a --> - [ ] M0 Phase 3 执行入口：修改 `tests/benchmark.c` 前先跑 current-state witness，并等待用户确认进入实施
+<!-- Q19C.8a --> - [x] M0 Phase 3 执行入口：修改 `tests/benchmark.c` 前先跑 current-state witness，并等待用户确认进入实施
 <!-- Q19C.9 --> - [ ] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()` + `load_user_app()` 启动 benchmark
 <!-- Q19C.10 --> - [ ] M2: 通过 `/bin/sh`、脚本或等价命令入口触发 benchmark，验证 stdio/TTY/argv/envp/exit/join
 <!-- Q19C.11 --> - [ ] M3: 采集 D1 SDMMC/block probe-only evidence；无可用 block device 时记录 `SKIPPED: <blocker summary>`，不得触发 `No block device found!` panic
