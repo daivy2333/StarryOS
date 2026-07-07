@@ -33,6 +33,21 @@ pub const COPIER_BUF_SIZE: usize = 1024;
 const TX_FAST_RETRY_LIMIT: usize = 32;
 /// Maximum spin iterations waiting for UART TEMT after last byte sent.
 const TX_TEMT_POLL_LIMIT: u32 = 256;
+/// Q19C.8e: slow-poll spin interval between `send_bytes` calls during budget-exhausted fallback.
+///
+/// D1 C906 at fixed frequency: 256 spins ≈ sub-microsecond. Tuned so that
+/// `TX_SLOW_POLL_LIMIT × TX_SLOW_POLL_SPINS` covers ~1-2 ms, enough for a 16B FIFO
+/// drain at 115200 bps (~1.11 ms). QEMU does not trigger this path.
+const TX_SLOW_POLL_SPINS: u32 = 256;
+/// Q19C.8e: max slow-poll iterations before falling back to ISR wait.
+///
+/// After `TX_FAST_RETRY_LIMIT` (32) fast spins fail and the final recheck returns
+/// zero, the copier enters this bounded slow-poll instead of immediately pending.
+/// This works around D1 THRE IRQ edge loss (learned L255): the FIFO drains during
+/// slow-poll, `send_bytes` eventually succeeds, and the copier resumes without
+/// waiting for a possibly-lost IRQ. Must NOT be replaced by
+/// `TX_FAST_RETRY_LIMIT=0` + drain-side `TX_WAKER` (disproven, see learned L266).
+const TX_SLOW_POLL_LIMIT: u32 = 4096;
 
 /// UART hardware access abstraction for copier tasks.
 ///
@@ -551,7 +566,62 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                         break;
                     }
 
-                    // Still no progress — yield to scheduler, wait for ISR
+                    // ── Q19C.8e: bounded slow-poll fallback ─────────────────────
+                    // After fast retry budget (32) and final recheck both return zero,
+                    // do NOT immediately pending. Instead, do a bounded slow-poll with
+                    // spin intervals to give the FIFO time to drain, then retry
+                    // `send_bytes`. This works around D1 THRE IRQ edge loss (L255):
+                    // software detects THRE re-assertion without depending on the IRQ.
+                    // QEMU does not reach this path (THRE responds immediately).
+                    // Must NOT be replaced by `TX_FAST_RETRY_LIMIT=0` + drain-side
+                    // `TX_WAKER` (disproven, see learned L266).
+                    let mut slow_polls = 0u32;
+                    let mut made_progress = false;
+                    loop {
+                        slow_polls += 1;
+                        if slow_polls > TX_SLOW_POLL_LIMIT {
+                            break;
+                        }
+                        for _ in 0..TX_SLOW_POLL_SPINS {
+                            core::hint::spin_loop();
+                        }
+                        let sent = self.uart.send_bytes(&write_buf[cursor..pending]);
+                        #[cfg(feature = "telemetry")]
+                        {
+                            self.tx_debug.hw_send_calls.fetch_add(1, Ordering::Relaxed);
+                            if sent > 0 {
+                                self.tx_debug
+                                    .hw_send_bytes
+                                    .fetch_add(sent as u64, Ordering::Relaxed);
+                                self.tx_debug
+                                    .hw_send_max_chunk
+                                    .fetch_max(sent as u64, Ordering::Relaxed);
+                            } else {
+                                self.tx_debug.hw_send_zero.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        cursor += sent;
+                        if sent > 0 {
+                            self.tx_staged_bytes.fetch_sub(sent, Ordering::AcqRel);
+                            #[cfg(feature = "telemetry")]
+                            self.telemetry
+                                .tx_hw_bytes
+                                .fetch_add(sent as u64, Ordering::Relaxed);
+                            made_progress = true;
+                            break;
+                        }
+                        #[cfg(feature = "telemetry")]
+                        self.telemetry
+                            .tx_no_progress
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    if made_progress {
+                        retries = 0;
+                        continue;
+                    }
+
+                    // Slow-poll exhausted — fall back to ISR wait
                     self.tx_copier_active.store(false, Ordering::Release);
                     return Poll::Pending;
                 }

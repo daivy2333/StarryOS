@@ -159,6 +159,28 @@ Q19C MUST record benchmark evidence with enough context to compare QEMU, Q19B em
 - **WHEN** Q19C results are compared to QEMU or Q19B
 - **THEN** the comparison MUST state whether the benchmark used physical UART line delay, embedded bytes, memory-root path loading, shell/script entry, or real rootfs.
 
+### Requirement: D1 TX optimization preserves progress
+
+Q19C D1 TX optimizations MUST preserve the known-good embedded userbench startup and drain progress before claiming throughput or latency improvements.
+
+#### Scenario: Optimizing TX wake or retry policy
+
+- **WHEN** Q19C changes TX copier retry limits, THRE wake registration, or `tcdrain`/`flush` wake behavior
+- **THEN** the D1 userbench MUST still reach the first user benchmark section after `benchmark process spawned`
+- **AND** it MUST complete the embedded benchmark with exit code 0 before the optimization is accepted.
+
+#### Scenario: Avoiding a disproven THRE-only progress dependency
+
+- **WHEN** an optimization depends on D1 THRE interrupts as the only forward-progress source after FIFO fill
+- **THEN** the design MUST include a software fallback or bounded polling path
+- **AND** it MUST NOT use the disproven `TX_FAST_RETRY_LIMIT=0` plus drain-side `TX_WAKER` registration scheme as the default behavior.
+
+#### Scenario: Recording remaining TX inefficiency
+
+- **WHEN** D1 TX diagnostic snapshots are captured
+- **THEN** the evidence MUST record `hw_send_zero`, `no_progress_budget_exhausted`, `hw_send_max_chunk`, and P99 drain/latency behavior
+- **AND** the report MUST distinguish proven fixes from open optimization work.
+
 ### Requirement: Boot image size remains visible
 
 Q19C MUST record Android boot image size for every Lichee fullbench image because embedded benchmark, shell, script, and rootfs-related payload can increase kernel image size.

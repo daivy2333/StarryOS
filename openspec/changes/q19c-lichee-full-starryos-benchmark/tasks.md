@@ -9,12 +9,16 @@
 - [ ] 1.6 梳理 QEMU 与 Q19B `benchmark.c` 当前参数差异：binary revision、payload sizes、iteration counts、drain policy、timer source、startup chain、root provider
 - [x] 1.7 在 `benchmark.c` 增加 manifest 输出：benchmark version、target mode、startup chain、root provider、timer source、TX sizes/iters/drain policy、latency iters、FIFO matrix sizes、RX mode
 - [x] 1.8 保持现有 TX baseline 不退化：sizes `{64,256,1024}`、iters=100、每轮 `tcdrain()`、输出 `size`/`iters`/KB/s/line rate；4096B 默认测试已移除以缩短 QEMU/userbench 真板运行时间
-- [ ] 1.9 保留并解释 64B 小包数据：`size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`
+- [x] 1.9 保留并解释 64B 小包数据：旧 `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate` 主要来自 section 前 stdout backlog 测量污染；pre-section drain 隔离后 D1 64B 接近线速
 - [x] 1.10 增加或规划 fixed-payload RX witness：保留无输入 `EAGAIN` regression，新增 manual-input 或 loopback 模式的 N bytes read summary
 - [x] 1.11 规划 64B 小包延迟优化实验：baseline drain-per-iteration、no-drain enqueue、batch-N then drain、`writev` fragments、64/128/256B break-even
-- [ ] 1.12 建立 M0 host witness：`git diff -- tests/benchmark.c kernel/resources/benchmark.elf`、OpenSpec validate、必要 cargo check 命令清单
-- [ ] 1.13 建立 M0 board witness 模板：raw serial log、manifest、TX baseline、RX witness、64B small-packet section、exit code
-- [ ] 1.14 Phase 3 前停止并等待用户确认，不修改 `tests/benchmark.c`、`kernel/resources/benchmark.elf` 或 loader/rootfs 代码
+- [x] 1.12 建立 M0 host witness：`git diff -- tests/benchmark.c kernel/resources/benchmark.elf`、OpenSpec validate、必要 cargo check 命令清单
+- [x] 1.13 建立 M0 board witness 模板：raw serial log、manifest、TX baseline、RX witness、64B small-packet section、exit code
+- [x] 1.14 Phase 3 前停止并等待用户确认，随后按用户指令实施 benchmark 统一与真板诊断
+- [x] 1.15 默认移除 4096B TX/FIFO 测试，避免 QEMU 和 D1 userbench 运行时间过长
+- [x] 1.16 D1 gated TX debug snapshot 已用于暴露 `user_push`、ring pop、HW send、zero-send、max chunk、drain state，不对 QEMU 输出造成噪声
+- [x] 1.17 已验证修复：D1 THRE 后一次填最多 16B FIFO；TTY OPOST/ONLCR short-write 计数修复，S11 1024B 正确发送恢复
+- [ ] 1.18 剩余优化：D1 TX `hw_send_zero` / `no_progress_budget_exhausted` 和 P99 长尾仍需低风险方案；`TX_FAST_RETRY_LIMIT=0` + drain 注册 `TX_WAKER` 会导致 benchmark 进程启动后卡住，已证伪
 
 ## 2. Part A / M1 — Memory-root path loader fullbench
 
@@ -73,5 +77,5 @@
 - [ ] 6.5 建立 Q19C rootfs result 表：rootfs format、block device、startup chain、benchmark summary、raw log；默认允许 `SKIPPED: deferred after SDMMC/block driver`
 - [ ] 6.6 建立 Q19C-M0 benchmark evidence 表：manifest fields、QEMU/Q19B 参数差异、RX witness mode、64B small-packet experiment matrix
 - [ ] 6.7 更新 `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` 或追加后续分析文档，记录最终方案和证据
-- [ ] 6.8 更新 `openspec/specs/learned/spec.md`、`openspec/specs/architecture/spec.md`、`openspec/specs/optimization/spec.md`、`.claude/docs/tasks.md`
+- [x] 6.8 更新 `openspec/specs/learned/spec.md`、`openspec/specs/optimization/spec.md`、`.claude/docs/tasks.md`、`.claude/docs/SNAPSHOT.md`，保存 Q19C-M0 当前进度和 O77 剩余优化问题
 - [ ] 6.9 归档 OpenSpec change，并将 `lichee-d1-fullbench` capability 合入主 specs

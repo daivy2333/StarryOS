@@ -160,6 +160,7 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 | **O66** | arceos TIP-004 | **`print_preserved_status()` 验证函数**：UART / PLIC / Clock init 前后 dump 当前寄存器状态，与 U-Boot/Linux 预期对比。arceos `DwmacHalImpl::configure_platform` 实现此模式。**Q20 真板观测必备**（O64 的前置依赖）。 | 🔴 P0 | VisionFive2 硬件到位 |
 | **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q21 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q21 决策 | Q20 真板数据 + O3 评估 |
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q20 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q20 真板驱动开发 |
+| **O77** | Q19C D1 TX 诊断 | **D1 TX zero-send / P99 长尾优化**：当前已验证 `send_bytes()` 16B FIFO burst 与 TTY short-write 修复；剩余问题是 TX copier 在 115200bps FIFO full 时产生较多 `hw_send_zero` / `no_progress_budget_exhausted`，并可能形成 P99 drain/latency 长尾。`TX_FAST_RETRY_LIMIT=0` + drain 注册 `TX_WAKER` 已在真板导致 benchmark 进程启动后卡住，不能作为默认方案。后续优化必须保留软件前进 fallback 或 bounded polling，并以 Q19B embedded userbench 完整通过作为第一 gate。 | 🔴 P0（Q19C-M0） | D1 userbench 数据显示 zero-send/P99 长尾仍显著 |
 <!-- tombstone: O67/O68/O70/O72/O73 --> Archived 2026-07-02 in ARC-202607021648 — 已采纳/已蕴含/已领先项从 active optimization 清单移除。
 
 #### Scenario: Q17-Q20 真板启动顺序（O63 + O74/O75/O76 + O64/O66 协同，Revised 2026-06-28）
@@ -168,6 +169,13 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 - **THEN** MUST 按顺序实施：(1) Q17 / O63 内存序修复（P0 — 先修 `ier_cache` RMW 竞争，再修 `tx_copier_active`/`tx_staged_bytes`）→ (2) Q18 / O74-O75 平台参数解耦与 early console 基础 → (3) Q19 / O76 Lichee RV Dock 单核 smoke test 演练启动链 → (4) Q20 / O66 `print_preserved_status()` 验证 U-Boot 已配置 PLIC/Clock 状态 → (5) Q20 / O64 PLIC+Clock trust-u-boot 模式（**不限制 UART 初始化**）→ (6) Q20 / O65 验证 axplat crate PLIC 初始化路径 → (7) Q20 跑通 Q15 Manual QA 全部 12 项
 - **AND** MUST 失败时优先排查 O63（内存序），其症状（staged_bytes 漂移 / flush hang / RX 停滞）最难定位
 - **AND** UART 可正常重新初始化 FCR/IER/波特率，无需 trust-u-boot
+
+#### Scenario: Q19C 评估 O77（D1 TX zero-send / P99 长尾）
+
+- **WHEN** 开发者继续优化 D1 TX copier、THRE wake、`tcdrain` 或 retry policy
+- **THEN** MUST 先证明 `make lichee-userbench` 产物在真板上能越过 `benchmark process spawned` 并完整输出 benchmark exit code 0
+- **AND** MUST 用 gated TX debug snapshot 记录 `hw_send_zero`、`no_progress_budget_exhausted`、`hw_send_max_chunk`、`ring_pop_bytes` 与 final/second drain
+- **AND** MUST 不得把 `TX_FAST_RETRY_LIMIT=0` + drain-side `TX_WAKER` 注册作为默认修复，除非另有软件 fallback 证明不会丢失 forward progress
 
 #### Scenario: Q21 评估 O69（DMA 决策树）
 

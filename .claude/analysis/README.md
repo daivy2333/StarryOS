@@ -1,12 +1,14 @@
 # Analysis Index
 
-> Last updated: 2026-07-04
-> 2026-07-04 update: 16 active-path tombstones (8 top-level + 8 in `lichee/`) were consolidated into `_archive/README.md`. The active tree now holds only 2 active analyses + the special binary backup tombstone.
+> Last updated: 2026-07-07
+> 2026-07-07 update: added `q19c-d1-tx-optimization.md` (Q19C.8e D1 TX zero-send / P99 long-tail optimization analysis).
+> 2026-07-04 update: 16 active-path tombstones (8 top-level + 8 in `lichee/`) were consolidated into `_archive/README.md`.
 
 ## Active
 
 - `q17-smp-memory-ordering.md` — Q17 SMP / memory-ordering analysis; still referenced by Q20 multi-hart revalidation.
 - `q19c-lichee-full-starryos-benchmark.md` — active Q19C fullbench planning and implementation reference.
+- `q19c-d1-tx-optimization.md` — Q19C.8e D1 TX zero-send / P99 long-tail optimization analysis; root causes and 5 optimization directions with recommended A+B combination.
 
 ## Special binary tombstone
 
