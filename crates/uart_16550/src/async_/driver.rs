@@ -10,6 +10,8 @@
 //! - `W: OsWakerSet` — waker notification abstraction for ring buffers
 //! - `U: UartPort` — interior-mutability-safe UART hardware access
 
+#[cfg(feature = "telemetry")]
+use core::sync::atomic::AtomicU64;
 use core::{fmt, future::poll_fn, marker::PhantomData, sync::atomic::Ordering, task::Poll};
 
 use super::{
@@ -87,6 +89,87 @@ pub struct TxCompletion {
     pub transmitter_empty: bool,
 }
 
+/// Snapshot of TX path counters for board-side diagnostics.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TxDebugSnapshot {
+    /// Calls to the user-facing TX push path.
+    pub user_push_calls: u64,
+    /// Bytes requested by user-facing TX push calls.
+    pub user_push_requested_bytes: u64,
+    /// Bytes accepted into the TX ring by user-facing push calls.
+    pub user_push_accepted_bytes: u64,
+    /// Non-empty TX ring pop batches performed by the TX copier.
+    pub ring_pop_calls: u64,
+    /// Bytes popped from the TX ring by the TX copier.
+    pub ring_pop_bytes: u64,
+    /// Calls from the TX copier into `UartPort::send_bytes`.
+    pub hw_send_calls: u64,
+    /// Bytes reported as accepted by `UartPort::send_bytes`.
+    pub hw_send_bytes: u64,
+    /// `send_bytes` calls that returned zero.
+    pub hw_send_zero: u64,
+    /// Largest single positive `send_bytes` return value.
+    pub hw_send_max_chunk: u64,
+    /// Times the TX copier exhausted its no-progress retry budget.
+    pub no_progress_budget_exhausted: u64,
+    /// Whether the TX ring was empty in the snapshot.
+    pub ring_empty: u64,
+    /// Whether the TX copier was active in the snapshot.
+    pub copier_active: u64,
+    /// Bytes staged by the TX copier but not yet reported sent.
+    pub staged_bytes: u64,
+    /// Whether the UART transmitter was empty in the snapshot.
+    pub transmitter_empty: u64,
+}
+
+#[derive(Debug)]
+#[cfg(feature = "telemetry")]
+struct TxDebugCounters {
+    user_push_calls: AtomicU64,
+    user_push_requested_bytes: AtomicU64,
+    user_push_accepted_bytes: AtomicU64,
+    ring_pop_calls: AtomicU64,
+    ring_pop_bytes: AtomicU64,
+    hw_send_calls: AtomicU64,
+    hw_send_bytes: AtomicU64,
+    hw_send_zero: AtomicU64,
+    hw_send_max_chunk: AtomicU64,
+    no_progress_budget_exhausted: AtomicU64,
+}
+
+#[cfg(feature = "telemetry")]
+impl TxDebugCounters {
+    const fn new() -> Self {
+        Self {
+            user_push_calls: AtomicU64::new(0),
+            user_push_requested_bytes: AtomicU64::new(0),
+            user_push_accepted_bytes: AtomicU64::new(0),
+            ring_pop_calls: AtomicU64::new(0),
+            ring_pop_bytes: AtomicU64::new(0),
+            hw_send_calls: AtomicU64::new(0),
+            hw_send_bytes: AtomicU64::new(0),
+            hw_send_zero: AtomicU64::new(0),
+            hw_send_max_chunk: AtomicU64::new(0),
+            no_progress_budget_exhausted: AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.user_push_calls.store(0, Ordering::Relaxed);
+        self.user_push_requested_bytes.store(0, Ordering::Relaxed);
+        self.user_push_accepted_bytes.store(0, Ordering::Relaxed);
+        self.ring_pop_calls.store(0, Ordering::Relaxed);
+        self.ring_pop_bytes.store(0, Ordering::Relaxed);
+        self.hw_send_calls.store(0, Ordering::Relaxed);
+        self.hw_send_bytes.store(0, Ordering::Relaxed);
+        self.hw_send_zero.store(0, Ordering::Relaxed);
+        self.hw_send_max_chunk.store(0, Ordering::Relaxed);
+        self.no_progress_budget_exhausted
+            .store(0, Ordering::Relaxed);
+    }
+}
+
 impl TxCompletion {
     /// Returns `true` when all four drain conditions are satisfied.
     #[must_use]
@@ -119,6 +202,8 @@ pub struct AsyncUartDriver<R: OsRuntime, W: OsWakerSet, U: UartPort> {
     pub tx_copier_active: core::sync::atomic::AtomicBool,
     /// Bytes popped from TX ring but not yet confirmed sent to UART FIFO.
     pub tx_staged_bytes: core::sync::atomic::AtomicUsize,
+    #[cfg(feature = "telemetry")]
+    tx_debug: TxDebugCounters,
     uart: &'static U,
     #[cfg(feature = "telemetry")]
     /// Diagnostic counters for TX copier behavior (only available
@@ -152,6 +237,8 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
             tx,
             tx_copier_active: core::sync::atomic::AtomicBool::new(false),
             tx_staged_bytes: core::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "telemetry")]
+            tx_debug: TxDebugCounters::new(),
             uart,
             #[cfg(feature = "telemetry")]
             telemetry: crate::async_::telemetry::Telemetry::new(),
@@ -170,6 +257,79 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
             copier_active: self.tx_copier_active.load(Ordering::Acquire),
             staged_bytes: self.tx_staged_bytes.load(Ordering::Acquire),
             transmitter_empty: self.uart.transmitter_empty(),
+        }
+    }
+
+    /// Record a user-facing TX push operation.
+    #[cfg(feature = "telemetry")]
+    pub fn record_tx_push(&self, requested: usize, accepted: usize) {
+        self.tx_debug
+            .user_push_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.tx_debug
+            .user_push_requested_bytes
+            .fetch_add(requested as u64, Ordering::Relaxed);
+        self.tx_debug
+            .user_push_accepted_bytes
+            .fetch_add(accepted as u64, Ordering::Relaxed);
+    }
+
+    /// Record a user-facing TX push operation.
+    #[cfg(not(feature = "telemetry"))]
+    #[inline(always)]
+    pub fn record_tx_push(&self, _requested: usize, _accepted: usize) {}
+
+    /// Reset diagnostic TX counters without changing TX data-path state.
+    #[cfg(feature = "telemetry")]
+    pub fn reset_tx_debug(&self) {
+        self.tx_debug.reset();
+    }
+
+    /// Reset diagnostic TX counters without changing TX data-path state.
+    #[cfg(not(feature = "telemetry"))]
+    pub fn reset_tx_debug(&self) {}
+
+    /// Return a snapshot of diagnostic TX counters and drain state.
+    #[cfg(feature = "telemetry")]
+    pub fn tx_debug_snapshot(&self) -> TxDebugSnapshot {
+        let c = self.tx_completion();
+        TxDebugSnapshot {
+            user_push_calls: self.tx_debug.user_push_calls.load(Ordering::Relaxed),
+            user_push_requested_bytes: self
+                .tx_debug
+                .user_push_requested_bytes
+                .load(Ordering::Relaxed),
+            user_push_accepted_bytes: self
+                .tx_debug
+                .user_push_accepted_bytes
+                .load(Ordering::Relaxed),
+            ring_pop_calls: self.tx_debug.ring_pop_calls.load(Ordering::Relaxed),
+            ring_pop_bytes: self.tx_debug.ring_pop_bytes.load(Ordering::Relaxed),
+            hw_send_calls: self.tx_debug.hw_send_calls.load(Ordering::Relaxed),
+            hw_send_bytes: self.tx_debug.hw_send_bytes.load(Ordering::Relaxed),
+            hw_send_zero: self.tx_debug.hw_send_zero.load(Ordering::Relaxed),
+            hw_send_max_chunk: self.tx_debug.hw_send_max_chunk.load(Ordering::Relaxed),
+            no_progress_budget_exhausted: self
+                .tx_debug
+                .no_progress_budget_exhausted
+                .load(Ordering::Relaxed),
+            ring_empty: c.ring_empty as u64,
+            copier_active: c.copier_active as u64,
+            staged_bytes: c.staged_bytes as u64,
+            transmitter_empty: c.transmitter_empty as u64,
+        }
+    }
+
+    /// Return a snapshot of diagnostic TX counters and drain state.
+    #[cfg(not(feature = "telemetry"))]
+    pub fn tx_debug_snapshot(&self) -> TxDebugSnapshot {
+        let c = self.tx_completion();
+        TxDebugSnapshot {
+            ring_empty: c.ring_empty as u64,
+            copier_active: c.copier_active as u64,
+            staged_bytes: c.staged_bytes as u64,
+            transmitter_empty: c.transmitter_empty as u64,
+            ..TxDebugSnapshot::default()
         }
     }
 
@@ -272,6 +432,13 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                     pending = self.tx.pop_batch(&mut write_buf);
                     cursor = 0;
                     if pending > 0 {
+                        #[cfg(feature = "telemetry")]
+                        {
+                            self.tx_debug.ring_pop_calls.fetch_add(1, Ordering::Relaxed);
+                            self.tx_debug
+                                .ring_pop_bytes
+                                .fetch_add(pending as u64, Ordering::Relaxed);
+                        }
                         self.tx_staged_bytes.fetch_add(pending, Ordering::AcqRel);
                     }
                     if pending == 0 {
@@ -294,6 +461,20 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                 let mut retries = 0usize;
                 loop {
                     let sent = self.uart.send_bytes(&write_buf[cursor..pending]);
+                    #[cfg(feature = "telemetry")]
+                    {
+                        self.tx_debug.hw_send_calls.fetch_add(1, Ordering::Relaxed);
+                        if sent > 0 {
+                            self.tx_debug
+                                .hw_send_bytes
+                                .fetch_add(sent as u64, Ordering::Relaxed);
+                            self.tx_debug
+                                .hw_send_max_chunk
+                                .fetch_max(sent as u64, Ordering::Relaxed);
+                        } else {
+                            self.tx_debug.hw_send_zero.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                     cursor += sent;
                     if sent > 0 {
                         self.tx_staged_bytes.fetch_sub(sent, Ordering::AcqRel);
@@ -328,10 +509,28 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                     }
 
                     // Budget exhausted — register waker, enable THRE, final recheck
+                    #[cfg(feature = "telemetry")]
+                    self.tx_debug
+                        .no_progress_budget_exhausted
+                        .fetch_add(1, Ordering::Relaxed);
                     TX_WAKER.register(cx.waker());
                     self.uart.update_ier(IER::THR_EMPTY, IER::empty());
 
                     let sent = self.uart.send_bytes(&write_buf[cursor..pending]);
+                    #[cfg(feature = "telemetry")]
+                    {
+                        self.tx_debug.hw_send_calls.fetch_add(1, Ordering::Relaxed);
+                        if sent > 0 {
+                            self.tx_debug
+                                .hw_send_bytes
+                                .fetch_add(sent as u64, Ordering::Relaxed);
+                            self.tx_debug
+                                .hw_send_max_chunk
+                                .fetch_max(sent as u64, Ordering::Relaxed);
+                        } else {
+                            self.tx_debug.hw_send_zero.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                     cursor += sent;
                     if sent > 0 {
                         self.tx_staged_bytes.fetch_sub(sent, Ordering::AcqRel);

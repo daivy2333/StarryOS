@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdint.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
 #include <termios.h>
@@ -50,6 +51,7 @@
 #define TX_WRITEV_FRAGMENTS 4
 #define TX_WRITEV_FRAGMENT_SIZE 64
 #define RX_FIXED_TIMEOUT_MS 5000
+#define TX_SLOW_ITER_NS 10000000LL
 
 #ifndef BENCH_RX_FIXED_BYTES
 #define BENCH_RX_FIXED_BYTES 0
@@ -58,6 +60,35 @@
 static const int TX_THROUGHPUT_SIZES[] = {64, 256, 1024};
 static const int TX_BREAK_EVEN_SIZES[] = {64, 128, 256};
 static const int FIFO_MATRIX_SIZES[] = {1, 15, 16, 17, 31, 32, 33, 48, 49};
+
+typedef struct {
+    int calls;
+    int errors;
+    int first_errno;
+    int last_errno;
+} drain_stats_t;
+
+#ifdef BENCH_D1_DIAG
+#define UART_TXDBG_SNAPSHOT 0x54584431U
+#define UART_TXDBG_RESET    0x54584432U
+
+typedef struct {
+    uint64_t user_push_calls;
+    uint64_t user_push_requested_bytes;
+    uint64_t user_push_accepted_bytes;
+    uint64_t ring_pop_calls;
+    uint64_t ring_pop_bytes;
+    uint64_t hw_send_calls;
+    uint64_t hw_send_bytes;
+    uint64_t hw_send_zero;
+    uint64_t hw_send_max_chunk;
+    uint64_t no_progress_budget_exhausted;
+    uint64_t ring_empty;
+    uint64_t copier_active;
+    uint64_t staged_bytes;
+    uint64_t transmitter_empty;
+} txdbg_snapshot_t;
+#endif
 
 static long long get_time_ns(void) {
     struct timespec ts;
@@ -75,6 +106,54 @@ static void print_int_list(const int *values, int count) {
 static long elapsed_ms(long long start, long long end) {
     return (long)((end - start) / 1000000LL);
 }
+
+static double line_time_ms(size_t bytes) {
+    return (double)bytes / (UART_LINE_RATE_KBPS * 1024.0) * 1000.0;
+}
+
+static int checked_tcdrain(int fd, drain_stats_t *stats) {
+    errno = 0;
+    int rc = tcdrain(fd);
+    if (stats) {
+        stats->calls++;
+        if (rc < 0) {
+            stats->errors++;
+            if (stats->first_errno == 0) stats->first_errno = errno;
+            stats->last_errno = errno;
+        }
+    }
+    return rc;
+}
+
+#ifdef BENCH_D1_DIAG
+static int txdbg_reset(int fd) {
+    return ioctl(fd, UART_TXDBG_RESET, 0);
+}
+
+static int txdbg_snapshot(int fd, txdbg_snapshot_t *snapshot) {
+    memset(snapshot, 0, sizeof(*snapshot));
+    return ioctl(fd, UART_TXDBG_SNAPSHOT, snapshot);
+}
+
+static void print_txdbg_snapshot(const char *phase, int size, const txdbg_snapshot_t *s, int rc) {
+    printf("  diag=s11-txdbg phase=%s size=%d ioctl_rc=%d user_calls=%llu user_req=%llu user_acc=%llu ring_pop_calls=%llu ring_pop_bytes=%llu hw_send_calls=%llu hw_send_bytes=%llu hw_send_zero=%llu hw_send_max_chunk=%llu no_progress_budget=%llu ring_empty=%llu copier_active=%llu staged_bytes=%llu transmitter_empty=%llu\r\n",
+           phase, size, rc,
+           (unsigned long long)s->user_push_calls,
+           (unsigned long long)s->user_push_requested_bytes,
+           (unsigned long long)s->user_push_accepted_bytes,
+           (unsigned long long)s->ring_pop_calls,
+           (unsigned long long)s->ring_pop_bytes,
+           (unsigned long long)s->hw_send_calls,
+           (unsigned long long)s->hw_send_bytes,
+           (unsigned long long)s->hw_send_zero,
+           (unsigned long long)s->hw_send_max_chunk,
+           (unsigned long long)s->no_progress_budget_exhausted,
+           (unsigned long long)s->ring_empty,
+           (unsigned long long)s->copier_active,
+           (unsigned long long)s->staged_bytes,
+           (unsigned long long)s->transmitter_empty);
+}
+#endif
 
 static void sort_longs(long *values, int count) {
     for (int i = 0; i < count - 1; i++) {
@@ -107,6 +186,48 @@ static void print_latency_summary(const char *prefix, long *latencies, int count
            (double)latencies[count * 99 / 100] / 1000000.0);
 }
 
+static void print_tx_latency_diag(const char *prefix, long *latencies, int count, int payload_size) {
+    if (count == 0) {
+        printf("  diag=%s latency_status=no-data\r\n", prefix);
+        return;
+    }
+
+    sort_longs(latencies, count);
+
+    long sum = 0;
+    int slow = 0;
+    int slow_over_line_plus10ms = 0;
+    long long line_ns = (long long)(line_time_ms((size_t)payload_size) * 1000000.0);
+    long long line_plus_10ms_ns = line_ns + TX_SLOW_ITER_NS;
+    for (int i = 0; i < count; i++) {
+        sum += latencies[i];
+        if (latencies[i] > TX_SLOW_ITER_NS) slow++;
+        if ((long long)latencies[i] > line_plus_10ms_ns) slow_over_line_plus10ms++;
+    }
+    double max_line_ratio = line_ns > 0 ? (double)latencies[count - 1] / (double)line_ns : 0.0;
+
+    printf("  diag=%s n=%d avg_ms=%.3f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f max_ms=%.3f slow_gt10ms=%d slow_over_line_plus10ms=%d max_line_ratio=%.2f\r\n",
+           prefix, count,
+           (double)sum / count / 1000000.0,
+           (double)latencies[count * 50 / 100] / 1000000.0,
+           (double)latencies[count * 95 / 100] / 1000000.0,
+           (double)latencies[count * 99 / 100] / 1000000.0,
+           (double)latencies[count - 1] / 1000000.0,
+           slow, slow_over_line_plus10ms, max_line_ratio);
+}
+
+static void prepare_section(const char *section) {
+    long long start = get_time_ns();
+    drain_stats_t stats = {0};
+    fflush(stdout);
+    checked_tcdrain(STDOUT_FILENO, &stats);
+    long long end = get_time_ns();
+    printf("  diag=%s pre_section_stdout_drain_ms=%ld drain_errors=%d last_errno=%d\r\n",
+           section, elapsed_ms(start, end), stats.errors, stats.last_errno);
+    fflush(stdout);
+    checked_tcdrain(STDOUT_FILENO, &stats);
+}
+
 static ssize_t write_full(int fd, const char *buf, size_t len) {
     size_t written = 0;
     while (written < len) {
@@ -117,6 +238,26 @@ static ssize_t write_full(int fd, const char *buf, size_t len) {
         written += (size_t)n;
     }
     return (ssize_t)written;
+}
+
+static size_t run_write_drain_iters(int fd, const char *buf, int size, int iters,
+                                    long *latencies, int *ok, int *short_writes,
+                                    drain_stats_t *drain_stats) {
+    size_t total = 0;
+    *ok = 0;
+    *short_writes = 0;
+
+    for (int i = 0; i < iters; i++) {
+        long long iter_start = get_time_ns();
+        ssize_t n = write_full(fd, buf, (size_t)size);
+        if (n > 0) total += (size_t)n;
+        if (n != size) (*short_writes)++;
+        checked_tcdrain(fd, drain_stats);
+        long long iter_end = get_time_ns();
+        latencies[(*ok)++] = (long)(iter_end - iter_start);
+    }
+
+    return total;
 }
 
 static void print_manifest(void) {
@@ -155,6 +296,7 @@ static void print_manifest(void) {
 /* ── TX throughput: 写 /dev/console + tcdrain ─────────────────────── */
 static void test_tx_throughput(void) {
     printf("=== [S10] TX Throughput Baseline (write + tcdrain each iteration) ===\r\n");
+    prepare_section("S10");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -169,23 +311,53 @@ static void test_tx_throughput(void) {
         memset(buf, 0, test_size);
 
         long long start = get_time_ns();
-        size_t total = 0;
-
-        for (int i = 0; i < iterations; i++) {
-            ssize_t n = write_full(fd, buf, (size_t)test_size);
-            if (n > 0) total += (size_t)n;
-            tcdrain(fd);   /* wait until UART FIFO is empty */
-        }
+        long latencies[TX_THROUGHPUT_ITERS];
+        int ok = 0;
+        int short_writes = 0;
+        drain_stats_t drain_stats = {0};
+        size_t total = run_write_drain_iters(
+            fd, buf, test_size, iterations, latencies, &ok, &short_writes,
+            &drain_stats);
 
         long long end = get_time_ns();
         double elapsed_s = (double)(end - start) / 1000000000.0;
         double kbps = (double)total / elapsed_s / 1024.0;
         double line_rate = kbps / UART_LINE_RATE_KBPS * 100.0;
 
-        printf("  policy=drain-each size=%d iters=%d bytes=%zu kbps=%.2f line_rate_pct=%.1f\r\n",
-               test_size, iterations, total, kbps, line_rate);
+        printf("  policy=drain-each size=%d iters=%d bytes=%zu short_writes=%d drain_calls=%d drain_errors=%d last_drain_errno=%d elapsed_ms=%ld line_time_ms=%.1f kbps=%.2f line_rate_pct=%.1f\r\n",
+               test_size, iterations, total, short_writes, drain_stats.calls,
+               drain_stats.errors, drain_stats.last_errno, elapsed_ms(start, end),
+               line_time_ms(total), kbps, line_rate);
+        char diag_prefix[64];
+        snprintf(diag_prefix, sizeof(diag_prefix), "drain-each-size-%d", test_size);
+        print_tx_latency_diag(diag_prefix, latencies, ok, test_size);
 
         free(buf);
+    }
+
+    char *recheck = malloc(TX_THROUGHPUT_SIZES[0]);
+    if (recheck) {
+        memset(recheck, 0, TX_THROUGHPUT_SIZES[0]);
+        long latencies[TX_THROUGHPUT_ITERS];
+        int ok = 0;
+        int short_writes = 0;
+        drain_stats_t drain_stats = {0};
+        long long start = get_time_ns();
+        size_t total = run_write_drain_iters(
+            fd, recheck, TX_THROUGHPUT_SIZES[0], TX_THROUGHPUT_ITERS,
+            latencies, &ok, &short_writes, &drain_stats);
+        long long end = get_time_ns();
+        double elapsed_s = (double)(end - start) / 1000000000.0;
+        double kbps = (double)total / elapsed_s / 1024.0;
+        double line_rate = kbps / UART_LINE_RATE_KBPS * 100.0;
+        printf("  policy=drain-each-recheck size=%d iters=%d bytes=%zu short_writes=%d drain_calls=%d drain_errors=%d last_drain_errno=%d elapsed_ms=%ld line_time_ms=%.1f kbps=%.2f line_rate_pct=%.1f\r\n",
+               TX_THROUGHPUT_SIZES[0], TX_THROUGHPUT_ITERS, total, short_writes,
+               drain_stats.calls, drain_stats.errors, drain_stats.last_errno,
+               elapsed_ms(start, end), line_time_ms(total), kbps, line_rate);
+        print_tx_latency_diag("drain-each-recheck-size-64", latencies, ok, TX_THROUGHPUT_SIZES[0]);
+        free(recheck);
+    } else {
+        perror("malloc");
     }
 
     close(fd);
@@ -195,6 +367,7 @@ static void test_tx_throughput(void) {
 /* ── TX enqueue: write without per-iteration drain, final tcdrain outside timing ── */
 static void test_tx_enqueue_no_drain(void) {
     printf("=== [S11] TX Enqueue Cost (write loop, final drain outside timing) ===\r\n");
+    prepare_section("S11");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -209,6 +382,15 @@ static void test_tx_enqueue_no_drain(void) {
 
         size_t total = 0;
         int short_writes = 0;
+        drain_stats_t drain_stats = {0};
+#ifdef BENCH_D1_DIAG
+        txdbg_snapshot_t txdbg_enqueue;
+        txdbg_snapshot_t txdbg_final;
+        txdbg_snapshot_t txdbg_second;
+        fflush(stdout);
+        checked_tcdrain(STDOUT_FILENO, NULL);
+        int txdbg_reset_rc = txdbg_reset(fd);
+#endif
         long long start = get_time_ns();
 
         for (int i = 0; i < TX_THROUGHPUT_ITERS; i++) {
@@ -218,15 +400,38 @@ static void test_tx_enqueue_no_drain(void) {
         }
 
         long long enqueue_end = get_time_ns();
-        tcdrain(fd);
+#ifdef BENCH_D1_DIAG
+        int txdbg_enqueue_rc = txdbg_snapshot(fd, &txdbg_enqueue);
+#endif
+        int final_drain_rc = checked_tcdrain(fd, &drain_stats);
+        int final_drain_errno = final_drain_rc < 0 ? errno : 0;
         long long drain_end = get_time_ns();
+#ifdef BENCH_D1_DIAG
+        int txdbg_final_rc = txdbg_snapshot(fd, &txdbg_final);
+#endif
+        int second_drain_rc = checked_tcdrain(fd, &drain_stats);
+        int second_drain_errno = second_drain_rc < 0 ? errno : 0;
+        long long second_drain_end = get_time_ns();
+#ifdef BENCH_D1_DIAG
+        int txdbg_second_rc = txdbg_snapshot(fd, &txdbg_second);
+#endif
 
         double elapsed_s = (double)(enqueue_end - start) / 1000000000.0;
         double kbps = elapsed_s > 0.0 ? (double)total / elapsed_s / 1024.0 : 0.0;
 
-        printf("  policy=no-drain size=%d iters=%d bytes=%zu short_writes=%d enqueue_kbps=%.2f final_drain_ms=%ld\r\n",
-               test_size, TX_THROUGHPUT_ITERS, total, short_writes, kbps,
-               elapsed_ms(enqueue_end, drain_end));
+        printf("  policy=no-drain size=%d iters=%d bytes=%zu short_writes=%d enqueue_ms=%ld final_drain_ms=%ld second_drain_ms=%ld final_drain_rc=%d final_drain_errno=%d second_drain_rc=%d second_drain_errno=%d drain_calls=%d drain_errors=%d last_drain_errno=%d line_time_ms=%.1f enqueue_kbps=%.2f\r\n",
+               test_size, TX_THROUGHPUT_ITERS, total, short_writes,
+               elapsed_ms(start, enqueue_end), elapsed_ms(enqueue_end, drain_end),
+               elapsed_ms(drain_end, second_drain_end), final_drain_rc,
+               final_drain_errno, second_drain_rc, second_drain_errno,
+               drain_stats.calls, drain_stats.errors, drain_stats.last_errno,
+               line_time_ms(total), kbps);
+#ifdef BENCH_D1_DIAG
+        printf("  diag=s11-txdbg-reset size=%d ioctl_rc=%d\r\n", test_size, txdbg_reset_rc);
+        print_txdbg_snapshot("enqueue", test_size, &txdbg_enqueue, txdbg_enqueue_rc);
+        print_txdbg_snapshot("final-drain", test_size, &txdbg_final, txdbg_final_rc);
+        print_txdbg_snapshot("second-drain", test_size, &txdbg_second, txdbg_second_rc);
+#endif
 
         free(buf);
     }
@@ -238,6 +443,7 @@ static void test_tx_enqueue_no_drain(void) {
 /* ── TX batch drain: amortize tcdrain overhead while preserving physical drain ── */
 static void test_tx_batch_drain(void) {
     printf("=== [S12] TX Batch Drain (write N iterations, then tcdrain) ===\r\n");
+    prepare_section("S12");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -252,6 +458,7 @@ static void test_tx_batch_drain(void) {
 
         size_t total = 0;
         int drain_count = 0;
+        drain_stats_t drain_stats = {0};
         long long start = get_time_ns();
 
         for (int i = 0; i < TX_THROUGHPUT_ITERS; i++) {
@@ -259,12 +466,12 @@ static void test_tx_batch_drain(void) {
             if (n > 0) total += (size_t)n;
 
             if ((i + 1) % TX_BATCH_DRAIN_EVERY == 0) {
-                tcdrain(fd);
+                checked_tcdrain(fd, &drain_stats);
                 drain_count++;
             }
         }
 
-        tcdrain(fd);
+        checked_tcdrain(fd, &drain_stats);
         drain_count++;
 
         long long end = get_time_ns();
@@ -272,9 +479,11 @@ static void test_tx_batch_drain(void) {
         double kbps = (double)total / elapsed_s / 1024.0;
         double line_rate = kbps / UART_LINE_RATE_KBPS * 100.0;
 
-        printf("  policy=batch-drain size=%d iters=%d batch=%d drains=%d bytes=%zu kbps=%.2f line_rate_pct=%.1f\r\n",
+        printf("  policy=batch-drain size=%d iters=%d batch=%d drains=%d bytes=%zu drain_calls=%d drain_errors=%d last_drain_errno=%d elapsed_ms=%ld line_time_ms=%.1f kbps=%.2f line_rate_pct=%.1f\r\n",
                test_size, TX_THROUGHPUT_ITERS, TX_BATCH_DRAIN_EVERY,
-               drain_count, total, kbps, line_rate);
+               drain_count, total, drain_stats.calls, drain_stats.errors,
+               drain_stats.last_errno, elapsed_ms(start, end),
+               line_time_ms(total), kbps, line_rate);
 
         free(buf);
     }
@@ -286,6 +495,7 @@ static void test_tx_batch_drain(void) {
 /* ── TX writev: syscall-side aggregation witness ───────────────────── */
 static void test_tx_writev_fragments(void) {
     printf("=== [S13] TX writev Fragments (fragment aggregation witness) ===\r\n");
+    prepare_section("S13");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -306,13 +516,14 @@ static void test_tx_writev_fragments(void) {
 
     size_t total = 0;
     int short_writes = 0;
+    drain_stats_t drain_stats = {0};
     long long start = get_time_ns();
 
     for (int i = 0; i < TX_THROUGHPUT_ITERS; i++) {
         ssize_t n = writev(fd, iov, TX_WRITEV_FRAGMENTS);
         if (n > 0) total += (size_t)n;
         if (n != TX_WRITEV_FRAGMENT_SIZE * TX_WRITEV_FRAGMENTS) short_writes++;
-        tcdrain(fd);
+        checked_tcdrain(fd, &drain_stats);
     }
 
     long long end = get_time_ns();
@@ -320,10 +531,12 @@ static void test_tx_writev_fragments(void) {
     double kbps = (double)total / elapsed_s / 1024.0;
     double line_rate = kbps / UART_LINE_RATE_KBPS * 100.0;
 
-    printf("  policy=writev-drain-each fragments=%d fragment_size=%d total_size=%d iters=%d bytes=%zu short_writes=%d kbps=%.2f line_rate_pct=%.1f\r\n",
+    printf("  policy=writev-drain-each fragments=%d fragment_size=%d total_size=%d iters=%d bytes=%zu short_writes=%d drain_calls=%d drain_errors=%d last_drain_errno=%d elapsed_ms=%ld line_time_ms=%.1f kbps=%.2f line_rate_pct=%.1f\r\n",
            TX_WRITEV_FRAGMENTS, TX_WRITEV_FRAGMENT_SIZE,
            TX_WRITEV_FRAGMENTS * TX_WRITEV_FRAGMENT_SIZE,
-           TX_THROUGHPUT_ITERS, total, short_writes, kbps, line_rate);
+           TX_THROUGHPUT_ITERS, total, short_writes, drain_stats.calls,
+           drain_stats.errors, drain_stats.last_errno, elapsed_ms(start, end),
+           line_time_ms(total), kbps, line_rate);
 
     free(buf);
     close(fd);
@@ -333,6 +546,7 @@ static void test_tx_writev_fragments(void) {
 /* ── TX small packet break-even: 64/128/256 with the baseline drain policy ── */
 static void test_tx_small_packet_break_even(void) {
     printf("=== [S14] TX Small Packet Break-even (64/128/256 drain-each) ===\r\n");
+    prepare_section("S14");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -345,22 +559,27 @@ static void test_tx_small_packet_break_even(void) {
         if (!buf) { perror("malloc"); continue; }
         memset(buf, 0, test_size);
 
-        size_t total = 0;
         long long start = get_time_ns();
-
-        for (int i = 0; i < TX_THROUGHPUT_ITERS; i++) {
-            ssize_t n = write_full(fd, buf, (size_t)test_size);
-            if (n > 0) total += (size_t)n;
-            tcdrain(fd);
-        }
+        long latencies[TX_THROUGHPUT_ITERS];
+        int ok = 0;
+        int short_writes = 0;
+        drain_stats_t drain_stats = {0};
+        size_t total = run_write_drain_iters(
+            fd, buf, test_size, TX_THROUGHPUT_ITERS, latencies, &ok, &short_writes,
+            &drain_stats);
 
         long long end = get_time_ns();
         double elapsed_s = (double)(end - start) / 1000000000.0;
         double kbps = (double)total / elapsed_s / 1024.0;
         double line_rate = kbps / UART_LINE_RATE_KBPS * 100.0;
 
-        printf("  policy=drain-each size=%d iters=%d bytes=%zu kbps=%.2f line_rate_pct=%.1f\r\n",
-               test_size, TX_THROUGHPUT_ITERS, total, kbps, line_rate);
+        printf("  policy=drain-each size=%d iters=%d bytes=%zu short_writes=%d drain_calls=%d drain_errors=%d last_drain_errno=%d elapsed_ms=%ld line_time_ms=%.1f kbps=%.2f line_rate_pct=%.1f\r\n",
+               test_size, TX_THROUGHPUT_ITERS, total, short_writes,
+               drain_stats.calls, drain_stats.errors, drain_stats.last_errno,
+               elapsed_ms(start, end), line_time_ms(total), kbps, line_rate);
+        char diag_prefix[64];
+        snprintf(diag_prefix, sizeof(diag_prefix), "break-even-size-%d", test_size);
+        print_tx_latency_diag(diag_prefix, latencies, ok, test_size);
 
         free(buf);
     }
@@ -372,23 +591,27 @@ static void test_tx_small_packet_break_even(void) {
 /* ── TX latency: 单字节 write + tcdrain ─────────────────────────── */
 static void test_tx_latency(void) {
     printf("=== [S20] TX Latency (single byte + tcdrain) ===\r\n");
+    prepare_section("S20");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
 
     long latencies[TX_LATENCY_ITERS];
     int ok = 0;
+    drain_stats_t drain_stats = {0};
 
     for (int i = 0; i < TX_LATENCY_ITERS; i++) {
         char tx = 0;
         long long start = get_time_ns();
         if (write(fd, &tx, 1) != 1) continue;
-        tcdrain(fd);
+        checked_tcdrain(fd, &drain_stats);
         long long end = get_time_ns();
         latencies[ok++] = (long)(end - start);
     }
 
     print_latency_summary("size=1 policy=drain-each", latencies, ok);
+    printf("  diag=S20 drain_calls=%d drain_errors=%d last_drain_errno=%d\r\n",
+           drain_stats.calls, drain_stats.errors, drain_stats.last_errno);
     printf("\r\n");
 
     close(fd);
@@ -397,6 +620,7 @@ static void test_tx_latency(void) {
 /* ── TX latency FIFO boundary matrix ────────────────────────────── */
 static void test_tx_latency_matrix(void) {
     printf("=== [S21] TX Latency FIFO Boundary Matrix ===\r\n");
+    prepare_section("S21");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) { perror("open"); return; }
@@ -411,12 +635,13 @@ static void test_tx_latency_matrix(void) {
 
         long latencies[FIFO_MATRIX_ITERS];
         int ok = 0;
+        drain_stats_t drain_stats = {0};
 
         for (int i = 0; i < FIFO_MATRIX_ITERS; i++) {
             long long start = get_time_ns();
             ssize_t n = write(fd, buf, sz);
             if (n != sz) continue;
-            tcdrain(fd);
+            checked_tcdrain(fd, &drain_stats);
             long long end = get_time_ns();
             latencies[ok++] = (long)(end - start);
         }
@@ -426,6 +651,8 @@ static void test_tx_latency_matrix(void) {
         char prefix[64];
         snprintf(prefix, sizeof(prefix), "size=%d policy=drain-each", sz);
         print_latency_summary(prefix, latencies, ok);
+        printf("  diag=fifo-size-%d drain_calls=%d drain_errors=%d last_drain_errno=%d\r\n",
+               sz, drain_stats.calls, drain_stats.errors, drain_stats.last_errno);
     }
 
     close(fd);
@@ -435,6 +662,7 @@ static void test_tx_latency_matrix(void) {
 /* ── non-blocking read test (FIONBIO) ───────────────────────────── */
 static void test_nonblock_read(void) {
     printf("=== [S30] RX Empty Non-blocking Read (FIONBIO) ===\r\n");
+    prepare_section("S30");
 
     int fd = open(DEVICE_PATH, O_RDWR | O_NONBLOCK);
     if (fd < 0) { perror("open"); return; }
@@ -479,6 +707,7 @@ static void test_nonblock_read(void) {
 /* ── optional RX fixed-payload witness ───────────────────────────── */
 static void test_rx_fixed_payload(void) {
     printf("=== [S31] RX Fixed Payload Witness ===\r\n");
+    prepare_section("S31");
 
     if (BENCH_RX_FIXED_BYTES <= 0) {
         printf("  status=SKIPPED reason=BENCH_RX_FIXED_BYTES=0\r\n\r\n");
@@ -539,6 +768,6 @@ int main(void) {
 
     printf("Done.\r\n");
     fflush(stdout);
-    tcdrain(STDOUT_FILENO);
+    checked_tcdrain(STDOUT_FILENO, NULL);
     return 0;
 }

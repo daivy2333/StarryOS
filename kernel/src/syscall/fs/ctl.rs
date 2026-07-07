@@ -16,7 +16,7 @@ use linux_raw_sys::{
     general::*,
     ioctl::{FIONBIO, TIOCGWINSZ},
 };
-use starry_vm::{VmPtr, vm_write_slice};
+use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
@@ -24,6 +24,49 @@ use crate::{
     task::AsThread,
     time::TimeValueLike,
 };
+
+const UART_TXDBG_SNAPSHOT: u32 = 0x5458_4431;
+const UART_TXDBG_RESET: u32 = 0x5458_4432;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UartTxDebugSnapshot {
+    user_push_calls: u64,
+    user_push_requested_bytes: u64,
+    user_push_accepted_bytes: u64,
+    ring_pop_calls: u64,
+    ring_pop_bytes: u64,
+    hw_send_calls: u64,
+    hw_send_bytes: u64,
+    hw_send_zero: u64,
+    hw_send_max_chunk: u64,
+    no_progress_budget_exhausted: u64,
+    ring_empty: u64,
+    copier_active: u64,
+    staged_bytes: u64,
+    transmitter_empty: u64,
+}
+
+impl From<uart_16550::async_::driver::TxDebugSnapshot> for UartTxDebugSnapshot {
+    fn from(value: uart_16550::async_::driver::TxDebugSnapshot) -> Self {
+        Self {
+            user_push_calls: value.user_push_calls,
+            user_push_requested_bytes: value.user_push_requested_bytes,
+            user_push_accepted_bytes: value.user_push_accepted_bytes,
+            ring_pop_calls: value.ring_pop_calls,
+            ring_pop_bytes: value.ring_pop_bytes,
+            hw_send_calls: value.hw_send_calls,
+            hw_send_bytes: value.hw_send_bytes,
+            hw_send_zero: value.hw_send_zero,
+            hw_send_max_chunk: value.hw_send_max_chunk,
+            no_progress_budget_exhausted: value.no_progress_budget_exhausted,
+            ring_empty: value.ring_empty,
+            copier_active: value.copier_active,
+            staged_bytes: value.staged_bytes,
+            transmitter_empty: value.transmitter_empty,
+        }
+    }
+}
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -38,6 +81,17 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         let nb = val != 0;
         f.set_nonblocking(nb)?;
         let _ = f.ioctl(cmd, nb as usize);
+        return Ok(0);
+    }
+    if cmd == UART_TXDBG_RESET {
+        crate::drivers::uart_init::driver().reset_tx_debug();
+        return Ok(0);
+    }
+    if cmd == UART_TXDBG_SNAPSHOT {
+        let snapshot: UartTxDebugSnapshot = crate::drivers::uart_init::driver()
+            .tx_debug_snapshot()
+            .into();
+        (arg as *mut UartTxDebugSnapshot).vm_write(snapshot)?;
         return Ok(0);
     }
     // TCSBRK (0x5409): tcdrain — wait for all TX stages (ring → copier → FIFO → wire)

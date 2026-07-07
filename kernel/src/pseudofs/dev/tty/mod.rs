@@ -111,8 +111,10 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         }
 
         let mut out = [0u8; 256];
+        let mut complete_at_prefix = [0usize; 257];
         let mut out_len = 0usize;
         let mut consumed = 0usize;
+        let mut segment_base = 0usize;
 
         for &byte in buf {
             let mapped = if byte == b'\n' {
@@ -124,20 +126,26 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             if out_len + mapped.len() > out.len() {
                 let written = self.writer.write(&out[..out_len]);
                 if written < out_len {
-                    return Ok(consumed);
+                    return Ok(segment_base + complete_at_prefix[written]);
                 }
                 out_len = 0;
+                segment_base = consumed;
+                complete_at_prefix[0] = 0;
             }
 
             out[out_len..out_len + mapped.len()].copy_from_slice(mapped);
+            for prefix in out_len + 1..out_len + mapped.len() {
+                complete_at_prefix[prefix] = consumed - segment_base;
+            }
             out_len += mapped.len();
             consumed += 1;
+            complete_at_prefix[out_len] = consumed - segment_base;
         }
 
         if out_len > 0 {
             let written = self.writer.write(&out[..out_len]);
             if written < out_len {
-                return Ok(consumed.saturating_sub(1));
+                return Ok(segment_base + complete_at_prefix[written]);
             }
         }
 

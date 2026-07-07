@@ -104,7 +104,9 @@ impl<R: OsRuntime + 'static, W: OsWakerSet + 'static, U: UartPort> TtyWrite
         if buf.is_empty() {
             return 0;
         }
-        self.driver.tx.push(buf)
+        let n = self.driver.tx.push(buf);
+        self.driver.record_tx_push(buf.len(), n);
+        n
     }
 }
 
@@ -122,6 +124,7 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> embedded_io_async::Write
             return Ok(0);
         }
         let n = self.driver.tx.push(buf);
+        self.driver.record_tx_push(buf.len(), n);
         Ok(n)
     }
 

@@ -26,6 +26,7 @@ const UART_LSR: usize = 5;
 const LSR_DR: u32 = 1 << 0;
 const LSR_THRE: u32 = 1 << 5;
 const LSR_TEMT: u32 = 1 << 6;
+const TX_FIFO_SIZE: usize = 16;
 
 // FCR bit definitions.
 const FCR_FIFO_ENABLE: u32 = 1 << 0;
@@ -139,14 +140,20 @@ impl UartPort for ArceOsD1UartPort {
     }
 
     fn send_bytes(&self, buf: &[u8]) -> usize {
-        for (i, &byte) in buf.iter().enumerate() {
-            let lsr = self.read_reg(UART_LSR);
-            if lsr & LSR_THRE == 0 {
-                return i;
-            }
+        if buf.is_empty() {
+            return 0;
+        }
+
+        let lsr = self.read_reg(UART_LSR);
+        if lsr & LSR_THRE == 0 {
+            return 0;
+        }
+
+        let len = buf.len().min(TX_FIFO_SIZE);
+        for &byte in &buf[..len] {
             self.write_reg(UART_RBR_THR, byte as u32);
         }
-        buf.len()
+        len
     }
 
     fn transmitter_empty(&self) -> bool {

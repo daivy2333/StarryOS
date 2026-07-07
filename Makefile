@@ -53,6 +53,7 @@ kernel/resources/benchmark.elf: tests/benchmark.c
 		-DBENCH_TARGET_MODE='"lichee-d1-userbench"' \
 		-DBENCH_STARTUP_CHAIN='"android-boot-image -> embedded benchmark.elf"' \
 		-DBENCH_ROOT_PROVIDER='"d1-memory-root-embedded-payload"' \
+		-DBENCH_D1_DIAG \
 		-o $@ $<
 
 defconfig justrun clean:
