@@ -1,3 +1,4 @@
+D1:
 Boot at 1970-01-01 00:00:00.432197728 UTC
 
 [starry-d1] Lichee D1 userbench mode
