@@ -47,7 +47,7 @@
 
 | 路径 | 用途 |
 |------|------|
-| <!-- L169 --> | `uart_16550/src/os/mod.rs` | OS abstraction trait definitions: 5 traits for cross-platform async |
+| <!-- L169 --> | `uart_16550/src/os/mod.rs` | OS abstraction trait definitions: 2 traits for cross-platform async (per ADR-036) |
 | <!-- L170 --> | `uart_16550/src/async_/mod.rs` | Async module root: exports isr, ring_buffer, driver, device_ops |
 | <!-- L171 --> | `uart_16550/src/async_/isr.rs` | ISR handler + AtomicWaker: RX_WAKER, TX_WAKER, DRAIN_WAKER |
 | <!-- L172 --> | `uart_16550/src/async_/ring_buffer.rs` | Ring buffer with OsWakerSet: RingBufRx<W>, RingBufTx<W> |
@@ -145,9 +145,7 @@ musl 工具链与 rootfs 部署 MUST 按本规范中的固定流程操作；任�
 
 UART 集成前 MUST 验证全部关键寄存器状态（IER / IIR / LSR / MCR），禁止假设外部 crate 初始化后的状态可用；NS16550 寄存器 stride MUST 配置为 1。
 
-**踩坑 1：M3 替换失败（方向 A 教训）**（L78）
-
-- **核心教训**：stride=4 导致 LoadFault + Console UART 状态不兼容。后 Q0~Q7 独立实现替代。**核心原则：硬件集成前 dump 全部寄存器**
+<!-- tombstone: L078 --> Archived 2026-07-08 in ARC-202607081429 — M3 替换失败（stride=4 + Console 状态不兼容）；根因由 ADR-026 纠正，教训"dump 寄存器"在 L79。
 
 **踩坑 2：硬件调试铁律**（L79）
 
@@ -220,12 +218,7 @@ ISR MUST 最小化（读 ISR → 禁用中断 → 唤醒 Waker → 返回），�
 3. ISR 性能要求高（~1.5 µs），`AtomicWaker::wake()` 是原子操作，无分支
 4. 代码更简洁，无需处理 BTreeMap 的并发问题
 
-**踩坑 3：Q1 架构关键发现（AtomicWaker + critical-section）**（L122）
-
-- **ISR 唤醒模式**：ISR 中禁用对应中断后调用 `AtomicWaker::wake()`，copier 任务中重新 enable 中断
-- **critical-section**：`embassy-sync` AtomicWaker 需要 `critical-section` crate v1.0 的 `_critical_section_1_0_acquire/release` 符号，在 `lib.rs` 中用 `disable_irqs/enable_irqs` 实现
-- **UnsafeCell**：多个 copier 任务共享 AsyncBuffer 需用 `UnsafeCell` 绕过 Rust 借用检查（单生产者单消费者场景安全）
-- **spawn_with_name + block_on**：axtask 的 spawn 接口收 `FnOnce() + Send + 'static` closure，内部用 `block_on(future)` 包装异步逻辑
+<!-- tombstone: L122 --> Archived 2026-07-08 in ARC-202607081429 — Q1 critical-section 1.0 符号实现细节；实现已固化在 lib.rs，不需要重复查阅。
 
 #### Scenario: 选型 ISR 唤醒机制
 
@@ -343,20 +336,9 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 
 共享硬件（同一 UART）的 reader/writer MUST 互斥访问，TX 共享 THR 时 MUST 保证同一批数据原子发送。
 
-**踩坑 1：copier/Console FIFO 竞争**（L123，2026-05-31）
+<!-- tombstone: L123 --> Archived 2026-07-08 in ARC-202607081429 — copier/Console FIFO 竞争（Q2/Q3 已解决）；解决方案在 ADR-028，教训"互斥 drain"已沉淀。
 
-- **症状**：Shell 显示 `starry:~#` 但键盘输入完全无效（`ls` 等命令无响应）
-- **根因**：RX copier 和 Console tty-reader 都读取同一个 UART RBR（FIFO）。copier 先读取 → 数据进入 ring buffer → tty-reader 读 FIFO 时空 → Shell 收不到输入
-- **解决**：Q2 关闭 copier 让 Console 独占 UART。Q3 替换 Console 后再由 copier 接管
-- **教训**：共享硬件（同一 UART）的两个 reader MUST 互斥访问，不能同时 drain FIFO
-
-**踩坑 2：TX copier 与 ax_println! 输出交错**（L126，2026-05-31）
-
-- **症状**：异步 TX 启用后 Shell 输出乱码（`ls /bin` 行间字符交叠）
-- **根因**：TX copier 用 `send_bytes()` 批发送，中间 `ax_println!` 的 Console polling TX 插队写 THR。copier 把未发完数据推回 ring buffer → 新数据与旧数据混合 → 再次发送时乱序
-- **解决**：TX copier 用本地 `cursor` 追踪已发位置，未发完的数据保留在本地 `write_buf` 中，不推回 ring buffer。下次迭代从 `cursor` 继续
-- **教训**：共享硬件（同一 UART THR）的两个 writer MUST 保证同一批数据原子发送。**禁止**把部分数据推回共享缓冲区
-- **回退方案（已弃用）**：临时切回 `ConsoleWriter` 让 Shell stdout 也走 Console TX — 这是降级，真正的异步 TX 被绕过
+<!-- tombstone: L126 --> Archived 2026-07-08 in ARC-202607081429 — TX copier 与 ax_println! 交错（Q4 已解决）；解决方案在 ADR-029（cursor 追踪），教训"原子发送"已沉淀。
 
 **踩坑 3：O_NONBLOCK 必须通过三个入口全部传播**（L140，2026-06-01）
 
@@ -396,12 +378,7 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 - **关键**：MUST 查 `TRANSMITTER_EMPTY`（bit 6, TEMT）而非 `THR_EMPTY`（bit 5），否则 THR 空但移位寄存器还在发 → tcdrain 过早返回
 - **QEMU 限制**：QEMU 16550 不仿真串口线延迟，tcdrain 几乎瞬时返回，吞吐量 ~200 KB/s 而非 ~11.5 KB/s
 
-**踩坑 2：三层嵌套 block_on/poll_io 导致 yield storm**（L134，2026-06-01）
-
-- **问题**：用户态 async read 路径有 3 层嵌套 `block_on(poll_io(...))`：`File → Tty/JobControl → Ldisc/WaitPollable`
-- **根因**：`ProcessMode::Manual` 中 `register_rx_waker()` 调用 `waker.wake_by_ref()`，导致 waker 注册后**立即唤醒** task
-- **效果**：形成高频 yield-re-schedule 循环（yield storm），无数据时空耗 CPU
-- **解决方向**：改用 `ProcessMode::External` 消除立即唤醒，或优化 WaitPollable 的 register 行为
+<!-- tombstone: L134 --> Archived 2026-07-08 in ARC-202607081429 — yield storm（Q7 已解决）；ProcessMode::External 消除立即唤醒。
 
 **踩坑 3：异步 VS 阻塞串口性能边界**（L135，2026-06-01）
 
@@ -419,19 +396,14 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 - **公平对比**：去除 tcdrain，只比 `write()` 延迟（Async 快 2.2~7.5x）
 - **📐 物理定律**：真板两者受 115200 bps 限制，线速上限 11.52 KB/s；QEMU 的差距是仿真人工产物（Q6 真板实测验证 ⏳）
 
-**踩坑 5：当前 benchmark 不测量实际 UART 吞吐量**（L136）
+**踩坑 5：当前 benchmark 不测量实际 UART 吞吐量**（L136） ⚠️ STALE [2026-07-08] — Q19B/Q19C benchmark 已通过 `/dev/console` 测 UART，但 QEMU `tests/benchmark.c` TX 吞吐量测试可能仍写 `/dev/null`；建议在 30 天内归档或更新
 
 - **问题**：`tests/benchmark.c` 的 TX 吞吐量测试写入 `/dev/null`（非 `/dev/console`），绕过 UART
 - **延迟测试**：测量的是 ring buffer push 时间（~1 µs），不是硬件发送延迟
 - **RX 用户态测试**：被跳过（TTY echo loop），内核态测试绕过 TTY 层
 - **解决**：TX 测试需 `write → tcdrain()` 等实际发送完成；RX 需 raw mode + 独立测试程序
 
-**踩坑 6：CPU 测试数据量统一**（L131）
-
-- **问题**：Console 测试写入 120 字节，Async 测试写入 102,400 字节，数据量差 853 倍
-- **影响**：CPU 占用数据无法公平对比（Console 2.3% vs Async 57.8%）
-- **解决**：统一测试数据量为 102,400 字节
-- **结果**：Console 3,835 cycles/byte，Async 268 cycles/byte，Async 效率高 14.3 倍
+<!-- tombstone: L131 --> Archived 2026-07-08 in ARC-202607081429 — CPU 测试数据量统一（Q5 已解决）；benchmark 已统一数据量 102400 字节。
 
 #### Scenario: 实现新的 tcdrain 类等待
 
@@ -729,48 +701,17 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **THEN** MUST 在下一个里程碑（Q8）优先修复，**禁止**以"低优先级"为由延后
 - **AND** 修复后 MUST 写 regression test 防止复发
 
-**踩坑 5：NAPI 模式永不退出（2026-06-11）**（L150）
+<!-- tombstone: L150 --> Archived 2026-07-08 in ARC-202607081429 — NAPI 模式永不退出（Q8 已修复）；添加 `if total == 0` 退出分支。
 
-- **症状**：`async_driver.rs:51` 中 `consecutive` 在 NAPI 模式（≥16）下只增不减（`consecutive += 1`），零字节读取时无重置逻辑。RX 中断永久禁用，CPU 空转轮询空 FIFO。
-- **根因**：NAPI 退出逻辑缺失 — 缺少 `total == 0` 时重置 `consecutive = 0` + 调用 `enable_rx_intr()` 的分支。
-- **解决**：添加 `if total == 0 { self.consecutive = 0; enable_rx_intr(); }` 退出分支。
-- **预防**：状态机转换 MUST 穷举所有转移条件，特别是"退出"路径。
+<!-- tombstone: L151 --> Archived 2026-07-08 in ARC-202607081429 — ISR 中获取 SpinNoIrq 锁（Q8 已修复）；`read_isr_unlocked()` 无锁读取已实现。
 
-**踩坑 6：ISR 中获取 SpinNoIrq 锁（2026-06-11）**（L151）
+<!-- tombstone: L152 --> Archived 2026-07-08 in ARC-202607081429 — IER 裸 write_volatile（Q8 已修复）；`set_ier()` 公共方法已添加。
 
-- **症状**：`isr.rs:10` 中 `uart_instance().lock()` 在 ISR 上下文获取 SpinNoIrq 锁。违反 ISR 极简原则第 4 条。
-- **根因**：`uart.isr()` 和 `disable_*_intr()` 需要 `&mut self`，而 uart_16550 的 MUTEX 要求 SpinNoIrq 保护。
-- **解决方向**：实现无锁的 ISR 读取路径（`unsafe fn isr_unchecked(&self)`），或拆分锁范围。
-- **预防**：ISR 路径 MUST 逐行审计锁获取，禁止任何形式的锁操作。
+<!-- tombstone: L153 --> Archived 2026-07-08 in ARC-202607081429 — 读路径 5 次数据拷贝分析（Q10 已优化）；C3/C4 合并已评估。
 
-**踩坑 7：IER 裸 write_volatile 绕过 uart_16550 API（2026-06-11）**（L152）
+<!-- tombstone: L154 --> Archived 2026-07-08 in ARC-202607081429 — PollSet→AtomicWaker 迁移风险矩阵（O46 已完成）；8 处迁移已完成。
 
-- **症状**：`uart_init.rs:72` 使用 `unsafe { core::ptr::write_volatile(ptr.add(offsets::IER), value) }`，违反 MMIO 封装规则。
-- **根因**：uart_16550 v0.6.0 无 `set_ier()` 公共方法，只能通过 `new_mmio()` 构造时的配置。
-- **解决方向**：向 uart_16550 添加 `pub fn set_ier(&mut self, ier: IER)` 方法，或使用 `ier_mut()` 返回引用。
-- **预防**：任何 `unsafe write_volatile` MUST 附 SAFETY 注释并证明无法通过 crate API 实现。
-
-**技巧 8：读路径数据拷贝分析（2026-06-11）**（L153）
-
-- **发现**：用户态串口读路径经过 5 次数据拷贝：UART FIFO → copier buf → driver ringbuf → InputReader buf → ldisc ringbuf → user buf
-- **可优化点**：C3/C4（InputReader buf → ldisc ringbuf）在同一个 `InputReader::poll()` 中立即完成，可合并为一次直接 push。
-- **关键文件**：`ldisc.rs:83-90`（InputReader::poll）
-- **量化**：每字节减少 1 次 memcpy，115200 bps 下节省 ~11.5 KB/s 的 CPU。
-
-**技巧 9：PollSet→AtomicWaker 迁移风险矩阵（2026-06-11）**（L154）
-
-- **pipe.rs**（3 PollSet）：HIGH — 跨操作唤醒（read→wakeTX, write→wakeRX, drop→wakeClose），需 3 个独立 AtomicWaker
-- **signalfd.rs**（1 PollSet）：LOW — 最简单的 1:1 替换，两个唤醒源（update_mask + read re-wake）
-- **pidfd.rs**（1 Arc\<PollSet\>）：HIGH — exit_event 是共享的（Arc 克隆自 Thread/ProcessData），修改影响 task/mod.rs 和 task/ops.rs 的唤醒路径
-- **event.rs**（2 PollSet）：MEDIUM — 同 pipe 的跨操作模式
-- **关键前提**：AtomicWaker 仅支持单 waker。需验证这些场景中是否最多 1 个 task 同时 poll（async 模型下通常是）。
-
-**技巧 10：copier waker 去重可简化（2026-06-11）**（L155）
-
-- **发现**：`async_driver.rs:53-55,82-84` 每个 poll_fn 迭代执行 2×Waker::clone() + will_wake() + register()
-- **原因**：单线程 copier 的 waker 几乎不变，但代码仍每次 clone+检查
-- **简化方向**：`if !last_waker.get().map_or(false, |old| old.will_wake(&cx.waker())) { RX_WAKER.register(cx.waker()); }` — 仅在变化时 clone
-- **量化**：每 poll 周期节省 ~2 次 Arc 原子操作（~20-40ns）
+<!-- tombstone: L155 --> Archived 2026-07-08 in ARC-202607081429 — copier waker 去重简化（已完成）；已实现 will_wake + Cell<Option<Waker>>。
 
 **踩坑 8：OpenSpec 变更的 tasks.md 漂移（2026-06-15）**（L156）
 
@@ -799,33 +740,9 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 | 验证格式 | `openspec validate <name>` | 无 ERROR |
 | 主 spec 同步 | 主 spec 与 delta spec 内容一致 | 主 spec 中相关条目已更新为最终态 |
 
-**技巧 12：异步串口提取的 5 个 OS 抽象 trait（2026-06-15）**（L158）
+<!-- tombstone: L158 --> Archived 2026-07-08 in ARC-202607081429 — 5 OS 抽象 trait 表（被 ADR-036 替代）；当前 2-trait API 见 L188-L192。
 
-将 StarryOS 异步串口实现提取为可复用 crate 时，仅需抽象 5 个 OS 特定 API：
-
-| Trait | 替代的 OS API | Linux 等价 | Tock 等价 |
-|-------|--------------|------------|-----------|
-| `OsRuntime` | `axtask::{block_on, spawn_with_name}` | 手动 poll loop | callback |
-| `OsIrq` | `axhal::irq::register_irq_hook` | `request_irq` | `subscribe` |
-| `OsMmio` | `axhal::mem::phys_to_virt` + `axmm::iomap` | `ioremap` | 不暴露 |
-| `OsSpinNoIrq` | `kspin::SpinNoIrq` | `spinlock_irqsave` | `critical_section` |
-| `OsWakerSet` | `axpoll::PollSet` | `wait_queue_head` | `AtomicSubscriptions` |
-
-**关键发现**：
-- 核心异步逻辑（isr.rs + ring_buffer.rs + async_driver.rs + device_ops.rs）仅 ~400 行
-- 已有依赖（embassy-sync + embassy-hal-internal + embedded-io-async）全部是 `no_std` 可移植的
-- `embedded-io-async` 是社区标准 trait，实现后可与任何 async I/O 消费者互操作
-- 三阶段迁移：trait 提取 → 核心逻辑 → 适配层，每阶段可独立验证
-
-**踩坑 4：D1 决策需要推翻（2026-06-15）**（L159）
-
-- **原决策**（uart_16550 ADR-7）：异步实现留在 StarryOS wrapper 层，uart_16550 保持 sync-only
-- **推翻理由**：
-  1. 复用需求 — 其他 OS 项目也需要异步 UART
-  2. Q12 已完成基础设施 — `atomic_ring_buffer` + `embedded_io_async` + TC tcdrain
-  3. 代码量可控 — 核心异步逻辑仅 ~400 行
-  4. trait 抽象成熟 — `embedded_io_async` 是社区标准
-- **新决策**：uart_16550 应该成为完整的异步 UART crate，通过 feature gate 支持 async
+<!-- tombstone: L159 --> Archived 2026-07-08 in ARC-202607081429 — D1 决策推翻（已执行）；ADR-033/036 已完成提取。
 
 ### Requirement: Q13 uart_16550 异步提取实施经验
 
@@ -899,7 +816,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L218 --> | axconfig 可复用边界 | `make/platform.mk` 已支持 `MYPLAT` / `PLAT_CONFIG`，`make/config.mk` 生成 `.axconfig.toml`，`make/build.mk` 读取 `plat.kernel-base-paddr`。这些可复用为多平台入口，但 axconfig 还不能完整表达 UART kind / reg width / boot image strategy。 | `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]` |
 | <!-- L219 --> | 32-bit MMIO access width 缺口 | `../uart_16550/src/backend/mmio.rs` 支持 stride，但 volatile read/write 当前是 `u8`；D1 / VisionFive2 的 DW APB UART 需要 stride 4 + 32-bit MMIO。后续不能只把 stride 改成 4，必须显式处理 access width。 | `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]` |
 | <!-- L220 --> | early console 分层经验 | 真板 bring-up 应先用不依赖 IRQ / async task / rootfs 的 polling early console 输出首字节；async UART `/dev/console` 在 early console 和平台 descriptor 稳定后再接入。 | `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]` |
-| <!-- L221 --> | D1 当前无输出根因 | 2026-06-28 板测已确认 U-Boot 能识别 Android boot image 并打印 `Starting kernel ...`，但 ELF 仍链接到 `0xffffffc080200000` 且 `_stext` 调用 `axplat_riscv64_qemu_virt::boot`；`lichee-d1` feature 只影响 StarryOS entry 层，不会替换 axplat 启动层。 | `.claude/analysis/d1-axplat-bringup-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md]` |
+<!-- tombstone: L221 --> Archived 2026-07-08 in ARC-202607081429 — D1 无输出根因（Q19 已解决）；修复在 ADR-045。
 | <!-- L222 --> | D1 axplat 构建 Gate | 正确 D1 镜像必须通过 `MYPLAT` / `PLAT_CONFIG` 接入本地 `axplat-riscv64-lichee-d1`，保持 `DWARF=n`，linker base 应为 `0xffffffc040200000`，boot image `kernel_addr` 应为 `0x40200000`，`objdump` 必须显示 D1 axplat boot symbols 而不是 QEMU。 | `.claude/analysis/d1-axplat-bringup-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md]` |
 | <!-- L223 --> | axplat 版本对齐铁律 | 创建新 axplat crate 时 MUST 以 `make build` 输出中实际编译的版本为准（如 `v0.3.1-pre.6`），不可用 cargo registry 中找到的最新版（如 `v0.4.1`）。`#[impl_interface]` vs `#[impl_plat_interface]` 宏名因版本而异。 | Q19 构建踩坑 |
 | <!-- L224 --> | axconfig_macros 类型标注 | `axconfig_macros` v0.2 依赖 TOML 中的 `# [(uint, uint)]` 类型注释来区分数组与元组生成。缺少此注释时生成 `&[&[usize]]`，`axdriver` 期望 `&[(usize, usize)]` 导致编译失败。单元素数组 `[[0,0]]` 无法通过类型推断补齐。 | Q19 构建踩坑 |
@@ -907,7 +824,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L226 --> | Cargo.lock 版本污染 | 对 workspace 内 path dependency 执行 `cargo check --manifest-path` 会升级 Cargo.lock 中未锁死的依赖（如 `axcpu 0.3` 松约束 → 0.3.1）。修复：用 `=0.3.0-preview.8` 精确锁死，然后 `git restore Cargo.lock` 恢复。 | Q19 构建踩坑 |
 | <!-- L227 --> | D1 IRQ interface 分层 | StarryOS `lichee-d1` 构建会通过全局 feature 触发 `axplat/irq` 接口符号；如果 D1 axplat 不提供 `IrqIf`，链接会报 undefined `__IrqIf_register` / `__IrqIf_set_enable` / `__IrqIf_handle`。Q19a 采用 `irq-if = ["axplat/irq"]` + `irq_stub.rs` no-op `IrqIf`，先满足运行时符号，不提前启用 PLIC；完整 PLIC 放到后续 `irq` feature。 | Q19 构建踩坑 |
 | <!-- L228 --> | D1 boot image 尺寸 gate | 未传 `DWARF=n` 时 raw binary / Android boot image 曾达到 `25.6M`，超过当前 boot 分区约 `10.1M` 容量。`rust-objcopy --strip-debug` 对该产物无效，因为调试相关段在当前链接布局中仍进入 raw binary。Lichee 构建必须在 `make lichee` 中强制 `DWARF=n`，或后续改 linker 明确丢弃 debug sections。 | Q19 烧录踩坑 |
-| <!-- L229 --> | D1/C906 Store/AMO fault 根因 | 板测日志 `Store/AMO access fault EPC ffffffc040244648 TVAL ffffffc0402c6908` 已符号化：EPC 位于 `percpu::imp::init` 的 `amoor.w.aqrl`，TVAL 是 `.bss` 中 `percpu::imp::IS_INIT`。这不是 USB/SD/MMC 问题，而是 D1/C906 早期页表 DDR 映射缺少 T-Head C9xx normal-memory 属性。早期 DDR PTE 必须设置 `SH\|B\|C`（bits 60/61/62）。 | Q19 板测定位 |
+<!-- tombstone: L229 --> Archived 2026-07-08 in ARC-202607081429 — D1/C906 Store/AMO fault 根因（Q19 已解决）；PTE 修复在 ADR-046。
 | <!-- L230 --> | D1 final page table 风险 | Q19 当前修复覆盖 early boot page table；后续若在 `axmm` / `new_kernel_aspace` 切换最终页表后再次出现 AMO / load / store fault，应优先检查最终页表是否也带 `xuantie-c9xx` / T-Head C9xx PTE 属性，而不是先怀疑 UART 或 boot image。 | Q19 后续风险 |
 | <!-- L231 --> | D1 smoke test 完成事实 | 2026-06-29 真板验证通过：官方 U-Boot Android boot image 成功加载 StarryOS，串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。这证明 D1 axplat、load/link 地址、Android boot image 打包、UART0 polling early console 已完成最小闭环。 | Q19 真板验收 |
 | <!-- L232 --> | D1 final PTE 修复 | 早期 PTE 修复后仍可能在最终页表阶段 fault；`lichee-d1` feature 必须启用 `page_table_entry/xuantie-c9xx`，让 final page table 也带 T-Head C9xx memory attributes。 | Q19 final page table 修复 |
@@ -971,3 +888,5 @@ API path quick-reference for post-Q13 module separation. All new async types and
 - **THEN** MUST 先把平台事实记录到 platform descriptor 或等价集中配置中
 - **AND** MUST 禁止在 `uart_init.rs` 等驱动初始化路径继续散落板级 base / irq / stride / access width 常量
 - **AND** MUST 先完成 polling early console smoke test，再接 async UART、PLIC、timer、rootfs 或 benchmark
+
+<!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

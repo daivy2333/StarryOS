@@ -127,58 +127,11 @@ DMA 探索 MUST 归入远期 M6，M0~M4 MUST 全程基于中断驱动 + NAPI 批
 - **WHEN** 开发者想改 `ax_println!` 走异步路径
 - **THEN** 不可行 — 该路径依赖外部 crate；必须保留 Console polling TX 作为内核日志通道
 
-### Requirement: 探索方向 A — 渐进式集成 Console（已部分失败，吸取教训）
+<!-- tombstone: A014/A015 --> Archived 2026-07-08 in ARC-202607081429 — 被 ADR-025/027 替代；M3 失败（IRQ 风暴 + TX busy-loop），核心架构由 ADR-025/027 继承。
 
-方向 A 策略（M1/M2 用 Console 验证架构，M3 替换为 AsyncUart）MUST 不再继续使用，但其 M1/M2 验证过的架构（Ring Buffer + ISR + copier 任务 + VFS 集成）MUST 在新方向中复用。
+<!-- tombstone: A016/A017 --> Archived 2026-07-08 in ARC-202607081429 — 方向 A 失败教训；"dump 寄存器"教训在 learned L79，stride 根因由 ADR-026 纠正。
 
-**决策详情**（2026-05-27, ADR-014 / ADR-015）：
-
-- **背景**：M1/M2 阶段 Console 和 AsyncUart 共享 UART 硬件验证上层架构，M3 替换为真正异步引擎
-- **结果**：❌ M3 失败 — IRQ 风暴 + TX busy-loop（详见 ADR-016, ADR-017）
-- **保留价值**：M1/M2 验证过的 Ring Buffer + ISR + copier + DeviceOps 架构在新方向（kernel 层独立实现）中完整复用
-
-#### Scenario: 复用方向 A 已验证架构
-
-- **WHEN** 在 kernel 层新实现异步串口模块
-- **THEN** 必须采用 Ring Buffer + ISR → AtomicWaker → copier 任务模型（M1/M2 已验证），禁止重新发明轮子
-
-### Requirement: 方向 A 失败教训 — 集成前 dump 全部寄存器
-
-任何硬件集成前 MUST 先 dump `IER` / `IIR` / `LSR` / `MCR` 等寄存器状态，禁止假设外部 crate 留下的 UART 状态可用。
-
-**决策详情**（2026-05-27, ADR-016 / ADR-017）：
-
-- **失败 1**：软件路径分离方案（Console RX 禁用 + AsyncUart 独占）— Shell 卡住，根因 AsyncUart RX copier 无法从 UART 正确读数据
-- **失败 2**：M3 替换尝试 — IRQ 风暴（RX-COPIER 和 tty-reader 循环唤醒）+ TX busy-loop（FIFO 满，LSR=0x00，THR_EMPTY=false TEMT=false）
-- **教训**：
-  1. ❌ 未验证硬件状态就开始集成（假设 Console 初始化后的 UART 状态正常）
-  2. ❌ 未添加足够调试信息（IIR / MCR / 完整 LSR 状态）
-  3. ❌ 战略转向过于激进（未充分验证可行性）
-
-#### Scenario: 集成新驱动
-
-- **WHEN** 开发者准备在已初始化的 UART 上启用新驱动
-- **THEN** 必须先调用 `log_uart_state()` 风格的诊断函数，输出全部关键寄存器，验证状态符合预期后才能继续
-
-### Requirement: 探索方向 B — 完全剔除 Console（部分失败，被 stride=4 根因纠正）
-
-方向 B 策略（feat/uart-async-dev2 分支，完全剔除 Console 从零开始）的核心设想（avoid Console 数据竞争 / IRQ 冲突 / 重初始化冲突）MUST 在新方向中保留；但其"必须修改 axplat"的前提 MUST 撤销 — 已被 ADR-026 stride=4 根因纠正。
-
-**决策详情**（2026-05-28, ADR-020 / ADR-021）：
-
-- **背景**：方向 A M3 失败后创建 feat/uart-async-dev2 分支，使用 uart_16550 crate 本地初始化，不依赖 axplat
-- **四个关键决策**：
-  1. UART 硬件初始化：uart_16550 crate 本地初始化，`IER::DATA_READY | IER::THR_EMPTY`
-  2. earlycon 内核日志：复用 axhal::console
-  3. AsyncUart 设备注册：DeviceOps + Pollable
-  4. IRQ waker 分发：ISR 读 ISR 寄存器判断 InterruptType，唤醒 rx_waker/tx_waker
-- **阻塞**：P1/P2 出现 LoadFault，最初误判为 MMIO 权限问题（ADR-022/023，已归档至 archive.md）
-- **纠正**：详见 ADR-026，真正根因是 stride=4 配置错误
-
-#### Scenario: 评估新阻塞问题的根因
-
-- **WHEN** UART 操作出现 LoadFault 或类似硬件错误
-- **THEN** 必须先排查 stride / 地址 / 寄存器映射等代码 bug，再考虑页表权限等系统级问题
+<!-- tombstone: A020/A021 --> Archived 2026-07-08 in ARC-202607081429 — 方向 B 已纠正；核心设想由 ADR-025/027 继承，stride 根因由 ADR-026 纠正，MMIO 权限由 ADR-024 澄清。
 
 ### Requirement: MMIO 权限纠正 — UART 在最终页表中已正确映射
 
@@ -318,48 +271,7 @@ Async RX 性能测试 MUST 在内核态直接测试 Ring Buffer，Console RX MUS
 - **WHEN** 开发者要测量 I/O 性能
 - **THEN** 必须先判断测试对象是"硬件吞吐 / 软件路径 / 端到端延迟"，再选择对应位置（内核态绕过 TTY / 用户态完整链路 / QEMU 时序欺骗需特殊处理）
 
-### Requirement: 异步串口提取 — uart_16550 成为完整异步 UART crate
-
-异步串口实现 MUST 提取到 `uart_16550` crate，通过 `async` feature gate 支持，使其成为可复用的异步 UART crate，适用于任何 Rust RISC-V OS 项目。
-
-**决策详情**（2026-06-15, ADR-032）：
-
-- **背景**：
-  - StarryOS 异步串口栈（Q0~Q12）已成熟，核心逻辑 ~400 行
-  - 其他 OS 项目（Linux kernel module, Tock capsule, RTIC driver）也需要异步 UART
-  - Q12 已完成基础设施迁移（`atomic_ring_buffer` + `embedded_io_async` + TC tcdrain）
-  - 现有 D1 决策（uart_16550 ADR-7）说"异步留在 wrapper 层"，需要推翻
-- **决策**：
-  1. uart_16550 新增 `async` feature gate，包含完整异步串口实现
-  2. 定义 5 个 OS 抽象 trait（`OsRuntime`, `OsIrq`, `OsMmio`, `OsSpinNoIrq`, `OsWakerSet`）
-  3. StarryOS 实现 ArceOS 适配层，从 uart_16550 导入异步实现
-  4. 删除 StarryOS 本地 drivers/ 中已迁移的代码
-- **原因**：
-  1. 复用需求 — 其他 OS 项目也需要异步 UART
-  2. 代码量可控 — 核心异步逻辑仅 ~400 行，不增加维护负担
-  3. trait 抽象成熟 — `embedded_io_async` 是社区标准，`embassy-sync` 是 ISR 安全的
-  4. Q12 已完成基础设施 — 可直接复用
-- **影响**：
-  - ✅ uart_16550 成为完整的异步 UART crate
-  - ✅ 其他 OS 项目可通过实现 5 个 trait 快速集成
-  - ✅ StarryOS 消除 ~400 行本地代码
-  - ⚠️ 需要推翻 D1 决策（uart_16550 ADR-7）
-  - ⚠️ 需要处理全局状态（`UART`, `DRIVER`, `ASYNC_TTY`）的泛型化
-- **替代方案**：
-  - ❌ 保持 D1 决策（wrapper 方案）— 无法复用
-  - ❌ 创建独立 crate（`portable-async-uart`）— 增加维护负担
-  - ✅ 提取到 uart_16550（本决策）— 最小侵入，复用现有
-- **状态**：📋 待实施
-
-#### Scenario: 实现异步串口的 OS 适配层
-
-- **WHEN** 开发者要在新 OS 项目中使用 uart_16550 的异步功能
-- **THEN** 必须实现 5 个 OS 抽象 trait（`OsRuntime`, `OsIrq`, `OsMmio`, `OsSpinNoIrq`, `OsWakerSet`），然后启用 `uart_16550` 的 `async` feature
-
-#### Scenario: 推翻 D1 决策
-
-- **WHEN** 开发者需要修改 uart_16550 的异步集成策略
-- **THEN** 必须参考本 ADR-032 的决策理由，确保不破坏跨平台复用目标
+<!-- tombstone: A032 --> Archived 2026-07-08 in ARC-202607081429 — 被 ADR-033（"已接受"）正式化；5-trait 由 ADR-036 缩减为 2-trait。
 
 <!-- A033 -->
 ### Requirement: ADR-033: uart_16550 成为完整异步 UART crate
@@ -1188,3 +1100,5 @@ Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/p
 - **THEN** the first fullbench gate MUST run benchmark through `load_user_app()` from a VFS-visible `/bin/benchmark`
 - **AND** `load_embedded_user_app()` MUST remain only the Q19B regression path
 - **AND** real SDMMC/rootfs parity MUST be a later gate after memory-root path loading succeeds
+
+<!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
