@@ -22,10 +22,11 @@
 
 ## 2. Part A / M1 — Memory-root path loader fullbench
 
-- [ ] 2.0a 在 `Cargo.toml` / `kernel/Cargo.toml` 新增 fullbench feature 组合：可用 `lichee-d1-fullbench` + compile-time mode，或显式 `lichee-d1-fullbench-mem`；必须继承 D1 async UART/PLIC、paging、task-ext、`dep:axfs`，且不得启用 `qemu`
+- [ ] 2.0a 在 `Cargo.toml` / `kernel/Cargo.toml` 新增 `lichee-d1-fullbench` feature 组合；M1 不引入 compile-time mode selector，必须继承 D1 async UART/PLIC、paging、task-ext、`dep:axfs`，且不得启用 `qemu`
 - [ ] 2.0b 在 `Makefile` 新增 `lichee-fullbench-mem` 或等价 target，输出 `starry-lichee-fullbench-mem-boot.img`，保留 `DWARF=n` 和 Android boot image inspect
 - [ ] 2.0c 在 `kernel/src/entry.rs` 新增 fullbench init 分支，串口日志打印 `lichee-memory-root-path`
 - [ ] 2.0d 在 `kernel/src/pseudofs/mod.rs` 或等价位置选择 ELF 注入机制：优先 `include_bytes!("../resources/benchmark.elf")` + `FsContext::write()`
+- [ ] 2.0e M1 性能基线采用 `docs/benchmark-report-async.md`，不重复跑 Q19C-M0/Q19C.8e 性能基线；M1 只验证 path-loader 启动链路
 - [ ] 2.1 确认 benchmark ELF 格式：`readelf -l kernel/resources/benchmark.elf | grep INTERP` 输出为空；若有 `PT_INTERP`，先修复构建参数
 - [ ] 2.2 fullbench-mem 实施后重新记录 boot image size；相对 1.5a baseline 的 delta 必须 < 0.5 MiB，否则精简 payload 或改方案
 - [ ] 2.3 在 `mount_all()` 之前调用 `FS_CONTEXT.lock().create_dir("/bin", DIR_PERMISSION)` 创建 `/bin`
@@ -38,6 +39,7 @@
 - [ ] 2.10 增加缺失路径诊断：输出 root provider、requested path、resolve error
 - [ ] 2.11 增加 loaded-process-before-first-section 诊断：若 `load_user_app()` 成功但进程未打印任何 benchmark section 就退出/abort，输出 exit status、stage reached，且不得记录 path-loader proof success
 - [ ] 2.12 Gate M1 board: 串口日志必须出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix 1/15/16/17/31/32/33/48/49、FIONBIO PASS、`benchmark exited with code: 0`，并证明 `/bin/benchmark` 通过 path loader 运行
+- [ ] 2.13 Gate M1 host: `openspec validate --changes`、`cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-fullbench`、`make lichee-fullbench-mem` 生成并 inspect `starry-lichee-fullbench-mem-boot.img`
 
 ## 3. Part A / M2 — Shell/script benchmark parity
 

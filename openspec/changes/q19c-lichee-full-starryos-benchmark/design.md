@@ -33,6 +33,8 @@ lichee_d1_init()
 
 Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable。实施上先做 M0 benchmark evidence cleanup，让后续数据可比较；工程上仍分成两段：Part A 解决 StarryOS 内部启动链路，Part B 解决真实块设备/rootfs。
 
+2026-07-08 目标对齐：最终目标是在 D1 真板上完整运行 StarryOS，进入 shell 后以 `/bin/benchmark` 或等价命令运行测试，证明装配异步 UART 的 `/dev/console`、TTY、syscall、`tcdrain()`、FIONBIO 与用户态启动链路在真板上像 QEMU 一样成立。Q19C 当前只推进到不依赖 SDMMC 的 memory-root path/shell 证明；真实 SDMMC/block/rootfs 留给 Q19D 或后续独立 change。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -61,12 +63,12 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 | smoke | `lichee-d1` | `lichee-smoke` | none | smoke marker | none | D1 boot smoke |
 | kbench | `lichee-d1-kbench` | `lichee-kbench` | none | kernel benchmark | none | async UART kernel benchmark |
 | embedded | `lichee-d1-userbench` | `lichee-embedded-userbench` | memory root for devfs only | embedded benchmark bytes | `load_embedded_user_app()` | Q19B regression |
-| M1 | `lichee-d1-fullbench` + mode `mem` or `lichee-d1-fullbench-mem` | `lichee-memory-root-path` | populated memory root | `/bin/benchmark` | `load_user_app()` | path loader proof |
+| M1 | `lichee-d1-fullbench` | `lichee-memory-root-path` | populated memory root | `/bin/benchmark` | `load_user_app()` | path loader proof |
 | M2 | `lichee-d1-fullbench` + mode `shell` or `lichee-d1-fullbench-shell` | `lichee-memory-root-shell` | populated memory root | `/bin/sh -c /init.sh` or equivalent | `load_user_app()` | shell/script proof |
 | M3 probe | `lichee-d1-fullbench` + mode `rootfs-probe` or equivalent | `lichee-rootfs-probe` | SDMMC/block probe only | none unless block exists | none or `load_user_app()` only after block exists | rootfs readiness evidence |
 | future rootfs | future milestone | `lichee-rootfs-path` | SDMMC/block rootfs | rootfs `/bin/sh` / `/bin/benchmark` | `load_user_app()` | full board parity |
 
-Implementation SHOULD prefer one `lichee-d1-fullbench` capability feature with a compile-time mode selector (for example `--cfg fullbench_mode="mem"`), or separate feature names if that is simpler for the Makefile. The observable contract is fixed: each image logs its label and does not silently fall back to a weaker mode.
+Implementation for M1 SHOULD use one explicit `lichee-d1-fullbench` feature and one `lichee-fullbench-mem` Makefile target. Do not introduce a compile-time mode selector until M2/M3 needs it; the M1 observable contract is fixed: the image logs `lichee-memory-root-path` and does not silently fall back to embedded bytes.
 
 ### M0: Benchmark Evidence Cleanup
 
@@ -131,7 +133,7 @@ Required layout:
 
 M1 uses `/bin/benchmark` directly. M2 uses `/bin/sh -c /init.sh` or a documented equivalent script command. Direct benchmark launch is not enough for M2 unless the equivalent command entry exercises the same argv/envp/stdio/exit path that shell/script would exercise.
 
-The memory-root injection path MUST use filesystem-level APIs rather than direct `MemoryNode` writes. `MemoryNode::read_at()` / `write_at()` / `append()` are page-cache backed and direct use can panic. The intended sequence is:
+The memory-root injection path MUST use filesystem-level APIs rather than direct `MemoryNode` writes. Current source already provides `FsContext::write()` in `crates/axfs-ng/src/highlevel/fs.rs`; it creates or truncates the file through `File::create()`. The intended sequence is:
 
 ```rust
 init_memory_root();
@@ -144,6 +146,8 @@ pseudofs::mount_all();
 ```
 
 After injection, M1 MUST verify `FS_CONTEXT.lock().resolve("/bin/benchmark")` succeeds before calling `load_user_app()`. The benchmark ELF MUST be checked as static/no interpreter (`readelf -l kernel/resources/benchmark.elf | grep INTERP` returns empty), because `load_user_app()` follows `PT_INTERP` for dynamic ELF.
+
+Performance baseline for M1 is `docs/benchmark-report-async.md` (Q19C-M0 + Q19C.8e). M1 validation does not need to re-prove UART throughput; it needs to prove startup-chain parity: VFS path resolution, `CachedFile`/file-backed ELF loading, process setup, stdio, benchmark sections, and exit code 0.
 
 M2 is optional unless a known-good static `/bin/sh` is available. Busybox may depend on `/proc/self/exe`; if that dependency is not resolved, Q19C may use a documented equivalent command entry instead of busybox, but the evidence must still cover argv/envp/stdio/exit/join.
 
@@ -234,7 +238,7 @@ Reason:
 |-------------|-------|----------|----------------|--------|
 | R0 Benchmark evidence cleanup | 1.1-1.14, 6.1-6.7 | 100% | RX fixed-payload may start as manual-input before loopback | Covered |
 | R1 Preserve embedded regression | 1.1-1.5, 6.1 | 100% | None | Covered |
-| R2 Memory-root path loader | 2.1-2.12, 6.2 | 100% | Uses memory-root, not physical rootfs | Covered |
+| R2 Memory-root path loader | 2.0a-2.13, 6.2 | 100% | Uses memory-root, not physical rootfs; performance baseline comes from `docs/benchmark-report-async.md` | Covered |
 | R3 Shell/script benchmark parity | 3.1-3.8, 6.3 | Optional after M1 | Static shell or documented equivalent allowed | Covered |
 | R4 SDMMC/block probe witness | 4.1-4.6, 6.4 | 100% | Probe-only, no full driver promise | Covered |
 | R5 Future real rootfs benchmark | 5.1-5.5, 6.5 | Conditional | SKIPPED unless block device exists | Deferred/Conditional |

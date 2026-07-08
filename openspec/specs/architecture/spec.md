@@ -1101,4 +1101,74 @@ Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/p
 - **AND** `load_embedded_user_app()` MUST remain only the Q19B regression path
 - **AND** real SDMMC/rootfs parity MUST be a later gate after memory-root path loading succeeds
 
+<!-- A053 -->
+### Requirement: ADR-053: D1 P99 长尾不作为异步 UART 主线阻塞项
+
+Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation as an async UART development gate unless it becomes a correctness issue or reproduces on another board.
+
+**日期**: 2026-07-08
+**状态**: ✅ 已接受
+**决策**:
+- 停止在 Q19C 主线上继续探究 D1 size>=15 / drain-each P99 长尾根因。
+- 将该问题归类为 D1 真板平台尾部行为或 D1 适配层调优项，而不是通用异步 UART 架构缺口。
+- Q19C 后续优先推进 M1 memory-root `/bin/benchmark` path loader；P99 tracing 只保留为后续可选项。
+
+**原因**:
+- 同版 benchmark 下，QEMU rootfs 路径未复现 D1 的 FIFO-boundary P99 长尾；D1 1B latency 也正常。
+- D1 已达到 96.6%~99.1% 物理线速，`/dev/console`、TTY、`tcdrain()`、FIONBIO 与 benchmark 回归均通过。
+- Q19C.8e 的 slow-pool + yield 重试证明 fallback 可用，`slow_poll_exh=0` / `yield_exh=0`，长尾当前不影响功能正确性，吞吐影响可接受。
+- 继续深挖会主要消耗在 D1 DW APB UART / PLIC / 调度 / 软件 wake 的平台细节上，和当前通用异步 UART 主线收益不匹配。
+
+**影响**:
+- D1 P99 长尾不阻塞 Q19C M1、M2 或后续 SDMMC/rootfs 探索。
+- 若未来出现 `tcdrain()` hang、明显交互卡顿、吞吐显著下降，或 VisionFive2 / 其他真板复现同类问题，再提升为平台 tracing 任务。
+- 通用异步 UART 当前状态视为已通过 QEMU + D1 双路径功能验证；后续工作以 loader/rootfs parity 和其他真板复验为主。
+
+**替代方案**:
+- ❌ 继续把 P99 tracing 作为 Q19C gate：会延迟 memory-root path loader，且当前没有正确性收益。
+- ❌ 声称问题已根治：当前只证明影响可接受，根因未探明。
+- ✅ 接受为 D1 平台尾部 known limitation，保留触发条件，主线继续推进 Q19C M1。
+
+#### Scenario: D1 P99 tail appears during Q19C
+
+- **WHEN** Lichee D1 benchmark shows size>=15 TX P99 tail latency but throughput and correctness gates still pass
+- **THEN** Q19C MUST record it as a known platform limitation
+- **AND** it MUST NOT block memory-root path loader work
+- **AND** it MUST only become a gate if it causes hang, data loss, visible interaction regression, or reproduces on another supported board
+
+<!-- A054 -->
+### Requirement: ADR-054: Q19C-M1 复用 high-level FS API 注入 memory-root benchmark
+
+Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` high-level APIs and then use `load_user_app()`; it MUST NOT add a parallel tmpfs write path or count `load_embedded_user_app()` as fullbench success.
+
+**日期**: 2026-07-08
+**状态**: 🔍 探究结论（指导 Q19C-M1 实施）
+**决策**:
+- D1 fullbench M1 在 `init_memory_root()` 后创建 `/bin`，通过 `FsContext::write("/bin/benchmark", benchmark_bytes)` 写入 benchmark ELF。
+- 注入后必须用 `FS_CONTEXT.resolve("/bin/benchmark")` 验证路径可见，再调用 `load_user_app()`。
+- Q19B embedded userbench 继续保留为 regression；fullbench 不复用 `load_embedded_user_app()` 作为成功路径。
+- 不新增 `MemoryFs`/`MemoryNode` 专用写接口，不 fork ELF loader。
+
+**原因**:
+- 当前 `axfs-ng` 已提供 `FsContext::create_dir()`、`FsContext::write()`、`FsContext::resolve()`，足以完成 M1 memory-root 注入。
+- `load_user_app()` 已通过 `FS_CONTEXT.resolve()` + `CachedFile` + file-backed ELF mapping 覆盖 Q19B 没覆盖的 path-loader 语义。
+- 直接写 tmpfs 内部节点会扩大实现范围并绕过 high-level VFS 语义；继续用 embedded loader 则无法证明 path loading。
+
+**影响**:
+- Q19C-M1 的代码改动集中在 feature/Makefile、`entry.rs` fullbench 分支和 memory-root populate helper。
+- 真实 SDMMC/rootfs 继续后置；M1 只证明 populated memory root 上的 path-based user loading。
+- `docs/benchmark-report-async.md` 作为性能基线；M1 验收关注启动链路和 benchmark 完整运行，不重新优化 UART 性能。
+
+**替代方案**:
+- ❌ 为 tmpfs 增加专用 embedded-file API：可行但范围过大，且当前 high-level API 已满足需求。
+- ❌ fullbench 继续调用 `load_embedded_user_app()`：无法覆盖 `FS_CONTEXT.resolve()` / `CachedFile` / file-backed mapping。
+- ✅ 使用 `FsContext::write()` 注入 `/bin/benchmark`，再走 `load_user_app()`：当前推荐路线。
+
+#### Scenario: M1 memory-root benchmark population
+
+- **WHEN** Q19C-M1 prepares a D1 fullbench image
+- **THEN** it MUST create and write `/bin/benchmark` through `FsContext`
+- **AND** it MUST prove `FS_CONTEXT.resolve("/bin/benchmark")` succeeds before spawning the process
+- **AND** it MUST start the process through `load_user_app()`, not `load_embedded_user_app()`
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
