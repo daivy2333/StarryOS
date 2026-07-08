@@ -44,7 +44,7 @@ use crate::drivers::{bench, uart_init};
 #[cfg(feature = "lichee-d1-userbench")]
 use crate::mm::load_embedded_user_app;
 #[cfg(feature = "lichee-d1-fullbench")]
-use crate::mm::load_user_app;
+use crate::mm::load_user_app_eager_from_path;
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
@@ -245,7 +245,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         ax_println!("[starry-d1] target_mode=lichee-d1-fullbench");
         ax_println!(
             "[starry-d1] startup_chain=android-boot-image -> memory-root /bin/benchmark -> \
-             load_user_app"
+             eager_elf_mapping"
         );
         ax_println!("[starry-d1] root_provider=d1-memory-root-path");
         ax_println!("[starry-d1] Initializing populated memory rootfs...");
@@ -289,7 +289,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
             .expect("Failed to get executable absolute path");
         let name = loc.name();
 
-        ax_println!("[starry-d1] Loading /bin/benchmark via path loader...");
+        ax_println!("[starry-d1] Loading /bin/benchmark via path eager loader...");
 
         let mut uspace = new_user_aspace_empty()
             .and_then(|mut it| {
@@ -299,7 +299,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
             .expect("Failed to create user address space");
 
         let (entry_vaddr, ustack_top) =
-            load_user_app(&mut uspace, Some(BENCH_PATH), &bench_args, &envs)
+            load_user_app_eager_from_path(&mut uspace, BENCH_PATH, &bench_args, &envs)
                 .expect("Failed to load /bin/benchmark");
 
         let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);

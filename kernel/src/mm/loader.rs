@@ -345,16 +345,8 @@ pub fn load_user_app(
     Ok((entry, user_sp))
 }
 
-/// Load an embedded ELF (from a byte slice) into the user address space.
-///
-/// Unlike `load_user_app` which reads the ELF from the filesystem, this
-/// function maps segments directly from the provided `elf_data` bytes.
-/// This is used for D1 `lichee-d1-userbench` mode where no rootfs exists.
-///
-/// # Returns
-/// - `(entry_vaddr, user_stack_top)` on success.
-#[cfg(feature = "lichee-d1-userbench")]
-pub fn load_embedded_user_app(
+#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench"))]
+fn load_user_app_from_elf_data(
     uspace: &mut AddrSpace,
     elf_data: &[u8],
     args: &[String],
@@ -443,4 +435,38 @@ pub fn load_embedded_user_app(
     )?;
 
     Ok((entry, user_sp))
+}
+
+/// Load an embedded ELF (from a byte slice) into the user address space.
+///
+/// Unlike `load_user_app` which reads the ELF from the filesystem, this
+/// function maps segments directly from the provided `elf_data` bytes.
+/// This is used for D1 `lichee-d1-userbench` mode where no rootfs exists.
+///
+/// # Returns
+/// - `(entry_vaddr, user_stack_top)` on success.
+#[cfg(feature = "lichee-d1-userbench")]
+pub fn load_embedded_user_app(
+    uspace: &mut AddrSpace,
+    elf_data: &[u8],
+    args: &[String],
+    envs: &[String],
+) -> AxResult<(VirtAddr, VirtAddr)> {
+    load_user_app_from_elf_data(uspace, elf_data, args, envs)
+}
+
+/// Load a VFS-visible user app by reading the ELF bytes eagerly.
+///
+/// Q19C-M1 still proves path resolution and VFS reads through `/bin/benchmark`,
+/// but avoids the current tmpfs + file-backed lazy COW path while that path is
+/// tracked separately on D1.
+#[cfg(feature = "lichee-d1-fullbench")]
+pub fn load_user_app_eager_from_path(
+    uspace: &mut AddrSpace,
+    path: &str,
+    args: &[String],
+    envs: &[String],
+) -> AxResult<(VirtAddr, VirtAddr)> {
+    let elf_data = FS_CONTEXT.lock().read(path)?;
+    load_user_app_from_elf_data(uspace, &elf_data, args, envs)
 }

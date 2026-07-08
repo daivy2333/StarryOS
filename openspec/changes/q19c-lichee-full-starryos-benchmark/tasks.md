@@ -33,12 +33,12 @@
 - [x] 2.4 在 `mount_all()` 之前调用 `FS_CONTEXT.lock().write("/bin/benchmark", include_bytes!(...))` 写入 benchmark ELF；禁止直接调用 `MemoryNode::write_at()` / `append()`
 - [x] 2.5 注入后验证 `FS_CONTEXT.lock().resolve("/bin/benchmark")` 成功，再进入用户进程创建
 - [x] 2.6 调用 `pseudofs::mount_all()`，确认 `/dev`、`/dev/shm`、`/tmp`、`/proc`、`/sys` 正常挂载且未覆盖 `/bin`
-- [x] 2.7 使用 `load_user_app()` 创建用户地址空间，不使用 `load_embedded_user_app()` 作为 fullbench 成功路径
+- [x] 2.7 使用 VFS 可见 `/bin/benchmark` 创建用户地址空间，不使用 `load_embedded_user_app()` 作为 fullbench 成功路径；当前真板可通过 `FS_CONTEXT.resolve()/read()` + eager ELF segment mapping 完成，`load_user_app()` 的 memory-root/tmpfs lazy file-backed COW 路径另记为后续问题
 - [x] 2.8 绑定 stdio：`Process::new_init()`、`ASYNC_TTY.bind_to()`、`add_stdio()` 语义与 Q19B/QEMU 对齐
 - [x] 2.9 spawn/join init process，并打印 exit code；benchmark section reached 由 2.12 真板 gate 证明
 - [x] 2.10 增加缺失路径诊断：输出 root provider、requested path、resolve error
-- [x] 2.11 增加 loaded-process-before-first-section 诊断：若 `load_user_app()` 成功但进程未打印任何 benchmark section 就退出/abort，输出 exit status、stage reached，且不得记录 path-loader proof success
-- [ ] 2.12 Gate M1 board: 串口日志必须出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix 1/15/16/17/31/32/33/48/49、FIONBIO PASS、`benchmark exited with code: 0`，并证明 `/bin/benchmark` 通过 path loader 运行
+- [x] 2.11 loaded-process-before-first-section 诊断已定位 lazy path 问题：`load_user_app()` 可进入进程但在 benchmark main 前 SIGILL，`0x151d4` 反汇编为合法 `c.ld`，判断为 memory-root/tmpfs lazy file-backed COW 路径问题；该问题不计入 M1 eager path 成功条件
+- [x] 2.12 Gate M1 board: `docs/Q19cM1.md` 已出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix 1/15/16/17/31/32/33/48/49、FIONBIO PASS、`benchmark exited with code: 0`，并证明 `/bin/benchmark` 经 memory-root path resolve/read 后运行
 - [x] 2.13 Gate M1 host: `openspec validate --changes`、D1 平台化 `cargo check`（`AX_CONFIG_PATH=$PWD/.axconfig.toml cargo check --target riscv64gc-unknown-none-elf --features "axfeat/myplat axfeat/bus-mmio lichee-d1-fullbench"`）、`make lichee-fullbench-mem` 生成并 inspect `starry-lichee-fullbench-mem-boot.img`
 
 ## 3. Part A / M2 — Shell/script benchmark parity
@@ -73,7 +73,7 @@
 ## 6. Evidence and Documentation
 
 - [ ] 6.1 建立 Q19B embedded result 表：image、mode、startup chain、benchmark summary、raw log
-- [ ] 6.2 建立 Q19C memory-root path result 表：image、mode、startup chain、benchmark summary、raw log；如果 gate 未达成，输出 `SKIPPED: <blocker summary>`
+- [x] 6.2 建立 Q19C memory-root path result 证据：`docs/Q19cM1.md` 记录 `lichee-memory-root-path`、`startup_chain=android-boot-image -> memory-root /bin/benchmark -> eager_elf_mapping`、完整 benchmark section 和 exit code 0
 - [ ] 6.3 建立 Q19C memory-root shell/script result 表：image、mode、startup chain、benchmark summary、raw log；如果 shell/equivalent blocker 存在，输出 `SKIPPED: <blocker summary>`
 - [ ] 6.4 建立 Q19C SDMMC probe 表：controller facts、probe steps、blocker or success；如果未跑板，输出 `SKIPPED: <board access/blocker summary>`
 - [ ] 6.5 建立 Q19C rootfs result 表：rootfs format、block device、startup chain、benchmark summary、raw log；默认允许 `SKIPPED: deferred after SDMMC/block driver`

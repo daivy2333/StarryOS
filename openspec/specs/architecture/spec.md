@@ -1075,13 +1075,13 @@ Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/p
 **状态**: 🔍 探究结论（待 Q19C change 落地）
 **决策**:
 - 保留 Q19B embedded `benchmark.elf` 作为 D1 async UART/userland regression gate。
-- 新增 Q19C fullbench runtime mode 时，先在 D1 memory root 中提供 `/bin/benchmark`，通过 `load_user_app()` 和 `FS_CONTEXT.resolve()` 启动 benchmark，而不是继续调用 `load_embedded_user_app()`。
+- 新增 Q19C fullbench runtime mode 时，先在 D1 memory root 中提供 `/bin/benchmark`，通过 `FS_CONTEXT.resolve()/read()` 和 eager ELF segment mapping 启动 benchmark，而不是继续调用 `load_embedded_user_app()`。
 - 只有 memory-root path loading 通过后，才进入真实 SDMMC/block rootfs parity；SDMMC bring-up 失败不得回归为 UART/TTY benchmark 阻塞。
 - D1 fullbench 不得启用 `qemu` feature；必须保持独立 feature set，继承 D1 async UART/PLIC 能力但排除 QEMU PCI/virtio/display 假设。
 
 **原因**:
 - Q19B 已证明 `/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO，但 embedded ELF 绕过了 rootfs/path loader。
-- QEMU 完整路径依赖 `load_user_app()` 从 `FS_CONTEXT` 解析 `/bin/sh` 或 benchmark 路径；这是 Q19B 尚未覆盖的差距。
+- QEMU 完整路径依赖 `load_user_app()` 从 `FS_CONTEXT` 解析 `/bin/sh` 或 benchmark 路径；Q19C-M1 先覆盖 D1 memory-root 的 VFS 路径可见性、读取、用户进程、stdio 和 benchmark 完整运行。
 - 真实 SDMMC/rootfs 需要 D1 block driver、clock/reset/pinmux/cache 等硬件 bring-up，排障面大，不能作为验证 normal loader path 的第一步。
 
 **影响**:
@@ -1097,7 +1097,7 @@ Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/p
 #### Scenario: D1 fullbench path loading
 
 - **WHEN** Q19C starts full StarryOS benchmark work on Lichee RV Dock
-- **THEN** the first fullbench gate MUST run benchmark through `load_user_app()` from a VFS-visible `/bin/benchmark`
+- **THEN** the first fullbench gate MUST run benchmark from a VFS-visible `/bin/benchmark`
 - **AND** `load_embedded_user_app()` MUST remain only the Q19B regression path
 - **AND** real SDMMC/rootfs parity MUST be a later gate after memory-root path loading succeeds
 
@@ -1111,7 +1111,7 @@ Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation 
 **决策**:
 - 停止在 Q19C 主线上继续探究 D1 size>=15 / drain-each P99 长尾根因。
 - 将该问题归类为 D1 真板平台尾部行为或 D1 适配层调优项，而不是通用异步 UART 架构缺口。
-- Q19C 后续优先推进 M1 memory-root `/bin/benchmark` path loader；P99 tracing 只保留为后续可选项。
+- Q19C 后续优先推进 memory-root `/bin/benchmark` path/shell/rootfs parity；P99 tracing 只保留为后续可选项。
 
 **原因**:
 - 同版 benchmark 下，QEMU rootfs 路径未复现 D1 的 FIFO-boundary P99 长尾；D1 1B latency 也正常。
@@ -1127,7 +1127,7 @@ Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation 
 **替代方案**:
 - ❌ 继续把 P99 tracing 作为 Q19C gate：会延迟 memory-root path loader，且当前没有正确性收益。
 - ❌ 声称问题已根治：当前只证明影响可接受，根因未探明。
-- ✅ 接受为 D1 平台尾部 known limitation，保留触发条件，主线继续推进 Q19C M1。
+- ✅ 接受为 D1 平台尾部 known limitation，保留触发条件，主线继续推进 Q19C M1/M2/M3。
 
 #### Scenario: D1 P99 tail appears during Q19C
 
@@ -1139,36 +1139,38 @@ Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation 
 <!-- A054 -->
 ### Requirement: ADR-054: Q19C-M1 复用 high-level FS API 注入 memory-root benchmark
 
-Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` high-level APIs and then use `load_user_app()`; it MUST NOT add a parallel tmpfs write path or count `load_embedded_user_app()` as fullbench success.
+Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` high-level APIs and then prove the benchmark runs from that VFS-visible path; it MUST NOT add a parallel tmpfs write path or count `load_embedded_user_app()` as fullbench success.
 
 **日期**: 2026-07-08
-**状态**: 🔍 探究结论（指导 Q19C-M1 实施）
+**状态**: ✅ 已落地（M1 eager path 真板通过；lazy file-backed COW deferred）
 **决策**:
 - D1 fullbench M1 在 `init_memory_root()` 后创建 `/bin`，通过 `FsContext::write("/bin/benchmark", benchmark_bytes)` 写入 benchmark ELF。
-- 注入后必须用 `FS_CONTEXT.resolve("/bin/benchmark")` 验证路径可见，再调用 `load_user_app()`。
+- 注入后必须用 `FS_CONTEXT.resolve("/bin/benchmark")` 验证路径可见；当前落地实现用 `FS_CONTEXT.read("/bin/benchmark")` 读取文件，再复用 eager ELF segment mapping 创建进程。
 - Q19B embedded userbench 继续保留为 regression；fullbench 不复用 `load_embedded_user_app()` 作为成功路径。
 - 不新增 `MemoryFs`/`MemoryNode` 专用写接口，不 fork ELF loader。
+- `load_user_app()` 的 memory-root/tmpfs lazy file-backed COW 路径在 D1 上另有 SIGILL 问题，作为 loader/mm 后续问题处理，不阻塞 Q19C-M1 或异步 UART 结论。
 
 **原因**:
 - 当前 `axfs-ng` 已提供 `FsContext::create_dir()`、`FsContext::write()`、`FsContext::resolve()`，足以完成 M1 memory-root 注入。
-- `load_user_app()` 已通过 `FS_CONTEXT.resolve()` + `CachedFile` + file-backed ELF mapping 覆盖 Q19B 没覆盖的 path-loader 语义。
+- 真板调试显示 lazy `CachedFile` + file-backed COW 路径可进入用户态并处理若干 page fault，但在 benchmark main 前 SIGILL；故障点反汇编为合法 `c.ld`，更像取指/懒映射字节问题，不是 UART 或 syscall 主线问题。
 - 直接写 tmpfs 内部节点会扩大实现范围并绕过 high-level VFS 语义；继续用 embedded loader 则无法证明 path loading。
 
 **影响**:
-- Q19C-M1 的代码改动集中在 feature/Makefile、`entry.rs` fullbench 分支和 memory-root populate helper。
+- Q19C-M1 的代码改动集中在 feature/Makefile、`entry.rs` fullbench 分支、memory-root populate helper 和 `load_user_app_eager_from_path()`。
 - 真实 SDMMC/rootfs 继续后置；M1 只证明 populated memory root 上的 path-based user loading。
 - `docs/benchmark-report-async.md` 作为性能基线；M1 验收关注启动链路和 benchmark 完整运行，不重新优化 UART 性能。
 
 **替代方案**:
 - ❌ 为 tmpfs 增加专用 embedded-file API：可行但范围过大，且当前 high-level API 已满足需求。
 - ❌ fullbench 继续调用 `load_embedded_user_app()`：无法覆盖 `FS_CONTEXT.resolve()` / `CachedFile` / file-backed mapping。
-- ✅ 使用 `FsContext::write()` 注入 `/bin/benchmark`，再走 `load_user_app()`：当前推荐路线。
+- ❌ 继续把 lazy file-backed COW 修复作为 M1 gate：会把 loader/mm bug 混入 async UART/fullbench 验收。
+- ✅ 使用 `FsContext::write()` 注入 `/bin/benchmark`，再走 `FS_CONTEXT.resolve()/read()` + eager ELF mapping：当前已验证路线。
 
 #### Scenario: M1 memory-root benchmark population
 
 - **WHEN** Q19C-M1 prepares a D1 fullbench image
 - **THEN** it MUST create and write `/bin/benchmark` through `FsContext`
 - **AND** it MUST prove `FS_CONTEXT.resolve("/bin/benchmark")` succeeds before spawning the process
-- **AND** it MUST start the process through `load_user_app()`, not `load_embedded_user_app()`
+- **AND** it MUST start the process from those VFS-read ELF bytes, not `load_embedded_user_app()`
 
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

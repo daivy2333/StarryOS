@@ -34,7 +34,7 @@ Q19C 分成两个工程部分。
 
 - 新增独立 Lichee fullbench runtime mode，与 Q19B `lichee-d1-userbench` 分离。
 - 在 memory-root 中提供 `/bin/benchmark`，通过 VFS 路径解析启动 benchmark。
-- 复用 `load_user_app()`，覆盖 `FS_CONTEXT.resolve()`、`CachedFile`、ELF path loader、argv/envp、stdio、process exit/join。
+- M1 通过 `FS_CONTEXT.resolve()/read()` + eager ELF mapping 覆盖 memory-root 路径可见性、文件读取、argv/envp、stdio、process exit/join；`load_user_app()` 的 lazy file-backed COW 路径另作为 loader/mm 后续问题处理。
 - 在 memory-root 中提供 `/bin/sh`、`/init.sh` 或明确等价的脚本入口，让 benchmark 可通过 shell/script 触发。
 
 ### Part B: 真板 rootfs / SDMMC 探针
@@ -62,7 +62,7 @@ Q19C 不修改已归档的 Q19/Q19B capability。Q19B embedded userbench 继续�
 
 - 新增 Lichee fullbench feature/target/image 命名。
 - memory-root 中的文件节点和应用布局。
-- Lichee fullbench 使用 `load_user_app()` 的 path-based 启动。
+- Lichee fullbench 使用 VFS-visible `/bin/benchmark` 启动；M1 当前采用 `FS_CONTEXT.resolve()/read()` + eager ELF mapping，后续 shell/rootfs 路径可继续推进 normal path loader parity。
 - shell/script 触发 benchmark 的最小闭环。
 - D1 SDMMC/rootfs 所需真板信息采集、probe-only blocker 分类与后续驱动接入计划。
 - benchmark 输出和证据格式标准化。
@@ -113,7 +113,7 @@ Q19C 不修改已归档的 Q19/Q19B capability。Q19B embedded userbench 继续�
 - `Makefile` — 新增 fullbench image target，保留 `DWARF=n`、Android boot image 打包和 size inspect。
 - `src/main.rs` — 作为 QEMU shell/script args 参考，不改变 QEMU 行为。
 - `kernel/src/entry.rs` — 新增 Lichee fullbench 启动分支，复用 QEMU 的 process setup 语义。
-- `kernel/src/mm/loader.rs` — 复用 `load_user_app()`；embedded loader 继续只用于 Q19B baseline。
+- `kernel/src/mm/loader.rs` — 复用 eager ELF segment mapping 并提供 `load_user_app_eager_from_path()`；embedded loader 继续只用于 Q19B baseline，lazy file-backed `load_user_app()` 修复另列后续项。
 - `kernel/src/pseudofs/mod.rs` — memory-root 需要可提供 `/bin/benchmark`、`/bin/sh`、`/init.sh` 等文件节点。
 - `kernel/src/file/mod.rs` — stdio 继续通过 `/dev/console` 绑定。
 - `crates/axfs-ng/src/lib.rs` — rootfs mode 只有在真实 block device 可用后调用。

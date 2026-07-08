@@ -13,6 +13,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 > 2026-06-29 更新：Q19B / O77 已在 Lichee RV Dock 真板完成 async UART userbench，大包 TX 达 97.7%~99.0% 115200bps 线速。
 > 2026-07-03 更新：Q17 / O63 已完成 QEMU 修复与回归验证；多 hart / 真板 SMP stress 尚未执行，不能声明跨 hart 内存序已被实测证明。
 > 2026-07-04 更新：Q19C review 后范围收敛为 benchmark evidence cleanup + memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆为 Q19D 后续方向。
+> 2026-07-08 更新：Q19C-M1 memory-root `/bin/benchmark` 已通过 VFS resolve/read + eager ELF mapping 在 D1 真板完整运行；`load_user_app()` lazy file-backed COW 路径的 SIGILL 另列 O80，不阻塞异步 UART/fullbench 验收。
 
 | Milestone | 目标 | 归属条目 | Gate |
 |-----------|------|----------|------|
@@ -21,7 +22,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 | **Q18** | 平台参数解耦 / early console 基础 | **O74**, **O75** | QEMU 行为保持；`uart_init.rs` 不再新增板级 base/irq/stride/width 常量 |
 | **Q19** | Lichee RV Dock early smoke test | **O76**, L213-L216, L231-L235, ADR-043 | ✅ Lichee 串口输出 `[starry-d1] smoke complete, halting.` |
 | **Q19B** | Lichee RV Dock async UART benchmark | **O77**, ADR-047~ADR-051, L236-L258 | ✅ kbench/userbench 均在真板完成；`/dev/console`、TTY、`tcdrain`、FIONBIO 全链路通过 |
-| **Q19C** | Lichee memory-root fullbench | **O78**, L259-L264, ADR-052 | benchmark manifest + memory-root `/bin/benchmark` path loader；shell/script optional；SDMMC/rootfs 仅 probe-only / SKIPPED evidence |
+| **Q19C** | Lichee memory-root fullbench | **O78**, **O80**, L259-L264/L276-L277, ADR-052/ADR-054 | ✅ M1 memory-root `/bin/benchmark` 已通过 VFS resolve/read + eager ELF mapping；shell/script optional；SDMMC/rootfs 仅 probe-only / SKIPPED evidence |
 | **Q19D** | Lichee SDMMC/rootfs implementation | **O79** | 基于 Q19C probe evidence 实施 D1 SDMMC/block/rootfs；真实 rootfs path benchmark 单独验收 |
 | **Q20** | VisionFive2 UART 验证 | **O66**, **O64**, **O65**, **O71**, **O38**, **O39**, Q15 Manual QA 真板复跑 | VisionFive2 串口稳定运行，真板基线数据落档 |
 | **Q21** | DMA / 高波特率决策 | **O3**, **O40**, **O69**, **O41** | 用 Q20 真板数据决定实施或拒绝 |
@@ -32,8 +33,9 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 |----------|------|--------|------|
 | **O74** | Platform descriptor 集中化 | 🔴 P0 | 抽出 QEMU/Lichee/VisionFive2 的 UART kind、base、irq、stride、MMIO access width、boot strategy；落实 ADR-044 |
 | **O75** | Early console 分层 | 🔴 P0 | 新增不依赖 IRQ / async task / rootfs 的 polling early console；QEMU 用 NS16550 U8，Lichee/VF2 用 DW APB U32 |
-| **O78** | Lichee memory-root path loader benchmark | 🔴 P0 | Q19C：标准化 benchmark manifest，通过 memory-root `/bin/benchmark` 走 `FS_CONTEXT.resolve()` + `load_user_app()`；SDMMC/rootfs 只做 probe-only evidence |
+| **O78** | Lichee memory-root path loader benchmark | ✅ 已完成 | Q19C：标准化 benchmark manifest，通过 memory-root `/bin/benchmark` 走 `FS_CONTEXT.resolve()/read()` + eager ELF mapping；真板 `docs/Q19cM1.md` 完整输出 benchmark 并 exit code 0；SDMMC/rootfs 只做 probe-only evidence |
 | **O79** | Lichee SDMMC/block/rootfs implementation | 🟡 P1 | Q19D：承接 Q19C probe，实施 D1 SDMMC/block driver、`AxBlockDevice`、真实 rootfs path benchmark；不得混入 Q19C M1 gate |
+| **O80** | Memory-root lazy file-backed COW loader 修复 | 🟡 P1 | `load_user_app()` + tmpfs/memory-root `CachedFile/FileBackend::Cached + Backend::new_cow` 在 D1 上 main 前 SIGILL；eager path 已证明 UART/VFS/read/userland 正常，后续应作为 loader/mm bug 单独修 |
 <!-- tombstone: O76/O77 --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 已完成并归档，active roadmap 不再保留已完成 Lichee 条目。
 
 #### Scenario: Roadmap-driven scheduling
@@ -72,9 +74,10 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 #### Scenario: Lichee fullbench 阶段边界
 
 - **WHEN** Q19C 进入实施
-- **THEN** MUST prioritize benchmark evidence cleanup and memory-root path loader proof
+- **THEN** MUST prioritize benchmark evidence cleanup and memory-root path-visible benchmark proof
 - **AND** SDMMC/rootfs work in Q19C MUST remain probe-only or SKIPPED blocker evidence
 - **AND** full D1 SDMMC/block/rootfs implementation MUST be tracked as Q19D / O79, not silently folded into Q19C
+- **AND** lazy file-backed COW loader repair MUST be tracked as O80, not as an async UART correctness gate
 
 #### Scenario: 真板启动失败或串口无输出
 
@@ -161,6 +164,7 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 | **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q21 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q21 决策 | Q20 真板数据 + O3 评估 |
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q20 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q20 真板驱动开发 |
 | **O77** | Q19C D1 TX 诊断 | **D1 TX zero-send / P99 长尾优化（Q19C.8e 已完成）**：已实施 slow-poll（`TX_SLOW_POLL_LIMIT=4096` × `TX_SLOW_POLL_SPINS=256`）+ yield 重试（`TX_YIELD_RETRIES=4` 自唤醒）作为 budget exhausted 后的 fallback。真板三轮数据证明 slow-pool 100% 成功（`slow_poll_exh=0`），yield 重试从未触发（`yield_exh=0`），ISR 从未丢失。P99 长尾（size=256 P99=50.86ms，2.34x 线时）**根因未探明**——slow-pool/yield 重试均未改善，100 次迭代中约 1 次超出线时+10ms，确切成因待查。当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 复验时再探明。`TX_FAST_RETRY_LIMIT=0` + drain `TX_WAKER` 已证伪，不得作为默认。 | ✅ 已完成（Q19C-M0） | P99 根因未探明，Q20 复验 |
+| **O80** | Q19C-M1 loader/mm 后续 | **Memory-root lazy file-backed COW SIGILL**：`load_user_app()` 从 `/bin/benchmark` lazy mapping 可进程化并处理 page fault/syscall，但 main 前在合法 RV64C `c.ld` 地址 SIGILL；eager VFS read + segment mapping 已通过完整 benchmark，说明问题不在 async UART、benchmark ELF 或通用 syscall。后续应检查 `CachedFile` 页缓存、`FileBackend::Cached`、`Backend::new_cow`、tmpfs offset/权限/取指路径，不作为 Q19C-M1 或 UART gate。 | 🟡 P1 | 需要恢复 lazy file-backed loader parity 时 |
 <!-- tombstone: O67/O68/O70/O72/O73 --> Archived 2026-07-02 in ARC-202607021648 — 已采纳/已蕴含/已领先项从 active optimization 清单移除。
 
 #### Scenario: Q17-Q20 真板启动顺序（O63 + O74/O75/O76 + O64/O66 协同，Revised 2026-06-28）

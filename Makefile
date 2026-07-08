@@ -61,7 +61,7 @@ benchmark-userbench-elf: tests/benchmark.c
 benchmark-fullbench-elf: tests/benchmark.c
 	$(BENCH_CC) $(BENCH_CFLAGS) \
 		-DBENCH_TARGET_MODE='"lichee-d1-fullbench"' \
-		-DBENCH_STARTUP_CHAIN='"android-boot-image -> memory-root /bin/benchmark -> load_user_app"' \
+		-DBENCH_STARTUP_CHAIN='"android-boot-image -> memory-root /bin/benchmark -> eager_elf_mapping"' \
 		-DBENCH_ROOT_PROVIDER='"d1-memory-root-path"' \
 		-DBENCH_D1_DIAG \
 		-o kernel/resources/benchmark.elf $<

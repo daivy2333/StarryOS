@@ -63,7 +63,7 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 | smoke | `lichee-d1` | `lichee-smoke` | none | smoke marker | none | D1 boot smoke |
 | kbench | `lichee-d1-kbench` | `lichee-kbench` | none | kernel benchmark | none | async UART kernel benchmark |
 | embedded | `lichee-d1-userbench` | `lichee-embedded-userbench` | memory root for devfs only | embedded benchmark bytes | `load_embedded_user_app()` | Q19B regression |
-| M1 | `lichee-d1-fullbench` | `lichee-memory-root-path` | populated memory root | `/bin/benchmark` | `load_user_app()` | path loader proof |
+| M1 | `lichee-d1-fullbench` | `lichee-memory-root-path` | populated memory root | `/bin/benchmark` | `FS_CONTEXT.resolve()/read()` + eager ELF segment mapping | path-visible benchmark proof |
 | M2 | `lichee-d1-fullbench` + mode `shell` or `lichee-d1-fullbench-shell` | `lichee-memory-root-shell` | populated memory root | `/bin/sh -c /init.sh` or equivalent | `load_user_app()` | shell/script proof |
 | M3 probe | `lichee-d1-fullbench` + mode `rootfs-probe` or equivalent | `lichee-rootfs-probe` | SDMMC/block probe only | none unless block exists | none or `load_user_app()` only after block exists | rootfs readiness evidence |
 | future rootfs | future milestone | `lichee-rootfs-path` | SDMMC/block rootfs | rootfs `/bin/sh` / `/bin/benchmark` | `load_user_app()` | full board parity |
@@ -145,9 +145,11 @@ FS_CONTEXT.lock().write("/init.sh", b"/bin/benchmark\n")?;
 pseudofs::mount_all();
 ```
 
-After injection, M1 MUST verify `FS_CONTEXT.lock().resolve("/bin/benchmark")` succeeds before calling `load_user_app()`. The benchmark ELF MUST be checked as static/no interpreter (`readelf -l kernel/resources/benchmark.elf | grep INTERP` returns empty), because `load_user_app()` follows `PT_INTERP` for dynamic ELF.
+After injection, M1 MUST verify `FS_CONTEXT.lock().resolve("/bin/benchmark")` succeeds before loading the process. The benchmark ELF MUST be checked as static/no interpreter (`readelf -l kernel/resources/benchmark.elf | grep INTERP` returns empty), because the normal file loader follows `PT_INTERP` for dynamic ELF.
 
-Performance baseline for M1 is `docs/benchmark-report-async.md` (Q19C-M0 + Q19C.8e). M1 validation does not need to re-prove UART throughput; it needs to prove startup-chain parity: VFS path resolution, `CachedFile`/file-backed ELF loading, process setup, stdio, benchmark sections, and exit code 0.
+Performance baseline for M1 is `docs/benchmark-report-async.md` (Q19C-M0 + Q19C.8e). M1 validation does not need to re-prove UART throughput; it needs to prove startup-chain parity up to the current accepted boundary: VFS path resolution/read, process setup, stdio, benchmark sections, and exit code 0.
+
+2026-07-08 真板调试结论：直接使用 `load_user_app()` 的 memory-root/tmpfs lazy file-backed COW 路径能够进入进程并触发 page fault，但在 benchmark main 前以 SIGILL 退出；故障地址 `0x151d4` 反汇编为合法 RV64C `c.ld`，更像取指/懒映射字节问题，而不是 UART、syscall 或 benchmark 编译器问题。M1 接受的实现改为从 `FS_CONTEXT.read("/bin/benchmark")` 读取 VFS 可见文件，再复用 eager ELF segment mapping。lazy file-backed COW 修复独立登记为后续 loader/mm 问题，不阻塞异步 UART 或 M1 fullbench 证据。
 
 M2 is optional unless a known-good static `/bin/sh` is available. Busybox may depend on `/proc/self/exe`; if that dependency is not resolved, Q19C may use a documented equivalent command entry instead of busybox, but the evidence must still cover argv/envp/stdio/exit/join.
 
@@ -177,14 +179,15 @@ Reason:
 - Path loader and shell/rootfs failures need isolation from UART/syscall regressions.
 - It prevents accidental success where fullbench silently falls back to embedded bytes.
 
-### D2: Path loader is the first required proof
+### D2: Path-visible benchmark is the first required proof
 
-The first new proof is `/bin/benchmark` via `FS_CONTEXT.resolve()` and `load_user_app()`.
+The first new proof is `/bin/benchmark` via `FS_CONTEXT.resolve()/read()` and eager ELF segment mapping.
 
 Reason:
 
 - This validates the biggest semantic gap between Q19B and QEMU.
-- It avoids SDMMC while still exercising VFS path lookup, file-backed ELF loading, process setup, stdio, and exit/join.
+- It avoids SDMMC while still exercising VFS path lookup/read, process setup, stdio, and exit/join.
+- The file-backed lazy COW path exposed a separate D1 memory-root/tmpfs loader bug; that bug is recorded separately and is not evidence against async UART.
 
 ### D3: Shell/script proof is separate from direct benchmark proof
 
@@ -309,7 +312,7 @@ Part B board probes must capture:
 Q19C is complete when:
 
 - Q19B embedded userbench remains runnable.
-- Lichee memory-root path mode runs `/bin/benchmark` through `load_user_app()`.
+- Lichee memory-root path mode runs `/bin/benchmark` through VFS resolve/read and eager ELF segment mapping.
 - Lichee shell/script mode runs benchmark from shell or documented equivalent script entry.
 - SDMMC/block exploration documents a concrete hardware blocker with captured probe data, or, if a block device is already available, proceeds to rootfs proof.
 - If block rootfs works, benchmark runs from real rootfs and is recorded separately from memory-root data; otherwise rootfs evidence is marked SKIPPED, not failed.

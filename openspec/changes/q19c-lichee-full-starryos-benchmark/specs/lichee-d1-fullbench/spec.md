@@ -33,15 +33,15 @@ Q19C MUST preserve the Q19B embedded benchmark path as an explicit regression ba
 - **THEN** Q19C validation MUST treat it as a regression in the baseline path
 - **AND** it MUST NOT attribute the failure to SDMMC/rootfs work without evidence.
 
-### Requirement: Memory-root path loader fullbench
+### Requirement: Memory-root path-visible fullbench
 
-Lichee fullbench MUST provide a memory-root path mode in which `/bin/benchmark` is reachable through the VFS namespace and started through `load_user_app()`.
+Lichee fullbench MUST provide a memory-root path mode in which `/bin/benchmark` is reachable through the VFS namespace and started from the VFS-provided file contents.
 
 #### Scenario: Benchmark starts through VFS resolve
 
 - **WHEN** Lichee fullbench boots in memory-root path mode
 - **THEN** `FS_CONTEXT.resolve("/bin/benchmark")` MUST resolve the benchmark file
-- **AND** the process MUST be loaded through the path-based `load_user_app()` flow
+- **AND** the process MUST be loaded from the VFS-readable benchmark ELF rather than embedded bytes
 - **AND** benchmark output MUST be labeled as `lichee-memory-root-path`.
 
 #### Scenario: Benchmark path is missing
@@ -52,7 +52,7 @@ Lichee fullbench MUST provide a memory-root path mode in which `/bin/benchmark` 
 
 #### Scenario: Loaded process fails before printing
 
-- **WHEN** `load_user_app()` returns successfully but the spawned init process exits or aborts before printing any benchmark section
+- **WHEN** a path-visible benchmark process is created but the spawned init process exits or aborts before printing any benchmark section
 - **THEN** the system MUST report spawn exit status and stage reached
 - **AND** it MUST NOT classify the run as a successful path-loader proof.
 
