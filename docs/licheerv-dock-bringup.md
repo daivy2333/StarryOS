@@ -5,6 +5,7 @@
 > 当前结论：Lichee RV Dock 适合作为真板流程演练板，但不适合作为 Q17 SMP / 多核内存序验证板。它使用 Allwinner D1 / XuanTie C906，属于单核 RISC-V 平台。
 
 > 2026-06-29 更新：StarryOS 已在 Lichee RV Dock 真板完成 early smoke test 与 Q19B async UART userbench。官方 U-Boot 成功加载 StarryOS Android boot image，D1 axplat 进入 StarryOS payload；`starry-lichee-userbench-boot.img` 已完整运行 embedded `benchmark.elf`，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过。
+> 2026-07-08 更新：Q19C-M0（同版 `q19c-m0-20260703` benchmark manifest + slow-pool/yield 重试）已在真板落地，64B 96.6% / 256B 97.3% / 1024B 98.8% / batch-1024B 99.1% 线速。Q19C-M1（memory-root `/bin/benchmark` + VFS resolve/read + eager ELF mapping）已在真板完整跑完 benchmark 并 exit code 0。详细数据见 `docs/benchmark-report-async.md`（2026-07-07 截稿）与 `docs/Q19cM1.md`（2026-07-08 M1 真板日志）。
 
 ## 1. 定位与边界
 
@@ -82,22 +83,48 @@ sbi_version: 0.2
 - 用户态 ELF loader + embedded `benchmark.elf`
 - syscall 路径：`openat` / `write` / `writev` / `ioctl(TCSBRK/tcdrain)` / `clock_gettime` / `FIONBIO`
 
-真板性能参数（UART0 115200 bps）：
+真板性能参数（UART0 115200 bps，Q19B embedded 路径，2026-06-29）：
 
 | 测项 | 结果 |
 |------|------|
 | 理论线速 | `11.52 KB/s` |
-| TX throughput 64B | `1.01 KB/s`（每轮 tcdrain，小包固定开销主导） |
-| TX throughput 256B | `11.25 KB/s`，`97.7% line rate` |
-| TX throughput 1024B | `11.40 KB/s`，`98.9% line rate` |
-| TX throughput 4096B | `11.41 KB/s`，`99.0% line rate` |
-| TX latency 1B | avg `0.270 ms`，P50 `0.185 ms`，P95 `0.187 ms`，P99 `8.547 ms` |
-| FIFO boundary 16B | avg `1.564 ms`，P50 `1.513 ms` |
-| FIFO boundary 32B | avg `2.927 ms`，P50 `2.876 ms` |
-| FIFO boundary 48B | avg `4.293 ms`，P50 `4.242 ms` |
+| TX throughput 64B | `1.01 KB/s`（每轮 tcdrain，小包固定开销主导；Q19C-M0 pre-section drain 后已恢复至 11.13 KB/s / 96.6% line rate） |
+| TX throughput 256B | `11.25 KB/s`，`97.7% line rate`（Q19C-M0 同版 manifest 数据为 11.21 KB/s / 97.3%）|
+| TX throughput 1024B | `11.40 KB/s`，`98.9% line rate`（Q19C-M0 同版 manifest 数据为 11.38 KB/s / 98.8%）|
+| TX throughput 4096B | `11.41 KB/s`，`99.0% line rate`（Q19C-M0 manifest 已移除 4096B 长耗时项；S12 batch-drain 1024B 达 11.42 KB/s / 99.1% line rate）|
+| TX latency 1B | avg `0.270 ms`，P50 `0.185 ms`，P95 `0.187 ms`，P99 `8.547 ms`（Q19C-M0 P99 已降至 0.224 ms，无 FIFO 满路径长尾）|
+| FIFO boundary 16B | avg `1.564 ms`，P50 `1.513 ms`（Q19C-M0 avg=1.627 ms / P50=1.490 ms / P99=15.191 ms，P99 长尾待 Q20 复验时探明）|
+| FIFO boundary 32B | avg `2.927 ms`，P50 `2.876 ms`（Q19C-M0 avg=3.017 ms / P50=2.881 ms / P99=16.558 ms）|
+| FIFO boundary 48B | avg `4.293 ms`，P50 `4.242 ms`（Q19C-M0 avg=4.383 ms / P50=4.249 ms / P99=17.750 ms）|
 | FIONBIO | `O_NONBLOCK` 与 `ioctl FIONBIO` 均返回 `EAGAIN`，PASS |
 
-结论：大包 TX 已接近 115200 bps 物理线速，`tcdrain` 等待的是实际串口发送完成；QEMU 上的高吞吐数据不能代表真实串口线速。
+结论：大包 TX 已接近 115200 bps 物理线速，`tcdrain` 等待的是实际串口发送完成；QEMU 上的高吞吐数据不能代表真实串口线速。Q19C-M0 在同版 `q19c-m0-20260703` manifest 下把 64B 小包从测量污染恢复至 96.6% 线速，并在 256B/1024B/batch-1024B 上保持 97.3%~99.1% 线速。
+
+### Q19C-M0 后续：benchmark evidence cleanup + TX copier slow-pool（2026-07-07）
+
+Q19C-M0 在同版 `q19c-m0-20260703` manifest 下新增 Q19B 缺失的横向可比性边界：
+
+- 统一 QEMU/D1 benchmark 输出 manifest（`version` / `target_mode` / `startup_chain` / `root_provider` / `tx_*` / `rx_*` 等）
+- 移除 4096B 长耗时项（吞吐已稳定，无需长时采样）
+- 每 section 前 `pre_section_stdout_drain_ms` 隔离 stdout backlog 污染
+- D1 `send_bytes()` 16B FIFO burst 修复（Q19C.8d）：`hw_send_max_chunk=16` 保持
+- TTY OPOST/ONLCR short-write 计数修复（Q19C.8d）：S11 1024B `short_writes` 保持低数字
+- TX copier slow-pool（`TX_SLOW_POLL_LIMIT=4096` × `TX_SLOW_POLL_SPINS=256`）+ yield 重试（`TX_YIELD_RETRIES=4`）作为 budget exhausted 后的 fallback（Q19C.8e）
+- 真板 `slow_poll_exh=0` / `yield_exh=0` 证明 slow-pool 100% 成功
+- P99 长尾（size=256 P99=50.86 ms / 2.34x 线时）根因未探明，影响 <2%，Q20 复验时再探明（O77/L275）
+
+### Q19C-M1 后续：memory-root path loader 证明（2026-07-08）
+
+Q19C-M1 成功把 D1 从 `load_embedded_user_app()`（Q19B 路径）推进到 `load_user_app()`（path loader）：
+
+- 启动链：`android-boot-image -> memory-root /bin/benchmark -> eager_elf_mapping`
+- log label：`lichee-memory-root-path`，`root_provider=d1-memory-root-path`
+- 入口：`init_memory_root()` → `FS_CONTEXT.create_dir("/bin")` + `FS_CONTEXT.write("/bin/benchmark", include_bytes!("../resources/benchmark.elf"))` → `FS_CONTEXT.resolve("/bin/benchmark")` → `mount_all()` → `load_user_app()`
+- 真板结果：`benchmark exited with code: 0`，完整输出 S00/S10/S11/S12/S13/S14/S20/S21/S30/S31 sections
+- 已知限制：`load_user_app()` lazy file-backed COW 路径在 `ip=0x151d4`（合法 RV64C `c.ld`）SIGILL；M1 用 eager VFS read + segment mapping 绕开，COW 修复作为独立 loader/mm 后续项（O80/L277）
+- 真板原始日志：`docs/Q19cM1.md`（142 行，2026-07-08 截稿）
+
+Q19C-M2（M2 shell/script 等价入口）与 Q19C-M3（M3 SDMMC/block probe-only）待后续推进；真实 D1 SDMMC/block/rootfs 实施拆到 Q19D 后续独立方向。
 
 Q19B 真板排障经验：
 

@@ -1052,7 +1052,7 @@ D1 DW APB UART async backend MUST treat THRE/TEMT readiness as both interrupt-dr
 
 **影响**:
 - D1 userbench 已完整跑完 embedded benchmark，`tcdrain` 不再卡住。
-- 真板大包 TX 达 97.7%~99.0% 115200bps 线速，证明 drain 等待的是实际串口发送完成。
+- 真板大包 TX 达 97.7%~99.0% 115200bps 线速，证明 drain 等待的是实际串口发送完成。（**注**：Q19C-M0 2026-07-07 同版 `q19c-m0-20260703` manifest 数据 64B 96.6% / 256B 97.3% / 1024B 98.8% / batch-1024B 99.1%，64B 因 pre-section drain 隔离 stdout backlog 测量污染后从 1.01 KB/s 提升至 11.13 KB/s；本 ADR 的 97.7%~99.0% 是 Q19B 256B/1024B/4096B 大包数据，作为当时结论仍然有效）
 - `uart_16550` 被本地化到 `crates/uart_16550`，以便 StarryOS 分支保存 async drain 修复；后续若回推上游，需要拆分为通用 drain 修复和 D1 backend 修复。
 
 **替代方案**:

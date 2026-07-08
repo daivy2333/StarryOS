@@ -1,8 +1,8 @@
 # StarryOS 异步串口学习地图
 
-> 范围：Q0~Q19C-M0 + Q17 SMP/内存序。
-> 日期：2026-07-07。
-> 关联：docs/async-uart-architecture.md、benchmark-report-async.md、licheerv-dock-bringup.md、lichee-q19b-benchmark-problems-solutions.md、`.claude/analysis/q19c-d1-tx-optimization.md`。
+> 范围：Q0~Q19C-M1 + Q17 SMP/内存序。
+> 日期：2026-07-08。
+> 关联：docs/async-uart-architecture.md、benchmark-report-async.md、licheerv-dock-bringup.md、Q19cM1.md、`.claude/analysis/q19c-d1-tx-optimization.md`、`.claude/analysis/q19c-m1-memory-root-path-loader.md`。
 
 ## 概览
 
@@ -92,6 +92,7 @@ QEMU 稳定产生 THRE 中断。D1 THRE 边沿可能丢失，靠 `update_ier(THR
 | Q19 | Lichee early smoke | Android boot image、D1 axplat、C906 PTE 修复 |
 | Q19B | D1 async UART benchmark | kbench/userbench、PLIC IRQ 18、embedded benchmark |
 | Q19C-M0 | benchmark evidence cleanup + TX copier slow-pool | manifest 统一、gated TX debug snapshot、slow-pool + yield 重试、P99 长尾根因未探明 |
+| Q19C-M1 | memory-root path loader proof | `FS_CONTEXT.resolve()/read()` + eager ELF mapping，真板 `benchmark exited with code: 0`；lazy file-backed COW SIGILL 记 O80/L277 |
 
 Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与 benchmark 路径。两者不能混为一个验收标准。
 
@@ -141,6 +142,8 @@ Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与
 | L265 | Q19C 64B 小包测量污染边界 |
 | L266 | Q19C TX drain/THRE 长尾排查经验 |
 | L275 | Q19C.8e slow-pool + yield 真板验证结果 |
+| L276 | Q19C-M1 memory-root path loader API 速查 |
+| L277 | Q19C-M1 lazy file-backed loader 踩坑（O80） |
 
 QEMU benchmark 仍用于相对优化和回归测试。D1 真板数据用于验证真实 115200 bps 线速。VisionFive2 后续需单独采集多核真板数据。
 

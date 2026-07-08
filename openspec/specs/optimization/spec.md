@@ -11,6 +11,7 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 > 2026-06-28 二次重排：基于 `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/]` 与 `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/]`，在真板验证前新增 Q18 平台参数解耦和 Q19 Lichee RV Dock early smoke test。原 VisionFive2 / DMA / 维护 / 远期池顺延。
 > 2026-06-29 更新：Q19 / O76 已在 Lichee RV Dock 真板完成，串口输出 `[starry-d1] smoke complete, halting.`。
 > 2026-06-29 更新：Q19B / O77 已在 Lichee RV Dock 真板完成 async UART userbench，大包 TX 达 97.7%~99.0% 115200bps 线速。
+> 2026-07-07 补充：Q19C-M0 在同版 `q19c-m0-20260703` manifest 下实测 64B 96.6% / 256B 97.3% / 1024B 98.8% / batch-1024B 99.1% 线速；64B 小包从 1.01 KB/s 提升至 11.13 KB/s，根因为 pre-section drain 隔离 stdout backlog 测量污染。Q19B 旧数据 97.7%~99.0% 仅在 256B+ 包大小上仍近似成立，但 64B 与 1024B 现以 Q19C-M0 数据为准。
 > 2026-07-03 更新：Q17 / O63 已完成 QEMU 修复与回归验证；多 hart / 真板 SMP stress 尚未执行，不能声明跨 hart 内存序已被实测证明。
 > 2026-07-04 更新：Q19C review 后范围收敛为 benchmark evidence cleanup + memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆为 Q19D 后续方向。
 > 2026-07-08 更新：Q19C-M1 memory-root `/bin/benchmark` 已通过 VFS resolve/read + eager ELF mapping 在 D1 真板完整运行；`load_user_app()` lazy file-backed COW 路径的 SIGILL 另列 O80，不阻塞异步 UART/fullbench 验收。
@@ -118,7 +119,7 @@ QEMU 模拟单 hart（当前 `.axconfig.toml` `max-cpu-num = 1`），`Relaxed` �
 - ✅ QEMU `ArceOsUartPort::update_ier()` 已将 `ier_cache` RMW 与 `set_ier()` 放入同一个 `SpinNoIrq` 临界区。
 - ✅ D1 `ArceOsD1UartPort::update_ier()` 已将 cache RMW 与 MMIO IER 写入放入 IRQ-off 临界区，软件 wake 放在 IRQ 恢复后执行。
 - ✅ `tx_copier_active` 已升级为 Release store / Acquire load；`tx_staged_bytes` 已升级为 AcqRel RMW / Acquire load。
-- ✅ QEMU rootfs benchmark 已通过：64B TX 159.25 KB/s，1B latency avg 0.177ms，FIFO boundary matrix 无 10ms 台阶，FIONBIO 双入口 PASS。
+- ✅ QEMU rootfs benchmark 已通过：64B TX 153.86 KB/s，1B latency avg 0.182 ms，FIFO boundary matrix 在 QEMU 上无 10ms 台阶，FIONBIO 双入口 PASS。**注**：D1 真板 P99 长尾在 size≥15 时稳定 14-18ms，根因未探明（slow-pool/yield 均未改善，`slow_poll_exh=0` 证明非 ISR 丢失），Q20 复验时再探明。Q19C-M0 同版 `q19c-m0-20260703` 数据见 `docs/benchmark-report-async.md`（2026-07-07 截稿）。
 - ⚠️ 当前验证仍是 QEMU 单 hart功能/性能回归，尚未覆盖 VisionFive2 或等价多 hart stress。后续 Q20 必须复验并发 UART read/write、flush/tcdrain 与 IER enable/disable，才能关闭 O63 的跨 hart 实测风险。
 
 #### Scenario: 真板多核下出现数据丢失或 hang
