@@ -89,6 +89,11 @@ lichee-d1-userbench = [
     "axfeat/paging",
     "starry-kernel/lichee-d1-userbench",
 ]
+lichee-d1-fullbench = [
+    "lichee-d1-async-uart",
+    "axfeat/paging",
+    "starry-kernel/lichee-d1-fullbench",
+]
 smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]

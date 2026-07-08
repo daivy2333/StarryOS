@@ -253,7 +253,7 @@ Reason:
 - `git diff -- tests/benchmark.c kernel/resources/benchmark.elf` before Phase 3, proving no implementation changed during planning
 - `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1`
 - `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench`
-- fullbench feature cargo check for each implemented mode
+- fullbench feature cargo check for each implemented mode using the generated D1 platform config, e.g. `AX_CONFIG_PATH=$PWD/.axconfig.toml cargo check --target riscv64gc-unknown-none-elf --features "axfeat/myplat axfeat/bus-mmio lichee-d1-fullbench"` after `make lichee-fullbench-mem` or equivalent D1 `defconfig`
 - QEMU cargo check remains valid with `--features qemu`
 - Android boot image inspect records `kernel_size`, `kernel_addr`, `name`, and `DWARF=n`
 

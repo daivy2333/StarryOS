@@ -4,17 +4,18 @@ use alloc::{
     vec,
 };
 
-// ── D1 userbench imports (full set for user processes) ───────────────
-#[cfg(feature = "lichee-d1-userbench")]
+// ── D1 user/fullbench imports (full set for user processes) ──────────
+#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench"))]
 use {
     crate::{
         drivers::ASYNC_TTY,
-        file::{self, FD_TABLE},
-        mm::{copy_from_kernel, load_embedded_user_app, new_user_aspace_empty},
+        file::FD_TABLE,
+        mm::{copy_from_kernel, new_user_aspace_empty},
         pseudofs,
         task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
     },
     axfs::FS_CONTEXT,
+    axfs_ng_vfs::NodePermission,
     axhal::uspace::UserContext,
     axsync::Mutex,
     axtask::{AxTaskExt, spawn_task},
@@ -40,6 +41,10 @@ use {
 // ── D1 benchmark imports (kbench and userbench) ──────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::{bench, uart_init};
+#[cfg(feature = "lichee-d1-userbench")]
+use crate::mm::load_embedded_user_app;
+#[cfg(feature = "lichee-d1-fullbench")]
+use crate::mm::load_user_app;
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
@@ -148,9 +153,11 @@ pub fn init(args: &[String], envs: &[String]) {
 fn lichee_d1_init(args: &[String], envs: &[String]) {
     let _ = (args, envs);
 
-    #[cfg(feature = "lichee-d1-userbench")]
+    #[cfg(feature = "lichee-d1-fullbench")]
+    ax_println!("[starry-d1] Lichee D1 fullbench memory-root path mode");
+    #[cfg(all(feature = "lichee-d1-userbench", not(feature = "lichee-d1-fullbench")))]
     ax_println!("[starry-d1] Lichee D1 userbench mode");
-    #[cfg(not(feature = "lichee-d1-userbench"))]
+    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench")))]
     ax_println!("[starry-d1] Lichee D1 kbench mode");
 
     // Phase 4: Initialize async UART hardware (D1 32-bit MMIO path)
@@ -161,7 +168,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     bench::run_startup_benchmark();
 
     // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
-    #[cfg(feature = "lichee-d1-userbench")]
+    #[cfg(all(feature = "lichee-d1-userbench", not(feature = "lichee-d1-fullbench")))]
     {
         ax_println!("[starry-d1] Initializing memory rootfs...");
         pseudofs::init_memory_root();
@@ -229,8 +236,117 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         }
     }
 
+    // ── Q19C-M1: memory-root path loader fullbench ───────────────────
+    #[cfg(feature = "lichee-d1-fullbench")]
+    {
+        const BENCH_PATH: &str = "/bin/benchmark";
+
+        ax_println!("[starry-d1] log_label=lichee-memory-root-path");
+        ax_println!("[starry-d1] target_mode=lichee-d1-fullbench");
+        ax_println!(
+            "[starry-d1] startup_chain=android-boot-image -> memory-root /bin/benchmark -> \
+             load_user_app"
+        );
+        ax_println!("[starry-d1] root_provider=d1-memory-root-path");
+        ax_println!("[starry-d1] Initializing populated memory rootfs...");
+        pseudofs::init_memory_root();
+
+        {
+            let fs = FS_CONTEXT.lock();
+            if fs.resolve("/bin").is_err() {
+                fs.create_dir("/bin", NodePermission::from_bits_truncate(0o755))
+                    .expect("Failed to create /bin in memory root");
+            }
+            fs.write(BENCH_PATH, include_bytes!("../resources/benchmark.elf"))
+                .expect("Failed to populate /bin/benchmark");
+            match fs.resolve(BENCH_PATH) {
+                Ok(_) => ax_println!(
+                    "[starry-d1] root_provider=d1-memory-root-path requested_path={} resolved=true",
+                    BENCH_PATH
+                ),
+                Err(err) => panic!(
+                    "[starry-d1] path-loader resolve failed: requested_path={} error={:?}",
+                    BENCH_PATH, err
+                ),
+            }
+        }
+
+        pseudofs::mount_all().expect("Failed to mount pseudofs");
+        spawn_alarm_task();
+
+        let bench_args = vec![String::from(BENCH_PATH)];
+        let envs = vec![];
+        let loc = match FS_CONTEXT.lock().resolve(BENCH_PATH) {
+            Ok(loc) => loc,
+            Err(err) => panic!(
+                "[starry-d1] path-loader resolve failed after mount_all: requested_path={} \
+                 error={:?}",
+                BENCH_PATH, err
+            ),
+        };
+        let path = loc
+            .absolute_path()
+            .expect("Failed to get executable absolute path");
+        let name = loc.name();
+
+        ax_println!("[starry-d1] Loading /bin/benchmark via path loader...");
+
+        let mut uspace = new_user_aspace_empty()
+            .and_then(|mut it| {
+                copy_from_kernel(&mut it)?;
+                Ok(it)
+            })
+            .expect("Failed to create user address space");
+
+        let (entry_vaddr, ustack_top) =
+            load_user_app(&mut uspace, Some(BENCH_PATH), &bench_args, &envs)
+                .expect("Failed to load /bin/benchmark");
+
+        let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
+        let mut task = new_user_task(name, uctx, 0);
+        task.ctx_mut().set_page_table_root(uspace.page_table_root());
+
+        let pid = task.id().as_u64() as Pid;
+        let proc = Process::new_init(pid);
+        proc.add_thread(pid);
+        ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
+
+        let proc = ProcessData::new(
+            proc,
+            path.to_string(),
+            Arc::new(bench_args),
+            Arc::new(Mutex::new(uspace)),
+            Arc::default(),
+            None,
+        );
+
+        {
+            let mut scope = proc.scope.write();
+            crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
+                .expect("Failed to add stdio");
+        }
+
+        let thr = Thread::new(pid, proc);
+        *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
+
+        let task = spawn_task(task);
+        add_task_to_table(&task);
+
+        ax_println!(
+            "[starry-d1] stage=loaded-process-before-first-section requested_path={} spawned=true",
+            BENCH_PATH
+        );
+        ax_println!("[starry-d1] benchmark process spawned from /bin/benchmark, waiting...");
+        let exit_code = task.join();
+        ax_println!("[starry-d1] benchmark exited with code: {:?}", exit_code);
+        ax_println!("[starry-d1] halting.");
+        loop {
+            riscv::asm::wfi();
+        }
+    }
+
     // ── kbench mode: halt after kernel benchmark ─────────────────────
-    #[cfg(not(feature = "lichee-d1-userbench"))]
+    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench")))]
     {
         ax_println!("[starry-d1] kernel benchmark complete, halting.");
         loop {

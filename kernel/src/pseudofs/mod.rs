@@ -49,7 +49,7 @@ impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
 const DIR_PERMISSION: NodePermission = NodePermission::from_bits_truncate(0o755);
 
 /// Initialize a memory-backed root filesystem for platforms without a block rootfs.
-#[cfg(feature = "lichee-d1-userbench")]
+#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench"))]
 pub fn init_memory_root() {
     let fs = MemoryFs::new();
     let mp = Mountpoint::new_root(&fs);
