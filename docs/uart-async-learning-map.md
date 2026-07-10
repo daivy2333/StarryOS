@@ -98,7 +98,7 @@ Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与
 
 ## 学习进度
 
-截至 2026-07-04，13 站中已完成 5 站。按 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 顺序推进。
+截至 2026-07-04，14 站中已完成 8 站。按 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 顺序推进。
 
 | 站 | 主题 | 状态 |
 |---|---|---|
@@ -107,9 +107,9 @@ Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与
 | 3 | ISR 4 步流程 + 3 个 AtomicWaker | ✅ |
 | 4 | RX copier + NAPI 状态机 | ✅ (2026-07-04，含两级 waker + spawn 任务答疑) |
 | 5 | TX copier + fast retry + TEMT | ✅ (2026-07-04，含四阶段 drain + register-then-recheck) |
-| 6 | `ProcessMode::External` 桥接 | ⬜ |
-| 7 | OS 抽象具体实现 | ⬜ |
-| 8 | VFS 接口 + flush 实现 | ⬜ |
+| 6 | `ProcessMode::External` 桥接 | ✅ (2026-07-04，含 PTY master/slave 选型 + AsyncUart 真实用法) |
+| 7 | OS 抽象具体实现 | ✅ (2026-07-04，5→2 trait 简化 + ArceOS 适配) |
+| 8 | VFS 接口 + flush 实现 | ✅ (2026-07-04，5 层 flush + TCSBRK 双份反模式) |
 | 9 | Q18 platform descriptor / early console | ⬜ |
 | 10 | Q19 Lichee Android boot image smoke | ⬜ |
 | 11 | Q19B D1 `UartPort` + PLIC IRQ 18 | ⬜ |
@@ -117,7 +117,7 @@ Q19 完成 boot/early mapping/early console/halt。Q19B 才证明 async UART 与
 | 13 | Q17 跨 hart 内存序 | ⬜ |
 | 14 | Q19C-M0 slow-pool + yield + gated TX debug | ⬜ |
 
-下一轮按顺序：6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14。
+下一轮按顺序：9 → 10 → 11 → 12 → 13 → 14。
 
 ## ADR 与经验索引
 
