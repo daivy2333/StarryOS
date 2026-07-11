@@ -40,7 +40,9 @@ use {
 
 // ── D1 benchmark imports (kbench and userbench) ──────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
-use crate::drivers::{bench, uart_init};
+use crate::drivers::uart_init;
+#[cfg(all(feature = "lichee-d1-async-uart", not(feature = "lichee-d1-rootfs-probe")))]
+use crate::drivers::bench;
 #[cfg(feature = "lichee-d1-userbench")]
 use crate::mm::load_embedded_user_app;
 #[cfg(all(not(feature = "lichee-d1-rootfs-probe"), any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
@@ -169,6 +171,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     ax_println!("[kernel] Async UART driver initialized (D1)");
 
     // Phase 4: Run kernel ring buffer benchmark
+    #[cfg(not(feature = "lichee-d1-rootfs-probe"))]
     bench::run_startup_benchmark();
 
     // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
