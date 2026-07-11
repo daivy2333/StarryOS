@@ -17,6 +17,8 @@ lichee-d1-async-uart = ["uart_16550/telemetry"]
 lichee-d1-kbench = ["lichee-d1-async-uart"]
 lichee-d1-userbench = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
 lichee-d1-fullbench = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
+lichee-d1-fullbench-command = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
+lichee-d1-rootfs-probe = ["lichee-d1-async-uart"]
 memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
 qemu = [
     "dep:axdisplay",

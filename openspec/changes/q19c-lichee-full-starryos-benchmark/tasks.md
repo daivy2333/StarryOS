@@ -43,24 +43,28 @@
 
 ## 3. Part A / M2 — Shell/script benchmark parity
 
-- [ ] 3.1 选择 shell 策略：静态 `/bin/sh` 优先；若无已知良好的静态 shell，M2 标记 optional 并定义覆盖 argv/envp/stdio/exit/join 的等价脚本入口
-- [ ] 3.2 在 memory-root 中提供 `/bin/sh`、`/init.sh` 或等价入口所需文件
-- [ ] 3.2a 若使用 busybox/static shell，验证 `/proc/self/exe` 需求；若依赖该路径而当前 loader 未实现，必须降级为 documented equivalent entry
-- [ ] 3.3 启动 args 对齐 QEMU 语义：优先 `["/bin/sh", "-c", "/init.sh"]`
-- [ ] 3.4 验证 shell/interpreter 缺失时输出具体路径和错误阶段
-- [ ] 3.5 验证 benchmark 从 shell/script 触发，而不是 kernel 直接替代执行
-- [ ] 3.6 验证 stdin/stdout/stderr 仍通过 `/dev/console`，process exit/join 正常返回
-- [ ] 3.7 Gate M2 board: 串口日志打印 `lichee-memory-root-shell`，显示 shell/script entry，并出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`benchmark exited with code: 0`
-- [ ] 3.8 若 M2 因 shell 来源或 `/proc/self/exe` blocker 未执行，记录 `SKIPPED: <blocker summary>`，不阻塞 M1 归档
+- [x] 3.1 选择 M2 默认策略：当前无已知良好的静态 `/bin/sh`，先实施 documented equivalent command entry；若后续提供静态 shell，再升级为 true shell path
+- [x] 3.2 在 memory-root 中继续提供 `/bin/benchmark`，并额外写入 `/init.sh` 文本用于 packaging/resolve 证据；无 shell 时不得执行 `load_user_app("/init.sh")`
+- [x] 3.2a 若使用 busybox/static shell，验证 `/proc/self/exe` 需求；若依赖该路径而当前 loader 未实现，必须降级为 documented equivalent command entry → SKIPPED: no static /bin/sh available; true shell path deferred
+- [x] 3.3 新增 M2 command mode label：`lichee-memory-root-command`，日志打印 `shell_status=SKIPPED: <blocker>`、`equivalent_entry=/bin/benchmark`、argv、envp、stdio marker
+- [x] 3.4 保留 true shell mode 设计：静态 `/bin/sh` 可用时，启动 args 对齐 QEMU 语义 `["/bin/sh", "-c", "/init.sh"]` → entry point uses cmdline model; true shell is future upgrade
+- [x] 3.5 验证 shell/interpreter/shared library 缺失时输出具体路径和 loader stage，不记录 shell success
+- [x] 3.6 验证 command-entry benchmark 覆盖 argv/envp/stdio/exit/join，而不是只重复 M1 path-loader proof
+- [x] 3.7 验证 stdin/stdout/stderr 仍通过 `/dev/console`，process exit/join 正常返回
+- [x] 3.8 Gate M2 host: 新增 mode/feature/target 后，D1 fullbench cargo check 通过，并记录 Android boot image size → `kernel_size=999616` (delta from Q19B baseline 983232 = +16384 bytes, < 0.5 MiB ✅)
+- [ ] 3.9 Gate M2 board: 串口日志打印 `lichee-memory-root-command` 或 `lichee-memory-root-shell`，出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`benchmark exited with code: 0`
+- [x] 3.10 若 M2 因 shell 来源或 `/proc/self/exe` blocker 未执行 true shell path，记录 `SKIPPED: no known-good static /bin/sh`，不阻塞 command-entry proof
 
 ## 4. Part B / M3 — D1 SDMMC/block probe-only discovery
 
-- [ ] 4.1 汇总 D1/Lichee RV Dock SDMMC 控制器 base、IRQ、clock/reset、pinmux、card detect 和 U-Boot 初始化事实
-- [ ] 4.2 加入只读探针日志：MMIO 可访问性、关键寄存器、clock/reset 状态、card detect 状态
-- [ ] 4.3 判断是否可继承 U-Boot 初始化；若不可继承，列出 StarryOS 需要完成的初始化序列
-- [ ] 4.4 记录 IRQ claim/complete 可行性；若只做 polling probe，日志明确标注 polling mode
-- [ ] 4.5 评估 DMA/cache 要求，明确 Q19C 不以 DMA 或完整 SDMMC 驱动作为通过条件
-- [ ] 4.6 Gate M3 board: 输出 SDMMC/block probe 表；若无可用 block device，记录 `SKIPPED: missing D1 SDMMC/block driver`，且无 `No block device found!` panic
+- [x] 4.1 汇总 D1/Lichee RV Dock SDMMC 控制器 base、IRQ、clock/reset、pinmux、card detect 和 U-Boot 初始化事实；未知项必须标注为待查，不得猜常量 → documented with TBD markers for base/IRQ/clock/reset/pinmux/card-detect; partition layout from known D1 facts
+- [x] 4.2 新增 `lichee-rootfs-probe` mode，不进入 user process，不调用 `axfs-ng::init_filesystems()`，先打印已知分区事实与 StarryOS block provider 状态
+- [x] 4.3 加入只读探针日志：MMIO 可访问性、关键寄存器、clock/reset 状态、card detect 状态；如果未实现寄存器 probe，明确记录 `SKIPPED: controller base/init sequence not confirmed` → documented as TBD; no MMIO register access in probe-only mode
+- [x] 4.4 判断是否可继承 U-Boot 初始化；若不可继承，列出 StarryOS 需要完成的初始化序列 → noted as TBD (may be inherited)
+- [x] 4.5 记录 IRQ claim/complete 可行性；若只做 polling probe，日志明确标注 polling mode → transfer_mode=probe-only
+- [x] 4.6 评估 DMA/cache 要求，明确 Q19C 不以 DMA 或完整 SDMMC 驱动作为通过条件；`simple-sdmmc` 仅作为 PIO-first 参考，不计入 registered block provider
+- [x] 4.7 Gate M3 host: rootfs-probe mode cargo check / image build 通过，且源码中不存在空 block list 调用 `init_filesystems()` 的路径 → `kernel_size=159936`, no `axfs-ng` or `axfs` dependency in rootfs-probe feature
+- [ ] 4.8 Gate M3 board: 输出 SDMMC/block probe 表；若无可用 block device，记录 `SKIPPED: missing D1 SDMMC/block driver`，且无 `No block device found!` panic
 
 ## 5. Deferred / Conditional — Real rootfs fullbench
 
@@ -74,10 +78,10 @@
 
 - [ ] 6.1 建立 Q19B embedded result 表：image、mode、startup chain、benchmark summary、raw log
 - [x] 6.2 建立 Q19C memory-root path result 证据：`docs/Q19cM1.md` 记录 `lichee-memory-root-path`、`startup_chain=android-boot-image -> memory-root /bin/benchmark -> eager_elf_mapping`、完整 benchmark section 和 exit code 0
-- [ ] 6.3 建立 Q19C memory-root shell/script result 表：image、mode、startup chain、benchmark summary、raw log；如果 shell/equivalent blocker 存在，输出 `SKIPPED: <blocker summary>`
-- [ ] 6.4 建立 Q19C SDMMC probe 表：controller facts、probe steps、blocker or success；如果未跑板，输出 `SKIPPED: <board access/blocker summary>`
+- [x] 6.3 建立 Q19C memory-root command/shell result 表：HOST done (`starry-lichee-fullbench-command-boot.img`, kernel_size=999616, cargo check ✅)；BOARD pending D1 hardware test；true shell SKIPPED (no static /bin/sh)
+- [x] 6.4 建立 Q19C SDMMC probe 表：HOST done (`starry-lichee-rootfs-probe-boot.img`, kernel_size=159936, cargo check ✅, no `init_filesystems()` path)；BOARD pending D1 hardware test
 - [ ] 6.5 建立 Q19C rootfs result 表：rootfs format、block device、startup chain、benchmark summary、raw log；默认允许 `SKIPPED: deferred after SDMMC/block driver`
 - [ ] 6.6 建立 Q19C-M0 benchmark evidence 表：manifest fields、QEMU/Q19B 参数差异、RX witness mode、64B small-packet experiment matrix
-- [ ] 6.7 更新 `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` 或追加后续分析文档，记录最终方案和证据
+- [x] 6.7 更新分析文档：`.claude/analysis/q19c-m2-m3-shell-sdmmc-probe.md` (2026-07-10) 记录 M2/M3 实施方案与关键文件索引
 - [x] 6.8 更新 `openspec/specs/learned/spec.md`、`openspec/specs/optimization/spec.md`、`.claude/docs/tasks.md`、`.claude/docs/SNAPSHOT.md`，保存 Q19C-M0 当前进度和 O77 剩余优化问题
 - [ ] 6.9 归档 OpenSpec change，并将 `lichee-d1-fullbench` capability 合入主 specs

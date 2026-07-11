@@ -8,7 +8,7 @@ Q19C MUST provide explicit Lichee fullbench runtime modes that are distinguishab
 
 - **WHEN** any Q19C fullbench image boots
 - **THEN** the serial log MUST print the active startup chain label before user application launch
-- **AND** the label MUST be one of `lichee-memory-root-path`, `lichee-memory-root-shell`, `lichee-rootfs-probe`, or `lichee-rootfs-path`.
+- **AND** the label MUST be one of `lichee-memory-root-path`, `lichee-memory-root-command`, `lichee-rootfs-probe`, or `lichee-rootfs-path`.
 
 #### Scenario: No silent fallback to embedded loader
 
@@ -62,21 +62,23 @@ Lichee fullbench MUST provide a memory-root path mode in which `/bin/benchmark` 
 - **THEN** `pseudofs::mount_all()` MUST still provide `/dev`, `/dev/shm`, `/tmp`, `/proc`, and `/sys`
 - **AND** `/dev/console` MUST be available for stdin, stdout, and stderr.
 
-### Requirement: Shell or script benchmark parity
+### Requirement: Command-entry benchmark parity
 
-Q19C MUST provide a shell/script-triggered benchmark path after memory-root path loading works, so the Lichee workflow exercises the same user-entry class as QEMU.
+Q19C M2 MUST accept `lichee-memory-root-command` as the required Lichee memory-root command-entry proof. A true shell path MAY be implemented later only when a known-good static `/bin/sh` and its dependencies are available; Q19C MUST NOT require implementing or importing a shell.
 
-#### Scenario: Shell starts benchmark
+#### Scenario: Command-entry is the accepted M2 path
 
-- **WHEN** `lichee-memory-root-shell` mode is selected and `/bin/sh` is available
-- **THEN** the init process SHOULD use arguments equivalent to `["/bin/sh", "-c", "/init.sh"]`
-- **AND** the benchmark MUST be launched by the shell/script path rather than by kernel direct dispatch.
+- **WHEN** Q19C M2 runs without a known-good static `/bin/sh`
+- **THEN** the serial log MUST label the mode as `lichee-memory-root-command`
+- **AND** it MUST record `shell_status=SKIPPED` with a concrete blocker summary
+- **AND** it MUST launch the documented equivalent entry for `/bin/benchmark`
+- **AND** it MUST verify stdio, process exit, and join behavior before M2 is accepted.
 
-#### Scenario: Equivalent script entry is used
+#### Scenario: Command-entry is not shell success
 
-- **WHEN** a static shell is unavailable
-- **THEN** Q19C MUST provide a documented equivalent command entry
-- **AND** that entry MUST verify argv/envp, stdio, process exit, and join behavior on board.
+- **WHEN** Q19C M2 uses the documented equivalent command entry
+- **THEN** the evidence MUST NOT record `lichee-memory-root-shell` success
+- **AND** it MUST NOT claim `/bin/sh -c /init.sh` ran unless that exact path was executed.
 
 #### Scenario: Shell dependency missing
 
@@ -94,6 +96,7 @@ Q19C rootfs path mode MUST only call `axfs-ng::init_filesystems()` after a real 
 - **THEN** the system MUST avoid the `No block device found!` panic path
 - **AND** it MUST report that rootfs benchmark is blocked by missing block device support
 - **AND** it MUST include SDMMC/block probe summary in the serial log or captured evidence.
+- **AND** it MUST NOT call `axfs-ng::init_filesystems()` until a registered Lichee block device exists.
 
 #### Scenario: Rootfs proof is skipped after probe
 
@@ -110,19 +113,20 @@ Q19C rootfs path mode MUST only call `axfs-ng::init_filesystems()` after a real 
 
 ### Requirement: SDMMC exploration records hardware facts
 
-Q19C Part B MUST record enough D1 SDMMC/block facts to distinguish hardware bring-up blockers from StarryOS filesystem or loader bugs. It MUST NOT require a full D1 SDMMC driver implementation inside Q19C.
+Q19C Part B MUST record enough D1 SDMMC/block facts to distinguish hardware bring-up blockers from StarryOS filesystem or loader bugs. It MUST NOT require a full D1 SDMMC driver implementation inside Q19C. When register-level or PIO block-read probe is not yet implemented, the evidence MUST record `SKIPPED` or `TBD` for those items; it MUST NOT silently claim MMIO accessibility or first block read success.
 
-#### Scenario: SDMMC probe runs
+#### Scenario: SDMMC probe runs with register access
 
-- **WHEN** SDMMC/block exploration is executed on Lichee RV Dock
-- **THEN** the evidence MUST include controller MMIO accessibility, clock/reset state, card detect or equivalent status, transfer mode, and first block read result
+- **WHEN** SDMMC/block exploration is executed on Lichee RV Dock AND register-level probe is implemented
+- **THEN** the evidence SHOULD include controller MMIO accessibility, clock/reset state, card detect or equivalent status, transfer mode, and first block read result
 - **AND** if IRQ is used, the evidence MUST include IRQ claim/complete behavior.
 
-#### Scenario: PIO-first path is used
+#### Scenario: SDMMC probe is skipped or TBD
 
-- **WHEN** DMA/cache behavior is not yet proven
-- **THEN** Q19C MAY use a PIO-first probe path if implementation effort is acceptable
-- **AND** the serial log MUST identify that DMA is not part of the current rootfs proof.
+- **WHEN** register-level or PIO block-read probe is not yet implemented
+- **THEN** the evidence MUST record `SKIPPED` or `TBD` for controller base, MMIO accessibility, clock/reset, pinmux, card detect, and first block read
+- **AND** it MUST NOT fabricate MMIO register values or block read data
+- **AND** the blocker summary MUST identify whether each item is blocked by missing controller documentation, missing driver code, or missing board access.
 
 ### Requirement: Rootfs image content is specified
 

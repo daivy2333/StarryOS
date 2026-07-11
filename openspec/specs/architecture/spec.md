@@ -1173,4 +1173,41 @@ Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` 
 - **AND** it MUST prove `FS_CONTEXT.resolve("/bin/benchmark")` succeeds before spawning the process
 - **AND** it MUST start the process from those VFS-read ELF bytes, not `load_embedded_user_app()`
 
+<!-- A055 -->
+### Requirement: ADR-055: Q19C-M2/M3 分离 command-entry proof 与 SDMMC probe-only
+
+Q19C-M2/M3 MUST keep memory-root command-entry proof separate from SDMMC/rootfs probe work. Shell absence or block-device absence MUST be recorded as explicit evidence, not hidden behind kernel-launched benchmark success or rootfs panic.
+
+**日期**: 2026-07-10
+**状态**: 🔍 探究结论
+**决策**:
+- M2 在没有已知静态 `/bin/sh` 时，允许 documented equivalent command entry，但必须独立标注 label、argv/envp、stdio、spawn/join 与 exit code。
+- M2 不得把 kernel-launched `/bin/benchmark` 伪称为 shell success；缺 `/bin/sh`、`/init.sh`、解释器或库时必须输出缺失路径和阶段。
+- M3 只做 `lichee-rootfs-probe` 证据；没有 D1 `AxBlockDevice` 前不得调用 `axfs-ng::init_filesystems()`。
+- `simple-sdmmc` 只能作为 PIO-first 探针参考，不能被当作已接入 StarryOS block/rootfs 的现成驱动。
+
+**原因**:
+- 当前 `load_user_app()` 对 `.sh` 会转向 `/bin/sh`，且 busybox 仍有 `/proc/self/exe` FIXME；强行做 shell proof 会把 shell packaging 问题混入 M2。
+- 当前 D1 平台没有 SDMMC block provider，`init_filesystems()` 对空 block list 会触发 `No block device found!`。
+- M2 验证的是命令入口与进程/stdio 语义；M3 验证的是硬件/block provider readiness。两者失败原因不同。
+
+**影响**:
+- Q19C 可以同时推进 M2/M3，但验收表必须分栏：memory-root command evidence、shell SKIPPED evidence、SDMMC probe evidence、rootfs SKIPPED evidence。
+- Q19D 可承接 M3 probe 结果创建真实 D1 SDMMC/block/rootfs implementation change。
+
+**替代方案**:
+- ❌ 等待完整 shell 再做 M2：会阻塞已经可验证的 argv/envp/stdio/exit/join 证据。
+- ❌ 在 M3 直接启用 rootfs：当前会落入空 block list panic。
+- ✅ M2 先做 documented equivalent command entry，M3 先做 probe-only：当前推荐路线。
+
+#### Scenario: M2/M3 missing dependency
+
+- **WHEN** Q19C-M2 lacks a known-good static shell
+- **THEN** it MUST record shell/script proof as `SKIPPED` or equivalent-command proof, with argv/envp/stdio/exit evidence
+- **AND** it MUST NOT claim shell-launched benchmark success
+
+- **WHEN** Q19C-M3 lacks a registered D1 block device
+- **THEN** it MUST record `SKIPPED: missing D1 SDMMC/block driver`
+- **AND** it MUST NOT call `axfs-ng::init_filesystems()` with an empty block list
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

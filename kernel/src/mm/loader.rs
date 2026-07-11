@@ -345,7 +345,7 @@ pub fn load_user_app(
     Ok((entry, user_sp))
 }
 
-#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench"))]
+#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
 fn load_user_app_from_elf_data(
     uspace: &mut AddrSpace,
     elf_data: &[u8],
@@ -460,7 +460,7 @@ pub fn load_embedded_user_app(
 /// Q19C-M1 still proves path resolution and VFS reads through `/bin/benchmark`,
 /// but avoids the current tmpfs + file-backed lazy COW path while that path is
 /// tracked separately on D1.
-#[cfg(feature = "lichee-d1-fullbench")]
+#[cfg(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
 pub fn load_user_app_eager_from_path(
     uspace: &mut AddrSpace,
     path: &str,

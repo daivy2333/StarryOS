@@ -40,7 +40,7 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 **Goals:**
 
 - Lichee 能通过 VFS path 解析运行 `/bin/benchmark`。
-- Lichee 能通过 `/bin/sh -c /init.sh` 或等价脚本入口运行 benchmark。
+- Lichee 能通过 documented equivalent command entry 运行 `/bin/benchmark`（M2 必达目标为 `lichee-memory-root-command`）。true shell path（`/bin/sh -c /init.sh`）仅作为 future optional。
 - Q19B embedded benchmark 继续作为 regression baseline。
 - Q19C-M0 先让 benchmark 输出包含参数 manifest，并规划真板 RX witness 与 64B 小包优化实验。
 - 真板 SDMMC/rootfs 探针有明确采集项、失败输出和后续接入标准；完整 D1 SDMMC 驱动/rootfs benchmark 不作为 Q19C 必达项。
@@ -64,8 +64,8 @@ Q19C 要把 D1 路径从 embedded payload first 推进到 shell/script capable�
 | kbench | `lichee-d1-kbench` | `lichee-kbench` | none | kernel benchmark | none | async UART kernel benchmark |
 | embedded | `lichee-d1-userbench` | `lichee-embedded-userbench` | memory root for devfs only | embedded benchmark bytes | `load_embedded_user_app()` | Q19B regression |
 | M1 | `lichee-d1-fullbench` | `lichee-memory-root-path` | populated memory root | `/bin/benchmark` | `FS_CONTEXT.resolve()/read()` + eager ELF segment mapping | path-visible benchmark proof |
-| M2 | `lichee-d1-fullbench` + mode `shell` or `lichee-d1-fullbench-shell` | `lichee-memory-root-shell` | populated memory root | `/bin/sh -c /init.sh` or equivalent | `load_user_app()` | shell/script proof |
-| M3 probe | `lichee-d1-fullbench` + mode `rootfs-probe` or equivalent | `lichee-rootfs-probe` | SDMMC/block probe only | none unless block exists | none or `load_user_app()` only after block exists | rootfs readiness evidence |
+| M2-command | `lichee-d1-fullbench-command` | `lichee-memory-root-command` | populated memory root | documented equivalent command entry for `/bin/benchmark` | eager path loader | argv/envp/stdio/exit/join proof（true shell deferred as future optional） |
+| M3 probe | `lichee-d1-rootfs-probe` | `lichee-rootfs-probe` | SDMMC/block probe only | none | none | rootfs readiness blocker evidence |
 | future rootfs | future milestone | `lichee-rootfs-path` | SDMMC/block rootfs | rootfs `/bin/sh` / `/bin/benchmark` | `load_user_app()` | full board parity |
 
 Implementation for M1 SHOULD use one explicit `lichee-d1-fullbench` feature and one `lichee-fullbench-mem` Makefile target. Do not introduce a compile-time mode selector until M2/M3 needs it; the M1 observable contract is fixed: the image logs `lichee-memory-root-path` and does not silently fall back to embedded bytes.
@@ -102,7 +102,7 @@ rx_mode=<no-input-eagain|manual-fixed-payload|loopback-fixed-payload>
 
 M0 RX work is an evidence plan, not a claim that TX proves RX performance. The minimum board witness remains no-input `EAGAIN`; the next useful witness is a fixed-payload read mode using manual serial injection or loopback if available.
 
-M0 also keeps the 64B D1 result visible: `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`. Small-packet optimization experiments should be reported separately from the baseline:
+M0 also keeps the 64B D1 result visible: `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`. Small-packet optimization experiments MUST be reported separately from the baseline:
 
 | Experiment | Purpose | Must label |
 |------------|---------|------------|
@@ -217,6 +217,7 @@ Required labels:
 - `lichee-embedded-userbench`
 - `lichee-memory-root-path`
 - `lichee-memory-root-shell`
+- `lichee-memory-root-command`
 - `lichee-rootfs-probe`
 - `lichee-rootfs-path`
 
@@ -227,13 +228,33 @@ Reason:
 
 ### D6: M0 benchmark evidence is a pre-implementation gate
 
-Before changing Q19C loader/rootfs code, M0 should establish the benchmark output contract and current-state witness commands.
+Before changing Q19C loader/rootfs code, M0 MUST establish the benchmark output contract and current-state witness commands.
 
 Reason:
 
 - `benchmark.c` is the payload used by both QEMU-style and Lichee-style runs, so hidden parameter drift makes performance comparisons misleading.
 - The current C payload already prints `size` and `iters` for TX throughput, but it does not print enough context to compare QEMU and board runs after Q19C adds new startup chains.
 - RX currently has correctness evidence (`EAGAIN`) but not fixed-payload board measurement, so RX performance claims must wait for a dedicated witness.
+
+### D7: No-shell M2 uses documented command-entry proof
+
+When no known-good static `/bin/sh` is available, M2 uses a documented equivalent command entry instead of blocking on shell packaging.
+
+Reason:
+
+- The current repository has no ready static shell payload for D1 memory-root.
+- `load_user_app()` redirects `.sh` paths to `/bin/sh`, and the loader source still records a `/proc/self/exe` FIXME for busybox-style retry behavior.
+- Q19C still needs a board witness for argv/envp, `/dev/console` stdio, process spawn/join, and exit code after M1.
+- The evidence must not claim shell-launched benchmark success unless `/bin/sh -c /init.sh` actually runs.
+
+Required evidence for the command-entry path:
+
+- `log_label=lichee-memory-root-command`
+- `shell_status=SKIPPED: no known-good static /bin/sh` or a more specific blocker
+- `equivalent_entry=/bin/benchmark`
+- argv and envp summary
+- stdio marker for `/dev/console`
+- benchmark sections and exit code
 
 ## Requirements Traceability Matrix
 
@@ -242,7 +263,7 @@ Reason:
 | R0 Benchmark evidence cleanup | 1.1-1.14, 6.1-6.7 | 100% | RX fixed-payload may start as manual-input before loopback | Covered |
 | R1 Preserve embedded regression | 1.1-1.5, 6.1 | 100% | None | Covered |
 | R2 Memory-root path loader | 2.0a-2.13, 6.2 | 100% | Uses memory-root, not physical rootfs; performance baseline comes from `docs/benchmark-report-async.md` | Covered |
-| R3 Shell/script benchmark parity | 3.1-3.8, 6.3 | Optional after M1 | Static shell or documented equivalent allowed | Covered |
+| R3 Shell/script benchmark parity | 3.1-3.10, 6.3 | 100% for command-entry proof; true shell proof conditional | Simplified to documented equivalent command entry when no known-good static shell exists; shell success not claimed | Covered with simplification |
 | R4 SDMMC/block probe witness | 4.1-4.6, 6.4 | 100% | Probe-only, no full driver promise | Covered |
 | R5 Future real rootfs benchmark | 5.1-5.5, 6.5 | Conditional | SKIPPED unless block device exists | Deferred/Conditional |
 | R6 Evidence separation | 6.1-6.8 | 100% | Board-only rows may be SKIPPED with blocker | Covered |
@@ -257,6 +278,7 @@ Reason:
 - `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1`
 - `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench`
 - fullbench feature cargo check for each implemented mode using the generated D1 platform config, e.g. `AX_CONFIG_PATH=$PWD/.axconfig.toml cargo check --target riscv64gc-unknown-none-elf --features "axfeat/myplat axfeat/bus-mmio lichee-d1-fullbench"` after `make lichee-fullbench-mem` or equivalent D1 `defconfig`
+- command/probe mode cargo check for any new feature or compile-time mode selector added for M2/M3
 - QEMU cargo check remains valid with `--features qemu`
 - Android boot image inspect records `kernel_size`, `kernel_addr`, `name`, and `DWARF=n`
 
@@ -293,6 +315,7 @@ Part B board probes must capture:
 | `/bin/benchmark` missing | path, root provider, resolve error | memory-root packaging bug |
 | ELF load fails | path, ELF type, interpreter path if present | loader or binary format issue |
 | shell missing | `/bin/sh` path and root listing hint | shell packaging issue |
+| command-entry shell skipped | shell blocker, equivalent entry, argv/envp/stdio markers | accepted M2 simplification, not shell success |
 | script fails | script path, argv, exit code | shell/script behavior issue |
 | no block device | device list count and SDMMC probe summary | Part B hardware blocker |
 | rootfs mount fails | fs type, first block read status, mount error | block/fs integration issue |

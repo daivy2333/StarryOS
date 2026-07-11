@@ -9,6 +9,7 @@
 > 2026-07-04 Q19C review 后新增 Q19D 方向：Q19C 只做 memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆到 Q19D，避免把完整块设备驱动混入 Q19C。
 > 2026-07-07 Q19C-M0 已进入源码与真板数据阶段：统一 benchmark manifest/测试项，移除默认 4096B 长耗时项，隔离 stdout backlog 后 64B 小包恢复接近线速；D1 FIFO 16B burst 与 TTY short-write 修复已验证，TX zero-send/P99 长尾仍待优化，`TX_FAST_RETRY_LIMIT=0` 方案已证伪并回退。
 > 2026-07-08 Q19C-M1 已完成：`lichee-fullbench-mem` 通过 memory-root `/bin/benchmark` VFS resolve/read + eager ELF mapping 在 D1 真板完整运行；`load_user_app()` lazy file-backed COW 路径 main 前 SIGILL 已记录为 O80/L277，不作为 async UART gate。
+> 2026-07-10 Q19C-M2/M3 host gate 完成：M2 fullbench-command (`lichee-d1-fullbench-command`, `make lichee-fullbench-command`, kernel_size=999616) 和 M3 rootfs-probe (`lichee-d1-rootfs-probe`, `make lichee-rootfs-probe`, kernel_size=159936) cargo check ✅ + image build ✅；M2/M3 board gate 待 D1 真板测试。
 > 2026-07-04 analysis 文档归档：Q18/Q19/Q19B 历史分析和 Lichee 原始采集日志移至 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/`；原路径保留 tombstone。
 > 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
 > 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
@@ -57,7 +58,7 @@
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ✅ 真板 smoke complete |
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
-| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + optional shell/script + SDMMC probe-only | 🧪 M0/M1 完成 / M2-M3 待做 |
+| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + command-entry + SDMMC probe-only | 🧪 M0/M1 host ✅ + M2/M3 host/acceptance ✅ / M2-M3 board gate 待测 (true shell deferred) |
 | **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧭 后续方向 / 待建 change |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
@@ -68,7 +69,7 @@
 
 ## 当前执行态
 
-Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0/M1 已完成（M1 通过 memory-root `/bin/benchmark` VFS resolve/read + eager ELF mapping；lazy file-backed COW 另记 O80），下一步按优先级推进 M2 shell/script 等价入口或 M3 SDMMC probe-only；Q19D 已登记为真实 D1 SDMMC/rootfs 后续方向；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
+Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0/M1 完成，M2 command-entry 与 M3 rootfs-probe host/acceptance gate 完成（feature 互斥 guard 已加入，true shell deferred as future optional）；M2/M3 board gate 待 D1 真板测试；Q19D 已登记为真实 D1 SDMMC/rootfs 后续方向；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
@@ -127,8 +128,12 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0/M1 已完成（M
 <!-- Q19C.8d --> - [x] D1 TX 已验证修复：`send_bytes()` 在 THRE 后一次填最多 16B FIFO，TTY OPOST/ONLCR short-write 计数修复；S11 1024B 正确发送恢复
 <!-- Q19C.8e --> - [x] Q19C.8e 已完成：slow-pool（`TX_SLOW_POLL_LIMIT=4096`）+ yield 重试（`TX_YIELD_RETRIES=4`）已实施；真板 `slow_poll_exh=0` `yield_exh=0` 证明 slow-pool 100% 成功；P99 长尾（50.86ms）根因未探明，当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 复验时再探明（O77/L275 已记录）
 <!-- Q19C.9 --> - [x] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()/read()` + eager ELF mapping 启动 benchmark；真板 `docs/Q19cM1.md` 已完整输出 manifest、TX/RX sections 和 exit code 0；`load_user_app()` lazy file-backed COW 问题后置为 O80
-<!-- Q19C.10 --> - [ ] M2: 通过 `/bin/sh`、脚本或等价命令入口触发 benchmark，验证 stdio/TTY/argv/envp/exit/join
-<!-- Q19C.11 --> - [ ] M3: 采集 D1 SDMMC/block probe-only evidence；无可用 block device 时记录 `SKIPPED: <blocker summary>`，不得触发 `No block device found!` panic
+<!-- Q19C.10a --> - [x] M2 host gate: `lichee-d1-fullbench-command` feature, `make lichee-fullbench-command`, `starry-lichee-fullbench-command-boot.img` kernel_size=999616, cargo check ✅, image build ✅；单模式 feature 互斥 guard 已加入（`compile_error!`）
+<!-- Q19C.10b --> - [x] M2 acceptance: true shell path deferred to future optional；M2 必达目标收敛为 `lichee-memory-root-command`；`shell_status=SKIPPED: no known-good static /bin/sh` 为合法证据
+<!-- Q19C.10c --> - [ ] M2 board gate: D1 真板运行，串口日志含 `lichee-memory-root-command`、`shell_status=SKIPPED`、argv/envp evidence、benchmark sections、exit code 0
+<!-- Q19C.11a --> - [x] M3 host gate: `lichee-d1-rootfs-probe` feature, `make lichee-rootfs-probe`, `starry-lichee-rootfs-probe-boot.img` kernel_size=159936, cargo check ✅, image build ✅, 无 `init_filesystems()` 调用路径；单模式 feature 互斥 guard 已加入
+<!-- Q19C.11b --> - [x] M3 acceptance: rootfs-probe 为 blocker report（非 register probe success / rootfs benchmark success）；日志标注 TBD/SKIPPED
+<!-- Q19C.11c --> - [ ] M3 board gate: D1 真板运行，输出 SDMMC probe table、`SKIPPED: missing D1 SDMMC/block driver`、无 `No block device found!` panic
 <!-- Q19C.12 --> - [ ] Future rootfs: 仅当后续有真实 block device/rootfs 时运行 rootfs path benchmark；否则 rootfs result 表记录 SKIPPED，不阻塞 Q19C M1 完成
 
 ### Q19D: Lichee SDMMC/rootfs implementation 🧭 后续方向 / 待建 change

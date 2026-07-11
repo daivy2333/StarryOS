@@ -35,7 +35,7 @@ Q19C 分成两个工程部分。
 - 新增独立 Lichee fullbench runtime mode，与 Q19B `lichee-d1-userbench` 分离。
 - 在 memory-root 中提供 `/bin/benchmark`，通过 VFS 路径解析启动 benchmark。
 - M1 通过 `FS_CONTEXT.resolve()/read()` + eager ELF mapping 覆盖 memory-root 路径可见性、文件读取、argv/envp、stdio、process exit/join；`load_user_app()` 的 lazy file-backed COW 路径另作为 loader/mm 后续问题处理。
-- 在 memory-root 中提供 `/bin/sh`、`/init.sh` 或明确等价的脚本入口，让 benchmark 可通过 shell/script 触发。
+- 在 memory-root 中提供 `/bin/benchmark` 和 `/init.sh` 文本证据；M2 必达目标为 `lichee-memory-root-command`（documented equivalent command entry）。true shell path（`/bin/sh -c /init.sh`）仅作为 future optional，Q19C 不要求实现或引入静态 shell。
 
 ### Part B: 真板 rootfs / SDMMC 探针
 
@@ -63,7 +63,7 @@ Q19C 不修改已归档的 Q19/Q19B capability。Q19B embedded userbench 继续�
 - 新增 Lichee fullbench feature/target/image 命名。
 - memory-root 中的文件节点和应用布局。
 - Lichee fullbench 使用 VFS-visible `/bin/benchmark` 启动；M1 当前采用 `FS_CONTEXT.resolve()/read()` + eager ELF mapping，后续 shell/rootfs 路径可继续推进 normal path loader parity。
-- shell/script 触发 benchmark 的最小闭环。
+- command-entry benchmark 触发（documented equivalent command entry，覆盖 argv/envp/stdio/exit/join）；true shell path 作为 future optional。
 - D1 SDMMC/rootfs 所需真板信息采集、probe-only blocker 分类与后续驱动接入计划。
 - benchmark 输出和证据格式标准化。
 
@@ -81,7 +81,7 @@ Q19C 不修改已归档的 Q19/Q19B capability。Q19B embedded userbench 继续�
 - `make lichee-userbench` 或既有等价目标继续产生 Q19B embedded benchmark image。
 - 新增 fullbench 目标产生独立 boot image，串口日志必须打印当前 mode。
 - memory-root path fullbench 日志必须包含 benchmark 是通过 VFS path 启动，而非 embedded loader。
-- shell/script mode 日志必须包含 shell/script 入口和 benchmark 命令。
+- command-entry mode 日志必须包含 `lichee-memory-root-command` label、`shell_status=SKIPPED` blocker、argv/envp construction evidence、stdio marker 和 `benchmark exited with code: 0`。不得声称 shell-launched success。
 - rootfs/probe 日志必须包含 SDMMC/block probe 状态；只有真实 block device 已可用时才允许进入 rootfs path benchmark，否则必须记录 `SKIPPED` 和 blocker summary。
 
 ## BDD Gap Scan
@@ -89,8 +89,10 @@ Q19C 不修改已归档的 Q19/Q19B capability。Q19B embedded userbench 继续�
 ### Happy Path
 
 - Lichee memory-root fullbench 从 `/bin/benchmark` 启动 benchmark，输出与 Q19B 同类 benchmark sections。
-- Lichee shell/script mode 在静态 shell 可用时启动 `/bin/sh -c /init.sh`；没有可靠 shell 时允许 documented equivalent command entry，但必须覆盖 argv/envp/stdio/exit/join。
+- Lichee memory-root command-entry mode 从 `/bin/benchmark` 启动 benchmark，覆盖 argv/envp construction、stdio、spawn/join、exit code；无可靠 shell 时记录 `shell_status=SKIPPED`。
 - Lichee rootfs probe mode 采集 SDMMC/block facts；若真实 block device 尚不可用，则输出 SKIPPED blocker evidence。
+
+**BDD default applied (2026-07-10)**: `AskUserQuestion` was unavailable in the current Default mode, so the BDD gap policy uses the workflow default assumption. M2 will proceed with documented equivalent command entry when no known-good static `/bin/sh` is available, and M3 will proceed as probe-only/SKIPPED evidence until a D1 `AxBlockDevice` exists.
 
 ### Sad Path
 
@@ -103,6 +105,7 @@ Q19C 不修改已归档的 Q19/Q19B capability。Q19B embedded userbench 继续�
 
 - Q19B embedded userbench 不能因 Q19C feature 新增而改变语义。
 - memory-root mode 必须明确标记为 non-persistent root，不等同真实 rootfs。
+- documented equivalent command entry 必须独立标记为 command/equivalent，不得记录为 shell-launched benchmark success。
 - 如果 shell 是动态 ELF，dynamic linker 路径和依赖库必须由同一 rootfs 提供。
 - Android boot image size 必须持续检查，避免 fullbench/rootfs payload 超过 boot 分区约束。
 

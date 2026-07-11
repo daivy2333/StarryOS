@@ -136,6 +136,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R10 --> `.claude/analysis/q19c-lichee-full-starryos-benchmark.md` | Q19C 完整 StarryOS benchmark 探究：先补 benchmark evidence cleanup（`benchmark.c` manifest、QEMU/真板参数对齐、RX witness、64B 小包优化探索），再从 Q19B embedded userbench 推进到 D1 memory-root path loading、可选 shell parity、SDMMC/rootfs parity 与完整 benchmark gate |
 | <!-- R11 --> `.claude/analysis/q19c-d1-tx-optimization.md` | Q19C.8e D1 TX zero-send / P99 长尾优化分析：TX copier 算法（driver.rs:418-579）、3 个根因（32 次 spin 在 ms 级 FIFO 排空前无效 / D1 THRE IRQ 边沿丢失 / P99 跳变点 = FIFO 排空等待）、`TX_FAST_RETRY_LIMIT=0` 证伪根因、5 个优化方向（A 时间预算 / B LSR poll watchdog / C 指数退避 / D IER 延迟使能 / E D1 专用路径）、推荐 A+B 组合 |
 | <!-- R12 --> `.claude/analysis/q19c-m1-memory-root-path-loader.md` | Q19C-M1 memory-root path loader 实施前分析：当前 D1 embedded userbench 与 QEMU path loader 差异、fullbench feature/Makefile 分层、`FsContext::write("/bin/benchmark")` 注入路径、`load_user_app()` 调用链、M1 gate 与风险边界 |
+| <!-- R13 --> `.claude/analysis/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3 实施前分析：shell 不可用时的 documented equivalent command entry、argv/envp/stdio/exit/join 证据边界、D1 SDMMC/block probe-only 路线、避免空 block list 触发 `No block device found!` |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
