@@ -10,7 +10,7 @@
 
 StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，基于 ArceOS 组件化架构。**核心目标**：实现高性能异步串口通信。
 
-- **当前状态**：Q19/Q19B 已完成（Lichee RV Dock 真板 smoke + D1 async UART userbench），当前主线待做 Q17 SMP / 内存序正确性
+- **当前状态**：D1 真板异步 UART 测试已正式结束（Q19/Q19B/Q19C 完成并归档），当前主线待做 Q17 多 hart 复验 / Q20 其他真板验证
 - **当前分支**：`uart-16550-lichee`（本地领先 origin 10 commits，用于 Lichee RV Dock 适配与验证）
 - **跨项目引用**：父项目 `../CLAUDE.md` — 跨项目文档索引；本仓库 `crates/uart_16550/` — 当前串口驱动库
 

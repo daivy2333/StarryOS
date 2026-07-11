@@ -13,9 +13,11 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 > 2026-06-29 更新：Q19B / O77 已在 Lichee RV Dock 真板完成 async UART userbench，大包 TX 达 97.7%~99.0% 115200bps 线速。
 > 2026-07-07 补充：Q19C-M0 在同版 `q19c-m0-20260703` manifest 下实测 64B 96.6% / 256B 97.3% / 1024B 98.8% / batch-1024B 99.1% 线速；64B 小包从 1.01 KB/s 提升至 11.13 KB/s，根因为 pre-section drain 隔离 stdout backlog 测量污染。Q19B 旧数据 97.7%~99.0% 仅在 256B+ 包大小上仍近似成立，但 64B 与 1024B 现以 Q19C-M0 数据为准。
 > 2026-07-03 更新：Q17 / O63 已完成 QEMU 修复与回归验证；多 hart / 真板 SMP stress 尚未执行，不能声明跨 hart 内存序已被实测证明。
-> 2026-07-04 更新：Q19C review 后范围收敛为 benchmark evidence cleanup + memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆为 Q19D 后续方向。
+> 2026-07-04 更新：Q19C review 后范围曾收敛为 benchmark evidence cleanup + memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施曾拆为 Q19D 后续方向。
 > 2026-07-08 更新：Q19C-M1 memory-root `/bin/benchmark` 已通过 VFS resolve/read + eager ELF mapping 在 D1 真板完整运行；`load_user_app()` lazy file-backed COW 路径的 SIGILL 另列 O80，不阻塞异步 UART/fullbench 验收。
-> 2026-07-11 更新：Q19C-M3 真板日志停在 startup benchmark 的 `FIFO depth` 后，未进入 rootfs-probe 证据输出。M3 应先做 probe entry isolation；startup benchmark 稳定性另列 O81。
+> 2026-07-11 更新：Q19C-M3 真板日志停在 startup benchmark 的 `FIFO depth` 后，未进入 rootfs-probe 证据输出。方向更新后，M3/rootfs-probe 不再作为 Q19C gate。
+> 2026-07-11 方向更新：项目目标收敛为真板内核态 + 用户态异步 UART 性能参数验证。Q19C-M0/M1/M2 已覆盖该目标；M3/rootfs-probe、Q19D SDMMC/rootfs、O79/O81 取消为当前规划。
+> 2026-07-11 状态确认：D1 真板异步 UART 测试正式结束。后续性能相关工作只保留 Q20 多 hart / 其他真板复验和按需报告整理。
 
 | Milestone | 目标 | 归属条目 | Gate |
 |-----------|------|----------|------|
@@ -24,8 +26,8 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 | **Q18** | 平台参数解耦 / early console 基础 | **O74**, **O75** | QEMU 行为保持；`uart_init.rs` 不再新增板级 base/irq/stride/width 常量 |
 | **Q19** | Lichee RV Dock early smoke test | **O76**, L213-L216, L231-L235, ADR-043 | ✅ Lichee 串口输出 `[starry-d1] smoke complete, halting.` |
 | **Q19B** | Lichee RV Dock async UART benchmark | **O77**, ADR-047~ADR-051, L236-L258 | ✅ kbench/userbench 均在真板完成；`/dev/console`、TTY、`tcdrain`、FIONBIO 全链路通过 |
-| **Q19C** | Lichee memory-root fullbench | **O78**, **O80**, **O81**, L259-L264/L276-L280, ADR-052/ADR-054 | ✅ M1 memory-root `/bin/benchmark` 已通过 VFS resolve/read + eager ELF mapping；shell/script optional；SDMMC/rootfs 仅 probe-only / SKIPPED evidence |
-| **Q19D** | Lichee SDMMC/rootfs implementation | **O79** | 基于 Q19C probe evidence 实施 D1 SDMMC/block/rootfs；真实 rootfs path benchmark 单独验收 |
+| **Q19C** | Lichee async UART board benchmark | **O80**, L259-L264/L276-L280, ADR-052/ADR-054/ADR-055 | ✅ M0/M1/M2 已通过真板；覆盖内核态 benchmark、用户态 `/dev/console`/TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command 证据；O78 已归档 |
+| **Q19D** | Lichee SDMMC/rootfs implementation | — | 🧊 取消当前规划；O79 已归档，需要 storage/rootfs bring-up 时重新 propose |
 | **Q20** | VisionFive2 UART 验证 | **O66**, **O64**, **O65**, **O71**, **O38**, **O39**, Q15 Manual QA 真板复跑 | VisionFive2 串口稳定运行，真板基线数据落档 |
 | **Q21** | DMA / 高波特率决策 | **O3**, **O40**, **O69**, **O41** | 用 Q20 真板数据决定实施或拒绝 |
 | **Q22** | 维护性清理 | **O48**, **O49**, **O50**, ADR-034 release LTO | 维护性债务有明确处理结论 |
@@ -35,11 +37,9 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 |----------|------|--------|------|
 | **O74** | Platform descriptor 集中化 | 🔴 P0 | 抽出 QEMU/Lichee/VisionFive2 的 UART kind、base、irq、stride、MMIO access width、boot strategy；落实 ADR-044 |
 | **O75** | Early console 分层 | 🔴 P0 | 新增不依赖 IRQ / async task / rootfs 的 polling early console；QEMU 用 NS16550 U8，Lichee/VF2 用 DW APB U32 |
-| **O78** | Lichee memory-root path loader benchmark | ✅ 已完成 | Q19C：标准化 benchmark manifest，通过 memory-root `/bin/benchmark` 走 `FS_CONTEXT.resolve()/read()` + eager ELF mapping；真板 `docs/Q19cM1.md` 完整输出 benchmark 并 exit code 0；SDMMC/rootfs 只做 probe-only evidence |
-| **O79** | Lichee SDMMC/block/rootfs implementation | 🟡 P1 | Q19D：承接 Q19C probe，实施 D1 SDMMC/block driver、`AxBlockDevice`、真实 rootfs path benchmark；不得混入 Q19C M1 gate |
 | **O80** | Memory-root lazy file-backed COW loader 修复 | 🟡 P1 | `load_user_app()` + tmpfs/memory-root `CachedFile/FileBackend::Cached + Backend::new_cow` 在 D1 上 main 前 SIGILL；eager path 已证明 UART/VFS/read/userland 正常，后续应作为 loader/mm bug 单独修 |
-| **O81** | M3 startup benchmark 隔离与 UART 刷出复核 | 🟡 P1 | `lichee-d1-rootfs-probe` 真板日志停在 startup benchmark 的 `FIFO depth` 后，尚未输出 rootfs-probe blocker table。先让 M3 probe-only 模式不被 startup benchmark 阻断；再用独立 UART benchmark 复核 TX ring/调度刷出稳定性。 |
 <!-- tombstone: O76/O77 --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 已完成并归档，active roadmap 不再保留已完成 Lichee 条目。
+<!-- tombstone: O78/O79/O81 --> Archived 2026-07-11 in ARC-202607111510 — Q19C memory-root path/command 已完成，Q19D/O79 与 M3/O81 取消当前规划。
 
 #### Scenario: Roadmap-driven scheduling
 
@@ -74,19 +74,19 @@ Q15 后续优化 MUST 按 Gate 类型拆分为 Q16~Q23，禁止继续把 O63/O64
 - **AND** `tcdrain` MUST be validated on real D1 UART state, including THRE no-pending / edge-loss behavior
 - **AND** later SDMMC/rootfs parity MUST be planned as a separate milestone, not folded back into Q19B
 
-#### Scenario: Lichee fullbench 阶段边界
+#### Scenario: Lichee async UART benchmark 收敛
 
 - **WHEN** Q19C 进入实施
-- **THEN** MUST prioritize benchmark evidence cleanup and memory-root path-visible benchmark proof
-- **AND** SDMMC/rootfs work in Q19C MUST remain probe-only or SKIPPED blocker evidence
-- **AND** full D1 SDMMC/block/rootfs implementation MUST be tracked as Q19D / O79, not silently folded into Q19C
+- **THEN** MUST prioritize D1 async UART kernel/user benchmark evidence, benchmark manifest cleanup, and memory-root path/command proof
+- **AND** shell, SDMMC, block, and real rootfs work MUST NOT be required for Q19C completion
+- **AND** full D1 SDMMC/block/rootfs implementation MUST be started only by a new storage/rootfs change after explicit goal confirmation
 - **AND** lazy file-backed COW loader repair MUST be tracked as O80, not as an async UART correctness gate
 
-#### Scenario: M3 probe-only entry isolation
+#### Scenario: M3/rootfs-probe is not a current gate
 
 - **WHEN** `lichee-d1-rootfs-probe` is used for Q19C M3
-- **THEN** startup benchmark output MUST NOT be required before the rootfs-probe blocker table
-- **AND** any startup benchmark stall or truncation MUST be tracked as O81, not as SDMMC/rootfs evidence
+- **THEN** missing probe output MUST NOT block Q19C async UART benchmark completion
+- **AND** further probe entry isolation MUST be deferred until storage/rootfs bring-up is explicitly re-opened
 
 #### Scenario: 真板启动失败或串口无输出
 
@@ -425,3 +425,4 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 <!-- arc: ARC-202607021535 --> 5 条已归档 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021535/proposal.md
 <!-- arc: ARC-202607021648 --> 4 组 optimization 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md
 <!-- arc: ARC-202607031929 --> O45/O46/O47 旧详细方案已归档 (2026-07-03) → ../changes/archive/2026-07-03-ARC-202607031929/proposal.md
+<!-- arc: ARC-202607111510 --> O78/O79/O81 已归档/压缩 (2026-07-11) → ../changes/archive/2026-07-11-ARC-202607111510/proposal.md

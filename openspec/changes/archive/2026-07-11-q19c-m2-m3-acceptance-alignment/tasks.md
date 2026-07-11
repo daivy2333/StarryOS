@@ -15,23 +15,24 @@
 
 ## 3. 任务状态修正
 
-- [x] 3.1 修正 `.claude/docs/tasks.md`：Q19C.10 拆为 10a(host)✅ + 10b(acceptance)✅ + 10c(board)⬜；Q19C.11 拆为 11a(host)✅ + 11b(acceptance)✅ + 11c(board)⬜
+- [x] 3.1 修正 `.claude/docs/tasks.md`：Q19C.10 拆为 10a(host)✅ + 10b(acceptance)✅ + 10c(board)✅；Q19C.11 保留 host/acceptance 历史事实，board gate 改为取消当前规划
 - [x] 3.2 保留 host gate 已完成证据：cargo check、image build、kernel_size
-- [x] 3.3 保留 board gate pending 证据模板：M2 UART log、M3 UART log
+- [x] 3.3 更新 board gate 证据：M2 UART log 已完成；M3 UART/rootfs-probe 不再需要 pending 模板
+- [x] 3.4 2026-07-11 方向更新：M2 board gate 已由 `docs/M2.md` 完成；M3/rootfs-probe 取消为当前 gate；Q19D 取消当前规划
 
 ## 4. M2 证据口径
 
 - [x] 4.1 检查 M2 日志：包含 mode label、shell skipped blocker、entry、argv/envp summary、stdio marker
 - [x] 4.2 不修改 benchmark payload，文档写成 kernel-side argv/envp construction proof → entry.rs 已添加 `argv_evidence=kernel-side-construction` 和 `note=user-observed-argv-not-claimed`
 - [x] 4.3 若要声明 user-observed argv/envp，则修改 payload → 当前 payload 不打印 argc/argv，user-observed 不声称
-- [ ] 4.4 M2 board gate 只在 D1 真板日志出现 benchmark sections 和 exit code 0 后勾选
+- [x] 4.4 M2 board gate 已完成：`docs/M2.md` 出现 benchmark sections、`Done.`、`benchmark exited with code: 0` 和 `halting.`
 
 ## 5. M3 证据口径
 
 - [x] 5.1 检查 M3 日志：包含 `lichee-rootfs-probe`、known facts、TBD/blocker、`rootfs_init=NOT called`
 - [x] 5.2 未实现 MMIO/register read，文档写为 TBD/SKIPPED，不写成 register probe success
 - [x] 5.3 确认 rootfs-probe feature 不依赖 `axfs-ng::init_filesystems()` 空 block path → `lib.rs` 将 rootfs-probe 加入 module exclusion gates，无 `axfs`/`axfs-ng` 依赖
-- [ ] 5.4 M3 board gate 只在 D1 真板日志出现 probe table 和无 panic 后勾选
+- [x] 5.4 M3 board gate 取消：2026-07-11 方向更新后，M3/rootfs-probe 不再作为 Q19C async UART 性能验证 gate
 
 ## 6. 验证
 

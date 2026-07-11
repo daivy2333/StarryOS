@@ -52,10 +52,10 @@
 - [x] 3.6 验证 command-entry benchmark 覆盖 argv/envp/stdio/exit/join，而不是只重复 M1 path-loader proof
 - [x] 3.7 验证 stdin/stdout/stderr 仍通过 `/dev/console`，process exit/join 正常返回
 - [x] 3.8 Gate M2 host: 新增 mode/feature/target 后，D1 fullbench cargo check 通过，并记录 Android boot image size → `kernel_size=999616` (delta from Q19B baseline 983232 = +16384 bytes, < 0.5 MiB ✅)
-- [ ] 3.9 Gate M2 board: 串口日志打印 `lichee-memory-root-command` 或 `lichee-memory-root-shell`，出现 manifest、64/256/1024 TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`benchmark exited with code: 0`
+- [x] 3.9 Gate M2 board: `docs/M2.md` 串口日志打印 `lichee-memory-root-command`、`shell_status=SKIPPED`、manifest、64/256/1024 TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`Done.`、`benchmark exited with code: 0` 和 `halting.`
 - [x] 3.10 若 M2 因 shell 来源或 `/proc/self/exe` blocker 未执行 true shell path，记录 `SKIPPED: no known-good static /bin/sh`，不阻塞 command-entry proof
 
-## 4. Part B / M3 — D1 SDMMC/block probe-only discovery
+## 4. Part B / M3 — D1 SDMMC/block probe-only discovery（取消当前规划）
 
 - [x] 4.1 汇总 D1/Lichee RV Dock SDMMC 控制器 base、IRQ、clock/reset、pinmux、card detect 和 U-Boot 初始化事实；未知项必须标注为待查，不得猜常量 → documented with TBD markers for base/IRQ/clock/reset/pinmux/card-detect; partition layout from known D1 facts
 - [x] 4.2 新增 `lichee-rootfs-probe` mode，不进入 user process，不调用 `axfs-ng::init_filesystems()`，先打印已知分区事实与 StarryOS block provider 状态
@@ -64,23 +64,23 @@
 - [x] 4.5 记录 IRQ claim/complete 可行性；若只做 polling probe，日志明确标注 polling mode → transfer_mode=probe-only
 - [x] 4.6 评估 DMA/cache 要求，明确 Q19C 不以 DMA 或完整 SDMMC 驱动作为通过条件；`simple-sdmmc` 仅作为 PIO-first 参考，不计入 registered block provider
 - [x] 4.7 Gate M3 host: rootfs-probe mode cargo check / image build 通过，且源码中不存在空 block list 调用 `init_filesystems()` 的路径 → `kernel_size=159936`, no `axfs-ng` or `axfs` dependency in rootfs-probe feature
-- [ ] 4.8 Gate M3 board: 输出 SDMMC/block probe 表；若无可用 block device，记录 `SKIPPED: missing D1 SDMMC/block driver`，且无 `No block device found!` panic
+- [x] 4.8 Gate M3 board 取消: `docs/M3.md` 输出不完整；2026-07-11 方向更新后，M3/rootfs-probe 不再作为 Q19C async UART 性能验证 gate
 
-## 5. Deferred / Conditional — Real rootfs fullbench
+## 5. Deferred / Conditional — Real rootfs fullbench（取消当前规划）
 
-- [ ] 5.1 仅当 4.x 已证明有真实 block device 时，准备 ext4 或 FAT rootfs 镜像，包含 `/bin/benchmark`、可选 `/bin/sh`、`/init.sh` 和必要动态依赖
-- [ ] 5.2 记录 rootfs 镜像格式、分区/偏移、benchmark binary build source 和 shell 来源
-- [ ] 5.3 在 Lichee rootfs mode 中打印 `lichee-rootfs-path`、block device 名称、filesystem type 和 mount result
-- [ ] 5.4 从 rootfs 解析 `/bin/benchmark` 并通过 `load_user_app()` 运行；若 block/rootfs 不可用，记录 `SKIPPED: <blocker summary>`
-- [ ] 5.5 Gate future rootfs board: 若执行，串口日志必须出现 manifest、TX throughput、TX latency、FIFO matrix、FIONBIO PASS、`benchmark exited with code: 0`；若未执行，SKIPPED 不阻塞 Q19C M1 完成
+- [x] 5.1 取消当前规划：不准备 ext4/FAT rootfs 镜像
+- [x] 5.2 取消当前规划：不记录 rootfs 镜像格式、分区/偏移、shell 来源
+- [x] 5.3 取消当前规划：不实现 Lichee rootfs mode
+- [x] 5.4 取消当前规划：不从真实 rootfs 解析 `/bin/benchmark`
+- [x] 5.5 取消当前规划：real rootfs board gate 不再阻塞 Q19C
 
 ## 6. Evidence and Documentation
 
 - [ ] 6.1 建立 Q19B embedded result 表：image、mode、startup chain、benchmark summary、raw log
 - [x] 6.2 建立 Q19C memory-root path result 证据：`docs/Q19cM1.md` 记录 `lichee-memory-root-path`、`startup_chain=android-boot-image -> memory-root /bin/benchmark -> eager_elf_mapping`、完整 benchmark section 和 exit code 0
 - [x] 6.3 建立 Q19C memory-root command/shell result 表：HOST done (`starry-lichee-fullbench-command-boot.img`, kernel_size=999616, cargo check ✅)；BOARD pending D1 hardware test；true shell SKIPPED (no static /bin/sh)
-- [x] 6.4 建立 Q19C SDMMC probe 表：HOST done (`starry-lichee-rootfs-probe-boot.img`, kernel_size=159936, cargo check ✅, no `init_filesystems()` path)；BOARD pending D1 hardware test
-- [ ] 6.5 建立 Q19C rootfs result 表：rootfs format、block device、startup chain、benchmark summary、raw log；默认允许 `SKIPPED: deferred after SDMMC/block driver`
+- [x] 6.4 建立 Q19C SDMMC probe 历史表：HOST done (`starry-lichee-rootfs-probe-boot.img`, kernel_size=159936, cargo check ✅, no `init_filesystems()` path)；BOARD 输出不完整；2026-07-11 后取消当前 gate
+- [x] 6.5 取消 Q19C rootfs result 表：rootfs format、block device、startup chain、benchmark summary、raw log 不再属于当前 async UART 性能验证范围
 - [ ] 6.6 建立 Q19C-M0 benchmark evidence 表：manifest fields、QEMU/Q19B 参数差异、RX witness mode、64B small-packet experiment matrix
 - [x] 6.7 更新分析文档：`.claude/analysis/q19c-m2-m3-shell-sdmmc-probe.md` (2026-07-10) 记录 M2/M3 实施方案与关键文件索引
 - [x] 6.8 更新 `openspec/specs/learned/spec.md`、`openspec/specs/optimization/spec.md`、`.claude/docs/tasks.md`、`.claude/docs/SNAPSHOT.md`，保存 Q19C-M0 当前进度和 O77 剩余优化问题

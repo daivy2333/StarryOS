@@ -8,7 +8,7 @@ Q19C MUST provide explicit Lichee fullbench runtime modes that are distinguishab
 
 - **WHEN** any Q19C fullbench image boots
 - **THEN** the serial log MUST print the active startup chain label before user application launch
-- **AND** the label MUST be one of `lichee-memory-root-path`, `lichee-memory-root-command`, `lichee-rootfs-probe`, or `lichee-rootfs-path`.
+- **AND** the label MUST be one of `lichee-memory-root-path` or `lichee-memory-root-command` for accepted Q19C results.
 
 #### Scenario: No silent fallback to embedded loader
 
@@ -86,82 +86,21 @@ Q19C M2 MUST accept `lichee-memory-root-command` as the required Lichee memory-r
 - **THEN** the system MUST report the missing path and loader stage
 - **AND** it MUST NOT record shell/script benchmark success.
 
-### Requirement: Rootfs mode requires real block device witness
+### Requirement: Rootfs and SDMMC are not Q19C gates
 
-Q19C rootfs path mode MUST only call `axfs-ng::init_filesystems()` after a real Lichee block device is available to the filesystem layer. Q19C MAY stop at `lichee-rootfs-probe` evidence when SDMMC/block support is not yet implemented.
+Q19C MUST NOT require shell, SDMMC, block, rootfs-probe, or real rootfs benchmark evidence for async UART performance completion. Any future D1 storage/rootfs work MUST be proposed as a separate change.
 
-#### Scenario: No block device is present
+#### Scenario: Rootfs work is requested after Q19C
 
-- **WHEN** rootfs mode is requested but no block device is registered
-- **THEN** the system MUST avoid the `No block device found!` panic path
-- **AND** it MUST report that rootfs benchmark is blocked by missing block device support
-- **AND** it MUST include SDMMC/block probe summary in the serial log or captured evidence.
-- **AND** it MUST NOT call `axfs-ng::init_filesystems()` until a registered Lichee block device exists.
+- **WHEN** D1 storage/rootfs bring-up is requested after Q19C
+- **THEN** it MUST be planned as a new change
+- **AND** it MUST NOT be treated as a missing Q19C async UART benchmark gate.
 
-#### Scenario: Rootfs proof is skipped after probe
+#### Scenario: M3/rootfs-probe remains incomplete
 
-- **WHEN** SDMMC/block probe identifies that no usable block device exists yet
-- **THEN** Q19C evidence MUST record `SKIPPED` with a blocker summary for `lichee-rootfs-path`
-- **AND** the skipped rootfs path MUST NOT block acceptance of memory-root path loader proof.
-
-#### Scenario: Block device is present
-
-- **WHEN** a Lichee block device is registered and contains a supported rootfs
-- **THEN** `axfs-ng::init_filesystems()` MUST initialize the root filesystem from that block device
-- **AND** `mount_all()` and path-based benchmark loading MUST operate from that rootfs namespace
-- **AND** benchmark output MUST be labeled as `lichee-rootfs-path`.
-
-### Requirement: SDMMC exploration records hardware facts
-
-Q19C Part B MUST record enough D1 SDMMC/block facts to distinguish hardware bring-up blockers from StarryOS filesystem or loader bugs. It MUST NOT require a full D1 SDMMC driver implementation inside Q19C. When register-level or PIO block-read probe is not yet implemented, the evidence MUST record `SKIPPED` or `TBD` for those items; it MUST NOT silently claim MMIO accessibility or first block read success.
-
-#### Scenario: SDMMC probe runs with register access
-
-- **WHEN** SDMMC/block exploration is executed on Lichee RV Dock AND register-level probe is implemented
-- **THEN** the evidence SHOULD include controller MMIO accessibility, clock/reset state, card detect or equivalent status, transfer mode, and first block read result
-- **AND** if IRQ is used, the evidence MUST include IRQ claim/complete behavior.
-
-#### Scenario: SDMMC probe is skipped or TBD
-
-- **WHEN** register-level or PIO block-read probe is not yet implemented
-- **THEN** the evidence MUST record `SKIPPED` or `TBD` for controller base, MMIO accessibility, clock/reset, pinmux, card detect, and first block read
-- **AND** it MUST NOT fabricate MMIO register values or block read data
-- **AND** the blocker summary MUST identify whether each item is blocked by missing controller documentation, missing driver code, or missing board access.
-
-### Requirement: Rootfs image content is specified
-
-Q19C rootfs benchmark MUST use a documented rootfs image layout so that failures can be traced to image content, filesystem mounting, or ELF loading.
-
-#### Scenario: Rootfs image is prepared
-
-- **WHEN** a rootfs image is used for Q19C
-- **THEN** the evidence MUST record filesystem type, image source, benchmark binary path, shell path if present, init script path if present, and dynamic interpreter/library requirements.
-
-#### Scenario: Rootfs file is missing
-
-- **WHEN** `/bin/benchmark`, `/bin/sh`, or `/init.sh` is missing from rootfs mode
-- **THEN** the failure MUST identify the missing path and rootfs provider
-- **AND** it MUST NOT be recorded as a UART or syscall failure.
-
-### Requirement: Benchmark evidence is chain-specific
-
-Q19C MUST record benchmark evidence with enough context to compare QEMU, Q19B embedded, Q19C memory-root path, Q19C memory-root shell/script, and Q19C rootfs path results without conflating their startup chains.
-
-#### Scenario: Recording benchmark evidence
-
-- **WHEN** a benchmark result is documented
-- **THEN** the record MUST include board/target, image name, git revision, feature set, startup chain, root provider, loader, benchmark output summary, exit code, and raw serial log reference.
-
-#### Scenario: Recording skipped board evidence
-
-- **WHEN** a board-dependent Q19C result cannot be produced because a gate was not reached
-- **THEN** the evidence record MUST contain `SKIPPED` and a concrete blocker summary
-- **AND** it MUST NOT fabricate benchmark or rootfs data.
-
-#### Scenario: Comparing results
-
-- **WHEN** Q19C results are compared to QEMU or Q19B
-- **THEN** the comparison MUST state whether the benchmark used physical UART line delay, embedded bytes, memory-root path loading, shell/script entry, or real rootfs.
+- **WHEN** historical M3/rootfs-probe board evidence is incomplete
+- **THEN** Q19C MUST still be allowed to complete from M0/M1/M2 evidence
+- **AND** the incomplete probe MUST be recorded as canceled current scope, not as a failed UART benchmark.
 
 ### Requirement: D1 TX optimization preserves progress
 

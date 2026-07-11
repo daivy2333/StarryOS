@@ -6,14 +6,17 @@
 > 2026-06-29 Q19B 真板 userbench 完成: `starry-lichee-userbench-boot.img` 在 Lichee RV Dock 完整跑完 embedded benchmark，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
 > 2026-06-29 Q19 完成：Lichee RV Dock 真板通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。
 > 2026-07-03 Q17 QEMU 修复完成：`ier_cache` RMW 纳入临界区，TX completion 控制流内存序升级，QEMU rootfs benchmark 通过；多 hart / 真板 SMP stress 尚未实测，作为 Q20 前置复验项保留。
-> 2026-07-04 Q19C review 后新增 Q19D 方向：Q19C 只做 memory-root path loader + SDMMC probe-only；真实 D1 SDMMC/block/rootfs 实施拆到 Q19D，避免把完整块设备驱动混入 Q19C。
+> 2026-07-04 Q19C review 后曾新增 Q19D 方向：Q19C 只做 memory-root path loader + SDMMC probe-only，真实 D1 SDMMC/block/rootfs 拆到 Q19D。
 > 2026-07-07 Q19C-M0 已进入源码与真板数据阶段：统一 benchmark manifest/测试项，移除默认 4096B 长耗时项，隔离 stdout backlog 后 64B 小包恢复接近线速；D1 FIFO 16B burst 与 TTY short-write 修复已验证，TX zero-send/P99 长尾仍待优化，`TX_FAST_RETRY_LIMIT=0` 方案已证伪并回退。
 > 2026-07-08 Q19C-M1 已完成：`lichee-fullbench-mem` 通过 memory-root `/bin/benchmark` VFS resolve/read + eager ELF mapping 在 D1 真板完整运行；`load_user_app()` lazy file-backed COW 路径 main 前 SIGILL 已记录为 O80/L277，不作为 async UART gate。
-> 2026-07-11 Q19C-M2 真板通过：`docs/M2.md` 完整输出 benchmark sections、`Done.`、`benchmark exited with code: 0` 和 `halting.`。Q19C-M3 真板未通过：`docs/M3.md` 只到 `d1_sdmmc_controller_base=TBD`，未输出完整 probe table；M3 暂停直接实施，先做深度探索。
+> 2026-07-11 Q19C-M2 真板通过：归档日志完整输出 benchmark sections、`Done.`、`benchmark exited with code: 0` 和 `halting.`。Q19C-M3 真板未通过：日志只到 `d1_sdmmc_controller_base=TBD`，未输出完整 probe table；方向更新后 M3 不再作为 UART gate。
+> 2026-07-11 Q19C-M3 旧方案归档：`q19c-m3-polling-console-isolation` 以未实施旧方案归档到 `openspec/changes/archive/2026-07-11-q19c-m3-polling-console-isolation/`，未合入主 spec；M3 后续先重新探索再决定方案。
+> 2026-07-11 Q19C 收尾完成：Q19C-M3 代码删除（`lichee-d1-rootfs-probe` feature/Makefile target/entry 分支/cfg 例外），证据表补充到主 spec；`q19c-m2-m3-acceptance-alignment`、`q19c-lichee-full-starryos-benchmark`、`q19c-async-uart-closeout` 三个 change 已归档至 `openspec/changes/archive/`；活跃 change 仅剩 `q17-smp-memory-ordering`。
+> 2026-07-11 D1 真板异步 UART 测试正式结束：Q19/Q19B/Q19C 已覆盖 D1 smoke、内核态 benchmark、用户态 benchmark、memory-root path/command 证据；后续不再把 shell、SDMMC、block、rootfs 作为 async UART 验证遗留项。
 > 2026-07-04 analysis 文档归档：Q18/Q19/Q19B 历史分析和 Lichee 原始采集日志移至 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/`；原路径保留 tombstone。
 > 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
 > 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
-> 2026-07-02 Q19C 规范已完整：目标是在 Lichee RV Dock 上像 QEMU 一样通过 StarryOS path loader/rootfs 链路运行 benchmark；当前 OpenSpec change 已具备可实施的 proposal/design/tasks/spec，尚未进入源码实现。
+> 2026-07-02 Q19C 规范已完整：原目标是在 Lichee RV Dock 上像 QEMU 一样通过 StarryOS path loader/rootfs 链路运行 benchmark；2026-07-11 已收敛为 D1 async UART 性能验证，rootfs/shell 不再是必达项。
 > 2026-06-27 Q15 后 roadmap 首次重排：单一 Q6 拆分为原 Q16~Q22，按 Gate 类型分层推进（见 `.claude/analysis/optimization-milestone-replan.md`）。
 > 2026-06-21 M4 Sync 已回退到 pre-M4 基线（04f8920/60c5729），原代码保留在 feat/uart-16550-async-temp。
 > 2026-06-21 Q15 开启：从 pre-M4 基线增量重融合 M4+ 正确性修复，每步 Manual QA 验证无退化。
@@ -58,8 +61,8 @@
 | **Q18** | 平台参数解耦 / early console 基础 | platform descriptor + QEMU 行为保持 + early console 抽象 | ✅ (2026-06-28) |
 | **Q19** | Lichee RV Dock early smoke test | Android boot image + D1 platform skeleton + UART0 polling 输出 | ✅ 真板 smoke complete |
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
-| **Q19C** | Lichee full StarryOS benchmark | benchmark evidence cleanup + memory-root path loader + command-entry + SDMMC probe-only | 🧪 M0/M1/M2 board ✅ / M3 board ⚠️ 输出不完整，待深度探索 |
-| **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧭 后续方向 / 待建 change |
+| **Q19C** | Lichee async UART board benchmark | benchmark evidence cleanup + memory-root path loader + command-entry + closeout | ✅ D1 async UART 性能验证完成并归档（2026-07-11） |
+| **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧊 取消当前规划；需要 storage/rootfs 时重新 propose |
 | **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
 | **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
@@ -69,7 +72,7 @@
 
 ## 当前执行态
 
-Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0/M1/M2 已通过 D1 真板；M3 rootfs-probe host/acceptance gate 完成但 board gate 未通过。当前应先深度探索 M3 输出中断边界，再决定是否采用 polling console isolation 或新的异步 UART 修复路线。Q19D 已登记为真实 D1 SDMMC/rootfs 后续方向；Q20 需要在 VisionFive2 或等价多 hart 环境复验 Q17 O63。
+D1 真板异步 UART 测试已正式结束：Q19/Q19B 已完成并归档，Q19C 已完成 D1 async UART 验证并全部归档（`q19c-m2-m3-acceptance-alignment` → `q19c-lichee-full-starryos-benchmark` → `q19c-async-uart-closeout`）。M3/rootfs-probe 代码已删除，历史证据保留在 `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/`；Q19D SDMMC/rootfs 取消当前规划。Q17 已完成 QEMU gate，活跃 change 仅剩 `q17-smp-memory-ordering`。Q20 需要 VisionFive2 或等价多 hart 环境复验 Q17 O63。
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
@@ -102,52 +105,15 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0/M1/M2 已通过 
 
 ### Q19: Lichee RV Dock D1 axplat bring-up ✅ 真板 smoke complete (2026-06-29)
 
-> 来源：OpenSpec change `q19-lichee-d1-early-smoke`，`.claude/analysis/d1-axplat-bringup-plan.md`、`.claude/analysis/lichee-rv-dock-adaptation-plan.md`。
+> 来源：OpenSpec change `q19-lichee-d1-early-smoke`，`.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md`、`.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md`。
 > 2026-06-29：D1 axplat、Android boot image、DW APB UART0 polling early console、C906 PTE 属性和 Lichee smoke feature gate 已通过真板最小验证。串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。Q19a 到此完成；PLIC/Timer/SDMMC/rootfs/TTY/benchmark 属于后续独立阶段。
 
 <!-- tombstone: Q19.1-Q19.13 --> Archived 2026-07-02 in ARC-202607021648 — Q19 子任务已收敛为摘要；完整任务见 Q19 archived change、`lichee-d1-early-smoke` spec 和 carrier spec。
 <!-- Q19.summary --> - [x] 完成 D1 axplat、Android boot image、DW APB UART0 polling early console、C906 PTE 属性、feature gate 与真板 smoke 输出 `[starry-d1] smoke complete, halting.`
 
-### Q19C: Lichee full StarryOS benchmark 🧪 M0/M1/M2 完成 / M3 待探索
+### Q19C/Q19D: D1 async UART board benchmark ✅ 正式结束
 
-> 来源：OpenSpec change `q19c-lichee-full-starryos-benchmark`，`.claude/analysis/q19c-lichee-full-starryos-benchmark.md`，ADR-052，learned L259-L261。
-> 当前状态：2026-07-11，Q19C-M0/M1/M2 已在 D1 真板通过。M2 以 `lichee-memory-root-command` 作为完成目标，true shell deferred。M3 rootfs-probe 当前只证明入口和 async UART init 可达，`docs/M3.md` 未出现完整 probe table，需要先做深度探索。
-
-<!-- Q19C.1 --> - [x] Phase 1: 需求探索 + CodeGraph 路径追踪，确认 QEMU full path 为 `mount_all()` → `FS_CONTEXT.resolve()` → `load_user_app()`，Q19B Lichee 当前为 embedded `load_embedded_user_app()`
-<!-- Q19C.2 --> - [x] BDD 缺口扫描：区分 Happy Path（memory-root/rootfs benchmark）、Sad Path（无 block device / path missing）、Edge（Q19B regression 不退化）
-<!-- Q19C.3 --> - [x] 创建 OpenSpec change：`proposal.md`、`design.md`、`tasks.md`、`specs/lichee-d1-fullbench/spec.md`
-<!-- Q19C.4 --> - [x] Phase 2: 方案拆分为 M0 benchmark evidence cleanup、M1 memory-root path loader、M2 optional shell/script parity、M3 SDMMC/block probe-only、future rootfs deferred
-<!-- Q19C.4a --> - [x] Review 修订: 补齐 `FsContext::create_dir/write` 注入 API、feature/Makefile/entry 脚手架任务、mode feature/log label 映射、显式 benchmark section gate、ELF/boot image size 检查与 SKIPPED evidence 规则
-<!-- Q19C.5 --> - [x] 实施入口：开始源码变更前建立 Q19B regression witness、`codegraph_impact` 与 Verify Current State
-<!-- Q19C.6 --> - [x] M0 Phase 1/2: 梳理并规划 `benchmark.c` 参数/manifest，使 QEMU、Q19B embedded、Q19C memory-root/shell/rootfs 数据可按配置横向解释
-<!-- Q19C.7 --> - [x] M0 Phase 1/2: 补齐真板 RX 测试方案，至少保留无输入 `EAGAIN` regression，并规划 fixed-payload/manual-input 或 loopback witness
-<!-- Q19C.8 --> - [x] M0 Phase 1/2: 保留 64B 小包结果 `size=64 / iters=100 / 1.01 KB/s / 8.8% line rate`，探索批量 drain、no-drain enqueue、`writev`、TX wake/drain path、64/128/256B break-even 优化方向
-<!-- Q19C.8a --> - [x] M0 Phase 3 执行入口：修改 `tests/benchmark.c` 前先跑 current-state witness，并等待用户确认进入实施
-<!-- Q19C.8b --> - [x] M0 实施：统一 QEMU/userbench benchmark manifest 与 section 输出，默认移除 4096B 测试，补齐 section pre-drain/latency 相对线时诊断和 D1 gated TX debug snapshot
-<!-- Q19C.8c --> - [x] M0 真板数据分析：确认 64B 小包旧异常主要来自 stdout backlog 测量污染；隔离后 D1 64B `write+tcdrain` 接近线速
-<!-- Q19C.8d --> - [x] D1 TX 已验证修复：`send_bytes()` 在 THRE 后一次填最多 16B FIFO，TTY OPOST/ONLCR short-write 计数修复；S11 1024B 正确发送恢复
-<!-- Q19C.8e --> - [x] Q19C.8e 已完成：slow-pool（`TX_SLOW_POLL_LIMIT=4096`）+ yield 重试（`TX_YIELD_RETRIES=4`）已实施；真板 `slow_poll_exh=0` `yield_exh=0` 证明 slow-pool 100% 成功；P99 长尾（50.86ms）根因未探明，当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 复验时再探明（O77/L275 已记录）
-<!-- Q19C.9 --> - [x] M1: 在 memory-root 中提供 benchmark ELF 文件节点，通过 `FS_CONTEXT.resolve()/read()` + eager ELF mapping 启动 benchmark；真板 `docs/Q19cM1.md` 已完整输出 manifest、TX/RX sections 和 exit code 0；`load_user_app()` lazy file-backed COW 问题后置为 O80
-<!-- Q19C.10a --> - [x] M2 host gate: `lichee-d1-fullbench-command` feature, `make lichee-fullbench-command`, `starry-lichee-fullbench-command-boot.img` kernel_size=999616, cargo check ✅, image build ✅；单模式 feature 互斥 guard 已加入（`compile_error!`）
-<!-- Q19C.10b --> - [x] M2 acceptance: true shell path deferred to future optional；M2 必达目标收敛为 `lichee-memory-root-command`；`shell_status=SKIPPED: no known-good static /bin/sh` 为合法证据
-<!-- Q19C.10c --> - [x] M2 board gate: D1 真板运行通过；`docs/M2.md` 含 `lichee-memory-root-command`、`shell_status=SKIPPED`、argv/envp evidence、benchmark sections、`Done.`、`benchmark exited with code: 0` 和 `halting.`
-<!-- Q19C.11a --> - [x] M3 host gate: `lichee-d1-rootfs-probe` feature, `make lichee-rootfs-probe`, `starry-lichee-rootfs-probe-boot.img` kernel_size=159936, cargo check ✅, image build ✅, 无 `init_filesystems()` 调用路径；单模式 feature 互斥 guard 已加入
-<!-- Q19C.11b --> - [x] M3 acceptance: rootfs-probe 为 blocker report（非 register probe success / rootfs benchmark success）；日志标注 TBD/SKIPPED
-<!-- Q19C.11c --> - [ ] M3 board gate: D1 真板未通过；`docs/M3.md` 只到 `d1_sdmmc_controller_base=TBD`，未输出 `rootfs_init=NOT called`、`block_status=SKIPPED` 或 `probe complete`
-<!-- Q19C.11d --> - [ ] M3 深度探索：定位 probe table 输出中断边界，重点检查 polling console 与 async UART 共用 UART0、`lichee-d1-rootfs-probe` feature 依赖、entry cfg 路由、TX flush/中断状态和最小复现
-<!-- Q19C.12 --> - [ ] Future rootfs: 仅当后续有真实 block device/rootfs 时运行 rootfs path benchmark；否则 rootfs result 表记录 SKIPPED，不阻塞 Q19C M1 完成
-
-### Q19D: Lichee SDMMC/rootfs implementation 🧭 后续方向 / 待建 change
-
-> 来源：Q19C OpenSpec change `q19c-lichee-full-starryos-benchmark` 的 2026-07-04 review（Q19C review 已吸收进该 change 的 design/tasks；不再有独立的 q19c-plan-review.md 文件）。Q19D 承接 Q19C 的 SDMMC probe evidence，目标是把真实 D1 SDMMC/block/rootfs 实施从 Q19C 中拆出，单独管理风险和验收。
-> 当前状态：仅登记方向，尚未创建 OpenSpec change；Q19C M1 memory-root path 已明确，仍需等 SDMMC probe evidence 明确后再正式 propose。
-
-<!-- Q19D.1 --> - [ ] 创建 OpenSpec change：`q19d-lichee-sdmmc-rootfs` 或等价名称，明确不与 Q20 VisionFive2 混合
-<!-- Q19D.2 --> - [ ] 基于 Q19C SDMMC probe 表确认 D1 SDMMC controller base/IRQ/clock/reset/pinmux/card-detect/U-Boot inheritance 状态
-<!-- Q19D.3 --> - [ ] 设计 D1 SDMMC 最小 PIO-first block read 路径，先证明可读 LBA0 或已知 block，再评估 IRQ/DMA/cache
-<!-- Q19D.4 --> - [ ] 将可用块设备注册为 `AxBlockDevice` / axdriver 设备容器，防止空 block list 调用 `axfs-ng::init_filesystems()`
-<!-- Q19D.5 --> - [ ] 准备 ext4/FAT rootfs 镜像，记录分区/偏移、benchmark ELF、可选 shell/init script 和动态依赖
-<!-- Q19D.6 --> - [ ] 真板运行 real rootfs path benchmark：通过 `load_user_app()` 从真实 rootfs 解析 `/bin/benchmark` 或 shell/script 入口，记录 raw serial log 与 benchmark summary
+> Q19C-M0/M1/M2 已在 D1 真板通过，D1 异步 UART 测试正式结束。M2 以 `lichee-memory-root-command` 作为完成目标，true shell deferred；M3/rootfs-probe、Q19D SDMMC/rootfs 与 real rootfs 不再是当前 gate。逐项历史已归档到 ARC-202607111510。
 
 ### Q20: VisionFive2 UART 验证 ⏳ 等待硬件
 
@@ -188,3 +154,4 @@ Q17 已完成 QEMU gate；Q19/Q19B 已完成并归档；Q19C-M0/M1/M2 已通过 
 
 <!-- arc: ARC-202607021648 --> Q18/Q19 详细任务与 Q8-Q11 重复指针已归档/压缩 (2026-07-02) → ../../openspec/changes/archive/2026-07-02-ARC-202607021648/proposal.md
 <!-- arc: ARC-202607031929 --> tasks `最终状态` / `关键经验` 历史小节已压缩归档 (2026-07-03) → ../../openspec/changes/archive/2026-07-03-ARC-202607031929/proposal.md
+<!-- arc: ARC-202607111510 --> Q19C/Q19D 逐项收尾任务已归档 (2026-07-11) → ../../openspec/changes/archive/2026-07-11-ARC-202607111510/proposal.md

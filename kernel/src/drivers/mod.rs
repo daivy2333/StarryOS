@@ -12,12 +12,12 @@
 pub mod bench;
 #[cfg(feature = "lichee-d1-async-uart")]
 pub mod d1_uart;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub mod ntty_async;
 pub mod os_arceos;
 pub mod uart_init;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub use ntty_async::ASYNC_TTY;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub type AsyncTty =
     crate::pseudofs::dev::tty::Tty<uart_init::ArceOsReader, uart_init::ArceOsWriter>;

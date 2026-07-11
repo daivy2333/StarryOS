@@ -1,6 +1,6 @@
 # Analysis Archive Index
 
-> Last updated: 2026-07-04
+> Last updated: 2026-07-11
 
 This directory stores archived analysis documents by batch. Active-path tombstones have been consolidated into this index so the active `.claude/analysis/` tree stays minimal.
 
@@ -8,6 +8,7 @@ This directory stores archived analysis documents by batch. Active-path tombston
 
 - `2026-06-24-q0-q15-analysis/` — early async UART, module extraction, Q15/M4, performance, and architecture analysis (14 files).
 - `2026-07-04-q19-lichee-analysis/` — Q18/Q19/Q19B Lichee plans, board captures, benchmark logs, and boot backup (8 files + `lichee/` subdir).
+- `2026-07-11-q19c-d1-async-uart-closeout/` — Q19C planning, TX optimization, M1/M2/M3 analysis, and D1 board evidence logs after D1 async UART testing ended (8 files + `lichee/` subdir).
 
 ## Active-path Tombstones (consolidated 2026-07-04)
 
@@ -45,6 +46,26 @@ This directory stores archived analysis documents by batch. Active-path tombston
 |-------------|-------------|
 | `.claude/analysis/lichee/boot-official-backup.img.tombstone.md` | binary `boot-official-backup.img` marker — original `.img` path is intentionally NOT replaced with text to avoid accidental flashing of a tombstone file. Archive copy lives at `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee/boot-official-backup.img`. |
 
+## Active-path Tombstones (consolidated 2026-07-11)
+
+### Top-level (`.claude/analysis/<file>` -> archive)
+
+| Old active path | Archive location (relative to `.claude/analysis/`) | Reason |
+|-----------------|----------------------------------------------------|--------|
+| `q19c-lichee-full-starryos-benchmark.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-lichee-full-starryos-benchmark.md` | Q19C completed and archived; final facts live in ADR-052/054/055, learned L259-L280, and lichee-d1-fullbench spec |
+| `q19c-d1-tx-optimization.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md` | Q19C.8e completed; P99 tail kept as known limitation for Q20复验 |
+| `q19c-m1-memory-root-path-loader.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | M1 memory-root path loader passed on D1; lazy COW issue remains O80 |
+| `q19c-m2-m3-shell-sdmmc-probe.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | M2 command-entry passed; M3/rootfs-probe canceled as UART gate |
+
+### Lichee subdir (`.claude/analysis/lichee/<file>` -> archive)
+
+| Old active path | Archive location (relative to `.claude/analysis/`) | Reason |
+|-----------------|----------------------------------------------------|--------|
+| `lichee/M2.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/lichee/M2.md` | Q19C-M2 board log preserved as final command-entry evidence |
+| `lichee/NewDate.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/lichee/NewDate.md` | Q19C-M0/M0.8e board data preserved |
+| `lichee/Q19cM1.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/lichee/Q19cM1.md` | Q19C-M1 board log preserved |
+| `lichee/licheerv-dock-bringup.md` | `_archive/2026-07-11-q19c-d1-async-uart-closeout/lichee/licheerv-dock-bringup.md` | Q19/Q19B/Q19C D1 board evidence preserved after final closeout |
+
 ## Restore Rule
 
 1. Find the old path in the table above (or grep `tombstone:` for older records).
@@ -53,5 +74,5 @@ This directory stores archived analysis documents by batch. Active-path tombston
 
 ## See also
 
-- `openspec/specs/references/spec.md` §"项目内部分析与设计文档索引" — R2/R4/R5/R6/R7 entries all carry `[ARCHIVED 2026-07-04 → …]` markers with the same archive paths.
+- `openspec/specs/references/spec.md` §"项目内部分析与设计文档索引" — R2/R4/R5/R6/R7 and R10-R13 entries carry archive markers with the same archive paths.
 - `openspec/specs/learned/spec.md` and `openspec/specs/architecture/spec.md` — every `.claude/analysis/*.md` reference now carries an inline `[ARCHIVED 2026-07-04 → …]` annotation.

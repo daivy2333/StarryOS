@@ -18,33 +18,29 @@ extern crate axruntime;
 extern crate axlog;
 
 // ── Feature mode mutual exclusion guards ───────────────────────────────
-// Each Lichee fullbench mode (path, command, rootfs-probe) is a single-mode
+// Each Lichee fullbench mode (path, command) is a single-mode
 // build target. Combining incompatible modes would produce unreachable code
 // paths or module exclusion failures.
 #[cfg(all(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
 compile_error!("lichee-d1-fullbench and lichee-d1-fullbench-command are mutually exclusive; select exactly one fullbench mode");
-#[cfg(all(feature = "lichee-d1-fullbench", feature = "lichee-d1-rootfs-probe"))]
-compile_error!("lichee-d1-fullbench and lichee-d1-rootfs-probe are mutually exclusive; select exactly one fullbench mode");
-#[cfg(all(feature = "lichee-d1-fullbench-command", feature = "lichee-d1-rootfs-probe"))]
-compile_error!("lichee-d1-fullbench-command and lichee-d1-rootfs-probe are mutually exclusive; select exactly one fullbench mode");
 
 pub mod entry;
 
 mod config;
 #[cfg(not(feature = "lichee-d1-smoke"))]
 mod drivers;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod file;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod mm;
 pub mod platform;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod pseudofs;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod syscall;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod task;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "lichee-d1-rootfs-probe")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod time;
 
 // Critical section implementation for embassy-sync AtomicWaker

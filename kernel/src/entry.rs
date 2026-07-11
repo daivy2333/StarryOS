@@ -5,7 +5,7 @@ use alloc::{
 };
 
 // ── D1 user/fullbench imports (full set for user processes) ──────────
-#[cfg(all(not(feature = "lichee-d1-rootfs-probe"), any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
+#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
 use {
     crate::{
         drivers::ASYNC_TTY,
@@ -41,11 +41,11 @@ use {
 // ── D1 benchmark imports (kbench and userbench) ──────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::uart_init;
-#[cfg(all(feature = "lichee-d1-async-uart", not(feature = "lichee-d1-rootfs-probe")))]
+#[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::bench;
 #[cfg(feature = "lichee-d1-userbench")]
 use crate::mm::load_embedded_user_app;
-#[cfg(all(not(feature = "lichee-d1-rootfs-probe"), any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
+#[cfg(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
 use crate::mm::load_user_app_eager_from_path;
 
 /// Initialize and run initproc.
@@ -155,15 +155,13 @@ pub fn init(args: &[String], envs: &[String]) {
 fn lichee_d1_init(args: &[String], envs: &[String]) {
     let _ = (args, envs);
 
-    #[cfg(all(not(feature = "lichee-d1-rootfs-probe"), feature = "lichee-d1-fullbench"))]
+    #[cfg(feature = "lichee-d1-fullbench")]
     ax_println!("[starry-d1] Lichee D1 fullbench memory-root path mode");
-    #[cfg(all(not(feature = "lichee-d1-rootfs-probe"), feature = "lichee-d1-fullbench-command"))]
+    #[cfg(feature = "lichee-d1-fullbench-command")]
     ax_println!("[starry-d1] Lichee D1 fullbench command-entry mode");
-    #[cfg(feature = "lichee-d1-rootfs-probe")]
-    ax_println!("[starry-d1] Lichee D1 rootfs-probe mode");
-    #[cfg(all(feature = "lichee-d1-userbench", not(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command", feature = "lichee-d1-rootfs-probe"))))]
+    #[cfg(all(feature = "lichee-d1-userbench", not(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))))]
     ax_println!("[starry-d1] Lichee D1 userbench mode");
-    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command", feature = "lichee-d1-rootfs-probe")))]
+    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
     ax_println!("[starry-d1] Lichee D1 kbench mode");
 
     // Phase 4: Initialize async UART hardware (D1 32-bit MMIO path)
@@ -171,11 +169,10 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     ax_println!("[kernel] Async UART driver initialized (D1)");
 
     // Phase 4: Run kernel ring buffer benchmark
-    #[cfg(not(feature = "lichee-d1-rootfs-probe"))]
     bench::run_startup_benchmark();
 
     // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
-    #[cfg(all(feature = "lichee-d1-userbench", not(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command", feature = "lichee-d1-rootfs-probe"))))]
+    #[cfg(all(feature = "lichee-d1-userbench", not(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))))]
     {
         ax_println!("[starry-d1] Initializing memory rootfs...");
         pseudofs::init_memory_root();
@@ -244,7 +241,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     }
 
     // ── Q19C-M1: memory-root path loader fullbench ───────────────────
-    #[cfg(all(not(feature = "lichee-d1-rootfs-probe"), feature = "lichee-d1-fullbench"))]
+    #[cfg(feature = "lichee-d1-fullbench")]
     {
         const BENCH_PATH: &str = "/bin/benchmark";
 
@@ -353,7 +350,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     }
 
     // ── Q19C-M2: command-entry fullbench ──────────────────────────────
-    #[cfg(all(not(feature = "lichee-d1-rootfs-probe"), feature = "lichee-d1-fullbench-command"))]
+    #[cfg(feature = "lichee-d1-fullbench-command")]
     {
         const BENCH_PATH: &str = "/bin/benchmark";
         const INIT_SH_PATH: &str = "/init.sh";
@@ -496,63 +493,8 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         }
     }
 
-    // ── Q19C-M3: rootfs-probe ─────────────────────────────────────────
-    #[cfg(feature = "lichee-d1-rootfs-probe")]
-    {
-        ax_println!("[starry-d1] log_label=lichee-rootfs-probe");
-        ax_println!("[starry-d1] target_mode=lichee-d1-rootfs-probe");
-        ax_println!("[starry-d1] probe_goal=SDMMC/block discovery, D1 known facts, no rootfs init");
-
-        // ── D1 known partition facts ──────────────────────────────────
-        ax_println!("[starry-d1] --- D1 SDMMC known facts ---");
-        ax_println!("[starry-d1] d1_sdmmc_controller_base=TBD (from D1 User Manual / DTS)");
-        ax_println!("[starry-d1] d1_sdmmc_irq=TBD");
-        ax_println!("[starry-d1] d1_sdmmc_clock_reset=TBD (may be inherited from U-Boot)");
-        ax_println!("[starry-d1] d1_sdmmc_pinmux=TBD (may be inherited from U-Boot)");
-        ax_println!("[starry-d1] d1_sdmmc_card_detect=TBD");
-        ax_println!(
-            "[starry-d1] d1_sdmmc_mmio_access=SKIPPED: controller base/init sequence not confirmed"
-        );
-        ax_println!("[starry-d1] d1_sdmmc_transfer_mode=probe-only (no PIO/DMA implemented)");
-        ax_println!(
-            "[starry-d1] d1_sdmmc_first_block_read=SKIPPED: PIO/DMA driver not implemented"
-        );
-        ax_println!("");
-        ax_println!("[starry-d1] --- D1 known partition layout ---");
-        ax_println!("[starry-d1] /dev/mmcblk0p1: vfat (boot-resource)");
-        ax_println!("[starry-d1] /dev/mmcblk0p4: Android boot image");
-        ax_println!("[starry-d1] /dev/mmcblk0p7: ext4 (rootfs)");
-        ax_println!("[starry-d1] u-boot_chain=sunxi_flash read 45000000 boot; bootm 45000000");
-        ax_println!("");
-
-        // ── StarryOS block provider status ────────────────────────────
-        ax_println!("[starry-d1] --- StarryOS block provider status ---");
-        ax_println!("[starry-d1] virtio-mmio-ranges=[] (D1 has no virtio block)");
-        ax_println!("[starry-d1] axdriver_mmio_bus=virtio-only (does not enumerate D1 SDMMC)");
-        ax_println!("[starry-d1] sdmmc_driver_status=not implemented (no D1 AxBlockDevice registered)");
-        ax_println!("[starry-d1] simple-sdmmc=reference crate available, not connected to D1 block");
-        ax_println!("");
-        ax_println!(
-            "[starry-d1] block_status=SKIPPED: missing D1 SDMMC/block driver"
-        );
-        ax_println!("[starry-d1] rootfs_init=NOT called (block_devs.len() == 0, would panic)");
-        ax_println!("");
-
-        // ── Q19D precondition evidence ─────────────────────────────────
-        ax_println!("[starry-d1] --- Q19D preconditions ---");
-        ax_println!("[starry-d1] q19d_requires=controller base/IRQ/clock/reset/pinmux/card-detect facts");
-        ax_println!("[starry-d1] q19d_requires=PIO-first block read path (LBA0 or known block)");
-        ax_println!("[starry-d1] q19d_requires=D1 AxBlockDevice registration before rootfs mount");
-        ax_println!("[starry-d1] q19d_scope=real D1 SDMMC/block/rootfs implementation (separate change)");
-        ax_println!("");
-        ax_println!("[starry-d1] probe complete, halting. No panic.");
-        loop {
-            riscv::asm::wfi();
-        }
-    }
-
     // ── kbench mode: halt after kernel benchmark ─────────────────────
-    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command", feature = "lichee-d1-rootfs-probe")))]
+    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
     {
         ax_println!("[starry-d1] kernel benchmark complete, halting.");
         loop {

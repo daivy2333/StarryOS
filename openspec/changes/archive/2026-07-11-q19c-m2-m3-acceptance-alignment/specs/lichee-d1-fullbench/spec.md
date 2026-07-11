@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Shell or script benchmark parity
 
@@ -26,7 +26,7 @@ Q19C M2 MUST accept `lichee-memory-root-command` as the required Lichee memory-r
 
 ### Requirement: Benchmark evidence is chain-specific
 
-Q19C MUST record benchmark evidence with enough context to compare QEMU, Q19B embedded, Q19C memory-root path, Q19C memory-root command, and Q19C rootfs probe/rootfs path results without conflating their startup chains.
+Q19C MUST record benchmark evidence with enough context to compare QEMU, Q19B embedded, Q19C memory-root path, and Q19C memory-root command results without conflating their startup chains.
 
 #### Scenario: Recording M2 argv evidence
 
@@ -34,30 +34,28 @@ Q19C MUST record benchmark evidence with enough context to compare QEMU, Q19B em
 - **THEN** the evidence MUST distinguish kernel-side argv/envp construction from user-observed argv/envp output
 - **AND** user-observed argv/envp MUST NOT be claimed unless the user payload prints argc/argv/envp or an equivalent marker.
 
-#### Scenario: Recording board pending status
+#### Scenario: Recording board status
 
-- **WHEN** M2 or M3 has passed host cargo/image gates but has not run on D1 hardware
-- **THEN** project task status MUST record host gate as done and board gate as pending
-- **AND** the overall board-dependent item MUST NOT be marked fully complete.
+- **WHEN** M2 has passed D1 board benchmark
+- **THEN** project task status MUST record M2 board gate as complete
+- **AND** the evidence MUST reference the serial log or document that contains benchmark sections and exit code.
 
-### Requirement: Rootfs mode requires real block device witness
+### Requirement: M3 rootfs-probe is canceled as a current gate
 
-Q19C rootfs path mode MUST only call `axfs-ng::init_filesystems()` after a real Lichee block device is available to the filesystem layer. Q19C MAY stop at `lichee-rootfs-probe` blocker evidence when SDMMC/block support is not yet implemented.
+Q19C MUST NOT require M3 rootfs-probe, SDMMC, block, shell, or real rootfs evidence for async UART performance completion. Historical M3 output MAY be kept as canceled-scope evidence, but it MUST NOT block Q19C.
 
-#### Scenario: Probe-only evidence is used
+#### Scenario: M3 output remains incomplete
 
-- **WHEN** `lichee-rootfs-probe` runs without a registered D1 block device
-- **THEN** it MUST report `SKIPPED` with a concrete SDMMC/block blocker
-- **AND** it MUST report that rootfs init was not called
-- **AND** it MUST NOT record rootfs benchmark success.
+- **WHEN** `lichee-rootfs-probe` output is incomplete or skipped
+- **THEN** Q19C MUST still be evaluated from M0/M1/M2 async UART evidence
+- **AND** the incomplete M3 output MUST NOT be recorded as UART benchmark failure.
 
-#### Scenario: Register probe is not implemented
+#### Scenario: Storage/rootfs is reopened later
 
-- **WHEN** M3 does not perform SDMMC MMIO/register reads
-- **THEN** the evidence MUST identify register probing as skipped or TBD
-- **AND** it MUST NOT claim controller MMIO accessibility or first block read success.
+- **WHEN** D1 SDMMC/block/rootfs work is requested later
+- **THEN** it MUST be planned in a follow-up change
+- **AND** that change MUST define its own block/rootfs acceptance gates.
 
-## ADDED Requirements
 
 ### Requirement: Fullbench mode features are mutually exclusive
 

@@ -4,7 +4,7 @@ Q19C 原始目标是让 D1 真板从 Q19B embedded userbench 走向更接近 QEM
 
 M2 原先写成 shell/script parity。但 StarryOS 当前没有自研 shell，QEMU 使用的是 rootfs 中的 `/bin/sh`。因此 Q19C 不应把“获得一个静态 `/bin/sh` 并跑 shell script”作为当前 change 的完成条件。
 
-M3 原先写成 SDMMC/rootfs probe。当前实现是保守的 rootfs-probe mode：不猜 D1 SDMMC MMIO 常量，不调用空 block list 的 `init_filesystems()`，只记录 blocker。该边界应写清楚。
+M3 原先写成 SDMMC/rootfs probe。2026-07-11 方向更新后，M3/rootfs-probe 不再属于 async UART 性能验证 gate。已有实现仍按保守口径记录：不猜 D1 SDMMC MMIO 常量，不调用空 block list 的 `init_filesystems()`，不声称 rootfs 成功。
 
 ## Goals / Non-Goals
 
@@ -13,9 +13,9 @@ M3 原先写成 SDMMC/rootfs probe。当前实现是保守的 rootfs-probe mode�
 - M2 验收目标收敛为 `lichee-memory-root-command`。
 - true shell path 明确为 future optional。
 - M2/M3 单模式 feature 组合有明确保护。
-- host gate 与 board gate 在任务状态中分开。
+- M2 board gate 已完成，M3 board gate 取消当前规划。
 - M2 argv/envp 证据不夸大。
-- M3 probe-only 证据不夸大。
+- M3 历史 probe-only 证据不夸大。
 
 **Non-Goals:**
 
@@ -23,7 +23,7 @@ M3 原先写成 SDMMC/rootfs probe。当前实现是保守的 rootfs-probe mode�
 - 不引入 busybox。
 - 不修复 loader lazy COW。
 - 不实现 SDMMC/block/rootfs。
-- 不要求 M2/M3 真板 gate 在规划阶段完成。
+- 不要求 M3 真板 gate 完成。
 
 ## Decisions
 
@@ -79,16 +79,16 @@ compile_error!("select exactly one Lichee fullbench mode feature");
 - 如果要声明 user-observed argv/envp，payload 必须打印 `argc/argv/envp` 或等价 marker。
 - M2 command-entry 不因 payload 未打印 argv 而失败，但证据名称不能夸大。
 
-### D5: M3 是 rootfs readiness blocker report
+### D5: M3/rootfs-probe 取消为当前 gate
 
-选择：当前 M3 是 `lichee-rootfs-probe` 的 blocker report，不是 SDMMC register probe 或 rootfs path benchmark。
+选择：当前 M3 不再是 Q19C 验收 gate。`lichee-rootfs-probe` 只保留为历史 blocker report，不是 SDMMC register probe 或 rootfs path benchmark。
 
 验收口径：
 
-- 未确认 controller base/init sequence 时，日志应写 `SKIPPED: controller base/init sequence not confirmed`。
-- 未注册 D1 `AxBlockDevice` 时，日志应写 `SKIPPED: missing D1 SDMMC/block driver`。
-- 不调用 `axfs-ng::init_filesystems()`。
-- 不记录 rootfs benchmark success。
+- M3 输出不完整不得阻塞 Q19C async UART 性能验证。
+- 历史 M3 日志不得写成 SDMMC register probe success。
+- 历史 M3 日志不得写成 rootfs benchmark success。
+- 后续 storage/rootfs bring-up 必须另开 change。
 
 ## Requirements Traceability Matrix
 
@@ -97,9 +97,9 @@ compile_error!("select exactly one Lichee fullbench mode feature");
 | R1 M2 command-entry is accepted target | 1.1-1.4, 4.1 | 100% | true shell deferred | Covered with user-approved simplification |
 | R2 true shell not claimed | 1.2, 1.5, 4.1 | 100% | none | Covered |
 | R3 feature modes are mutually exclusive | 2.1-2.4 | 100% | guard may be compile_error or documented single-mode target | Covered |
-| R4 host/board task status separated | 3.1-3.3 | 100% | none | Covered |
+| R4 host/board task status separated | 3.1-3.4 | 100% | M2 done; M3 canceled current gate | Covered |
 | R5 argv/envp evidence is named accurately | 4.1-4.3 | 100% | user-observed argv optional | Covered |
-| R6 M3 probe-only evidence is named accurately | 5.1-5.4 | 100% | no register probe unless implemented | Covered |
+| R6 M3 probe-only evidence is named accurately | 5.1-5.4 | 100% | canceled current gate; no register/rootfs success claim | Covered |
 
 Gate 2 result: no uncovered requirement. The only simplification is user-approved: Q19C drops true shell as a required goal.
 
@@ -111,10 +111,10 @@ Gate 2 result: no uncovered requirement. The only simplification is user-approve
 - `openspec validate --changes`
 - `openspec validate --specs`
 - `AX_CONFIG_PATH=$PWD/.axconfig.toml cargo check --target riscv64gc-unknown-none-elf --features "axfeat/myplat axfeat/bus-mmio lichee-d1-fullbench-command"`
-- `AX_CONFIG_PATH=$PWD/.axconfig.toml cargo check --target riscv64gc-unknown-none-elf --features "axfeat/myplat axfeat/bus-mmio lichee-d1-rootfs-probe"`
+- Historical only: `AX_CONFIG_PATH=$PWD/.axconfig.toml cargo check --target riscv64gc-unknown-none-elf --features "axfeat/myplat axfeat/bus-mmio lichee-d1-rootfs-probe"`
 - Negative feature-combination check if compile_error guards are added.
 - `make lichee-fullbench-command`
-- `make lichee-rootfs-probe`
+- Historical only: `make lichee-rootfs-probe`
 
 ### Board Verification
 
@@ -128,11 +128,10 @@ M2 board log must include:
 - benchmark sections,
 - `benchmark exited with code: 0`.
 
-M3 board log must include:
+M3 board log is no longer required for Q19C completion. If preserved as historical evidence, it must not claim SDMMC/rootfs success:
 
 - image name,
 - `lichee-rootfs-probe`,
-- D1 SDMMC/block known facts,
-- `rootfs_init=NOT called`,
-- `SKIPPED: missing D1 SDMMC/block driver` or more specific blocker,
-- no `No block device found!` panic.
+- observed stage,
+- blocker or truncation summary,
+- no rootfs benchmark success claim.

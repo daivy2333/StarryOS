@@ -729,7 +729,7 @@ StarryOS Lichee RV Dock bring-up MUST start from an Android boot image smoke tes
 **参考**:
 - `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md]`
 - `.claude/analysis/lichee/public-platform-notes.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee/public-platform-notes.md]`
-- `docs/licheerv-dock-bringup.md`
+- `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/lichee/licheerv-dock-bringup.md`
 - `openspec/specs/learned/spec.md` L213-L216
 
 #### Scenario: Lichee RV Dock early bring-up
@@ -1067,39 +1067,42 @@ D1 DW APB UART async backend MUST treat THRE/TEMT readiness as both interrupt-dr
 - **AND** `tcdrain` / `flush` waiters MUST be registered on the drain completion path, not only on the TX ring space path
 
 <!-- A052 -->
-### Requirement: ADR-052: Q19C 完整 StarryOS benchmark 先走 memory-root path loader，再做 SDMMC/rootfs parity
+### Requirement: ADR-052: Q19C 异步 UART 性能验证以 memory-root path/command 收敛
 
-Lichee RV Dock 上的完整 StarryOS benchmark MUST first prove the normal VFS/path-based user loading path with a populated memory root before treating real SDMMC/rootfs bring-up as the blocking requirement.
+Lichee RV Dock 上的 Q19C benchmark MUST prove D1 async UART kernel/user performance through memory-root path and command-entry modes; shell, SDMMC, block, and real rootfs MUST NOT be required for Q19C completion.
 
 **日期**: 2026-07-02
-**状态**: 🔍 探究结论（待 Q19C change 落地）
+**状态**: ✅ 已接受（2026-07-11 方向更新）
 **决策**:
 - 保留 Q19B embedded `benchmark.elf` 作为 D1 async UART/userland regression gate。
 - 新增 Q19C fullbench runtime mode 时，先在 D1 memory root 中提供 `/bin/benchmark`，通过 `FS_CONTEXT.resolve()/read()` 和 eager ELF segment mapping 启动 benchmark，而不是继续调用 `load_embedded_user_app()`。
-- 只有 memory-root path loading 通过后，才进入真实 SDMMC/block rootfs parity；SDMMC bring-up 失败不得回归为 UART/TTY benchmark 阻塞。
+- M2 以 `lichee-memory-root-command` 作为完成目标；true shell path 只作为 future optional。
+- M3/rootfs-probe、真实 SDMMC/block rootfs parity、Q19D storage/rootfs implementation 取消为当前规划；需要时重新 propose。
 - D1 fullbench 不得启用 `qemu` feature；必须保持独立 feature set，继承 D1 async UART/PLIC 能力但排除 QEMU PCI/virtio/display 假设。
 
 **原因**:
 - Q19B 已证明 `/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO，但 embedded ELF 绕过了 rootfs/path loader。
-- QEMU 完整路径依赖 `load_user_app()` 从 `FS_CONTEXT` 解析 `/bin/sh` 或 benchmark 路径；Q19C-M1 先覆盖 D1 memory-root 的 VFS 路径可见性、读取、用户进程、stdio 和 benchmark 完整运行。
-- 真实 SDMMC/rootfs 需要 D1 block driver、clock/reset/pinmux/cache 等硬件 bring-up，排障面大，不能作为验证 normal loader path 的第一步。
+- QEMU 完整路径依赖 rootfs 镜像中的 `/bin/sh`；在 D1 上自制或引入 shell 会把验证目标扩展到 shell packaging、解释器、`/proc/self/exe` 和动态依赖。
+- Q19C-M1/M2 已覆盖 D1 memory-root 的 VFS 路径可见性、读取、用户进程、stdio、spawn/join、exit code 和 benchmark 完整运行。
+- 真实 SDMMC/rootfs 需要 D1 block driver、clock/reset/pinmux/cache 等硬件 bring-up；这些不属于 async UART 性能验证。
 
 **影响**:
-- Q19C 可以拆成一个前置证据清理 gate 加两个可验证工程阶段：benchmark evidence cleanup、memory-root fullbench 和 SDMMC/rootfs parity。
+- Q19C 可以按 M0/M1/M2 收尾：benchmark evidence cleanup、memory-root path fullbench、memory-root command-entry fullbench。
 - benchmark 数据仍按 QEMU / D1 embedded / D1 fullbench 分栏记录，避免覆盖不同测试条件。
-- 后续 OpenSpec change 应新增 `lichee-d1-fullbench` 或等价 make target，并保留 `make lichee-userbench` 不退化。
+- 后续优先级转向 Q20 多 hart / 等价真板复验，而不是继续扩展 rootfs/shell。
 
 **替代方案**:
 - ❌ 直接做 SDMMC/rootfs：工程价值高，但会把 block bring-up 和 user loader parity 绑在一起，降低定位效率。
+- ❌ 为 Q19C 自制或引入 shell：会偏离 async UART 性能验证目标。
 - ❌ 复用 QEMU feature：会重新引入 PCI/virtio/display/rootfs 假设，不符合 D1 硬件事实。
-- ✅ benchmark evidence cleanup -> memory-root path loader -> shell/script optional -> SDMMC/rootfs parity：当前推荐路线。
+- ✅ benchmark evidence cleanup -> memory-root path loader -> command-entry benchmark -> 收尾：当前路线。
 
 #### Scenario: D1 fullbench path loading
 
 - **WHEN** Q19C starts full StarryOS benchmark work on Lichee RV Dock
 - **THEN** the first fullbench gate MUST run benchmark from a VFS-visible `/bin/benchmark`
 - **AND** `load_embedded_user_app()` MUST remain only the Q19B regression path
-- **AND** real SDMMC/rootfs parity MUST be a later gate after memory-root path loading succeeds
+- **AND** shell, SDMMC, block, and real rootfs parity MUST NOT be required for Q19C completion
 
 <!-- A053 -->
 ### Requirement: ADR-053: D1 P99 长尾不作为异步 UART 主线阻塞项
@@ -1111,7 +1114,7 @@ Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation 
 **决策**:
 - 停止在 Q19C 主线上继续探究 D1 size>=15 / drain-each P99 长尾根因。
 - 将该问题归类为 D1 真板平台尾部行为或 D1 适配层调优项，而不是通用异步 UART 架构缺口。
-- Q19C 后续优先推进 memory-root `/bin/benchmark` path/shell/rootfs parity；P99 tracing 只保留为后续可选项。
+- Q19C 后续优先按 memory-root `/bin/benchmark` path/command 证据收尾；P99 tracing 只保留为后续可选项。
 
 **原因**:
 - 同版 benchmark 下，QEMU rootfs 路径未复现 D1 的 FIFO-boundary P99 长尾；D1 1B latency 也正常。
@@ -1120,14 +1123,14 @@ Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation 
 - 继续深挖会主要消耗在 D1 DW APB UART / PLIC / 调度 / 软件 wake 的平台细节上，和当前通用异步 UART 主线收益不匹配。
 
 **影响**:
-- D1 P99 长尾不阻塞 Q19C M1、M2 或后续 SDMMC/rootfs 探索。
+- D1 P99 长尾不阻塞 Q19C M1/M2 收尾。
 - 若未来出现 `tcdrain()` hang、明显交互卡顿、吞吐显著下降，或 VisionFive2 / 其他真板复现同类问题，再提升为平台 tracing 任务。
 - 通用异步 UART 当前状态视为已通过 QEMU + D1 双路径功能验证；后续工作以 loader/rootfs parity 和其他真板复验为主。
 
 **替代方案**:
 - ❌ 继续把 P99 tracing 作为 Q19C gate：会延迟 memory-root path loader，且当前没有正确性收益。
 - ❌ 声称问题已根治：当前只证明影响可接受，根因未探明。
-- ✅ 接受为 D1 平台尾部 known limitation，保留触发条件，主线继续推进 Q19C M1/M2/M3。
+- ✅ 接受为 D1 平台尾部 known limitation，保留触发条件，主线按 Q19C M1/M2 证据收尾。
 
 #### Scenario: D1 P99 tail appears during Q19C
 
@@ -1157,7 +1160,7 @@ Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` 
 
 **影响**:
 - Q19C-M1 的代码改动集中在 feature/Makefile、`entry.rs` fullbench 分支、memory-root populate helper 和 `load_user_app_eager_from_path()`。
-- 真实 SDMMC/rootfs 继续后置；M1 只证明 populated memory root 上的 path-based user loading。
+- 真实 SDMMC/rootfs 不再作为当前 roadmap；M1 只证明 populated memory root 上的 path-based user loading。
 - `docs/benchmark-report-async.md` 作为性能基线；M1 验收关注启动链路和 benchmark 完整运行，不重新优化 UART 性能。
 
 **替代方案**:
@@ -1174,40 +1177,42 @@ Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` 
 - **AND** it MUST start the process from those VFS-read ELF bytes, not `load_embedded_user_app()`
 
 <!-- A055 -->
-### Requirement: ADR-055: Q19C-M2/M3 分离 command-entry proof 与 SDMMC probe-only
+### Requirement: ADR-055: Q19C-M2 command-entry 是收尾 gate，M3/rootfs-probe 取消当前规划
 
-Q19C-M2/M3 MUST keep memory-root command-entry proof separate from SDMMC/rootfs probe work. Shell absence or block-device absence MUST be recorded as explicit evidence, not hidden behind kernel-launched benchmark success or rootfs panic.
+Q19C-M2 MUST accept memory-root command-entry proof as the final async UART user benchmark gate. Q19C-M3/rootfs-probe, shell, SDMMC, block, and real rootfs MUST NOT be required unless a new storage/rootfs goal is proposed.
 
 **日期**: 2026-07-10
-**状态**: 🔍 探究结论
+**状态**: ✅ 已接受（2026-07-11 方向更新）
 **决策**:
 - M2 在没有已知静态 `/bin/sh` 时，允许 documented equivalent command entry，但必须独立标注 label、argv/envp、stdio、spawn/join 与 exit code。
 - M2 不得把 kernel-launched `/bin/benchmark` 伪称为 shell success；缺 `/bin/sh`、`/init.sh`、解释器或库时必须输出缺失路径和阶段。
-- M3 只做 `lichee-rootfs-probe` 证据；没有 D1 `AxBlockDevice` 前不得调用 `axfs-ng::init_filesystems()`。
-- `simple-sdmmc` 只能作为 PIO-first 探针参考，不能被当作已接入 StarryOS block/rootfs 的现成驱动。
+- M3/rootfs-probe 不再作为 Q19C board gate。已完成的 host/probe 代码只保留为历史事实。
+- Q19D SDMMC/rootfs 取消当前规划。若后续目标转向 storage/rootfs bring-up，必须重新 create change。
 
 **原因**:
 - 当前 `load_user_app()` 对 `.sh` 会转向 `/bin/sh`，且 busybox 仍有 `/proc/self/exe` FIXME；强行做 shell proof 会把 shell packaging 问题混入 M2。
-- 当前 D1 平台没有 SDMMC block provider，`init_filesystems()` 对空 block list 会触发 `No block device found!`。
-- M2 验证的是命令入口与进程/stdio 语义；M3 验证的是硬件/block provider readiness。两者失败原因不同。
+- 当前 D1 平台没有 SDMMC block provider；实现 block/rootfs 不能提高 async UART 性能结论的可信度。
+- M0/M1/M2 已覆盖内核态 benchmark、用户态 `/dev/console`、TTY、syscall、`tcdrain`、FIONBIO、memory-root path/command 和 exit code。
 
 **影响**:
-- Q19C 可以同时推进 M2/M3，但验收表必须分栏：memory-root command evidence、shell SKIPPED evidence、SDMMC probe evidence、rootfs SKIPPED evidence。
-- Q19D 可承接 M3 probe 结果创建真实 D1 SDMMC/block/rootfs implementation change。
+- Q19C 按 M0/M1/M2 证据收尾；M3 board gate 不再等待。
+- 后续工作优先 Q20 多 hart / 等价真板复验。Storage/rootfs 另立项。
 
 **替代方案**:
 - ❌ 等待完整 shell 再做 M2：会阻塞已经可验证的 argv/envp/stdio/exit/join 证据。
-- ❌ 在 M3 直接启用 rootfs：当前会落入空 block list panic。
-- ✅ M2 先做 documented equivalent command entry，M3 先做 probe-only：当前推荐路线。
+- ❌ 继续 M3/rootfs-probe：只能证明 storage/rootfs blocker，不能增加 UART 性能证据。
+- ✅ M2 documented equivalent command entry 作为 Q19C 收尾 gate：当前路线。
 
-#### Scenario: M2/M3 missing dependency
+#### Scenario: M2 missing shell
 
 - **WHEN** Q19C-M2 lacks a known-good static shell
 - **THEN** it MUST record shell/script proof as `SKIPPED` or equivalent-command proof, with argv/envp/stdio/exit evidence
 - **AND** it MUST NOT claim shell-launched benchmark success
 
-- **WHEN** Q19C-M3 lacks a registered D1 block device
-- **THEN** it MUST record `SKIPPED: missing D1 SDMMC/block driver`
-- **AND** it MUST NOT call `axfs-ng::init_filesystems()` with an empty block list
+#### Scenario: M3/rootfs-probe is not required
+
+- **WHEN** Q19C async UART performance evidence is evaluated
+- **THEN** M3/rootfs-probe MUST NOT be required for completion
+- **AND** real SDMMC/block/rootfs work MUST be proposed separately before implementation
 
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
