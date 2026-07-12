@@ -68,7 +68,6 @@ typedef struct {
     int last_errno;
 } drain_stats_t;
 
-#ifdef BENCH_D1_DIAG
 #define UART_TXDBG_SNAPSHOT 0x54584431U
 #define UART_TXDBG_RESET    0x54584432U
 
@@ -90,7 +89,6 @@ typedef struct {
     uint64_t staged_bytes;
     uint64_t transmitter_empty;
 } txdbg_snapshot_t;
-#endif
 
 static long long get_time_ns(void) {
     struct timespec ts;
@@ -127,7 +125,6 @@ static int checked_tcdrain(int fd, drain_stats_t *stats) {
     return rc;
 }
 
-#ifdef BENCH_D1_DIAG
 static int txdbg_reset(int fd) {
     return ioctl(fd, UART_TXDBG_RESET, 0);
 }
@@ -157,7 +154,6 @@ static void print_txdbg_snapshot(const char *phase, int size, const txdbg_snapsh
            (unsigned long long)s->staged_bytes,
            (unsigned long long)s->transmitter_empty);
 }
-#endif
 
 static void sort_longs(long *values, int count) {
     for (int i = 0; i < count - 1; i++) {
@@ -209,15 +205,19 @@ static void print_tx_latency_diag(const char *prefix, long *latencies, int count
         if ((long long)latencies[i] > line_plus_10ms_ns) slow_over_line_plus10ms++;
     }
     double max_line_ratio = line_ns > 0 ? (double)latencies[count - 1] / (double)line_ns : 0.0;
+    long p50_ns = latencies[count * 50 / 100];
+    double p99_p50_ratio = p50_ns > 0 ? (double)latencies[count * 99 / 100] / (double)p50_ns : 0.0;
+    double max_p50_ratio = p50_ns > 0 ? (double)latencies[count - 1] / (double)p50_ns : 0.0;
 
-    printf("  diag=%s n=%d avg_ms=%.3f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f max_ms=%.3f slow_gt10ms=%d slow_over_line_plus10ms=%d max_line_ratio=%.2f\r\n",
+    printf("  diag=%s n=%d avg_ms=%.3f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f max_ms=%.3f slow_gt10ms=%d slow_over_line_plus10ms=%d max_line_ratio=%.2f p99_p50_ratio=%.2f max_p50_ratio=%.2f\r\n",
            prefix, count,
            (double)sum / count / 1000000.0,
-           (double)latencies[count * 50 / 100] / 1000000.0,
+           (double)p50_ns / 1000000.0,
            (double)latencies[count * 95 / 100] / 1000000.0,
            (double)latencies[count * 99 / 100] / 1000000.0,
            (double)latencies[count - 1] / 1000000.0,
-           slow, slow_over_line_plus10ms, max_line_ratio);
+           slow, slow_over_line_plus10ms, max_line_ratio,
+           p99_p50_ratio, max_p50_ratio);
 }
 
 static void prepare_section(const char *section) {
@@ -362,13 +362,11 @@ static void test_tx_enqueue_no_drain(void) {
         size_t total = 0;
         int short_writes = 0;
         drain_stats_t drain_stats = {0};
-#ifdef BENCH_D1_DIAG
         txdbg_snapshot_t txdbg_enqueue;
         txdbg_snapshot_t txdbg_final;
         fflush(stdout);
         checked_tcdrain(STDOUT_FILENO, NULL);
         int txdbg_reset_rc = txdbg_reset(fd);
-#endif
         long long start = get_time_ns();
 
         for (int i = 0; i < TX_THROUGHPUT_ITERS; i++) {
@@ -378,15 +376,11 @@ static void test_tx_enqueue_no_drain(void) {
         }
 
         long long enqueue_end = get_time_ns();
-#ifdef BENCH_D1_DIAG
         int txdbg_enqueue_rc = txdbg_snapshot(fd, &txdbg_enqueue);
-#endif
         int final_drain_rc = checked_tcdrain(fd, &drain_stats);
         int final_drain_errno = final_drain_rc < 0 ? errno : 0;
         long long drain_end = get_time_ns();
-#ifdef BENCH_D1_DIAG
         int txdbg_final_rc = txdbg_snapshot(fd, &txdbg_final);
-#endif
 
         double elapsed_s = (double)(enqueue_end - start) / 1000000000.0;
         double kbps = elapsed_s > 0.0 ? (double)total / elapsed_s / 1024.0 : 0.0;
@@ -397,11 +391,9 @@ static void test_tx_enqueue_no_drain(void) {
                final_drain_rc, final_drain_errno,
                drain_stats.calls, drain_stats.errors, drain_stats.last_errno,
                line_time_ms(total), kbps);
-#ifdef BENCH_D1_DIAG
         printf("  diag=s11-txdbg-reset size=%d ioctl_rc=%d\r\n", test_size, txdbg_reset_rc);
         print_txdbg_snapshot("enqueue", test_size, &txdbg_enqueue, txdbg_enqueue_rc);
         print_txdbg_snapshot("final-drain", test_size, &txdbg_final, txdbg_final_rc);
-#endif
 
         free(buf);
     }
@@ -579,7 +571,7 @@ static void test_tx_latency(void) {
         latencies[ok++] = (long)(end - start);
     }
 
-    print_latency_summary("size=1 policy=drain-each", latencies, ok);
+    print_tx_latency_diag("s20-single-byte", latencies, ok, 1);
     printf("  diag=S20 drain_calls=%d drain_errors=%d last_drain_errno=%d\r\n",
            drain_stats.calls, drain_stats.errors, drain_stats.last_errno);
     printf("\r\n");
@@ -619,8 +611,8 @@ static void test_tx_latency_matrix(void) {
         free(buf);
 
         char prefix[64];
-        snprintf(prefix, sizeof(prefix), "size=%d policy=drain-each", sz);
-        print_latency_summary(prefix, latencies, ok);
+        snprintf(prefix, sizeof(prefix), "s21-fifo-size-%d", sz);
+        print_tx_latency_diag(prefix, latencies, ok, sz);
         printf("  diag=fifo-size-%d drain_calls=%d drain_errors=%d last_drain_errno=%d\r\n",
                sz, drain_stats.calls, drain_stats.errors, drain_stats.last_errno);
     }
@@ -720,12 +712,83 @@ static void test_rx_fixed_payload(void) {
     close(fd);
 }
 
+/* ── TX counter proxy summary ─────────────────────────────────────── */
+static void print_tx_counter_summary(int fd) {
+    printf("=== [S40] TX Counter Proxy Summary ===\r\n");
+
+    txdbg_snapshot_t s;
+    int rc = txdbg_snapshot(fd, &s);
+    if (rc < 0) {
+        printf("  status=FAIL ioctl_error=%d errno=%d error=%s\r\n\r\n",
+               rc, errno, strerror(errno));
+        return;
+    }
+
+    /* Determine availability: if user_push_calls is 0, telemetry counters are unavailable */
+    int telemetry_available = (s.user_push_calls > 0);
+
+    printf("  telemetry_available=%d ioctl_rc=%d\r\n", telemetry_available, rc);
+
+    /* Raw counter fields */
+    printf("  counter=user-push user_calls=%llu user_req=%llu user_acc=%llu\r\n",
+           (unsigned long long)s.user_push_calls,
+           (unsigned long long)s.user_push_requested_bytes,
+           (unsigned long long)s.user_push_accepted_bytes);
+    printf("  counter=ring-pop ring_pop_calls=%llu ring_pop_bytes=%llu\r\n",
+           (unsigned long long)s.ring_pop_calls,
+           (unsigned long long)s.ring_pop_bytes);
+    printf("  counter=hw-send hw_send_calls=%llu hw_send_bytes=%llu hw_send_zero=%llu hw_send_max_chunk=%llu\r\n",
+           (unsigned long long)s.hw_send_calls,
+           (unsigned long long)s.hw_send_bytes,
+           (unsigned long long)s.hw_send_zero,
+           (unsigned long long)s.hw_send_max_chunk);
+    printf("  counter=no-progress no_progress_budget=%llu slow_poll_exh=%llu yield_exh=%llu\r\n",
+           (unsigned long long)s.no_progress_budget_exhausted,
+           (unsigned long long)s.slow_poll_exhausted,
+           (unsigned long long)s.yield_retries_exhausted);
+    printf("  counter=drain-state ring_empty=%llu copier_active=%llu staged_bytes=%llu transmitter_empty=%llu\r\n",
+           (unsigned long long)s.ring_empty,
+           (unsigned long long)s.copier_active,
+           (unsigned long long)s.staged_bytes,
+           (unsigned long long)s.transmitter_empty);
+
+    /* Derived proxy fields */
+    if (telemetry_available) {
+        double bytes_per_user_call = s.user_push_calls > 0
+            ? (double)s.user_push_accepted_bytes / (double)s.user_push_calls : 0.0;
+        double bytes_per_ring_pop = s.ring_pop_calls > 0
+            ? (double)s.ring_pop_bytes / (double)s.ring_pop_calls : 0.0;
+        double bytes_per_hw_send = s.hw_send_calls > 0
+            ? (double)s.hw_send_bytes / (double)s.hw_send_calls : 0.0;
+        double hw_kb = (double)s.hw_send_bytes / 1024.0;
+        double zero_per_kb = hw_kb > 0.0
+            ? (double)s.hw_send_zero / hw_kb : 0.0;
+        double no_progress_per_kb = hw_kb > 0.0
+            ? (double)s.no_progress_budget_exhausted / hw_kb : 0.0;
+
+        printf("  proxy=derived bytes_per_user_call=%.1f bytes_per_ring_pop=%.1f bytes_per_hw_send=%.3f zero_per_kb=%.1f no_progress_per_kb=%.1f\r\n",
+               bytes_per_user_call, bytes_per_ring_pop, bytes_per_hw_send,
+               zero_per_kb, no_progress_per_kb);
+    } else {
+        printf("  proxy=derived status=not-available reason=telemetry-counters-are-zero\r\n");
+    }
+
+    printf("\r\n");
+}
+
 /* ── 主函数 ──────────────────────────────────────────────────────── */
 int main(void) {
     printf("UART Async Benchmark\r\n");
     printf("====================\r\n\r\n");
 
     print_manifest();
+
+    /* Reset TX debug counters before benchmark run for clean delta */
+    int fd_counter = open(DEVICE_PATH, O_WRONLY);
+    if (fd_counter >= 0) {
+        txdbg_reset(fd_counter);
+    }
+
     test_tx_throughput();
     test_tx_enqueue_no_drain();
     test_tx_batch_drain();
@@ -735,6 +798,12 @@ int main(void) {
     test_tx_latency_matrix();
     test_nonblock_read();
     test_rx_fixed_payload();
+
+    /* TX counter proxy summary after all benchmarks */
+    if (fd_counter >= 0) {
+        print_tx_counter_summary(fd_counter);
+        close(fd_counter);
+    }
 
     printf("Done.\r\n");
     fflush(stdout);

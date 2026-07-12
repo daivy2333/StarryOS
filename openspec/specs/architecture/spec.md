@@ -947,4 +947,23 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **AND** multi-hart O63 proof MUST remain required before claiming SMP correctness
 - **AND** generic `io_uring` semantics MUST NOT be required unless a later ADR proves UART-specific rings are insufficient
 
+<!-- A057 -->
+### Requirement: ADR-057: Q20 只收敛 benchmark 证据，不改变 UART 驱动语义
+
+**日期**: 2026-07-12
+**状态**: 已接受
+**约束**: Q20 的代码改动 MUST 限定在 benchmark、诊断输出、构建宏和证据归档路径；若需要修改 `tx_copier_loop()`、waker、IER 或 drain 语义，MUST 退出 Q20 并另开优化或正确性 change。
+**决定**: Q20 使用现有 `tests/benchmark.c`、TX debug ioctl、`tx_debug_snapshot()`、`IRQ_COUNT` 和 D1/QEMU fullbench 入口补齐 latency/jitter、CPU/counter proxy、RX fixed payload 和 raw evidence。Q20 输出可以作为 Q21~Q23 性能决策输入，但不能声明 SMP 正确性。
+**原因**: Q19C 已证明 D1 async UART 基本路径和线速能力，剩余问题是测量口径不完整；把测量增强和驱动语义优化混在一起会破坏基线，使 Q23 无法判断收益来自 batching、counter 可观测性还是驱动行为变化。
+**影响**: Q20 plan 应优先做 S20/S21 jitter diag、QEMU+D1 同格式 TX counter delta、S31 fixed payload PASS 和 `.claude/analysis/q20-evidence/` raw log；驱动优化、completion queue 和 user ring 分别留给 Q21~Q23。
+**恢复入口**: R16、L287、`.claude/analysis/q20-benchmark-gap-closure.md`。
+
+#### Scenario: Implementing Q20 benchmark closure
+
+- **WHEN** Q20 implementation changes benchmark output
+- **THEN** it MUST preserve existing write/read/tcdrain semantics
+- **AND** it MUST keep QEMU and D1 evidence separated
+- **AND** it MUST label counter-derived CPU data as proxy metrics unless cycle-level measurement is added
+- **AND** it MUST NOT claim SMP correctness without Q24 multi-hart stress
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

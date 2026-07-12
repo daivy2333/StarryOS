@@ -810,7 +810,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L212 --> | Q17 内存序选型速查 | 不按架构分叉实现内存序；按 Rust 语言级并发契约选序。纯 telemetry 保持 `Relaxed`；跨 hart 发布/观察状态用 `Release`/`Acquire`；参与同步判断的 RMW 计数用 `AcqRel`；多字段一致性优先用锁或重新设计快照。`ier_cache` 是非原子 RMW 竞争，不能只靠 Acquire/Release 修复 | `.claude/analysis/q17-smp-memory-ordering.md` |
 | <!-- L213 --> | D1 板级事实 | D1/C906 单核 Sv39；RAM `0x40000000 + 512MiB`；OpenSBI v0.6 + U-Boot 2018.05；boot 分区是 Android boot image，`kernel_addr=0x40200000`。官方 Linux 采集已足够，后续不再泛采集。 | R4 + D1 closeout |
 | <!-- L214 --> | D1 UART0 事实 | base `0x02500000`，size `0x400`，IRQ `18`，`ttyS0,115200`；DTS 为 `snps,dw-apb-uart`，`reg-shift=2` / `reg-io-width=4`。必须按 stride 4 + 32-bit MMIO 处理，不能套 QEMU stride=1。 | DTS + 真板 probe |
-| <!-- L215 --> | D1 Android boot image | `/dev/mmcblk0p4` / `boot`，magic `ANDROID!`，name `d1-nezha`，page_size `2048`，kernel_addr `0x40200000`，ramdisk_addr `0x41200000`，tags_addr `0x40200100`。写 boot 前必须备份。 | boot probe |
+| <!-- L215 --> | D1 Android boot image 烧录 | boot 分区 `/dev/by-name/boot`，magic `ANDROID!`，name `d1-nezha`，page_size `2048`，kernel_addr `0x40200000`。烧录流程：① host `make lichee-fullbench-command` → `starry-lichee-fullbench-command-boot.img`；② 将 .img 拷贝到 TF 卡 exUDISK 分区；③ 在 D1 官方 Linux 中 `dd if=/dev/by-name/boot of=/mnt/exUDISK/boot-official-backup.img bs=1M`（备份），`dd if=/mnt/exUDISK/starry-lichee-*.img of=/dev/by-name/boot bs=1M conv=fsync`（烧录），`sync && reboot -f`。恢复：`dd if=/mnt/exUDISK/boot-official-backup.img of=/dev/by-name/boot bs=1M conv=fsync`。注意 `/dev/mmcblk0p4` 是底层设备名但不应在 dd 命令中直接使用，by-name 路径才是稳定接口。 | boot probe + Q19/Q19C 真板验证 |
 | <!-- L216 --> | D1 bring-up 顺序 | 先做 D1 axplat + DW APB UART polling early console + Android boot image。首个成功标准是 `[starry-d1] early boot`；timer 可先用 SBI，rootfs/USB/SD/Shell/async benchmark 后置。 | R5/R7 |
 | <!-- L217 --> | 平台参数耦合点 | 旧 `uart_init.rs` 硬编码 QEMU base `0x10000000`、stride 1、raw LSR `base+5`、`iomap(..., 0x1000)`；换板必须抽 platform facts，不能只改构建目标。 | R6 |
 | <!-- L218 --> | axconfig 可复用边界 | `MYPLAT` / `PLAT_CONFIG` / `.axconfig.toml` / `plat.kernel-base-paddr` 可复用；axconfig 仍不能完整表达 UART kind、reg width、boot image strategy。 | R6 |
@@ -870,6 +870,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L284 --> | trust-u-boot 边界 | PLIC/clock 可借鉴 U-Boot preserve/status dump；UART FCR/IER/baud 仍可显式初始化，不能把 PHY 经验泛化为所有外设不重配。 | R14 + ADR-040 |
 | <!-- L285 --> | 中断分层验证 | IRQ 验证拆成 claim、handler、device status、EOI。Q24 UART 记录 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake、complete 后重复触发。 | R14 |
 | <!-- L286 --> | QEMU/D1-first 重排 | Q20~Q23 先做 QEMU/D1 latency+jitter+CPU/RX、completion queue、mmap ring/zero-copy、性能决策；multi-hart/VF2 O63 后置为 Q24。入口：`tests/benchmark.c`、`tx_debug_snapshot()`、`DeviceOps::mmap()`/`sys_mmap()`。 | R15 |
+| <!-- L287 --> | Q20 benchmark gap 入口 | Q20 不是从零写 benchmark；现有入口是 `tests/benchmark.c` 的 S10/S14/S20/S21/S31、`Makefile` 的 QEMU/D1 benchmark target、`kernel/src/syscall/fs/ctl.rs` 的 TX debug ioctl、`AsyncUartDriver::tx_debug_snapshot()` 和 `IRQ_COUNT`。缺口是统一 jitter ratio、QEMU+D1 同格式 counter delta、RX fixed payload PASS 和 raw log 归档。 | R16 |
 
 #### Scenario: 新增 Q13 层级 API
 
