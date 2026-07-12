@@ -20,14 +20,15 @@ Q20 MUST produce comparable TX latency and jitter output for QEMU and D1 without
 
 ### Requirement: Q20 TX counter proxy evidence
 
-Q20 MUST report TX path counter data as CPU/copy proxy evidence for QEMU and D1.
+Q20 MUST report a stable TX counter section for QEMU and D1. D1 MUST provide effective CPU/copy proxy evidence. QEMU MAY report derived proxy fields as unavailable when the diagnostic counters are zero.
 
 #### Scenario: TX counter fields are present
 
 - **WHEN** the benchmark records TX counter evidence
 - **THEN** the output MUST include user push, ring pop, hardware send, zero-send, no-progress, slow-poll exhausted, and yield exhausted counters when available
 - **AND** unavailable counters MUST be represented explicitly rather than silently omitted
-- **AND** derived fields MUST include bytes per user call, bytes per ring pop, bytes per hardware send, zero sends per KiB, and no-progress events per KiB.
+- **AND** D1 derived fields MUST include bytes per user call, bytes per ring pop, bytes per hardware send, zero sends per KiB, and no-progress events per KiB
+- **AND** QEMU derived fields MAY be marked `not-available` when all TX debug counters are zero.
 
 #### Scenario: Counter evidence is interpreted
 

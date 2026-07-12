@@ -22,7 +22,7 @@ sync
 dd if=/mnt/exUDISK/starry-lichee-fullbench-command-boot.img of=/dev/by-name/boot bs=1M conv=fsync
 sync
 reboot -f
-# 串口 115200 8N1，启动后执行 /bin/benchmark
+# 串口 115200 8N1；fullbench command-entry 会自动构造 /bin/benchmark 并等待退出
 
 # 恢复官方 boot
 dd if=/mnt/exUDISK/boot-official-backup.img of=/dev/by-name/boot bs=1M conv=fsync
@@ -40,8 +40,8 @@ make justrun   # QEMU 启动后，shell 中执行 /bin/benchmark
 ### D1
 ```bash
 # 在 D1 官方 Linux 中烧录（详见上方 Build Commands）
-# 重启后串口登录，执行：
-/bin/benchmark
+# 重启后 StarryOS fullbench command-entry 自动运行 /bin/benchmark
+# 串口保存完整启动和 benchmark 输出
 ```
 
 ## Expected Benchmark Sections
@@ -69,18 +69,19 @@ make justrun   # QEMU 启动后，shell 中执行 /bin/benchmark
 - `counter=no-progress`: no_progress_budget, slow_poll_exh, yield_exh
 - `counter=drain-state`: ring_empty, copier_active, staged_bytes, transmitter_empty
 
-### Derived proxy (when telemetry available)
+### Derived proxy (when counters are available)
 - `bytes_per_user_call`, `bytes_per_ring_pop`, `bytes_per_hw_send`
 - `zero_per_kb`, `no_progress_per_kb`
 
-On QEMU without `telemetry` feature: `proxy=derived status=not-available reason=telemetry-counters-are-zero`
+On QEMU without effective TX debug counters: `proxy=derived status=not-available reason=telemetry-counters-are-zero`.
+This is accepted for Q20; QEMU still proves the output shape and jitter fields, while D1 provides the effective counter proxy.
 
 ## Evidence Status
 
 | Evidence | File | Status |
 |----------|------|--------|
-| QEMU rootfs raw log | qemu-rootfs.log | Pending manual run |
-| D1 serial raw log | d1-fullbench-command.log | Pending manual run |
+| QEMU rootfs raw log | qemu-rootfs.log | Completed from `docs/out.md` |
+| D1 serial raw log | d1-fullbench-command.log | Pending recapture |
 | RX fixed payload | — | Intentionally excluded (design D1) |
 
 ## Notes

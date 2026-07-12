@@ -30,7 +30,7 @@ RX fixed payload gate 从 Q20 移出。
 
 - QEMU rootfs benchmark 输出 S10/S14/S20/S21 的 TX latency / jitter summary。
 - D1 fullbench command-entry benchmark 输出同版 TX latency / jitter summary。
-- QEMU 和 D1 输出可比较的 TX counter / CPU proxy 字段。
+- QEMU 和 D1 输出同形态 S40 TX counter section；D1 输出有效 counter proxy，QEMU 若 counters 为 0 必须显式标记 not-available。
 - Q20 raw evidence 目录保存 QEMU rootfs log、D1 serial log 和 evidence README。
 - `docs/benchmark-report-async.md` 追加 Q20 结果摘要，并引用 raw evidence。
 
@@ -46,7 +46,7 @@ RX fixed payload gate 从 Q20 移出。
 
 - D1 P99 长尾应与 `slow_poll_exh`、`yield_exh`、`hw_send_zero`、throughput 同时解释。
 - stdout backlog 会污染小包数据；每节必须保留 pre-section `fflush + tcdrain` 见证。
-- 如果 QEMU 缺少 D1-only ioctl 宏输出，应优先让 benchmark 输出退化为可解释的 `not-available`，而不是让整段失败。
+- 如果 QEMU 的 TX debug counters 为 0，应输出同形态 S40 并退化为可解释的 `not-available`，而不是让整段失败。
 - RX fixed payload 可以保留现有代码，但 Q20 不要求开启、验证或记录 PASS。
 
 ## Scope

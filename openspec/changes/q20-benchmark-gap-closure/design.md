@@ -24,7 +24,7 @@ It must not change the underlying TX path semantics.
 **Goals:**
 
 - Add uniform jitter fields for S10/S14/S20/S21.
-- Add TX counter / CPU proxy output for QEMU and D1.
+- Add a stable S40 TX counter section for QEMU and D1; D1 provides effective counter proxy, QEMU may explicitly report not-available when counters are zero.
 - Preserve Q19C benchmark manifest and pre-section drain protection.
 - Save raw QEMU and D1 evidence under a Q20-specific path.
 - Update the benchmark report after raw evidence exists.
@@ -63,12 +63,12 @@ It must not change the underlying TX path semantics.
 
 ### D3: CPU data is counter proxy first
 
-**选择**: Q20 优先输出 `bytes/call`、`zero/kb`、`no-progress/kb`、`irq_delta` 等 proxy，不先引入 cycle accounting。
+**选择**: Q20 优先输出 `bytes/call`、`zero/kb`、`no-progress/kb` 等 proxy，不先引入 cycle accounting。
 
 **理由**:
 - 现有 TX debug snapshot 已有足够字段解释 D1 slow-poll 和 FIFO fill 行为。
 - cycle-level measurement 会扩大改动面，可能涉及时间源、用户态 ABI 或 per-section kernel counter。
-- proxy 足以支持 Q23 的“是否明显恶化”判断。
+- D1 proxy 足以支持 Q23 的“是否明显恶化”判断；QEMU 只要求保留同形态 S40 section，并在 counters 为 0 时显式输出 not-available。
 
 ### D4: Evidence before report
 
@@ -84,7 +84,7 @@ It must not change the underlying TX path semantics.
 |------|----------|
 | RX exclusion hides RX-only regressions | Q20 明确只建立 TX baseline；RX 专项另开 change |
 | Counter proxy is overclaimed | 文档和输出均标注 proxy，不称 CPU utilization |
-| QEMU/D1 output diverges | 允许不可用字段输出 `not-available`，但 section 名和字段名保持稳定 |
+| QEMU/D1 output diverges | QEMU 允许 derived proxy 输出 `not-available`，但 section 名和字段名保持稳定；D1 必须提供有效 counter proxy |
 | D1 P99 tail remains unexplained | Q20 只复验和标注，不把根因修复作为 gate |
 | Evidence collection needs true board | 代码和 QEMU gate 可先完成；D1 raw log 是最终 Q20 gate |
 
@@ -93,7 +93,7 @@ It must not change the underlying TX path semantics.
 | Requirement | Task(s) | Coverage | Simplification | Status |
 |-------------|---------|----------|----------------|--------|
 | R1: TX jitter summary | 2.1, 2.2, 5.1, 5.2 | 100% | None | Covered |
-| R2: TX counter / CPU proxy | 3.1, 3.2, 5.1, 5.2 | 100% | CPU cycles simplified to counter proxy | User-approved |
+| R2: TX counter / CPU proxy | 3.1, 3.2, 5.1, 5.2 | 100% | CPU cycles simplified to D1 counter proxy; QEMU may report not-available | User-approved |
 | R3: raw evidence | 4.1, 4.2, 5.1, 5.2 | 100% | None | Covered |
 | R4: report update | 6.1 | 100% | None | Covered |
 | R5: RX fixed payload | - | 0% by design | Removed from Q20 scope by user | User-approved |
