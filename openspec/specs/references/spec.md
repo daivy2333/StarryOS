@@ -137,6 +137,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R11 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md` | Q19C.8e D1 TX zero-send / P99 长尾优化分析：TX copier 算法（driver.rs:418-579）、3 个根因（32 次 spin 在 ms 级 FIFO 排空前无效 / D1 THRE IRQ 边沿丢失 / P99 跳变点 = FIFO 排空等待）、`TX_FAST_RETRY_LIMIT=0` 证伪根因、5 个优化方向（A 时间预算 / B LSR poll watchdog / C 指数退避 / D IER 延迟使能 / E D1 专用路径）、推荐 A+B 组合 |
 | <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1 memory-root path loader 实施前分析：当前 D1 embedded userbench 与 QEMU path loader 差异、fullbench feature/Makefile 分层、`FsContext::write("/bin/benchmark")` 注入路径、`load_user_app()` 调用链、M1 gate 与风险边界 |
 | <!-- R13 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3 实施前分析：shell 不可用时的 documented equivalent command entry、argv/envp/stdio/exit/join 证据边界、D1 SDMMC/block probe-only 路线；2026-07-11 方向更新后，仅 M2 command-entry 保留为 Q19C 收尾 gate，M3/rootfs-probe 取消当前规划 |
+| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层、以及 StarryOS Q20 UART 复验检查清单 |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
