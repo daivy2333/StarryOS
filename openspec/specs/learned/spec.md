@@ -869,6 +869,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L283 --> | 真板寄存器可访问性优先于 workload | DWMAC 初始寄存器全读 `0x0` 时，明扬先把 gate 降级为 Clock 100、MAC_VERSION、DMA_BUS_MODE 写后读回，而不是先调 smoltcp。StarryOS Q20 UART 也应先记录 IER/IIR/LSR/FCR/MCR 原始值和写后读回，再跑 benchmark。 | `.claude/analysis/arceos-true-board-validation.md`, `work/arceos/axdriver_crates/axdriver_net/QUICK_TEST_GUIDE.md` |
 | <!-- L284 --> | trust-u-boot 必须配合状态 dump 和边界说明 | arceos DWMAC 后期改为对照 U-Boot clock/reset 日志，先 `set_clocks_uboot()` 再 `print_preserved_status()`，避免破坏 bootloader 已建状态。StarryOS 可借鉴到 PLIC/clock；UART FCR/IER/baud 仍可显式初始化，不能把 PHY 经验泛化成“所有外设都不重配”。 | `.claude/analysis/arceos-true-board-validation.md`, `work/arceos/modules/axdriver/src/dwmac.rs`, `openspec/specs/architecture/spec.md` ADR-040 |
 | <!-- L285 --> | 中断验证拆成 claim/handler/status/EOI | arceos 网络 IRQ 先看 PLIC claim，再看 `eth_irq called`，再清设备状态，最后 `PLIC.complete()` 允许重复触发。“中断可以触发多次了”说明 EOI 是独立 gate。StarryOS Q20 UART IRQ 应记录 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake、complete 后重复触发。 | `.claude/analysis/arceos-true-board-validation.md`, `work/arceos/modules/axhal/src/platform/riscv64_starfive/irq.rs`, `work/arceos/modules/axnet/src/smoltcp_impl/mod.rs` |
+| <!-- L286 --> | QEMU/D1-first 里程碑重排入口 | 当前可直接推进的 UART 工作应先落在 QEMU/D1：`tests/benchmark.c` 已有 S10-S31，`AsyncUartDriver::tx_debug_snapshot()` 已有 TX counter，`DeviceOps::mmap()`/`sys_mmap()` 可承接用户态 ring 原型；multi-hart / VisionFive2 O63 复验后置为硬件 gate。 | `.claude/analysis/uart-async-qemu-d1-first-replan.md` |
 
 #### Scenario: 新增 Q13 层级 API
 

@@ -1215,4 +1215,40 @@ Q19C-M2 MUST accept memory-root command-entry proof as the final async UART user
 - **THEN** M3/rootfs-probe MUST NOT be required for completion
 - **AND** real SDMMC/block/rootfs work MUST be proposed separately before implementation
 
+<!-- A056 -->
+### Requirement: ADR-056: QEMU/D1 可验证 UART 工作前移，multi-hart 真板复验后置
+
+StarryOS async UART roadmap MUST prioritize work that can be completed on current QEMU and Lichee D1 targets before waiting for VisionFive2 or another multi-hart board.
+
+**日期**: 2026-07-12
+**状态**: ✅ 已接受（milestone replan analysis）
+**决策**:
+- 将 latency / jitter / CPU 开销 / RX fixed payload 补测前移为下一阶段 benchmark gap closure。
+- 将 UART 专用 user completion queue、mmap user ring、zero-copy prototype 和 ring/completion 性能决策从远期预研池前移。
+- 保留 Q17/O63 multi-hart 复验，但把它后置为 VisionFive2 / 等价 SMP 硬件 gate。
+- 不先实现通用 `io_uring`；先实现 UART 专用 submit/completion ring，保留 `/dev/console` read/write fallback。
+
+**原因**:
+- QEMU 和 D1 已能运行同版 benchmark，`tests/benchmark.c` 已覆盖 write+tcdrain、no-drain enqueue、batch drain、writev、FIFO boundary、FIONBIO 与 optional RX fixed payload。
+- D1 是单 hart，不能证明 O63；但它能证明 UART 语义、tail latency、CPU/counter 开销和 user ring 原型。
+- 当前 `DeviceOps::mmap()` / `sys_mmap()` 已有 device mapping 框架，可作为 user ring/zero-copy 原型入口。
+- VisionFive2 / multi-hart 依赖硬件，不应阻塞当前可验证工作。
+
+**影响**:
+- 后续 optimization milestone 应从 Q20 开始重排：Q20 benchmark gap closure，Q21 completion queue MVP，Q22 user ring/zero-copy，Q23 performance decision，Q24 multi-hart revalidation。
+- Q23 不再是空泛远期池；它成为 ring/completion 是否保留的决策 gate。
+- Q24 仍必须覆盖并发 read/write、flush/tcdrain、IER enable/disable、waker 和 release/acquire 语义。
+
+**替代方案**:
+- ❌ 继续等待 multi-hart 真板后再做 ring/completion：会阻塞 QEMU/D1 当前可完成工作。
+- ❌ 直接做完整 `io_uring`：范围过大，串口目前只需要少量 opcode 与 completion 语义。
+- ✅ 先做 UART 专用 ring/completion，测出收益后决定保留、收窄或回滚。
+
+#### Scenario: Planning UART async work after Q19C
+
+- **WHEN** 新增 async UART 后续 milestone
+- **THEN** 当前 QEMU/D1 可验证的测试、ring、completion 和 zero-copy 工作 MUST be scheduled before VisionFive2-only validation
+- **AND** multi-hart O63 proof MUST remain required before claiming SMP correctness
+- **AND** generic `io_uring` semantics MUST NOT be required unless a later ADR proves UART-specific rings are insufficient
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

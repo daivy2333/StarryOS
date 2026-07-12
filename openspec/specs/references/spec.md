@@ -138,6 +138,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1 memory-root path loader 实施前分析：当前 D1 embedded userbench 与 QEMU path loader 差异、fullbench feature/Makefile 分层、`FsContext::write("/bin/benchmark")` 注入路径、`load_user_app()` 调用链、M1 gate 与风险边界 |
 | <!-- R13 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3 实施前分析：shell 不可用时的 documented equivalent command entry、argv/envp/stdio/exit/join 证据边界、D1 SDMMC/block probe-only 路线；2026-07-11 方向更新后，仅 M2 command-entry 保留为 Q19C 收尾 gate，M3/rootfs-probe 取消当前规划 |
 | <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层、以及 StarryOS Q20 UART 复验检查清单 |
+| <!-- R15 --> `.claude/analysis/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；将 VisionFive2 / multi-hart O63 复验后置为硬件 gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

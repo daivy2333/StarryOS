@@ -13,6 +13,7 @@
 > 2026-07-11 Q19C-M3 旧方案归档：`q19c-m3-polling-console-isolation` 以未实施旧方案归档到 `openspec/changes/archive/2026-07-11-q19c-m3-polling-console-isolation/`，未合入主 spec；M3 后续先重新探索再决定方案。
 > 2026-07-11 Q19C 收尾完成：Q19C-M3 代码删除（`lichee-d1-rootfs-probe` feature/Makefile target/entry 分支/cfg 例外），证据表补充到主 spec；`q19c-m2-m3-acceptance-alignment`、`q19c-lichee-full-starryos-benchmark`、`q19c-async-uart-closeout` 三个 change 已归档至 `openspec/changes/archive/`；活跃 change 仅剩 `q17-smp-memory-ordering`。
 > 2026-07-11 D1 真板异步 UART 测试正式结束：Q19/Q19B/Q19C 已覆盖 D1 smoke、内核态 benchmark、用户态 benchmark、memory-root path/command 证据；后续不再把 shell、SDMMC、block、rootfs 作为 async UART 验证遗留项。
+> 2026-07-12 Q20~Q23 重新规划：基于 ADR-056 / R15 / L286，先推进 QEMU+D1 可验证的 latency+jitter+CPU/RX 补测、UART completion queue、mmap user ring/zero-copy 和性能决策；VisionFive2 / multi-hart O63 复验后置为 Q24。
 > 2026-07-04 analysis 文档归档：Q18/Q19/Q19B 历史分析和 Lichee 原始采集日志移至 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/`；原路径保留 tombstone。
 > 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
 > 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
@@ -63,16 +64,19 @@
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
 | **Q19C** | Lichee async UART board benchmark | benchmark evidence cleanup + memory-root path loader + command-entry + closeout | ✅ D1 async UART 性能验证完成并归档（2026-07-11） |
 | **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧊 取消当前规划；需要 storage/rootfs 时重新 propose |
-| **Q20** | VisionFive2 UART 验证 | O66/O64/O65/O71 + O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
-| **Q21** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q20 数据 | ⏳ 等待硬件数据 |
-| **Q22** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
-| **Q23** | 远期预研池 | O1/O36、O54/O55、O58/O59、O37 | 🧊 按数据触发 |
+| **Q20** | Benchmark gap closure | QEMU+D1 latency / jitter / CPU 开销 / RX fixed payload 补测 | ⏳ 待做 |
+| **Q21** | UART user completion queue MVP | UART 专用 submit/completion queue，先 TX，保留 read/write fallback | ⏳ 待做 |
+| **Q22** | User ring + zero-copy prototype | `mmap` user ring + zero-copy RX/TX 原型，明确 fallback | ⏳ 待做 |
+| **Q23** | Ring/completion performance decision | 对比 write/tcdrain、no-drain、batch-drain、writev 与 user ring | ⏳ 待做 |
+| **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
+| **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q23/Q24 数据 | ⏳ 等待数据 |
+| **Q26** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
 
 ---
 
 ## 当前执行态
 
-D1 真板异步 UART 测试已正式结束：Q19/Q19B 已完成并归档，Q19C 已完成 D1 async UART 验证并全部归档（`q19c-m2-m3-acceptance-alignment` → `q19c-lichee-full-starryos-benchmark` → `q19c-async-uart-closeout`）。M3/rootfs-probe 代码已删除，历史证据保留在 `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/`；Q19D SDMMC/rootfs 取消当前规划。Q17 已完成 QEMU gate，活跃 change 仅剩 `q17-smp-memory-ordering`。Q20 需要 VisionFive2 或等价多 hart 环境复验 Q17 O63。
+D1 真板异步 UART 测试已正式结束：Q19/Q19B 已完成并归档，Q19C 已完成 D1 async UART 验证并全部归档（`q19c-m2-m3-acceptance-alignment` → `q19c-lichee-full-starryos-benchmark` → `q19c-async-uart-closeout`）。M3/rootfs-probe 代码已删除，历史证据保留在 `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/`；Q19D SDMMC/rootfs 取消当前规划。Q17 已完成 QEMU gate，活跃 change 仅剩 `q17-smp-memory-ordering`。当前主线改为 Q20~Q23：先做 QEMU+D1 可验证的测试补齐和用户态 ring/completion 原型；VisionFive2 或等价多 hart O63 复验后置为 Q24。
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
@@ -115,40 +119,72 @@ D1 真板异步 UART 测试已正式结束：Q19/Q19B 已完成并归档，Q19C 
 
 > Q19C-M0/M1/M2 已在 D1 真板通过，D1 异步 UART 测试正式结束。M2 以 `lichee-memory-root-command` 作为完成目标，true shell deferred；M3/rootfs-probe、Q19D SDMMC/rootfs 与 real rootfs 不再是当前 gate。逐项历史已归档到 ARC-202607111510。
 
-### Q20: VisionFive2 UART 验证 ⏳ 等待硬件
+### Q20: Benchmark gap closure ⏳ 待做
 
-<!-- Q20.1 --> - [ ] O66 `print_preserved_status()`：UART / PLIC / Clock 状态 dump
-<!-- Q20.2 --> - [ ] O64 trust-u-boot 脚手架：明确 PLIC/Clock 只观察或最小补丁，UART 可正常 re-init
-<!-- Q20.3 --> - [ ] O65 PLIC init_primary/init_percpu 防御性验证
-<!-- Q20.4 --> - [ ] O71 PAC 类型安全寄存器访问评估（只做决策，不强行引入依赖）
-<!-- Q20.5 --> - [ ] O38 VisionFive2 UART 时钟适配
-<!-- Q20.6 --> - [ ] O39 真实硬件 FIFO 深度验证
-<!-- Q20.7 --> - [ ] 真板复跑 Q15 Manual QA：1B latency / 64B TX / FIONBIO / tcdrain / Shell 交互
-<!-- Q20.8 --> - [ ] 更新 `SNAPSHOT.md` / `optimization/spec.md` 真板数据，明确 QEMU vs 真板可信度
-<!-- Q20.9 --> - [ ] Gate Q20: VisionFive2 串口稳定运行，真板基线数据落档
+> 来源：ADR-056、R15 `.claude/analysis/uart-async-qemu-d1-first-replan.md`、L286。目标是先补齐 QEMU+D1 当前可验证的指标，不改驱动语义。
 
-### Q21: DMA / 高波特率决策 ⏳ 等待硬件数据
+<!-- Q20.1 --> - [ ] 增加 jitter summary：S10/S14/S21 输出 `p99/p50`、`max/p50`、`slow_over_line_plus10ms`
+<!-- Q20.2 --> - [ ] 增加 CPU/counter summary：输出 IRQ count、TX poll、no-progress、hw_send_zero、bytes/call
+<!-- Q20.3 --> - [ ] 启用 RX fixed payload：`BENCH_RX_FIXED_BYTES > 0` 时 QEMU 与 D1 都有 PASS 样本
+<!-- Q20.4 --> - [ ] 保存 raw evidence：QEMU rootfs log 与 D1 serial log 分开归档
+<!-- Q20.5 --> - [ ] Gate Q20: QEMU+D1 输出 latency、jitter、CPU/IRQ/copy 开销与 RX fixed payload 证据
 
-<!-- Q21.1 --> - [ ] O3/O40/O69 DMA 决策树：JH7110 DMA 控制器是否存在、是否可达 UART FIFO、PIO vs DMA ROI
-<!-- Q21.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q20 稳定后实施
-<!-- Q21.3 --> - [ ] Gate Q21: 用真板数据决定实施 / 拒绝 DMA 与高波特率扩展
+### Q21: UART user completion queue MVP ⏳ 待做
 
-### Q22: 维护性清理 ⏳ 待做
+> 只做 UART 专用 completion queue，不先实现完整 `io_uring`。MVP 先覆盖 TX。
 
-<!-- Q22.1 --> - [ ] O48 memtrack 是否集成：Q20/Q21 调试需要则启用，否则记录保留/移除决策
-<!-- Q22.2 --> - [ ] O49 `ProcessMode::Manual` 移除评估
-<!-- Q22.3 --> - [ ] O50 预留接口评估（超过 90 天未用则移除或留明确注释）
-<!-- Q22.4 --> - [ ] ADR-034 发布前 LTO 检查：开发期不启用，release 前恢复
-<!-- Q22.5 --> - [ ] Gate Q22: 维护性债务有明确处理结论，不阻塞 Q17~Q21
+<!-- Q21.1 --> - [ ] 定义 submit ring / completion ring entry：request id、opcode、buffer、len、status、bytes、timestamp
+<!-- Q21.2 --> - [ ] 实现 doorbell：用 `ioctl` 或轻量 syscall 通知 kernel 消费 submit ring
+<!-- Q21.3 --> - [ ] 实现 TX completion：completion 不弱于 write + `tcdrain` 语义，仍以 `TxCompletion` 四阶段为完成依据
+<!-- Q21.4 --> - [ ] 接入 wait path：复用 poll/select 或现有 waker，禁止新增 busy loop
+<!-- Q21.5 --> - [ ] Gate Q21: 用户态能提交 N 个 TX request 并读取 completion；read/write fallback 不退化
 
-### Q23: 远期预研池 🧊 按数据触发
+### Q22: User ring + zero-copy prototype ⏳ 待做
 
-<!-- Q23.1 --> - [ ] O1/O36 零拷贝 RX：仅当 Q20 证明 RX 拷贝是瓶颈时启动
-<!-- Q23.2 --> - [ ] O54 ISR 直接搬运：需重新评估 ISR 延迟与极简原则冲突
-<!-- Q23.3 --> - [ ] O55 半满/IDLE 唤醒：当前 NAPI 已覆盖相近收益，低优先级
-<!-- Q23.4 --> - [ ] O58 ArceOS feature gate 特化：仅当性能不达标且可接受可移植性损失时启动
-<!-- Q23.5 --> - [ ] O59 MaybeUninit ring buffer：unsafe 成本高，需单独安全分析
-<!-- Q23.6 --> - [ ] O37 kernel log TX 合并：外部 crate 约束强，收益低
+> 基于现有 `DeviceOps::mmap()` / `sys_mmap()` 路线做 UART 专用 user ring 原型。
+
+<!-- Q22.1 --> - [ ] 设计 mmap ring 所有权：head/tail、wrap、full/empty、用户/内核写权限
+<!-- Q22.2 --> - [ ] 实现 TX shared ring：用户写 descriptor/payload，kernel copier 消费
+<!-- Q22.3 --> - [ ] 实现 RX shared ring：kernel 写 payload，用户读；防止覆盖未消费数据
+<!-- Q22.4 --> - [ ] 实现 completion ring release/acquire 语义，记录 status/bytes/timestamp
+<!-- Q22.5 --> - [ ] 保留 fallback：mmap 不可用时回到 read/write
+<!-- Q22.6 --> - [ ] Gate Q22: `mmap` ring 在 QEMU+D1 可用，并明确减少了哪些 user/kernel 拷贝
+
+### Q23: Ring/completion performance decision ⏳ 待做
+
+> Q23 是保留/收窄/回滚决策，不继续堆功能。
+
+<!-- Q23.1 --> - [ ] 建立对照矩阵：write+tcdrain、no-drain enqueue、batch-drain、writev、user ring+completion
+<!-- Q23.2 --> - [ ] 正确性对照：FIONBIO、short write、tcdrain、FIFO boundary 均不退化
+<!-- Q23.3 --> - [ ] 延迟对照：1B 与 15/16/17B 不退化，P99 长尾有解释
+<!-- Q23.4 --> - [ ] CPU 对照：poll/send/IRQ/copy counters 不明显恶化
+<!-- Q23.5 --> - [ ] Gate Q23: 决定 ring/completion 保留、收窄或回滚；若收益只来自 batch-drain，则只保留 batch-drain
+
+### Q24: VisionFive2 / multi-hart revalidation ⏳ 等待硬件
+
+<!-- Q24.1 --> - [ ] O66 `print_preserved_status()`：UART / PLIC / Clock 状态 dump
+<!-- Q24.2 --> - [ ] O64 trust-u-boot 脚手架：明确 PLIC/Clock 只观察或最小补丁，UART 可正常 re-init
+<!-- Q24.3 --> - [ ] O65 PLIC init_primary/init_percpu 防御性验证
+<!-- Q24.4 --> - [ ] O71 PAC 类型安全寄存器访问评估（只做决策，不强行引入依赖）
+<!-- Q24.5 --> - [ ] O38 VisionFive2 UART 时钟适配
+<!-- Q24.6 --> - [ ] O39 真实硬件 FIFO 深度验证
+<!-- Q24.7 --> - [ ] O63 multi-hart stress：并发 read/write、flush/tcdrain、IER enable/disable 无数据丢失或 hang
+<!-- Q24.8 --> - [ ] 真板复跑 Q15 Manual QA：1B latency / 64B TX / FIONBIO / tcdrain / Shell 交互
+<!-- Q24.9 --> - [ ] Gate Q24: VisionFive2 或等价 SMP 环境串口稳定运行，multi-hart 风险有实测结论
+
+### Q25: DMA / 高波特率决策 ⏳ 等待数据
+
+<!-- Q25.1 --> - [ ] O3/O40/O69 DMA 决策树：JH7110 DMA 控制器是否存在、是否可达 UART FIFO、PIO vs DMA ROI
+<!-- Q25.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q23/Q24 数据证明需要后实施
+<!-- Q25.3 --> - [ ] Gate Q25: 用 Q23/Q24 数据决定实施 / 拒绝 DMA 与高波特率扩展
+
+### Q26: 维护性清理 ⏳ 待做
+
+<!-- Q26.1 --> - [ ] O48 memtrack 是否集成：调试需要则启用，否则记录保留/移除决策
+<!-- Q26.2 --> - [ ] O49 `ProcessMode::Manual` 移除评估
+<!-- Q26.3 --> - [ ] O50 预留接口评估（超过 90 天未用则移除或留明确注释）
+<!-- Q26.4 --> - [ ] ADR-034 发布前 LTO 检查：开发期不启用，release 前恢复
+<!-- Q26.5 --> - [ ] Gate Q26: 维护性债务有明确处理结论，不阻塞 Q20~Q25
 
 <!-- tombstone: Q8-Q11 archive pointers --> Archived 2026-07-02 in ARC-202607021648 — Q8~Q11 已在 Milestone 表与 archive 目录中可定位，删除重复小节。
 

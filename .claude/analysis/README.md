@@ -7,6 +7,7 @@
 ## Active
 
 - `q17-smp-memory-ordering.md` — Q17 SMP / memory-ordering analysis; still referenced by Q20 multi-hart revalidation.
+- `uart-async-qemu-d1-first-replan.md` — UART async milestone replan; moves QEMU/D1 benchmark gaps and user ring/completion/zero-copy ahead of multi-hart board validation.
 
 ## Special binary tombstone
 
