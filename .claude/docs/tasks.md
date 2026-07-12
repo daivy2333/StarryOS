@@ -1,30 +1,10 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支。
-> 2026-06-25 Q15 M0~M4 增量重融合 + Manual QA 全部完成（QEMU benchmark 验证无 64B write+tcdrain 退化）。
-> 2026-06-28 基于 Lichee RV Dock 与 platform-parameter-decoupling 探索结果，roadmap 二次重排：Q17 不动，新增 Q18 平台参数解耦、Q19 荔枝派 early smoke test，原 VisionFive2/DMA/维护阶段顺延为 Q20~Q23。
-> 2026-06-29 Q19B 真板 userbench 完成: `starry-lichee-userbench-boot.img` 在 Lichee RV Dock 完整跑完 embedded benchmark，`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO 全链路通过；大包 TX 达 97.7%~99.0% 线速。
-> 2026-06-29 Q19 完成：Lichee RV Dock 真板通过官方 U-Boot Android boot image 启动 StarryOS D1 payload，串口输出 `[starry-d1] early boot` 与 `[starry-d1] smoke complete, halting.`。
-> 2026-07-03 Q17 QEMU 修复完成：`ier_cache` RMW 纳入临界区，TX completion 控制流内存序升级，QEMU rootfs benchmark 通过；多 hart / 真板 SMP stress 尚未实测，作为 Q20 前置复验项保留。
-> 2026-07-04 Q19C review 后曾新增 Q19D 方向：Q19C 只做 memory-root path loader + SDMMC probe-only，真实 D1 SDMMC/block/rootfs 拆到 Q19D。
-> 2026-07-07 Q19C-M0 已进入源码与真板数据阶段：统一 benchmark manifest/测试项，移除默认 4096B 长耗时项，隔离 stdout backlog 后 64B 小包恢复接近线速；D1 FIFO 16B burst 与 TTY short-write 修复已验证，TX zero-send/P99 长尾仍待优化，`TX_FAST_RETRY_LIMIT=0` 方案已证伪并回退。
-> 2026-07-08 Q19C-M1 已完成：`lichee-fullbench-mem` 通过 memory-root `/bin/benchmark` VFS resolve/read + eager ELF mapping 在 D1 真板完整运行；`load_user_app()` lazy file-backed COW 路径 main 前 SIGILL 已记录为 O80/L277，不作为 async UART gate。
-> 2026-07-11 Q19C-M2 真板通过：归档日志完整输出 benchmark sections、`Done.`、`benchmark exited with code: 0` 和 `halting.`。Q19C-M3 真板未通过：日志只到 `d1_sdmmc_controller_base=TBD`，未输出完整 probe table；方向更新后 M3 不再作为 UART gate。
-> 2026-07-11 Q19C-M3 旧方案归档：`q19c-m3-polling-console-isolation` 以未实施旧方案归档到 `openspec/changes/archive/2026-07-11-q19c-m3-polling-console-isolation/`，未合入主 spec；M3 后续先重新探索再决定方案。
-> 2026-07-11 Q19C 收尾完成：Q19C-M3 代码删除（`lichee-d1-rootfs-probe` feature/Makefile target/entry 分支/cfg 例外），证据表补充到主 spec；`q19c-m2-m3-acceptance-alignment`、`q19c-lichee-full-starryos-benchmark`、`q19c-async-uart-closeout` 三个 change 已归档至 `openspec/changes/archive/`；活跃 change 仅剩 `q17-smp-memory-ordering`。
-> 2026-07-11 D1 真板异步 UART 测试正式结束：Q19/Q19B/Q19C 已覆盖 D1 smoke、内核态 benchmark、用户态 benchmark、memory-root path/command 证据；后续不再把 shell、SDMMC、block、rootfs 作为 async UART 验证遗留项。
-> 2026-07-12 Q20~Q23 重新规划：基于 ADR-056 / R15 / L286，先推进 QEMU+D1 可验证的 latency+jitter+CPU/RX 补测、UART completion queue、mmap user ring/zero-copy 和性能决策；VisionFive2 / multi-hart O63 复验后置为 Q24。
-> 2026-07-04 analysis 文档归档：Q18/Q19/Q19B 历史分析和 Lichee 原始采集日志移至 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/`；原路径保留 tombstone。
-> 2026-07-02 Q19/Q19B OpenSpec changes 已归档：`2026-07-02-q19-lichee-d1-early-smoke`、`2026-07-02-q19b-lichee-d1-benchmark`；活跃 change 仅剩 Q17/Q19C。
-> 2026-07-02 状态同步：入口文档、project context、Q19 change tasks 已清理旧分支 / 旧路径 / 已完成但未勾选的状态。
-> 2026-07-02 Q19C 规范已完整：原目标是在 Lichee RV Dock 上像 QEMU 一样通过 StarryOS path loader/rootfs 链路运行 benchmark；2026-07-11 已收敛为 D1 async UART 性能验证，rootfs/shell 不再是必达项。
-> 2026-06-27 Q15 后 roadmap 首次重排：单一 Q6 拆分为原 Q16~Q22，按 Gate 类型分层推进（见 `.claude/analysis/optimization-milestone-replan.md`）。
-> 2026-06-21 M4 Sync 已回退到 pre-M4 基线（04f8920/60c5729），原代码保留在 feat/uart-16550-async-temp。
-> 2026-06-21 Q15 开启：从 pre-M4 基线增量重融合 M4+ 正确性修复，每步 Manual QA 验证无退化。
-> 2026-06-19 OS trait 清理：ADR-036 删除未使用的 OsIrq/OsMmio/OsSpinNoIrq（5→2 trait），消除 3 个 dead_code warning。
-> 2026-06-16 Q13 完成：异步串口完整提取到 uart_16550（9 commits, Phase 1 trait 提取 + Phase 2-3 核心逻辑迁移 + 适配层）。
-> 2026-06-03 P0 完成，OpenSpec 文档体系建立（核心 5 域 + 后续 capability specs）。
-> 条目格式: <!-- Q{编号} --> 或 <!-- P{编号} --> 标记开头，支持 grep 精确定位。
+> 当前主线（2026-07-12）：Q20~Q23 先做 QEMU+D1 可验证的 latency/jitter/CPU/RX 补测、UART completion queue、mmap ring/zero-copy 和性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。
+> 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
+> 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
+> 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
 
 ---
 
@@ -76,7 +56,8 @@
 
 ## 当前执行态
 
-D1 真板异步 UART 测试已正式结束：Q19/Q19B 已完成并归档，Q19C 已完成 D1 async UART 验证并全部归档（`q19c-m2-m3-acceptance-alignment` → `q19c-lichee-full-starryos-benchmark` → `q19c-async-uart-closeout`）。M3/rootfs-probe 代码已删除，历史证据保留在 `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/`；Q19D SDMMC/rootfs 取消当前规划。Q17 已完成 QEMU gate，活跃 change 仅剩 `q17-smp-memory-ordering`。当前主线改为 Q20~Q23：先做 QEMU+D1 可验证的测试补齐和用户态 ring/completion 原型；VisionFive2 或等价多 hart O63 复验后置为 Q24。
+D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。当前主线是 Q20~Q23：补测 QEMU+D1 指标，做 UART completion queue、mmap user ring/zero-copy，并用数据决定保留、收窄或回滚。
+
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。

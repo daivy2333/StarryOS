@@ -697,511 +697,225 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **AND** per-architecture ordering branches MUST NOT be introduced unless a future ADR proves a platform-specific hardware erratum requires them
 
 <!-- A043 -->
-### Requirement: ADR-043: Lichee RV Dock 采用 Android boot image + D1 polling early console 分阶段适配
-
-StarryOS Lichee RV Dock bring-up MUST start from an Android boot image smoke test and a D1 UART0 polling early console before enabling PLIC, timer, async TTY, storage, USB, or benchmark workloads.
+### Requirement: ADR-043: Lichee RV Dock 先走 Android boot image + polling early console
 
 **日期**: 2026-06-28
-**状态**: 已接受（适配方案阶段）
-**决策**:
-- 沿用官方启动链 `BOOT0 -> OpenSBI -> U-Boot -> Android boot image`，优先生成可由当前 U-Boot `bootm` 加载的 Android boot image。
-- 第一阶段 kernel load/link 基线使用官方 boot header 中的 `0x40200000`。
-- 第一阶段 console 使用 D1 UART0 polling early console：base `0x02500000`，stride 4，32-bit MMIO，baud 115200。
-- 第一阶段不启用 UART IRQ、async TTY、rootfs、USB、SD/MMC 或 benchmark。
-- D1 UART 不能直接复用当前 QEMU NS16550 byte-addressed 假设；完整 async UART 适配需在 smoke test 后再扩展 `uart_16550` backend 或新增 DW APB UART 适配层。
-
-**原因**:
-- Lichee RV Dock 官方镜像已确认 boot 分区为 Android boot image，U-Boot 环境变量已确认从 boot 分区加载到内存后 `bootm`。
-- D1 UART 是 DesignWare APB UART，公开 DTS 与真板采集均指向 stride 4、32-bit MMIO；当前 StarryOS QEMU UART 初始化路径使用 `0x10000000` 和 stride 1，不能只改 base 地址。
-- first-byte serial output 是真板 bring-up 的最小可观测闭环，能把启动链、链接地址和 UART 访问模型问题与后续子系统隔离。
-
-**影响**:
-- Lichee RV Dock 后续适配应优先提交平台骨架、boot image 工具链和 early console，而不是先接入 benchmark。
-- Q17 SMP 验证不能依赖 Lichee RV Dock；该板仅用于单核真板流程、启动链和串口适配演练。
-- 如果 M3 smoke test 失败，排查范围优先限定为 boot image、link/load 地址、UART base/stride/access-width，不应立刻扩大到 async TTY 或文件系统。
-
-**替代方案**:
-- ❌ 直接把完整 StarryOS async UART benchmark 打包烧录：变量过多，失败不可定位。
-- ❌ 只修改 QEMU UART base 为 `0x02500000`：忽略 D1 UART 32-bit MMIO 访问宽度，风险高。
-- ❌ 改 U-Boot 环境变量加载裸镜像：增加恢复风险，第一阶段无必要。
-- ✅ Android boot image + D1 polling early console + milestone gate：当前方案。
-
-**参考**:
-- `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md]`
-- `.claude/analysis/lichee/public-platform-notes.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee/public-platform-notes.md]`
-- `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/lichee/licheerv-dock-bringup.md`
-- `openspec/specs/learned/spec.md` L213-L216
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: Lichee RV Dock bring-up 先沿用官方 `BOOT0 -> OpenSBI -> U-Boot -> Android boot image`，load/link 基线为 `0x40200000`，用 D1 UART0 polling early console 输出首字节；暂不启用 UART IRQ、async TTY、rootfs、USB、SD/MMC、benchmark。
+**原因**: boot 分区已确认是 Android boot image；D1 UART 是 DW APB UART，base `0x02500000`、stride 4、32-bit MMIO、115200，不能复用 QEMU NS16550 stride=1 假设。
+**影响**: Q19 只验证启动链、链接地址、UART 访问模型；D1 单核不能替代 Q17 multi-hart 验证。失败时先查 boot image、load/link、UART base/stride/width。
+**恢复入口**: R4/R5、L213-L216、Q19 archived change、D1 closeout bringup log。
 
 #### Scenario: Lichee RV Dock early bring-up
 
-- **WHEN** StarryOS starts a Lichee RV Dock bring-up milestone
-- **THEN** the first runnable target MUST be a boot-image smoke test with D1 UART0 polling early console output
-- **AND** async TTY, UART IRQ, rootfs, USB, SD/MMC, shell, and benchmark workloads MUST remain disabled until polling serial output is confirmed
+- **WHEN** StarryOS starts Lichee RV Dock bring-up
+- **THEN** first runnable target MUST be Android boot image + D1 UART0 polling early console
+- **AND** async TTY, UART IRQ, rootfs, USB, SD/MMC, shell, and benchmark MUST remain disabled until polling serial output is confirmed
 
 <!-- A044 -->
-### Requirement: ADR-044: 多平台适配采用 build-time platform descriptor 分离平台事实、驱动能力与启动策略
-
-StarryOS board-specific constants MUST be centralized behind a build-time platform descriptor or equivalent platform module before adding Lichee RV Dock or VisionFive2 async UART support.
+### Requirement: ADR-044: 平台事实由 build-time descriptor 集中表达
 
 **日期**: 2026-06-28
-**状态**: 已接受（架构重构前置决策）
-**决策**:
-- StarryOS 复用现有 `MYPLAT` / `PLAT_CONFIG` / `axconfig` / `axplat` 机制选择平台，不另起一套平台选择系统。
-- StarryOS 自己新增轻量 platform descriptor，集中表达 async UART 和 bring-up 需要但 axconfig 不完整表达的事实：UART kind、base、irq、register stride、MMIO access width、early console strategy、boot image strategy。
-- `kernel/src/drivers/uart_init.rs` 不得继续作为板级常量来源；它只能消费 platform descriptor，并负责 async UART 初始化。
-- 真板 bring-up 必须先使用 polling early console。async UART、PLIC、timer、rootfs、USB、benchmark 在 early console 可观测后逐步接回。
-- D1 / VisionFive2 等 DW APB UART 平台必须显式表达 32-bit MMIO access width；不能只把 NS16550 stride 从 1 改成 4。
-
-**原因**:
-- 当前 `uart_init.rs` 硬编码 QEMU UART base `0x10000000`、stride 1、raw LSR `base+5`，这会让 `make MYPLAT=...` 仍然访问 QEMU 地址。
-- 构建系统已经有 `MYPLAT`、`PLAT_CONFIG`、`.axconfig.toml` 和 `axconfig-gen`，应顺势接入，而不是在驱动里堆条件编译常量。
-- axconfig 能表达 memory / PLIC / UART base / IRQ，但不能完整表达 `ConsoleKind`、`reg_width` 和 boot image strategy。
-- `uart_16550` 当前 MMIO backend 只有 stride 参数，底层 volatile access width 是 `u8`。D1 / VisionFive2 的 DW APB UART 需要 32-bit MMIO 访问模型。
-
-**影响**:
-- Lichee RV Dock 和 VisionFive2 适配可共享同一套平台边界：descriptor + early console + async UART backend。
-- 上层 TTY、line discipline、`/dev/console` 不需要感知 UART base / stride / width。
-- 后续若引入 DTB 解析，也应先解析成同一个 descriptor，而不是让各驱动分散解析 DTB。
-- QEMU 现有行为可作为第一个 descriptor 复刻，降低重构风险。
-
-**替代方案**:
-- ❌ 在 `uart_init.rs` 内按平台写 `#[cfg(feature = "...")]` 常量：短期快，但会继续污染驱动层。
-- ❌ 完整运行时 DTB 解析作为第一步：过重，会推迟 early console 可观测闭环。
-- ❌ 仅复用 axplat ConsoleIf：适合 polling console，不足以表达 async UART ring buffer、waker 和 IRQ 控制。
-- ✅ build-time platform descriptor + early console + 分阶段接回 async UART：当前方案。
-
-**参考**:
-- `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]`
-- `.claude/analysis/lichee-rv-dock-adaptation-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md]`
-- `openspec/specs/learned/spec.md` L217-L220
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: 复用 `MYPLAT` / `PLAT_CONFIG` / `axconfig` / `axplat`；新增轻量 platform descriptor 表达 UART kind、base、irq、stride、MMIO width、early console strategy、boot image strategy。`uart_init.rs` 只消费 descriptor，不再追加板级常量。
+**原因**: `uart_init.rs` 原硬编码 QEMU base `0x10000000`、stride 1、raw LSR `base+5`；axconfig 不能完整表达 `ConsoleKind`、`reg_width`、boot image strategy；D1/VF2 需要 stride 4 + 32-bit MMIO。
+**影响**: QEMU、Lichee、VisionFive2 共享 descriptor + early console + backend 边界；TTY、ldisc、`/dev/console` 不感知硬件常量；未来 DTB 也先解析成 descriptor。
+**恢复入口**: R6、L217-L220。
 
 #### Scenario: Board constants are centralized
 
-- **WHEN** a StarryOS driver needs board-specific base addresses, IRQ numbers, register stride, register width, or boot image parameters
-- **THEN** it MUST read them from the platform descriptor or equivalent centralized platform module
-- **AND** it MUST NOT introduce new board-specific constants directly inside driver initialization code
+- **WHEN** a driver needs board-specific base, IRQ, stride, width, or boot image parameters
+- **THEN** it MUST read them from platform descriptor or equivalent centralized platform module
+- **AND** it MUST NOT introduce board-specific constants inside driver initialization code
 
 <!-- A045 -->
-### Requirement: ADR-045: D1 真板正路径必须接入 D1 axplat 启动层
-
-StarryOS Lichee RV Dock bring-up MUST replace the QEMU axplat boot path with a D1-specific axplat before expecting StarryOS `entry.rs` smoke code to run.
+### Requirement: ADR-045: D1 必须接入 D1 axplat 启动层
 
 **日期**: 2026-06-28
-**状态**: 已接受（Q19 正路径方案）
-**决策**:
-- 新增或接入本地 `axplat-riscv64-lichee-d1`，由它负责 `_start`、早期页表、MMU enable、内存布局、D1 polling console 和平台初始化。
-- Lichee 构建必须通过 `MYPLAT` / `PLAT_CONFIG` 选择 D1 axplat；禁止继续使用 `axfeat/defplat` 的 QEMU virt 启动层。
-- Host-side Gate 必须检查 `readelf` / linker script / `objdump`：entry 与 linker base 应为 D1 高半区地址，boot symbols 必须是 D1 axplat 而不是 QEMU axplat。
-- StarryOS `kernel/src/platform/*` descriptor 只表达 StarryOS 驱动层事实；它不能替代 axplat 启动层。
-
-**原因**:
-- 最新板测中 U-Boot 已识别 `d1-nezha` Android boot image 并跳转，但没有 StarryOS 输出，说明问题位于 payload 早期执行路径。
-- 当前 ELF 仍以 `0xffffffc080200000` 为入口并调用 `axplat_riscv64_qemu_virt::boot`，与 D1 `0x40200000` 物理加载和 `0xffffffc040200000` 高半区预期不一致。
-- `axruntime` 会在 StarryOS `entry::init` 前运行；如果 axplat console、页表或 MMU 设置错误，`[starry-d1] early boot` 永远不会打印。
-
-**影响**:
-- Q19 后续实现重点从 `entry.rs` smoke 分支转向本地 D1 axplat crate。
-- D1 polling console 要放在 axplat 层，至少在 axruntime 早期日志前可用；StarryOS 层 smoke console 只能作为第二层确认。
-- `DWARF=n` 仍是 Lichee boot image 打包的强制 Gate，直到 raw binary debug section 控制被正式解决。
-
-**替代方案**:
-- ❌ 只覆盖 `KERNEL_BASE_PADDR`：不能替换 QEMU `_start`、页表、console 与 MMIO 范围。
-- ❌ 只在 `kernel/src/platform/lichee_d1.rs` 增加常量：该层运行太晚，无法修复 axplat 早期失败。
-- ❌ 直接复用 VisionFive2 axplat：RAM 起点相近，但 hart-id、UART、PLIC 和 console access width 都不是 D1。
-- ✅ 本地 `axplat-riscv64-lichee-d1` + artifact inspection + Android boot smoke：当前方案。
-
-**参考**:
-- `.claude/analysis/d1-axplat-bringup-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md]`
-- `.claude/analysis/platform-parameter-decoupling.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md]`
-- `openspec/specs/learned/spec.md` L221-L222
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: Lichee 构建必须通过 `MYPLAT` / `PLAT_CONFIG` 选择本地 `axplat-riscv64-lichee-d1`，由它负责 `_start`、早期页表、MMU、内存布局、D1 polling console 和平台初始化；禁止继续走 QEMU virt axplat。
+**原因**: U-Boot 已跳转但无 Starry 输出；旧产物仍以 `0xffffffc080200000` 入口和 `axplat_riscv64_qemu_virt::boot` 启动，不匹配 D1 `0x40200000` 物理加载与 `0xffffffc040200000` 高半区预期。
+**影响**: Q19 重点转为 D1 axplat；host gate 用 `readelf` / linker script / `objdump` 验证 D1 boot symbols、ELF entry、linker base；`DWARF=n` 仍是 boot image 尺寸 gate。
+**恢复入口**: R7、L221-L222。
 
 #### Scenario: D1 boot path verification
 
 - **WHEN** StarryOS builds a Lichee RV Dock boot image
-- **THEN** host inspection MUST prove the boot path references `axplat_riscv64_lichee_d1`
-- **AND** it MUST NOT reference `axplat_riscv64_qemu_virt::boot`
-- **AND** board flashing MUST be deferred if the generated linker base, ELF entry, or Android boot image address do not match the D1 contract
+- **THEN** host inspection MUST prove it references `axplat_riscv64_lichee_d1`
+- **AND** board flashing MUST be deferred if linker base, ELF entry, or Android boot image address do not match the D1 contract
 
 <!-- A046 -->
-### Requirement: ADR-046: D1/C906 early page table 必须设置 T-Head normal-memory PTE flags
-
-StarryOS Lichee RV Dock early boot page table MUST mark DDR mappings with T-Head C9xx normal-memory attributes before entering `axruntime` / `percpu` initialization.
+### Requirement: ADR-046: D1/C906 页表必须设置 T-Head normal-memory PTE flags
 
 **日期**: 2026-06-28
-**状态**: 已接受（Q19 板测修复）
-**决策**:
-- D1 axplat early boot 的 DDR identity mapping 与 high-half mapping 使用 `PTE_DDR = 0xef | (1 << 60) | (1 << 61) | (1 << 62)`。
-- 低地址 / MMIO bootstrap mapping 暂不套用 cacheable normal-memory 属性，避免把 UART / PLIC / timer 等设备区错误标记为普通内存。
-- `Store/AMO access fault` 如果发生在 `.bss` / percpu 原子操作附近，默认按 D1/C906 memory attribute 问题优先排查。
-- 后续最终页表也必须继承等价的 `xuantie-c9xx` / T-Head C9xx 属性；early page table 修复不代表最终页表已经安全。
-
-**原因**:
-- 真板日志已经进入 StarryOS payload：U-Boot 识别 `d1-nezha`，打印 `Starting kernel ...` 后触发 `Store/AMO access fault`。
-- `EPC ffffffc040244648` 符号化为 `percpu::imp::init` 中的 `amoor.w.aqrl`，`TVAL ffffffc0402c6908` 对应 `.bss` 符号 `percpu::imp::IS_INIT`。
-- 项目依赖中的 `ax-page-table-entry` 对 `xuantie-c9xx` 明确使用 `SH = 1<<60`、`B = 1<<61`、`C = 1<<62` 表示 normal memory。
-
-**影响**:
-- Q19 下一次板测应重编带该 PTE 修复的镜像并重新写入 boot 分区。
-- 如果修复后串口能继续输出，说明 D1 axplat 已跨过 `axruntime`/`percpu` 早期障碍。
-- 如果后续在内存管理初始化后再次 fault，应检查最终 kernel address space 的 PTE 属性，而不是回退到 boot image 格式或官方 Linux 采集。
-
-**替代方案**:
-- ❌ 禁用 percpu / atomics：规避症状，不解决 D1/C906 内存属性要求。
-- ❌ 把整个 0..1G 都标记为 normal memory：可能误标设备 MMIO。
-- ✅ 仅对 DDR `0x40000000..0x80000000` 和高半区 DDR 镜像设置 `SH|B|C`：当前方案。
-
-**参考**:
-- `crates/axplat-riscv64-lichee-d1/src/boot.rs`
-- `openspec/specs/learned/spec.md` L229-L230
-- `.claude/analysis/d1-axplat-bringup-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md]`
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: D1 axplat 的 DDR identity/high-half mapping 使用 `PTE_DDR = 0xef | (1 << 60) | (1 << 61) | (1 << 62)`；低地址/MMIO 不套用 normal-memory 属性；final page table 也必须带 `xuantie-c9xx` / T-Head C9xx 属性。
+**原因**: 真板在 `Starting kernel ...` 后 `Store/AMO access fault`；EPC 指向 `percpu::imp::init` 的 `amoor.w.aqrl`，TVAL 指向 `.bss` 的 `IS_INIT`；依赖中的 `ax-page-table-entry` 已定义 SH/B/C normal-memory 位。
+**影响**: `.bss` / percpu / atomic 附近 fault 优先查 D1/C906 memory attribute；若后续切 final page table 后再 fault，先查最终页表 PTE。
+**恢复入口**: `crates/axplat-riscv64-lichee-d1/src/boot.rs`、L229-L230。
 
 #### Scenario: D1/C906 AMO fault diagnosis
 
-- **WHEN** Lichee RV Dock 在 `Starting kernel ...` 后报告 `Store/AMO access fault`
-- **THEN** MUST 先符号化 EPC/TVAL，确认是否落在 DDR `.bss` / percpu / atomic 路径
-- **AND** MUST 检查 early page table 和 final page table 是否设置 T-Head C9xx normal-memory PTE flags
+- **WHEN** Lichee RV Dock reports `Store/AMO access fault` after `Starting kernel ...`
+- **THEN** EPC/TVAL MUST be symbolized first
+- **AND** early and final page tables MUST be checked for T-Head C9xx normal-memory PTE flags
 
 <!-- A047 -->
 ### Requirement: ADR-047: Q19B 先嵌入 benchmark payload，再追求 SDMMC/rootfs parity
 
-StarryOS Lichee RV Dock benchmark bring-up MUST first reach async UART benchmark data through staged platform modes and an embedded benchmark payload; SDMMC/rootfs parity MUST NOT block the first Q19B benchmark dataset.
-
 **日期**: 2026-06-29
-**状态**: 已接受（Q19B 探索结论）
-**决策**:
-- Q19B 从 Q19A smoke-only 路径拆出显式模式：smoke、kernel benchmark、user benchmark。
-- 先实现 D1-safe async UART path（DW APB UART stride 4 / 32-bit MMIO）与真实 PLIC UART IRQ 18，再进入 `/dev/console` 和用户态 benchmark。
-- 第一个用户态 benchmark 数据优先通过 embedded benchmark ELF 或小 initramfs 获取，复用现有 `load_user_app`/ELF loader 能力，避免先实现完整 SDMMC/rootfs。
-- SDMMC/rootfs 从 TF 卡运行 `/bin/benchmark` 是后续 parity 阶段，不作为 Q19B 首个成功标准。
-- QEMU benchmark 数据和 D1 真板数据必须分栏记录；QEMU 不仿真物理串口线延迟，不能覆盖 D1 结果。
-
-**原因**:
-- 当前 `entry.rs` 在 `feature = "lichee-d1"` 时直接进入 `run_lichee_d1_smoke() -> !`，完整 QEMU 用户路径被绕开。
-- QEMU 用户 benchmark 依赖 `/dev/console`、`tcdrain`、`FIONBIO`、`clock_gettime` 和用户 ELF 加载；这些比 Q19A smoke 多出多个可独立失败的子系统。
-- D1 当前没有 StarryOS SDMMC/rootfs 路径。若把 SDMMC 作为前置，无法区分 block bring-up 失败和 async UART/TTY 失败。
-- `crates/axplat-riscv64-lichee-d1/src/irq.rs` 已有真实 PLIC 实现，但顶层 Lichee feature 当前只启用 `irq-if` stub；这适合单独作为 Q19B-M2 Gate。
-
-**影响**:
-- Q19B milestone 必须按 mode split → D1 async UART backend → PLIC/UART IRQ → kernel benchmark → `/dev/console` → embedded user benchmark → optional SDMMC/rootfs 的顺序推进。
-- `tests/benchmark.c` 应保持与 QEMU source-compatible；差异应在 payload delivery 和平台 feature 中处理。
-- 文档和结果保存路径应区分 `lichee-kbench` 与 `lichee-userbench`，原始串口日志建议保存到 `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee/q19b-*.txt`（当前为归档目录，活跃采集可走此路径或新建 `_archive/<日期>-新批次>/lichee/`）。
-
-**替代方案**:
-- ❌ 直接启用完整 qemu feature set：会重新引入 block/PCI/virtio 假设，已经导致 `No block device found` 与 PCI 常量缺失。
-- ❌ 先做 SDMMC/rootfs：工程价值高，但会延迟第一个 async UART 真板数据，并扩大排障面。
-- ❌ 只跑 `drivers::bench::run_startup_benchmark()` 就声明完成：它只覆盖 ring buffer/driver 层，不证明用户态 syscall、TTY、tcdrain、FIONBIO。
-- ✅ 嵌入 benchmark ELF，先得到 D1 用户态 `/dev/console` 数据，再补 SDMMC/rootfs parity：当前方案。
-
-**参考**:
-- `.claude/analysis/q19b-lichee-benchmark-plan.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/q19b-lichee-benchmark-plan.md]`
-- `openspec/specs/learned/spec.md` L236-L239
-- `tests/benchmark.c`
-- `kernel/src/entry.rs`
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: Q19B 拆成 smoke、kernel benchmark、user benchmark；先做 D1-safe async UART（stride 4 / 32-bit MMIO）和 PLIC IRQ 18，再经 `/dev/console` 跑 embedded benchmark ELF 或小 initramfs；SDMMC/rootfs parity 后置。
+**原因**: Q19A smoke 绕开完整用户路径；QEMU benchmark 依赖 `/dev/console`、`tcdrain`、`FIONBIO`、`clock_gettime`、ELF loader；D1 无 StarryOS SDMMC/rootfs，若前置会混淆 block 与 UART/TTY 问题。
+**影响**: Q19B 必须分栏记录 QEMU 与 D1 数据；kernel ring benchmark 不能算最终 userbench gate；`tests/benchmark.c` 保持 source-compatible，差异只在 payload delivery 和 feature。
+**恢复入口**: Q19B archived change、L236-L258、R8/R9 tombstone。
 
 #### Scenario: Q19B first benchmark dataset
 
-- **WHEN** Q19B aims to collect the first Lichee RV Dock async UART benchmark data
-- **THEN** it MUST run through a staged mode that has D1 async UART, PLIC IRQ, `/dev/console`, and a user benchmark payload
-- **AND** it SHOULD use an embedded benchmark ELF before SDMMC/rootfs is available
-- **AND** it MUST NOT count kernel ring benchmark alone as the final Q19B user benchmark gate
+- **WHEN** Q19B collects first D1 async UART benchmark data
+- **THEN** it MUST use D1 async UART, PLIC IRQ, `/dev/console`, and user benchmark payload
+- **AND** embedded benchmark ELF SHOULD be used before SDMMC/rootfs is available
+- **AND** kernel ring benchmark alone MUST NOT count as final Q19B user benchmark gate
 
 <!-- A048 -->
-### Requirement: ADR-048: D1 先做平台专用 UartPort，后考虑 uart_16550 width-aware backend
-
-D1 DW APB UART (stride 4, 32-bit MMIO) 的异步栈入口 MUST 先通过 D1 专用 `ArceOsD1UartPort` 实现，禁止在当前阶段修改 `uart_16550::MmioBackend`（外部 crate 约束）。
+### Requirement: ADR-048: D1 先用平台专用 UartPort，后评估 width-aware backend
 
 **日期**: 2026-06-29
-**状态**: 已落地（Q19B Phase 2）
-**决策**:
-- 在 `kernel/src/drivers/d1_uart.rs` 中实现 `ArceOsD1UartPort`，直接通过 32-bit `read_volatile`/`write_volatile` 访问 DW APB UART 寄存器（stride 4），实现 `uart_16550::async_::driver::UartPort` trait。
-- 同时提供 D1 专用 ISR handler (`d1_uart_isr_handler`)，在 IIR 读取时使用 stride-aware 32-bit access，复用 `uart_16550::async_::isr` 的全局 waker (`RX_WAKER`/`TX_WAKER`/`DRAIN_WAKER`)。
-- QEMU 路径的 `ArceOsUartPort`（封装 `Uart16550<MmioBackend>`，U8 byte access）完全保留不变。
-- D1 路径和 QEMU 路径通过 `#[cfg(feature = "lichee-d1-kbench")]` 条件编译互斥，共享相同的 `AsyncUartDriver` 类型系统但使用不同的 `UartPort` 实现。
-- 长期方案：VisionFive2 也有类似 access-width 需求，可在 D1 benchmark 验证后提取 width-aware backend 到 `uart_16550` crate。
-
-**原因**:
-- `uart_16550::Uart16550<MmioBackend>` 内部做 U8 `read_volatile`/`write_volatile`，这是 NS16550 的标准行为。D1 的 DW APB UART 要求 stride 4 + 32-bit MMIO，不兼容当前 backend。
-- 项目规则：「不修改任何外部 crate」— `uart_16550` 是外部 crate。当前阶段不适合改动 `MmioBackend`。
-- D1 专用实现风险最小：162 行自包含代码，不碰 uart_16550 内部，`UartPort` trait 只有 4 个方法（`receive_bytes`/`send_bytes`/`transmitter_empty`/`update_ier`），接口简洁。
-
-**影响**:
-- `kernel/src/drivers/uart_init.rs` 通过 feature gate 维护双路径（QEMU `ArceOsUartPort` + D1 `ArceOsD1UartPort`），各自有独立的类型别名 (`ArceOsDriver`/`ArceOsReader`/`ArceOsWriter`) 和 ISR wrapper。
-- `kernel/src/lib.rs` 和 `kernel/src/drivers/mod.rs` 的 feature gate 需要精确控制哪些模块在 kbench 模式下可用（排除 `file`/`pseudofs`/`mm`/`syscall`/`task`/`time`/`ntty_async`，因为它们依赖 `axfs`/`axdisplay`）。
-- `NonNull<u8>` 需要 `unsafe impl Send + Sync` 才能放入 `lazy_static!`（内核态下 MMIO base pointer 是 immutable constant）。
-
-**替代方案**:
-- ❌ 扩展 `uart_16550::MmioBackend` 支持 access width：违反「不修改外部 crate」规则。
-- ❌ 通过 uart_16550 的 `Backend` trait 添加 width-aware 实现：Backend trait 是 sealed，无法外部实现。
-- ❌ 在 QEMU 路径中也使用 32-bit MMIO：NS16550 在 QEMU 上 stride 1 / U8 access 已验证且性能良好，没有必要。
-- ✅ D1 专用 `UartPort` + 复用 `AsyncUartDriver`/waker 体系：当前方案。
-
-**参考**:
-- `kernel/src/drivers/d1_uart.rs`（新增，162 行）
-- `kernel/src/drivers/uart_init.rs`（重构，双路径 feature gate）
-- `kernel/src/platform/early_console.rs` — `DwApbUart32EarlyConsole::putchar`（DW APB UART 32-bit MMIO 参考）
-- `kernel/src/platform/lichee_d1.rs` — `LICHEE_D1` descriptor（stride 4 / U32）
+**状态**: 已落地
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: 在 `kernel/src/drivers/d1_uart.rs` 实现 `ArceOsD1UartPort` 与 `d1_uart_isr_handler`，用 stride-aware 32-bit volatile MMIO 访问 RBR/THR=0、IER=1、IIR=2、LSR=5；QEMU `Uart16550<MmioBackend>` U8 路径保持不变；两条路径用 feature gate 互斥。
+**原因**: `uart_16550::MmioBackend` 是 U8 access，适合 NS16550；D1/VF2 DW APB UART 需要 32-bit access。当前阶段受外部 crate 约束，先在 StarryOS 平台层隔离。
+**影响**: 共用 `AsyncUartDriver` 类型系统和 waker，硬件访问路径分离；D1 benchmark 通过后再考虑把 width-aware backend 提取到 `uart_16550`。
+**恢复入口**: L240-L242。
 
 #### Scenario: D1 async UART register access
 
 - **WHEN** Lichee D1 benchmark mode initializes async UART
-- **THEN** it MUST use the D1-specific `ArceOsD1UartPort` for register access
-- **AND** it MUST access DW APB UART registers through stride-aware 32-bit volatile MMIO
-- **AND** it MUST NOT route D1 UART access through the QEMU `Uart16550<MmioBackend>` byte-MMIO path
+- **THEN** it MUST use D1-specific `ArceOsD1UartPort`
+- **AND** it MUST access DW APB UART through stride-aware 32-bit volatile MMIO
+- **AND** it MUST NOT route D1 through QEMU byte-MMIO path
 
 <!-- A049 -->
-### Requirement: ADR-049: Q19B Phase 5-6 通过最小 axfs-ng patch 解阻
-
-StarryOS D1 userbench 模式 (`lichee-d1-userbench`) 的 `/dev/console` TTY gate 和 embedded user benchmark payload 阶段 MUST 使用最小 D1 runtime 和 patched `axfs-ng`，避免重新引入 QEMU PCI/virtio/display/rootfs 假设。
+### Requirement: ADR-049: Q19B userbench 用最小 D1 runtime + patched axfs-ng 解阻
 
 **日期**: 2026-06-29
-**状态**: ✅ 已落地（Q19B Host Gate）
-**决策**:
-- Q19B userbench 启用 `dep:axfs` 和 `axfeat/task-ext`，恢复 `pseudofs::mount_all()`、`ASYNC_TTY`、`FD_TABLE`、用户任务与 syscall 最小路径。
-- 不启用 QEMU `qemu` feature；D1 路径继续排除 net socket、fb/axdisplay、virtio/display 等硬件无关模块。
-- 通过 `[patch.crates-io] axfs-ng = { path = "crates/axfs-ng" }` 本地化 `axfs-ng`，仅修改其 `axdriver` 依赖为 `default-features = false, features = ["block", "bus-mmio"]`。
-- D1 userbench 通过 embedded `benchmark.elf` 获取首个用户态 benchmark 路径，不要求 SDMMC/rootfs parity。
-- `make lichee-userbench` 必须作为烧录前 gate，而不仅是 `cargo check`。
-
-**原因**:
-- `pseudofs::mount_all()` 与 `add_stdio()` 需要 `axfs::FS_CONTEXT`，完全绕开 `axfs` 会扩大重构面。
-- 原始 `axfs-ng` 依赖 `axdriver` 时未关闭默认 feature，而 `axdriver` default 是 `bus-pci`；D1 没有 `PCI_ECAM_BASE` / `PCI_RANGES` / `PCI_BUS_END`。
-- `axdriver` 的 `build.rs` 在未启用自身 `bus-mmio` feature 时会默认输出 `cfg(bus="pci")`，所以只在 root feature 添加 `axfeat/bus-mmio` 不足以影响 `axfs-ng` 的间接 `axdriver`。
-
-**影响**:
-- `make lichee-userbench` 已生成可写入 boot 分区的 `starry-lichee-userbench-boot.img` (`kernel_size=876736`)。
-- 本地 `crates/axfs-ng` 是 deliberate patch，不是无意 vendor 膨胀；后续升级 axfs-ng 时必须重新核对 `axdriver` feature。
-- 真板仍需验证 `/dev/console`、`tcdrain`、FIONBIO、用户态 benchmark 输出；host gate 通过不等于 Q19B 最终完成。
-
-**替代方案**:
-- ❌ 直接启用 `qemu` feature：会带入 PCI/virtio/display/net 假设，扩大排障面。
-- ❌ 给 D1 axconfig 填假 `PCI_*` 常量：只欺骗编译器，运行时可能访问不存在的 PCI ECAM。
-- ❌ 完全重写最小 devfs：短期可行但重构面大，偏离 benchmark 数据目标。
-- ✅ patch `axfs-ng` 的 `axdriver` 依赖并保持 embedded benchmark：当前方案。
-
-**参考**:
-- `crates/axfs-ng/Cargo.toml` — patched `axdriver` dependency
-- `kernel/src/pseudofs/mod.rs:61` — `mount_all()` 依赖 `axfs::FS_CONTEXT`
-- `kernel/src/entry.rs` — `lichee_d1_init()` 中 Phase 5-6 TODO
-- `openspec/changes/q19b-lichee-d1-benchmark/tasks.md` — Phase 5-6 deferred 标记
+**状态**: 已落地
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: `lichee-d1-userbench` 启用 `dep:axfs` 和 `axfeat/task-ext`，恢复 pseudofs、ASYNC_TTY、FD_TABLE、用户任务与 syscall；不启用 QEMU `qemu` feature；本地 patch `axfs-ng`，让间接 `axdriver` 使用 `default-features = false, features = ["block", "bus-mmio"]`；`make lichee-userbench` 是烧录前 gate。
+**原因**: `pseudofs::mount_all()` 与 stdio 需要 `axfs::FS_CONTEXT`；原 `axfs-ng -> axdriver` 默认落到 `bus-pci`，D1 没有 PCI 常量；只加 `axfeat/bus-mmio` 不能影响间接 `axdriver`。
+**影响**: `make lichee-userbench` 已生成 `starry-lichee-userbench-boot.img`，`kernel_size=876736`；本地 `crates/axfs-ng` 是 deliberate patch，升级时必须复核。
+**恢复入口**: L249、L252-L253。
 
 #### Scenario: D1 userbench reaches devfs work
 
 - **WHEN** Q19B proceeds from kbench to userbench
-- **THEN** it MUST use a D1 feature set that includes `axfs` and `task-ext` without enabling QEMU PCI/virtio/display assumptions
+- **THEN** it MUST include `axfs` and `task-ext` without QEMU PCI/virtio/display assumptions
 - **AND** patched `axfs-ng` MUST enable `axdriver/block` and `axdriver/bus-mmio` with `default-features = false`
 - **AND** `make lichee-userbench` MUST pass before board flashing
 
 <!-- A050 -->
 ### Requirement: ADR-050: Q19B feature 必须区分硬件能力与运行模式
 
-StarryOS Lichee D1 benchmark features MUST NOT use a kbench-only runtime feature as the parent of userbench if that feature also excludes user/process/filesystem modules.
-
 **日期**: 2026-06-29
-**状态**: ✅ 已落地（Q19B-Next.1）
-**决策**:
-- 后续 Q19B 继续推进前，必须重新梳理 Lichee feature 语义，把 D1 async UART / PLIC 这类硬件能力与 smoke/kbench/userbench 这类运行模式分开。
-- `lichee-d1-userbench` 可以复用 D1 async UART 和 PLIC 能力，但不能继承会排除 `ASYNC_TTY`、`file`、`mm`、`pseudofs`、`task`、`syscall`、`time` 的 kbench-only feature。
-- userbench 的第一 host gate 是 `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench` 通过，且不得通过直接启用完整 QEMU PCI/virtio/display 假设来绕过。
-- `/dev/console` gate 必须先于 embedded benchmark ELF；只有 `/dev/console` 和 async TTY 通路成立后，才加载完整 `tests/benchmark.c` payload。
-
-**原因**:
-- 当前 `kernel/Cargo.toml` 定义 `lichee-d1-userbench = ["lichee-d1-kbench"]`。
-- 当前 `kernel/src/lib.rs` 和 `kernel/src/drivers/mod.rs` 用 `#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]` 排除用户态路径模块。
-- 实测 `cargo check --target riscv64gc-unknown-none-elf --features lichee-d1-userbench` 失败，缺失 `crate::drivers::ASYNC_TTY`、`crate::file`、`crate::mm`、`crate::pseudofs`、`crate::task`、`axfs`、`axtask::AxTaskExt`。
-
-**影响**:
-- Q19B 当前 Phases 0-4 可以作为 kbench 交付继续保留；Phases 5-6 需要单独做 feature/runtime 边界修正。
-- 后续实现应优先新增或重命名 feature，使 kbench-only exclusion 不影响 userbench。
-- 这条 ADR 不要求立即实现 D1 SDMMC/rootfs；embedded benchmark 仍然是首个用户态数据路径的推荐方式。
-
-**替代方案**:
-- ❌ 继续让 userbench 继承 kbench-only feature：会持续排除 userbench 必需模块。
-- ❌ 直接启用 `qemu` feature：会重新带入 PCI/virtio/display/rootfs 假设，扩大排障面。
-- ✅ 拆分硬件能力 feature 与运行模式 feature，再构建最小 D1 userbench runtime：当前方案。
-
-**参考**:
-- `.claude/analysis/q19b-current-blockers.md` `[ARCHIVED 2026-07-04 → _archive/2026-07-04-q19-lichee-analysis/q19b-current-blockers.md]`
-- `kernel/Cargo.toml`
-- `kernel/src/lib.rs`
-- `kernel/src/drivers/mod.rs`
+**状态**: 已落地
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: 分离 D1 async UART/PLIC 硬件能力 feature 与 smoke/kbench/userbench 运行模式 feature；`lichee-d1-userbench` 可复用硬件能力，但不能继承会排除 `ASYNC_TTY`、`file`、`mm`、`pseudofs`、`task`、`syscall`、`time` 的 kbench-only feature。
+**原因**: 旧 `lichee-d1-userbench = ["lichee-d1-kbench"]`，而 kbench gate 排除了用户态路径模块，导致 `cargo check --features lichee-d1-userbench` 缺少 `ASYNC_TTY`、`file`、`mm`、`pseudofs`、`task`、`axfs`、`AxTaskExt`。
+**影响**: kbench-only exclusion 不影响 userbench；`/dev/console` gate 先于 embedded benchmark ELF；仍不要求 SDMMC/rootfs。
+**恢复入口**: L245、L248-L250。
 
 #### Scenario: D1 userbench feature selection
 
 - **WHEN** `lichee-d1-userbench` is enabled
 - **THEN** it MUST include D1 async UART and PLIC capability
-- **AND** it MUST keep the user/process/filesystem modules required by the benchmark runtime visible
-- **AND** it MUST NOT inherit a kbench-only feature that excludes `ASYNC_TTY`, `file`, `mm`, `pseudofs`, `task`, `syscall`, or `time`
+- **AND** it MUST keep user/process/filesystem modules visible
+- **AND** it MUST NOT inherit a kbench-only feature that excludes benchmark runtime modules
 
 <!-- A051 -->
 ### Requirement: ADR-051: D1 async UART drain 必须兼容 THRE 边沿丢失
 
-D1 DW APB UART async backend MUST treat THRE/TEMT readiness as both interrupt-driven and state-driven; drain waiters MUST NOT rely solely on future THRE interrupts.
-
 **日期**: 2026-06-29
-**状态**: ✅ 已落地（Q19B 真板 userbench）
-**决策**:
-- D1 `ArceOsD1UartPort` 在启用 `IER::THR_EMPTY` 后，如果 LSR 已显示 THRE/TEMT，必须立即软件 wake `TX_WAKER` / `DRAIN_WAKER`。
-- D1 ISR 读取 IIR 时必须识别 bit0=1 的 no-pending 状态；no-pending 不是有效中断类型，但可基于 LSR 的 THRE/TEMT 补一次 TX/drain wake。
-- `flush()` 与 `sys_ioctl(TCSBRK/tcdrain)` 必须注册 `DRAIN_WAKER`，不能只注册 TX ring waker；因为数据被 TX copier pop 出 ring 后，后续状态变化发生在 staged buffer 和 UART FIFO/TEMT。
-- TX copier 在最后一批数据送入 UART 且确认 transmitter empty 后必须 wake `DRAIN_WAKER`。
-
-**原因**:
-- QEMU NS16550 模型稳定产生 THRE 中断，曾掩盖“启用 THRE 时硬件已经 ready 但不再产生新边沿”的真板窗口。
-- Lichee RV Dock 真板日志显示 IRQ 18 可进入，但 IIR 多次为 `0xc1`（no pending），有效 THRE `0xc2` 只偶发。
-- userbench 首次卡在 64B write 后的 `tcdrain`，说明 `/dev/console`、write、TX ring 都成立，卡点在 staged/TEMT drain 唤醒。
-
-**影响**:
-- D1 userbench 已完整跑完 embedded benchmark，`tcdrain` 不再卡住。
-- 真板大包 TX 达 97.7%~99.0% 115200bps 线速，证明 drain 等待的是实际串口发送完成。（**注**：Q19C-M0 2026-07-07 同版 `q19c-m0-20260703` manifest 数据 64B 96.6% / 256B 97.3% / 1024B 98.8% / batch-1024B 99.1%，64B 因 pre-section drain 隔离 stdout backlog 测量污染后从 1.01 KB/s 提升至 11.13 KB/s；本 ADR 的 97.7%~99.0% 是 Q19B 256B/1024B/4096B 大包数据，作为当时结论仍然有效）
-- `uart_16550` 被本地化到 `crates/uart_16550`，以便 StarryOS 分支保存 async drain 修复；后续若回推上游，需要拆分为通用 drain 修复和 D1 backend 修复。
-
-**替代方案**:
-- ❌ 在 `tcdrain` 内轮询硬件：破坏原异步架构，且把硬件细节泄漏到 syscall 层。
-- ❌ 只依赖 PLIC/UART 中断：D1 no-pending/edge-loss 窗口已由真板日志证伪。
-- ✅ 保持 copier + waker 架构，在硬件 backend 和 drain 状态机补齐 ready-state wake：当前方案。
+**状态**: 已落地
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: D1 backend 启用 `IER::THR_EMPTY` 后若 LSR 已 THRE/TEMT，立即 wake `TX_WAKER` / `DRAIN_WAKER`；ISR 对 IIR bit0=1 no-pending 不能当有效中断，但可基于 LSR 补 wake；`flush()` / `TCSBRK` 注册 `DRAIN_WAKER`；TX copier 最后一批数据送完且 TEMT 后 wake drain。
+**原因**: QEMU 稳定 THRE IRQ 掩盖边沿丢失；D1 真板 IIR 多次 `0xc1` no pending，有效 `0xc2` 偶发；userbench 首次卡在 64B `tcdrain`，说明卡点是 staged/TEMT drain 唤醒。
+**影响**: D1 userbench 完整通过；Q19B 大包 TX 97.7%~99.0% 线速，Q19C-M0 同版 manifest 为 64B 96.6%、256B 97.3%、1024B 98.8%、batch-1024B 99.1%；后续上游化需拆通用 drain 与 D1 backend。
+**恢复入口**: L255-L258、O77/L275。
 
 #### Scenario: Porting async UART to a real board
 
 - **WHEN** a real UART backend enables THRE interrupts
 - **THEN** it MUST also check current LSR readiness and wake TX/drain waiters if THRE/TEMT is already true
-- **AND** `tcdrain` / `flush` waiters MUST be registered on the drain completion path, not only on the TX ring space path
+- **AND** `tcdrain` / `flush` waiters MUST be registered on drain completion path, not only TX ring space path
 
 <!-- A052 -->
-### Requirement: ADR-052: Q19C 异步 UART 性能验证以 memory-root path/command 收敛
-
-Lichee RV Dock 上的 Q19C benchmark MUST prove D1 async UART kernel/user performance through memory-root path and command-entry modes; shell, SDMMC, block, and real rootfs MUST NOT be required for Q19C completion.
+### Requirement: ADR-052: Q19C 以 memory-root path/command 收敛 UART 性能验证
 
 **日期**: 2026-07-02
-**状态**: ✅ 已接受（2026-07-11 方向更新）
-**决策**:
-- 保留 Q19B embedded `benchmark.elf` 作为 D1 async UART/userland regression gate。
-- 新增 Q19C fullbench runtime mode 时，先在 D1 memory root 中提供 `/bin/benchmark`，通过 `FS_CONTEXT.resolve()/read()` 和 eager ELF segment mapping 启动 benchmark，而不是继续调用 `load_embedded_user_app()`。
-- M2 以 `lichee-memory-root-command` 作为完成目标；true shell path 只作为 future optional。
-- M3/rootfs-probe、真实 SDMMC/block rootfs parity、Q19D storage/rootfs implementation 取消为当前规划；需要时重新 propose。
-- D1 fullbench 不得启用 `qemu` feature；必须保持独立 feature set，继承 D1 async UART/PLIC 能力但排除 QEMU PCI/virtio/display 假设。
-
-**原因**:
-- Q19B 已证明 `/dev/console`、TTY、syscall、`tcdrain` 和 FIONBIO，但 embedded ELF 绕过了 rootfs/path loader。
-- QEMU 完整路径依赖 rootfs 镜像中的 `/bin/sh`；在 D1 上自制或引入 shell 会把验证目标扩展到 shell packaging、解释器、`/proc/self/exe` 和动态依赖。
-- Q19C-M1/M2 已覆盖 D1 memory-root 的 VFS 路径可见性、读取、用户进程、stdio、spawn/join、exit code 和 benchmark 完整运行。
-- 真实 SDMMC/rootfs 需要 D1 block driver、clock/reset/pinmux/cache 等硬件 bring-up；这些不属于 async UART 性能验证。
-
-**影响**:
-- Q19C 可以按 M0/M1/M2 收尾：benchmark evidence cleanup、memory-root path fullbench、memory-root command-entry fullbench。
-- benchmark 数据仍按 QEMU / D1 embedded / D1 fullbench 分栏记录，避免覆盖不同测试条件。
-- 后续优先级转向 Q20 多 hart / 等价真板复验，而不是继续扩展 rootfs/shell。
-
-**替代方案**:
-- ❌ 直接做 SDMMC/rootfs：工程价值高，但会把 block bring-up 和 user loader parity 绑在一起，降低定位效率。
-- ❌ 为 Q19C 自制或引入 shell：会偏离 async UART 性能验证目标。
-- ❌ 复用 QEMU feature：会重新引入 PCI/virtio/display/rootfs 假设，不符合 D1 硬件事实。
-- ✅ benchmark evidence cleanup -> memory-root path loader -> command-entry benchmark -> 收尾：当前路线。
+**状态**: 已接受（2026-07-11 方向更新）
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: Q19B embedded benchmark 保留为 regression；Q19C fullbench 先在 D1 memory root 提供 `/bin/benchmark`，通过 `FS_CONTEXT.resolve()/read()` + eager ELF segment mapping 启动；M2 以 `lichee-memory-root-command` 收尾；shell、SDMMC、block、真实 rootfs 和 Q19D 取消当前规划。
+**原因**: Q19B 已验证 `/dev/console`、TTY、syscall、`tcdrain`、FIONBIO，但绕过 path loader；M1/M2 已覆盖 VFS 可见性、读取、用户进程、stdio、spawn/join、exit code；真实 storage/rootfs 属于独立硬件 bring-up。
+**影响**: Q19C 按 M0/M1/M2 收尾；数据按 QEMU、D1 embedded、D1 fullbench 分栏；后续转向 Q20~Q23 和 Q24 multi-hart。
+**恢复入口**: R10、L259-L264、L276-L280。
 
 #### Scenario: D1 fullbench path loading
 
-- **WHEN** Q19C starts full StarryOS benchmark work on Lichee RV Dock
-- **THEN** the first fullbench gate MUST run benchmark from a VFS-visible `/bin/benchmark`
-- **AND** `load_embedded_user_app()` MUST remain only the Q19B regression path
+- **WHEN** Q19C starts full StarryOS benchmark on Lichee RV Dock
+- **THEN** first fullbench gate MUST run benchmark from VFS-visible `/bin/benchmark`
+- **AND** `load_embedded_user_app()` MUST remain only Q19B regression path
 - **AND** shell, SDMMC, block, and real rootfs parity MUST NOT be required for Q19C completion
 
 <!-- A053 -->
-### Requirement: ADR-053: D1 P99 长尾不作为异步 UART 主线阻塞项
-
-Q19C MUST NOT continue treating the Lichee D1 TX P99 tail-latency investigation as an async UART development gate unless it becomes a correctness issue or reproduces on another board.
+### Requirement: ADR-053: D1 P99 长尾不阻塞异步 UART 主线
 
 **日期**: 2026-07-08
-**状态**: ✅ 已接受
-**决策**:
-- 停止在 Q19C 主线上继续探究 D1 size>=15 / drain-each P99 长尾根因。
-- 将该问题归类为 D1 真板平台尾部行为或 D1 适配层调优项，而不是通用异步 UART 架构缺口。
-- Q19C 后续优先按 memory-root `/bin/benchmark` path/command 证据收尾；P99 tracing 只保留为后续可选项。
-
-**原因**:
-- 同版 benchmark 下，QEMU rootfs 路径未复现 D1 的 FIFO-boundary P99 长尾；D1 1B latency 也正常。
-- D1 已达到 96.6%~99.1% 物理线速，`/dev/console`、TTY、`tcdrain()`、FIONBIO 与 benchmark 回归均通过。
-- Q19C.8e 的 slow-pool + yield 重试证明 fallback 可用，`slow_poll_exh=0` / `yield_exh=0`，长尾当前不影响功能正确性，吞吐影响可接受。
-- 继续深挖会主要消耗在 D1 DW APB UART / PLIC / 调度 / 软件 wake 的平台细节上，和当前通用异步 UART 主线收益不匹配。
-
-**影响**:
-- D1 P99 长尾不阻塞 Q19C M1/M2 收尾。
-- 若未来出现 `tcdrain()` hang、明显交互卡顿、吞吐显著下降，或 VisionFive2 / 其他真板复现同类问题，再提升为平台 tracing 任务。
-- 通用异步 UART 当前状态视为已通过 QEMU + D1 双路径功能验证；后续工作以 loader/rootfs parity 和其他真板复验为主。
-
-**替代方案**:
-- ❌ 继续把 P99 tracing 作为 Q19C gate：会延迟 memory-root path loader，且当前没有正确性收益。
-- ❌ 声称问题已根治：当前只证明影响可接受，根因未探明。
-- ✅ 接受为 D1 平台尾部 known limitation，保留触发条件，主线按 Q19C M1/M2 证据收尾。
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: 停止把 D1 size>=15 / drain-each P99 长尾作为 Q19C gate；归类为 D1 平台尾部行为或适配层调优项。
+**原因**: QEMU rootfs 未复现，D1 1B latency 正常；D1 已达 96.6%~99.1% 线速，`/dev/console`、TTY、`tcdrain()`、FIONBIO 通过；slow-pool/yield 证明 forward progress，不改善 P99，影响可接受。
+**影响**: Q19C M1/M2 不被 P99 tracing 阻塞；若出现 hang、数据丢失、明显交互退化、吞吐显著下降，或其他真板复现，再提升为平台 tracing。
+**恢复入口**: R11、L265-L266、L275、O77。
 
 #### Scenario: D1 P99 tail appears during Q19C
 
-- **WHEN** Lichee D1 benchmark shows size>=15 TX P99 tail latency but throughput and correctness gates still pass
-- **THEN** Q19C MUST record it as a known platform limitation
-- **AND** it MUST NOT block memory-root path loader work
+- **WHEN** D1 benchmark shows size>=15 TX P99 tail but throughput and correctness gates pass
+- **THEN** Q19C MUST record it as known platform limitation
 - **AND** it MUST only become a gate if it causes hang, data loss, visible interaction regression, or reproduces on another supported board
 
 <!-- A054 -->
-### Requirement: ADR-054: Q19C-M1 复用 high-level FS API 注入 memory-root benchmark
-
-Q19C-M1 MUST populate memory-root `/bin/benchmark` through existing `FsContext` high-level APIs and then prove the benchmark runs from that VFS-visible path; it MUST NOT add a parallel tmpfs write path or count `load_embedded_user_app()` as fullbench success.
+### Requirement: ADR-054: Q19C-M1 用 high-level FS API 注入 memory-root benchmark
 
 **日期**: 2026-07-08
-**状态**: ✅ 已落地（M1 eager path 真板通过；lazy file-backed COW deferred）
-**决策**:
-- D1 fullbench M1 在 `init_memory_root()` 后创建 `/bin`，通过 `FsContext::write("/bin/benchmark", benchmark_bytes)` 写入 benchmark ELF。
-- 注入后必须用 `FS_CONTEXT.resolve("/bin/benchmark")` 验证路径可见；当前落地实现用 `FS_CONTEXT.read("/bin/benchmark")` 读取文件，再复用 eager ELF segment mapping 创建进程。
-- Q19B embedded userbench 继续保留为 regression；fullbench 不复用 `load_embedded_user_app()` 作为成功路径。
-- 不新增 `MemoryFs`/`MemoryNode` 专用写接口，不 fork ELF loader。
-- `load_user_app()` 的 memory-root/tmpfs lazy file-backed COW 路径在 D1 上另有 SIGILL 问题，作为 loader/mm 后续问题处理，不阻塞 Q19C-M1 或异步 UART 结论。
-
-**原因**:
-- 当前 `axfs-ng` 已提供 `FsContext::create_dir()`、`FsContext::write()`、`FsContext::resolve()`，足以完成 M1 memory-root 注入。
-- 真板调试显示 lazy `CachedFile` + file-backed COW 路径可进入用户态并处理若干 page fault，但在 benchmark main 前 SIGILL；故障点反汇编为合法 `c.ld`，更像取指/懒映射字节问题，不是 UART 或 syscall 主线问题。
-- 直接写 tmpfs 内部节点会扩大实现范围并绕过 high-level VFS 语义；继续用 embedded loader 则无法证明 path loading。
-
-**影响**:
-- Q19C-M1 的代码改动集中在 feature/Makefile、`entry.rs` fullbench 分支、memory-root populate helper 和 `load_user_app_eager_from_path()`。
-- 真实 SDMMC/rootfs 不再作为当前 roadmap；M1 只证明 populated memory root 上的 path-based user loading。
-- `docs/benchmark-report-async.md` 作为性能基线；M1 验收关注启动链路和 benchmark 完整运行，不重新优化 UART 性能。
-
-**替代方案**:
-- ❌ 为 tmpfs 增加专用 embedded-file API：可行但范围过大，且当前 high-level API 已满足需求。
-- ❌ fullbench 继续调用 `load_embedded_user_app()`：无法覆盖 `FS_CONTEXT.resolve()` / `CachedFile` / file-backed mapping。
-- ❌ 继续把 lazy file-backed COW 修复作为 M1 gate：会把 loader/mm bug 混入 async UART/fullbench 验收。
-- ✅ 使用 `FsContext::write()` 注入 `/bin/benchmark`，再走 `FS_CONTEXT.resolve()/read()` + eager ELF mapping：当前已验证路线。
+**状态**: 已落地
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: M1 在 `init_memory_root()` 后用 `FsContext::create_dir()` / `write()` 注入 `/bin/benchmark`，用 `resolve()` 验证路径，再通过 `FS_CONTEXT.read()` + eager ELF segment mapping 启动；不新增 tmpfs 专用写接口，不把 `load_embedded_user_app()` 当 fullbench 成功路径。
+**原因**: 现有 high-level API 足够；lazy `CachedFile` + file-backed COW 可进入用户态但在 main 前 SIGILL，反汇编为合法 `c.ld`，更像取指/懒映射字节问题，不是 UART/syscall 主线。
+**影响**: M1 改动集中在 feature/Makefile、`entry.rs` fullbench 分支、memory-root populate helper、`load_user_app_eager_from_path()`；lazy COW 修复作为 loader/mm 后续。
+**恢复入口**: R12、L276-L277。
 
 #### Scenario: M1 memory-root benchmark population
 
-- **WHEN** Q19C-M1 prepares a D1 fullbench image
+- **WHEN** Q19C-M1 prepares D1 fullbench image
 - **THEN** it MUST create and write `/bin/benchmark` through `FsContext`
-- **AND** it MUST prove `FS_CONTEXT.resolve("/bin/benchmark")` succeeds before spawning the process
-- **AND** it MUST start the process from those VFS-read ELF bytes, not `load_embedded_user_app()`
+- **AND** it MUST prove `FS_CONTEXT.resolve("/bin/benchmark")` succeeds before spawn
+- **AND** it MUST start process from VFS-read ELF bytes, not `load_embedded_user_app()`
 
 <!-- A055 -->
-### Requirement: ADR-055: Q19C-M2 command-entry 是收尾 gate，M3/rootfs-probe 取消当前规划
-
-Q19C-M2 MUST accept memory-root command-entry proof as the final async UART user benchmark gate. Q19C-M3/rootfs-probe, shell, SDMMC, block, and real rootfs MUST NOT be required unless a new storage/rootfs goal is proposed.
+### Requirement: ADR-055: Q19C-M2 command-entry 是收尾 gate，M3/rootfs-probe 取消
 
 **日期**: 2026-07-10
-**状态**: ✅ 已接受（2026-07-11 方向更新）
-**决策**:
-- M2 在没有已知静态 `/bin/sh` 时，允许 documented equivalent command entry，但必须独立标注 label、argv/envp、stdio、spawn/join 与 exit code。
-- M2 不得把 kernel-launched `/bin/benchmark` 伪称为 shell success；缺 `/bin/sh`、`/init.sh`、解释器或库时必须输出缺失路径和阶段。
-- M3/rootfs-probe 不再作为 Q19C board gate。已完成的 host/probe 代码只保留为历史事实。
-- Q19D SDMMC/rootfs 取消当前规划。若后续目标转向 storage/rootfs bring-up，必须重新 create change。
-
-**原因**:
-- 当前 `load_user_app()` 对 `.sh` 会转向 `/bin/sh`，且 busybox 仍有 `/proc/self/exe` FIXME；强行做 shell proof 会把 shell packaging 问题混入 M2。
-- 当前 D1 平台没有 SDMMC block provider；实现 block/rootfs 不能提高 async UART 性能结论的可信度。
-- M0/M1/M2 已覆盖内核态 benchmark、用户态 `/dev/console`、TTY、syscall、`tcdrain`、FIONBIO、memory-root path/command 和 exit code。
-
-**影响**:
-- Q19C 按 M0/M1/M2 证据收尾；M3 board gate 不再等待。
-- 后续工作优先 Q20 多 hart / 等价真板复验。Storage/rootfs 另立项。
-
-**替代方案**:
-- ❌ 等待完整 shell 再做 M2：会阻塞已经可验证的 argv/envp/stdio/exit/join 证据。
-- ❌ 继续 M3/rootfs-probe：只能证明 storage/rootfs blocker，不能增加 UART 性能证据。
-- ✅ M2 documented equivalent command entry 作为 Q19C 收尾 gate：当前路线。
+**状态**: 已接受（2026-07-11 方向更新）
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: 缺少已知静态 `/bin/sh` 时，M2 接受 documented equivalent command entry，但必须记录 label、argv/envp、stdio、spawn/join、exit code；不得伪称 shell success。M3/rootfs-probe、shell、SDMMC、block、real rootfs 不再是 Q19C gate；storage/rootfs 需要新 change。
+**原因**: `.sh` 会转向 `/bin/sh`，busybox 仍有 `/proc/self/exe` FIXME；D1 无 SDMMC block provider；M0/M1/M2 已覆盖 async UART、`/dev/console`、TTY、syscall、`tcdrain`、FIONBIO、memory-root path/command。
+**影响**: Q19C 以 M0/M1/M2 证据收尾；M3 board gate 不等待；后续优先 Q20~Q24。
+**恢复入口**: R13、L278-L280。
 
 #### Scenario: M2 missing shell
 
@@ -1218,36 +932,18 @@ Q19C-M2 MUST accept memory-root command-entry proof as the final async UART user
 <!-- A056 -->
 ### Requirement: ADR-056: QEMU/D1 可验证 UART 工作前移，multi-hart 真板复验后置
 
-StarryOS async UART roadmap MUST prioritize work that can be completed on current QEMU and Lichee D1 targets before waiting for VisionFive2 or another multi-hart board.
-
 **日期**: 2026-07-12
-**状态**: ✅ 已接受（milestone replan analysis）
-**决策**:
-- 将 latency / jitter / CPU 开销 / RX fixed payload 补测前移为下一阶段 benchmark gap closure。
-- 将 UART 专用 user completion queue、mmap user ring、zero-copy prototype 和 ring/completion 性能决策从远期预研池前移。
-- 保留 Q17/O63 multi-hart 复验，但把它后置为 VisionFive2 / 等价 SMP 硬件 gate。
-- 不先实现通用 `io_uring`；先实现 UART 专用 submit/completion ring，保留 `/dev/console` read/write fallback。
-
-**原因**:
-- QEMU 和 D1 已能运行同版 benchmark，`tests/benchmark.c` 已覆盖 write+tcdrain、no-drain enqueue、batch drain、writev、FIFO boundary、FIONBIO 与 optional RX fixed payload。
-- D1 是单 hart，不能证明 O63；但它能证明 UART 语义、tail latency、CPU/counter 开销和 user ring 原型。
-- 当前 `DeviceOps::mmap()` / `sys_mmap()` 已有 device mapping 框架，可作为 user ring/zero-copy 原型入口。
-- VisionFive2 / multi-hart 依赖硬件，不应阻塞当前可验证工作。
-
-**影响**:
-- 后续 optimization milestone 应从 Q20 开始重排：Q20 benchmark gap closure，Q21 completion queue MVP，Q22 user ring/zero-copy，Q23 performance decision，Q24 multi-hart revalidation。
-- Q23 不再是空泛远期池；它成为 ring/completion 是否保留的决策 gate。
-- Q24 仍必须覆盖并发 read/write、flush/tcdrain、IER enable/disable、waker 和 release/acquire 语义。
-
-**替代方案**:
-- ❌ 继续等待 multi-hart 真板后再做 ring/completion：会阻塞 QEMU/D1 当前可完成工作。
-- ❌ 直接做完整 `io_uring`：范围过大，串口目前只需要少量 opcode 与 completion 语义。
-- ✅ 先做 UART 专用 ring/completion，测出收益后决定保留、收窄或回滚。
+**状态**: 已接受
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
+**决定**: Q20 先补 latency / jitter / CPU 开销 / RX fixed payload；Q21 做 UART user completion queue MVP；Q22 做 mmap user ring / zero-copy prototype；Q23 做 ring/completion 性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。先做 UART 专用 submit/completion ring，保留 `/dev/console` read/write fallback，不先做通用 `io_uring`。
+**原因**: QEMU 和 D1 已能跑同版 benchmark；`tests/benchmark.c` 覆盖 write+tcdrain、no-drain、batch drain、writev、FIFO boundary、FIONBIO、optional RX fixed payload；`DeviceOps::mmap()` / `sys_mmap()` 可承接 user ring 原型；D1 单 hart不能证明 O63，但可证明 UART 语义、tail latency、CPU/counter 和 user ring 原型。
+**影响**: optimization milestone 从 Q20 重排到 Q26；Q23 成为 ring/completion 保留、收窄或回滚 gate；Q24 仍必须覆盖并发 read/write、flush/tcdrain、IER enable/disable、waker、release/acquire。
+**恢复入口**: R15、L286、`.claude/analysis/uart-async-qemu-d1-first-replan.md`。
 
 #### Scenario: Planning UART async work after Q19C
 
 - **WHEN** 新增 async UART 后续 milestone
-- **THEN** 当前 QEMU/D1 可验证的测试、ring、completion 和 zero-copy 工作 MUST be scheduled before VisionFive2-only validation
+- **THEN** QEMU/D1 可验证的测试、ring、completion 和 zero-copy work MUST be scheduled before VisionFive2-only validation
 - **AND** multi-hart O63 proof MUST remain required before claiming SMP correctness
 - **AND** generic `io_uring` semantics MUST NOT be required unless a later ADR proves UART-specific rings are insufficient
 
