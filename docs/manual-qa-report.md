@@ -5,7 +5,7 @@
 > **当前 state**：Q0~Q13 + LTO 全部完成（2026-06-16）；本文档为 Q7 阶段手动 QA 报告，**功能结论仍然有效**
 > **截稿日期**：2026-06-30（补充 Q19B Lichee D1 真板数据状态）
 > **测试方式**：交互式手动测试（QEMU 内 Shell + [`benchmark.c`](https://github.com/daivy2333/StarryOS/blob/feat/uart-16550-async/tests/benchmark.c)）
-> **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/benchmark-report-async.md`（性能数据） · `docs/uart-performance-comparison.md`（Console vs Async 对比）
+> **关联文档**：`docs/async-uart-architecture.md`（架构） · `docs/benchmark-report-async.md`（性能数据）
 
 ---
 
@@ -21,7 +21,7 @@ StarryOS 异步串口（Q7 + O45 阶段）通过 12 项手动 QA 测试，**全�
 | 性能（Q7 基线）| ✅ 软件开销 63.9 µs | T11（avg 150.7 µs，含 QEMU 仿真）|
 | 吞吐量 e2e | ✅ D1 已回填；VF2 待回填 | Q19B D1 大包 TX 97.7%~99.0% 线速；T12 的 QEMU 绝对吞吐仍不可信 |
 
-**小结**：12 项测试用例全 PASS 是异步串口功能正确性、稳定性、性能三维度达标的充分证据；D1 真板吞吐已经由 Q19B 回填，VisionFive2 仍是后续独立真板验证项（详见 `docs/benchmark-report-async.md` §0.1）。
+**小结**：12 项测试用例全 PASS 是异步串口功能正确性、稳定性、性能三维度达标的充分证据；D1 真板吞吐已经回填，VisionFive2 仍是后续独立真板验证项（详见 `docs/benchmark-report-async.md`）。
 
 ---
 
@@ -45,7 +45,7 @@ QA 测试的结论严格依赖**测试环境**——本节明确所有测试用�
 **关键限制**：
 - QEMU 16550 模型不仿真真实串口线延迟。`./benchmark` 测得的"延迟"在 QEMU 上反映**软件开销**，硬件时间被算作 0。Lichee D1 真板已经测得大包 97.7%~99.0% 线速；VisionFive2 硬件时间仍需后续单独采集。
 - 12 项测试覆盖了主要场景，但**非穷尽**（无 DMA、无高速波特率、无多进程并发）。
-- 性能数字（avg 150.7 µs）对应 Q7 阶段，Q13.1 优化后已降至 129.5 µs（详见 `docs/benchmark-report-async.md` §0）。
+- 性能数字（avg 150.7 µs）对应 Q7 阶段，Q13.1 优化后已降至 129.5 µs；当前性能基线详见 `docs/benchmark-report-async.md`。
 
 **测试方法**（交互式手动 + benchmark 自动化）：
 
@@ -281,7 +281,7 @@ Done.
 > **Q13.1 更新数据**（参考，非本文测试结果）：
 > - 1-byte avg 150.7 µs → Q13.1 后降至 129.5 µs（↓14%）
 > - 软件 overhead 63.9 µs → Q13.1 后降至 42.6 µs（↓33%）
-> - 详细数据见 `docs/benchmark-report-async.md` §0 TL;DR
+> - 当前性能基线见 `docs/benchmark-report-async.md`
 
 **小结**：12 项测试的原始终端输出全部保留作为证据，QEMU 仿真限制已明确标注（详见 §1）。Q7 修复的 yield storm / FIONBIO 传播 / tcdrain 真异步化三处问题均有对应测试验证（T6 / T10 / T11）。
 
@@ -289,7 +289,7 @@ Done.
 
 ## 4. 端到端性能
 
-T11 / T12 测得的端到端性能数据反映**Q7 阶段**状态——单字节平均延迟 150.7 µs（其中软件开销 63.9 µs）。**Q13 + Q13.1 + LTO 优化后**已显著改善至 129.5 µs avg / 42.6 µs 软件开销（详见 `docs/benchmark-report-async.md` §0 TL;DR）。
+T11 / T12 测得的端到端性能数据反映**Q7 阶段**状态——单字节平均延迟 150.7 µs（其中软件开销 63.9 µs）。**Q13 + Q13.1 + LTO 优化后**已显著改善至 129.5 µs avg / 42.6 µs 软件开销；当前性能基线详见 `docs/benchmark-report-async.md`。
 
 **端到端性能表**（Q7 阶段为本文档基线，Q13.1 数据为演进参考）：
 
@@ -334,7 +334,7 @@ T11 / T12 测得的端到端性能数据反映**Q7 阶段**状态——单字节
 1. 12 项手动 QA 测试**全部通过**，覆盖功能正确性、并发稳定性、非阻塞模式、端到端性能四大维度
 2. Q7 修复的 yield storm / FIONBIO 传播 / tcdrain 真异步化三处问题均有对应测试验证（T6 / T10 / T11）
 3. 阻塞 + 异步 + 非阻塞三种模式共存无冲突
-4. Q6 VisionFive2 真板验证是当前唯一待办（详见 `docs/async-uart-architecture.md` §0 与 `docs/benchmark-report-async.md` §0）
+4. Q6 VisionFive2 真板验证是当前唯一待办（详见 `docs/async-uart-architecture.md` 与 `docs/benchmark-report-async.md`）
 5. 性能数据已从 Q7 基线 63.9 µs 演进至 Q13.1 42.6 µs（↓33%）
 
 **小结**：Q7 阶段功能结论"全部 PASS"是 Q8~Q13 阶段 9 步优化的稳定基线；真板验证 Q6 是当前唯一待办，所有性能/功能数据需以 Q6 真板为最终权威。

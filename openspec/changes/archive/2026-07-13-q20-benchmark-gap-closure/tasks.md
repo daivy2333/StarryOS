@@ -23,20 +23,20 @@
 
 - [x] 4.1 Create `.claude/analysis/q20-evidence/README.md` with build commands, run commands, macros, expected sections, and evidence status.
 - [x] 4.2 Save QEMU rootfs raw log as `.claude/analysis/q20-evidence/qemu-rootfs.log`.
-- [ ] 4.3 Save D1 serial raw log as `.claude/analysis/q20-evidence/d1-fullbench-command.log`.
+- [x] 4.3 Save D1 serial raw log as `.claude/analysis/q20-evidence/d1-fullbench-command.log`.
 - [x] 4.4 Mark RX fixed payload as intentionally not run in the evidence README.
 
 ## 5. Validation Gates
 
 - [x] 5.1 Run QEMU rootfs benchmark and confirm S10/S14/S20/S21 jitter + TX counter output is present.
-- [ ] 5.2 Run D1 fullbench command-entry benchmark and confirm S10/S14/S20/S21 jitter + TX counter output is present.
+- [x] 5.2 Run D1 fullbench command-entry benchmark and confirm S10/S14/S20/S21 jitter + TX counter output is present.
 - [x] 5.3 Confirm Q20 does not claim SMP correctness and does not modify driver semantics.
 - [x] 5.4 Run `openspec validate q20-benchmark-gap-closure --strict`.
 - [x] 5.5 Run `openspec validate --changes` and `openspec validate --specs`.
 
 ## 6. Report and State Sync
 
-- [ ] 6.1 Update `docs/benchmark-report-async.md` with Q20 summary tables and raw evidence links.
-- [ ] 6.2 Update `.claude/docs/tasks.md` Q20 status after validation evidence exists.
-- [ ] 6.3 Update `.claude/docs/SNAPSHOT.md` after Q20 gate passes.
+- [x] 6.1 Update `docs/benchmark-report-async.md` with Q20 summary tables and raw evidence links.
+- [x] 6.2 Update `.claude/docs/tasks.md` Q20 status after validation evidence exists.
+- [x] 6.3 Update `.claude/docs/SNAPSHOT.md` after Q20 gate passes.
 - [ ] 6.4 Archive this change only after Q20 evidence and docs are complete.

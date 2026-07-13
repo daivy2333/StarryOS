@@ -80,8 +80,8 @@ This is accepted for Q20; QEMU still proves the output shape and jitter fields, 
 
 | Evidence | File | Status |
 |----------|------|--------|
-| QEMU rootfs raw log | qemu-rootfs.log | Completed from `docs/out.md` |
-| D1 serial raw log | d1-fullbench-command.log | Pending recapture |
+| QEMU rootfs raw log | qemu-rootfs.log | Current retained raw log |
+| D1 serial raw log | d1-fullbench-command.log | Current retained raw log |
 | RX fixed payload | — | Intentionally excluded (design D1) |
 
 ## Notes

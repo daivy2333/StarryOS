@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支。
-> 当前主线（2026-07-12）：Q20~Q23 先做 QEMU+D1 可验证的 latency/jitter/CPU/RX 补测、UART completion queue、mmap ring/zero-copy 和性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。
+> 当前主线（2026-07-13）：Q20 benchmark gap closure 已完成；后续推进 Q21~Q23 的 UART completion queue、mmap ring/zero-copy 和性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -44,7 +44,7 @@
 | **Q19B** | Lichee D1 async UART benchmark | kbench/userbench Android boot images + embedded benchmark ELF | ✅ 真板 userbench complete |
 | **Q19C** | Lichee async UART board benchmark | benchmark evidence cleanup + memory-root path loader + command-entry + closeout | ✅ D1 async UART 性能验证完成并归档（2026-07-11） |
 | **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧊 取消当前规划；需要 storage/rootfs 时重新 propose |
-| **Q20** | Benchmark gap closure | QEMU+D1 latency / jitter / CPU 开销 / RX fixed payload 补测 | ⏳ 待做 |
+| **Q20** | Benchmark gap closure | QEMU+D1 TX latency / jitter / CPU proxy 补测，RX fixed payload 明确排除 | ✅ |
 | **Q21** | UART user completion queue MVP | UART 专用 submit/completion queue，先 TX，保留 read/write fallback | ⏳ 待做 |
 | **Q22** | User ring + zero-copy prototype | `mmap` user ring + zero-copy RX/TX 原型，明确 fallback | ⏳ 待做 |
 | **Q23** | Ring/completion performance decision | 对比 write/tcdrain、no-drain、batch-drain、writev 与 user ring | ⏳ 待做 |
@@ -56,7 +56,7 @@
 
 ## 当前执行态
 
-D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。当前主线是 Q20~Q23：补测 QEMU+D1 指标，做 UART completion queue、mmap user ring/zero-copy，并用数据决定保留、收窄或回滚。
+D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；当前主线是 Q21~Q23：做 UART completion queue、mmap user ring/zero-copy，并用数据决定保留、收窄或回滚。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -100,15 +100,15 @@ D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖
 
 > Q19C-M0/M1/M2 已在 D1 真板通过，D1 异步 UART 测试正式结束。M2 以 `lichee-memory-root-command` 作为完成目标，true shell deferred；M3/rootfs-probe、Q19D SDMMC/rootfs 与 real rootfs 不再是当前 gate。逐项历史已归档到 ARC-202607111510。
 
-### Q20: Benchmark gap closure ⏳ 待做
+### Q20: Benchmark gap closure ✅ (2026-07-13)
 
-> 来源：ADR-056、R15 `.claude/analysis/uart-async-qemu-d1-first-replan.md`、L286。目标是先补齐 QEMU+D1 当前可验证的指标，不改驱动语义。
+> 来源：ADR-056、ADR-057、R15/R16、L286/L287、`.claude/analysis/q20-evidence/`。目标是先补齐 QEMU+D1 当前可验证的 TX latency/jitter/counter 指标，不改驱动语义。RX fixed payload 经用户确认排除在 Q20 scope 外。
 
-<!-- Q20.1 --> - [ ] 增加 jitter summary：S10/S14/S21 输出 `p99/p50`、`max/p50`、`slow_over_line_plus10ms`
-<!-- Q20.2 --> - [ ] 增加 CPU/counter summary：输出 IRQ count、TX poll、no-progress、hw_send_zero、bytes/call
-<!-- Q20.3 --> - [ ] 启用 RX fixed payload：`BENCH_RX_FIXED_BYTES > 0` 时 QEMU 与 D1 都有 PASS 样本
-<!-- Q20.4 --> - [ ] 保存 raw evidence：QEMU rootfs log 与 D1 serial log 分开归档
-<!-- Q20.5 --> - [ ] Gate Q20: QEMU+D1 输出 latency、jitter、CPU/IRQ/copy 开销与 RX fixed payload 证据
+<!-- Q20.1 --> - [x] 增加 jitter summary：S10/S14/S20/S21 输出 `p99_p50_ratio`、`max_p50_ratio`、`slow_over_line_plus10ms`
+<!-- Q20.2 --> - [x] 增加 CPU/counter proxy summary：S40 输出 user/ring/hw/no-progress/drain counters；D1 输出有效派生 proxy，QEMU 明确 not-available
+<!-- Q20.3 --> - [x] RX fixed payload scope 决策：经用户确认不做；S31 保持 `SKIPPED reason=BENCH_RX_FIXED_BYTES=0`
+<!-- Q20.4 --> - [x] 保存 raw evidence：QEMU rootfs log 与 D1 serial log 分别归档到 `.claude/analysis/q20-evidence/`
+<!-- Q20.5 --> - [x] Gate Q20: QEMU+D1 输出 TX latency、jitter、counter proxy 证据；D1 fullbench command-entry 正常退出，Q20 不声明 SMP 正确性
 
 ### Q21: UART user completion queue MVP ⏳ 待做
 
