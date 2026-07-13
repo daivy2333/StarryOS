@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支。
-> 当前主线（2026-07-13）：Q20 benchmark gap closure 已完成；后续推进 Q21~Q23 的 UART completion queue、mmap ring/zero-copy 和性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。
+> 当前主线（2026-07-13）：Q20 benchmark gap closure 已完成；Q21/Q22 user completion queue 与 mmap ring/zero-copy 取消当前规划；Q24 等 VisionFive2 / 等价 SMP 的 O63 复验。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -45,18 +45,18 @@
 | **Q19C** | Lichee async UART board benchmark | benchmark evidence cleanup + memory-root path loader + command-entry + closeout | ✅ D1 async UART 性能验证完成并归档（2026-07-11） |
 | **Q19D** | Lichee SDMMC/rootfs implementation | D1 SDMMC/block driver + `AxBlockDevice` + real rootfs path benchmark | 🧊 取消当前规划；需要 storage/rootfs 时重新 propose |
 | **Q20** | Benchmark gap closure | QEMU+D1 TX latency / jitter / CPU proxy 补测，RX fixed payload 明确排除 | ✅ |
-| **Q21** | UART user completion queue MVP | UART 专用 submit/completion queue，先 TX，保留 read/write fallback | ⏳ 待做 |
-| **Q22** | User ring + zero-copy prototype | `mmap` user ring + zero-copy RX/TX 原型，明确 fallback | ⏳ 待做 |
-| **Q23** | Ring/completion performance decision | 对比 write/tcdrain、no-drain、batch-drain、writev 与 user ring | ⏳ 待做 |
+| **Q21** | UART user completion queue MVP | 已有 TX ring + copier + TxCompletion 覆盖主要思想；真板线速限制下收益不足 | 🧊 取消当前规划 |
+| **Q22** | User ring + zero-copy prototype | `mmap` ring / zero-copy 原型复杂度高，当前 D1 115200 bps 无可见吞吐收益 | 🧊 取消当前规划 |
+| **Q23** | Ring/completion performance decision | 基于 Q20 数据决策：不实施 Q21/Q22；保留现有 batch/writev/tx counter 路径 | ✅ 决策完成 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
-| **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q23/Q24 数据 | ⏳ 等待数据 |
+| **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q24 或新硬件数据 | ⏳ 等待数据 |
 | **Q26** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
 
 ---
 
 ## 当前执行态
 
-D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；当前主线是 Q21~Q23：做 UART completion queue、mmap user ring/zero-copy，并用数据决定保留、收窄或回滚。
+D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；Q21/Q22 经 2026-07-13 决策取消当前规划，因为现有异步 UART 已接近 D1 物理线速，user ring/completion 的复杂度高于可见收益。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -110,36 +110,14 @@ D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖
 <!-- Q20.4 --> - [x] 保存 raw evidence：QEMU rootfs log 与 D1 serial log 分别归档到 `.claude/analysis/q20-evidence/`
 <!-- Q20.5 --> - [x] Gate Q20: QEMU+D1 输出 TX latency、jitter、counter proxy 证据；D1 fullbench command-entry 正常退出，Q20 不声明 SMP 正确性
 
-### Q21: UART user completion queue MVP ⏳ 待做
+### Q21/Q22/Q23: user ring / completion queue 路线取消当前规划 ✅ 决策完成（2026-07-13）
 
-> 只做 UART 专用 completion queue，不先实现完整 `io_uring`。MVP 先覆盖 TX。
+> Q21/Q22 原计划是 UART 专用 completion queue 与 `mmap` user ring / zero-copy 原型。Q20 数据显示 D1 TX 已达 95.2%-99.1% 线速，现有 TX ring + copier + `TxCompletion` 已覆盖提交/执行分离的主要思想。受 115200 bps 物理线速限制，继续实现 user ring/completion queue 难以产生可见吞吐收益。
 
-<!-- Q21.1 --> - [ ] 定义 submit ring / completion ring entry：request id、opcode、buffer、len、status、bytes、timestamp
-<!-- Q21.2 --> - [ ] 实现 doorbell：用 `ioctl` 或轻量 syscall 通知 kernel 消费 submit ring
-<!-- Q21.3 --> - [ ] 实现 TX completion：completion 不弱于 write + `tcdrain` 语义，仍以 `TxCompletion` 四阶段为完成依据
-<!-- Q21.4 --> - [ ] 接入 wait path：复用 poll/select 或现有 waker，禁止新增 busy loop
-<!-- Q21.5 --> - [ ] Gate Q21: 用户态能提交 N 个 TX request 并读取 completion；read/write fallback 不退化
-
-### Q22: User ring + zero-copy prototype ⏳ 待做
-
-> 基于现有 `DeviceOps::mmap()` / `sys_mmap()` 路线做 UART 专用 user ring 原型。
-
-<!-- Q22.1 --> - [ ] 设计 mmap ring 所有权：head/tail、wrap、full/empty、用户/内核写权限
-<!-- Q22.2 --> - [ ] 实现 TX shared ring：用户写 descriptor/payload，kernel copier 消费
-<!-- Q22.3 --> - [ ] 实现 RX shared ring：kernel 写 payload，用户读；防止覆盖未消费数据
-<!-- Q22.4 --> - [ ] 实现 completion ring release/acquire 语义，记录 status/bytes/timestamp
-<!-- Q22.5 --> - [ ] 保留 fallback：mmap 不可用时回到 read/write
-<!-- Q22.6 --> - [ ] Gate Q22: `mmap` ring 在 QEMU+D1 可用，并明确减少了哪些 user/kernel 拷贝
-
-### Q23: Ring/completion performance decision ⏳ 待做
-
-> Q23 是保留/收窄/回滚决策，不继续堆功能。
-
-<!-- Q23.1 --> - [ ] 建立对照矩阵：write+tcdrain、no-drain enqueue、batch-drain、writev、user ring+completion
-<!-- Q23.2 --> - [ ] 正确性对照：FIONBIO、short write、tcdrain、FIFO boundary 均不退化
-<!-- Q23.3 --> - [ ] 延迟对照：1B 与 15/16/17B 不退化，P99 长尾有解释
-<!-- Q23.4 --> - [ ] CPU 对照：poll/send/IRQ/copy counters 不明显恶化
-<!-- Q23.5 --> - [ ] Gate Q23: 决定 ring/completion 保留、收窄或回滚；若收益只来自 batch-drain，则只保留 batch-drain
+<!-- Q21.1 --> - [x] 决策：不实施 UART user completion queue MVP；保留当前 `write()` / `writev()` / `tcdrain()` / `TxCompletion` 路径
+<!-- Q22.1 --> - [x] 决策：不实施 `mmap` user ring / zero-copy prototype；O1/O36 保留为远期候选，不进入当前 roadmap
+<!-- Q23.1 --> - [x] 决策输入：Q20 QEMU+D1 TX jitter/counter 证据、D1 线速数据、S40 fallback 未耗尽
+<!-- Q23.2 --> - [x] 决策结果：user ring/completion 路线取消当前规划；可借鉴优化记录到 `openspec/specs/optimization/spec.md` O82
 
 ### Q24: VisionFive2 / multi-hart revalidation ⏳ 等待硬件
 
@@ -156,8 +134,8 @@ D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖
 ### Q25: DMA / 高波特率决策 ⏳ 等待数据
 
 <!-- Q25.1 --> - [ ] O3/O40/O69 DMA 决策树：JH7110 DMA 控制器是否存在、是否可达 UART FIFO、PIO vs DMA ROI
-<!-- Q25.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q23/Q24 数据证明需要后实施
-<!-- Q25.3 --> - [ ] Gate Q25: 用 Q23/Q24 数据决定实施 / 拒绝 DMA 与高波特率扩展
+<!-- Q25.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q24 或新硬件数据证明需要后实施
+<!-- Q25.3 --> - [ ] Gate Q25: 用 Q24 或新硬件数据决定实施 / 拒绝 DMA 与高波特率扩展
 
 ### Q26: 维护性清理 ⏳ 待做
 

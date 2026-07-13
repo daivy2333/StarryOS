@@ -158,7 +158,7 @@ Q20 已完成 benchmark 证据链：同版 benchmark、QEMU raw evidence、D1 ra
 | 项目 | 状态 | 说明 |
 |------|------|------|
 | RX fixed payload | 未做 | 不好做，不纳入 Q20 gate |
-| D1 size>=15 P99 tail | 保留 | 24-27 ms 级 tail，作为 Q23 输入 |
+| D1 size>=15 P99 tail | 保留 | 24-27 ms 级 tail，作为后续诊断输入 |
 | QEMU S40 counter | 不可用 | telemetry counters 为 0 |
 | CPU 使用率 | 未采集 | 当前只有 counter proxy，不能当作 CPU 百分比 |
 | SMP 正确性 | 未声明 | 交给后续 SMP gate |

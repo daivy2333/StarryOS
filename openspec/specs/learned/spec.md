@@ -869,7 +869,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L283 --> | 寄存器先于 workload | 若 MMIO 初值异常，先做寄存器写后读 gate，再跑 workload。Q24 UART 先记录 IER/IIR/LSR/FCR/MCR 原值和写后读回。 | R14 |
 | <!-- L284 --> | trust-u-boot 边界 | PLIC/clock 可借鉴 U-Boot preserve/status dump；UART FCR/IER/baud 仍可显式初始化，不能把 PHY 经验泛化为所有外设不重配。 | R14 + ADR-040 |
 | <!-- L285 --> | 中断分层验证 | IRQ 验证拆成 claim、handler、device status、EOI。Q24 UART 记录 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake、complete 后重复触发。 | R14 |
-| <!-- L286 --> | QEMU/D1-first 重排 | Q20~Q23 先做 QEMU/D1 latency+jitter+CPU/RX、completion queue、mmap ring/zero-copy、性能决策；multi-hart/VF2 O63 后置为 Q24。入口：`tests/benchmark.c`、`tx_debug_snapshot()`、`DeviceOps::mmap()`/`sys_mmap()`。 | R15 |
+| <!-- L286 --> | QEMU/D1-first 重排 | 原计划：Q20~Q23 先做 QEMU/D1 latency+jitter+CPU/RX、completion queue、mmap ring/zero-copy、性能决策；multi-hart/VF2 O63 后置为 Q24。2026-07-13 被 ADR-058 收敛：Q20 已完成，Q21/Q22 取消当前规划，O82 仅保留可借鉴项。 | R15 / ADR-058 |
 | <!-- L287 --> | Q20 benchmark gap 入口 | Q20 不是从零写 benchmark；现有入口是 `tests/benchmark.c` 的 S10/S14/S20/S21/S31、`Makefile` 的 QEMU/D1 benchmark target、`kernel/src/syscall/fs/ctl.rs` 的 TX debug ioctl、`AsyncUartDriver::tx_debug_snapshot()` 和 `IRQ_COUNT`。缺口是统一 jitter ratio、QEMU+D1 同格式 counter delta、RX fixed payload PASS 和 raw log 归档。 | R16 |
 
 #### Scenario: 新增 Q13 层级 API

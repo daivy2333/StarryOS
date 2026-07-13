@@ -1,10 +1,10 @@
 # Benchmark Gap Closure
 
-> Q20 — TX jitter/counter gap closure between QEMU and D1 for Q21~Q23 决策基线。
+> Q20 — TX jitter/counter gap closure between QEMU and D1 for UART 优化决策。
 
 ## Purpose
 
-为 Q21（UART completion queue）、Q22（user ring / zero-copy）、Q23（性能决策）建立 QEMU 和 D1 双平台可对比的 TX jitter 与 counter proxy 基线，不改变 UART 驱动语义。
+建立 QEMU 和 D1 双平台可对比的 TX jitter 与 counter proxy 基线，不改变 UART 驱动语义。Q20 证据已用于 2026-07-13 决策：Q21 UART completion queue 与 Q22 user ring / zero-copy 取消当前规划。
 
 ## Requirements
 

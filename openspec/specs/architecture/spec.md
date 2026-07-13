@@ -933,17 +933,17 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 ### Requirement: ADR-056: QEMU/D1 可验证 UART 工作前移，multi-hart 真板复验后置
 
 **日期**: 2026-07-12
-**状态**: 已接受
-**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate。
-**决定**: Q20 先补 latency / jitter / CPU 开销 / RX fixed payload；Q21 做 UART user completion queue MVP；Q22 做 mmap user ring / zero-copy prototype；Q23 做 ring/completion 性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。先做 UART 专用 submit/completion ring，保留 `/dev/console` read/write fallback，不先做通用 `io_uring`。
+**状态**: 已接受；Q21/Q22/Q23 当前排期由 ADR-058 取代。
+**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate；涉及 Q21/Q22/Q23 时 MUST 以 ADR-058 为准。
+**决定**: 原计划为 Q20 先补 latency / jitter / CPU 开销 / RX fixed payload；Q21 做 UART user completion queue MVP；Q22 做 mmap user ring / zero-copy prototype；Q23 做 ring/completion 性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。2026-07-13 后，Q21/Q22/Q23 当前排期由 ADR-058 收敛。
 **原因**: QEMU 和 D1 已能跑同版 benchmark；`tests/benchmark.c` 覆盖 write+tcdrain、no-drain、batch drain、writev、FIFO boundary、FIONBIO、optional RX fixed payload；`DeviceOps::mmap()` / `sys_mmap()` 可承接 user ring 原型；D1 单 hart不能证明 O63，但可证明 UART 语义、tail latency、CPU/counter 和 user ring 原型。
 **影响**: optimization milestone 从 Q20 重排到 Q26；Q23 成为 ring/completion 保留、收窄或回滚 gate；Q24 仍必须覆盖并发 read/write、flush/tcdrain、IER enable/disable、waker、release/acquire。
 **恢复入口**: R15、L286、`.claude/analysis/uart-async-qemu-d1-first-replan.md`。
 
 #### Scenario: Planning UART async work after Q19C
 
-- **WHEN** 新增 async UART 后续 milestone
-- **THEN** QEMU/D1 可验证的测试、ring、completion 和 zero-copy work MUST be scheduled before VisionFive2-only validation
+- **WHEN** 使用 ADR-056 规划 async UART 后续 milestone
+- **THEN** ADR-058 MUST be checked first for Q21/Q22/Q23 scope
 - **AND** multi-hart O63 proof MUST remain required before claiming SMP correctness
 - **AND** generic `io_uring` semantics MUST NOT be required unless a later ADR proves UART-specific rings are insufficient
 
@@ -953,9 +953,9 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 **日期**: 2026-07-12
 **状态**: 已接受
 **约束**: Q20 的代码改动 MUST 限定在 benchmark、诊断输出、构建宏和证据归档路径；若需要修改 `tx_copier_loop()`、waker、IER 或 drain 语义，MUST 退出 Q20 并另开优化或正确性 change。
-**决定**: Q20 使用现有 `tests/benchmark.c`、TX debug ioctl、`tx_debug_snapshot()`、`IRQ_COUNT` 和 D1/QEMU fullbench 入口补齐 latency/jitter、CPU/counter proxy、RX fixed payload 和 raw evidence。Q20 输出可以作为 Q21~Q23 性能决策输入，但不能声明 SMP 正确性。
+**决定**: Q20 使用现有 `tests/benchmark.c`、TX debug ioctl、`tx_debug_snapshot()`、`IRQ_COUNT` 和 D1/QEMU fullbench 入口补齐 latency/jitter、CPU/counter proxy、RX fixed payload 和 raw evidence。Q20 输出可以作为后续 UART 优化决策输入，但不能声明 SMP 正确性。
 **原因**: Q19C 已证明 D1 async UART 基本路径和线速能力，剩余问题是测量口径不完整；把测量增强和驱动语义优化混在一起会破坏基线，使 Q23 无法判断收益来自 batching、counter 可观测性还是驱动行为变化。
-**影响**: Q20 plan 应优先做 S20/S21 jitter diag、QEMU+D1 同格式 TX counter delta、S31 fixed payload PASS 和 `.claude/analysis/q20-evidence/` raw log；驱动优化、completion queue 和 user ring 分别留给 Q21~Q23。
+**影响**: Q20 plan 应优先做 S20/S21 jitter diag、QEMU+D1 同格式 TX counter delta、S31 fixed payload PASS 和 `.claude/analysis/q20-evidence/` raw log；completion queue 和 user ring 后续由 ADR-058 判定为不进入当前规划。
 **恢复入口**: R16、L287、`.claude/analysis/q20-benchmark-gap-closure.md`。
 
 #### Scenario: Implementing Q20 benchmark closure
@@ -965,5 +965,23 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **AND** it MUST keep QEMU and D1 evidence separated
 - **AND** it MUST label counter-derived CPU data as proxy metrics unless cycle-level measurement is added
 - **AND** it MUST NOT claim SMP correctness without Q24 multi-hart stress
+
+<!-- A058 -->
+### Requirement: ADR-058: 取消 Q21/Q22 user ring/completion 当前规划
+
+**日期**: 2026-07-13
+**状态**: 已接受
+**约束**: 本 ADR 取代 ADR-056 中 Q21/Q22/Q23 的当前排期；ADR-056 的历史重排背景保留。
+**决定**: 当前规划 MUST 不实施 Q21 UART user completion queue MVP，也不实施 Q22 `mmap` user ring / zero-copy prototype。Q23 ring/completion performance decision 以当前讨论和 Q20 数据完成：保留现有 TX ring + copier + `TxCompletion` + `write()` / `writev()` / `tcdrain()` 路径，不新增 user-visible SQ/CQ ring。
+**原因**: 当前异步 UART 已具备类似 `io_uring` 的提交/执行分离：`write()` 接受数据进入 TX ring，后台 copier 推进物理发送，`tcdrain()` / `flush()` 观察四阶段 drain。Q20 D1 数据显示 TX 已达 95.2%-99.1% 线速，主要瓶颈是 115200 bps 物理 UART；继续做 user ring/completion 复杂度高，收益难以在当前真板上体现。
+**影响**: `.claude/docs/tasks.md` 不再把 Q21/Q22 列为待做开发；`openspec/specs/optimization/spec.md` 以 O82 记录可借鉴但不实施的优化点。后续只有在高波特率、多 writer 公平性、细粒度 completion 追踪或 CPU proxy 数据证明需要时，才重新评估 user ring/completion。
+**替代方案**: 继续按 ADR-056 实施 Q21/Q22；拒绝，当前数据不支持投入。只改 RX 对称结构；拒绝，RX 没有证据驱动的重构需求。
+
+#### Scenario: Reconsidering user ring or completion queue
+
+- **WHEN** a future proposal reintroduces UART completion queue, user ring, zero-copy TX/RX, or request-level completion
+- **THEN** it MUST cite new evidence that current `write()` / `writev()` / batch / `tcdrain()` paths are insufficient
+- **AND** it MUST preserve `/dev/console` read/write fallback
+- **AND** it MUST define which metric improves: copy count, syscall count, tail latency, CPU proxy, or multi-writer fairness
 
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

@@ -2,24 +2,24 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q0~Q15 已完成；Q20~Q26 规划中）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q15 已完成；Q20 已完成；Q21/Q22 取消当前规划）的性能优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
 ## Requirements
-### Requirement: Q20~Q26 后续优化 Roadmap — 已重排
+### Requirement: Q20 后续优化 Roadmap — Q21/Q22 已取消当前规划
 
-Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先推进 QEMU+D1 当前可验证项，再等待 multi-hart 真板。
+Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。
 
-**重排依据**: ADR-056、R15、L286。
-**历史边界**: Q16~Q19C 已完成；Q19D、M3/rootfs-probe、O79/O81 取消当前规划。Storage/rootfs 需要新 change。
-**硬件边界**: D1 是单 hart，可验证 UART 语义、延迟、抖动、CPU/counter 和 user ring 原型；不能证明 O63 multi-hart。
+**重排依据**: ADR-058、Q20 benchmark report、O82。
+**历史边界**: Q16~Q20 已完成；Q19D、M3/rootfs-probe、O79/O81、Q21/Q22 取消当前规划。Storage/rootfs 需要新 change。
+**硬件边界**: D1 是单 hart，可验证 UART 语义、延迟、抖动和 CPU/counter proxy；不能证明 O63 multi-hart。
 
 | Milestone | 目标 | 归属条目 | Gate |
 |-----------|------|----------|------|
-| **Q20** | Benchmark gap closure | O77 follow-up、ADR-056、R15、L286 | QEMU+D1 输出 latency、jitter、CPU/IRQ/copy 开销与 RX fixed payload 证据 |
-| **Q21** | UART user completion queue MVP | ADR-056 | TX submit/completion queue 可用；read/write fallback 不退化 |
-| **Q22** | User ring + zero-copy prototype | O1/O36、ADR-056 | `mmap` ring 在 QEMU+D1 可用，并说明减少的 user/kernel copy |
-| **Q23** | Ring/completion performance decision | ADR-056 | 对比 write/tcdrain、no-drain、batch-drain、writev、user ring；决定保留、收窄或回滚 |
+| **Q20** | Benchmark gap closure | O77 follow-up、ADR-057 | ✅ QEMU+D1 输出 latency、jitter、counter proxy 与 raw evidence |
+| **Q21** | UART user completion queue MVP | ADR-056 → ADR-058 | 🧊 取消当前规划；现有 TX ring + copier + `TxCompletion` 已覆盖主要思想 |
+| **Q22** | User ring + zero-copy prototype | O1/O36、ADR-056 → ADR-058 | 🧊 取消当前规划；D1 115200 bps 线速下收益不足 |
+| **Q23** | Ring/completion performance decision | ADR-058、O82 | ✅ 决策完成：不实施 Q21/Q22，保留现有 write/writev/tcdrain/batch 路径 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 并发 read/write、flush/tcdrain、IER enable/disable 无数据丢失或 hang |
-| **Q25** | DMA / 高波特率决策 | O3/O40/O69/O41 | 用 Q23/Q24 数据决定实施或拒绝 |
+| **Q25** | DMA / 高波特率决策 | O3/O40/O69/O41 | 用 Q24 或新硬件数据决定实施或拒绝 |
 | **Q26** | 维护性清理 | O48/O49/O50、ADR-034 | memtrack、Manual mode、预留接口、release LTO 有结论 |
 
 | 编号 | 当前结论 | 触发条件 |
@@ -27,6 +27,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 | **O74/O75** | 平台 descriptor + early console 已落地 | 新平台适配时继续沿用 |
 | **O77** | D1 P99 长尾根因未探明但不阻塞；Q20 补测 | 继续改 D1 TX copier、THRE wake、retry policy 时 |
 | **O80** | Memory-root lazy COW SIGILL 是 loader/mm 后续，不是 UART gate | 需要恢复 lazy file-backed loader parity 时 |
+| **O82** | io_uring-like user ring/completion 可借鉴但当前不实施 | 高波特率、多 writer 公平性、细粒度 completion 或 CPU 证据出现时 |
 
 <!-- tombstone: O76/O77 --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 已完成并归档，active roadmap 不再保留已完成 Lichee 条目。
 <!-- tombstone: O78/O79/O81 --> Archived 2026-07-11 in ARC-202607111510 — Q19C memory-root path/command 已完成，Q19D/O79 与 M3/O81 取消当前规划。
@@ -35,12 +36,12 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 
 - **WHEN** 新增或重排 Q15 后优化项
 - **THEN** MUST 先判定该项属于文档收敛、QEMU correctness、真板观测、真板验证、数据驱动决策、维护清理还是远期实验
-- **AND** MUST 放入对应 Q20~Q26 milestone，禁止只按 O 编号顺序排期
+- **AND** MUST 放入对应 active milestone 或 O82 远期候选，禁止只按 O 编号顺序排期
 
 #### Scenario: QEMU-only work before hardware
 
 - **WHEN** multi-hart 真板尚未到位
-- **THEN** MUST 优先推进 Q20~Q23 中可在 QEMU 和 D1 上验证的工作
+- **THEN** MUST 优先收敛 Q20 已有证据和文档，不得新开 Q21/Q22 user ring/completion 实施
 - **AND** MUST NOT 在 QEMU 上声称 DMA、高波特率或绝对吞吐量结论
 
 #### Scenario: 多平台常量进入驱动初始化
@@ -122,7 +123,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 | **O64** | arceos ADR-004（PIT-007 / TIP-004） | **trust u-boot 模式（仅 PLIC + Clock）**：VisionFive2 启动时 U-Boot 已配置 PLIC 全局状态和 SoC 时钟树，OS 不应"重新初始化一切"。**不含 UART**：arceos starfive 的 UART 走 SBI console，无 MMIO init 先例；NS16550 寄存器（FCR/IER/波特率）重复设置无害（ADR-040 Revised）。arceos 反复失败 7+ 次后 commit `4334e41` "revolution" 锁定此决策。**Q20 真板观测必备**。 | 🔴 P0 | VisionFive2 硬件到位 |
 | **O65** | arceos ADR-002（PIT-003） | **PLIC init_primary / init_percpu 防御性分离**：当前 StarryOS 使用的 axplat crates（0.3.1-pre.6 / 0.1.0-pre.2）已采用 `static PLIC: SpinNoIrq<Plic>`（编译时初始化）+ 幂等 `init_by_context()`，**当前代码安全**。旧 arceos 的 `LazyInit<Plic>` + `init_percpu()` 内调 `init_plic()` 反模式**不存在于当前代码中**，但作为防御性设计模式保留（ADR-041 Revised）。降至 P1。 | 🟡 P1（防御性） | Q24 平台切换时验证 |
 | **O66** | arceos TIP-004 | **`print_preserved_status()` 验证函数**：UART / PLIC / Clock init 前后 dump 当前寄存器状态，与 U-Boot/Linux 预期对比。arceos `DwmacHalImpl::configure_platform` 实现此模式。**Q20 真板观测必备**（O64 的前置依赖）。 | 🔴 P0 | VisionFive2 硬件到位 |
-| **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q25 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q21 决策 | Q23/Q24 数据 + O3 评估 |
+| **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q25 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q25 决策 | Q24 或新硬件数据 + O3 评估 |
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q24 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q24 真板驱动开发 |
 | **O77** | Q19C D1 TX 诊断 | **D1 TX zero-send / P99 长尾优化（Q19C.8e 已完成）**：已实施 slow-poll（`TX_SLOW_POLL_LIMIT=4096` × `TX_SLOW_POLL_SPINS=256`）+ yield 重试（`TX_YIELD_RETRIES=4` 自唤醒）作为 budget exhausted 后的 fallback。真板三轮数据证明 slow-pool 100% 成功（`slow_poll_exh=0`），yield 重试从未触发（`yield_exh=0`），ISR 从未丢失。P99 长尾（size=256 P99=50.86ms，2.34x 线时）**根因未探明**——slow-pool/yield 重试均未改善，100 次迭代中约 1 次超出线时+10ms，确切成因待查。当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 补测时再探明。`TX_FAST_RETRY_LIMIT=0` + drain `TX_WAKER` 已证伪，不得作为默认。 | ✅ 已完成（Q19C-M0） | P99 根因未探明，Q20 补测 |
 | **O80** | Q19C-M1 loader/mm 后续 | **Memory-root lazy file-backed COW SIGILL**：`load_user_app()` 从 `/bin/benchmark` lazy mapping 可进程化并处理 page fault/syscall，但 main 前在合法 RV64C `c.ld` 地址 SIGILL；eager VFS read + segment mapping 已通过完整 benchmark，说明问题不在 async UART、benchmark ELF 或通用 syscall。后续应检查 `CachedFile` 页缓存、`FileBackend::Cached`、`Backend::new_cow`、tmpfs offset/权限/取指路径，不作为 Q19C-M1 或 UART gate。 | 🟡 P1 | 需要恢复 lazy file-backed loader parity 时 |
@@ -142,11 +143,33 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 - **AND** MUST 用 gated TX debug snapshot 记录 `hw_send_zero`、`no_progress_budget_exhausted`、`hw_send_max_chunk`、`ring_pop_bytes` 与 final/second drain
 - **AND** MUST 不得把 `TX_FAST_RETRY_LIMIT=0` + drain-side `TX_WAKER` 注册作为默认修复，除非另有软件 fallback 证明不会丢失 forward progress
 
-#### Scenario: Q21 评估 O69（DMA 决策树）
+#### Scenario: Q25 评估 O69（DMA 决策树）
 
-- **WHEN** Q23/Q24 数据完成后需要重新评估 DMA
+- **WHEN** Q24 或新的高波特率硬件数据完成后需要重新评估 DMA
 - **THEN** MUST 按 O3/O40 决策树走：(1) JH7110 是否有 DMA 控制器 → (2) DMA 是否能访问 UART FIFO → (3) PIO+中断 vs DMA 开销对比 → (4) 是否需要更高波特率（O41）
 - **AND** 如决定引入 DMA，**借鉴** arceos `axdma` 的 `DMAInfo` 二元组模式与 `DwmacHal::cache_flush_range` 处理
+
+#### O82: io_uring-like user ring/completion 优化 — 当前不实施
+
+**时间**: 2026-07-13。
+**结论**: 当前异步 UART 已具备类似 `io_uring` 的提交/执行分离：`write()` 进入 TX ring，`uart-tx-copier` 后台推进，`tcdrain()` / `flush()` 观察 `TxCompletion`。D1 TX 已达 95.2%-99.1% 线速，继续实现 user completion queue 或 `mmap` user ring 难以产生可见吞吐收益。
+**状态**: 🧊 远期候选，不进入当前 roadmap。
+
+| 可借鉴项 | 适用条件 | 当前处理 |
+|----------|----------|----------|
+| completion 观测增强 | 需要按单次提交追踪完成 | 保留 `TxCompletion` 全局 drain，暂不加 CQ |
+| submit batch id / watermark | 需要判断某次 write 是否已物理发送 | 暂不加 request id 或 offset watermark |
+| backpressure 可观测性 | blocking write / poll/select 需要更细 writable 信息 | 继续使用 short write + ring wake |
+| counter 分阶段细化 | 需要定位 P99 tail 或 CPU proxy | 继续使用 S40；需要时再扩展 |
+| 多 writer 公平性 | 日志刷屏影响交互或多 producer 抢占 | 当前共享 TX ring；有证据再设计 quota |
+
+#### Scenario: 评估 O82 user ring/completion
+
+- **WHEN** 开发者重新提出 UART completion queue、`mmap` user ring、zero-copy TX/RX 或每请求 completion
+- **THEN** MUST 先证明当前 `write()` / `writev()` / batch-drain / `tcdrain()` 路径在目标硬件上不是线速瓶颈
+- **AND** MUST 说明收益来自减少 copy、减少 syscall、改善 tail latency、改善 CPU proxy 还是多 writer 公平性
+- **AND** MUST 保留 `/dev/console` read/write fallback
+- **AND** MUST NOT 因为概念类似 `io_uring` 而实施通用 SQ/CQ 机制
 
 ### Requirement: 远期优化（优先级低，不确定是否做）
 
@@ -154,10 +177,11 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
-| **O1 / O36** | 零拷贝 RX | — | mmap ring buffer 到用户空间 |
+| **O1 / O36** | 零拷贝 RX | — | mmap ring buffer 到用户空间；当前由 O82 判定为远期候选 |
 | **O5** | 协程优先级调度 | — | 取决于 axtask 支持 |
 | **O37** | kernel log TX 合并 | — | `ax_println!` 走 ring buffer |
 | **O32** | poll_fn 闭包 | — | 编译器可能已优化 |
+| **O82** | user ring / completion 可借鉴项 | — | completion 观测、watermark、backpressure、counter、公平性；当前不实施 |
 
 <!-- tombstone: O45 --> Archived in optimization/spec.md #O45 2026-06-16 — ✅ 已完成（2026-06-11 Q8），tcdrain 真异步化
 <!-- tombstone: O46 --> Archived in optimization/spec.md #O46 2026-06-16 — ✅ 已完成（2026-06-11 Q8），AtomicWaker 推广 8 处
@@ -165,7 +189,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 
 #### Scenario: 评估 O1/O36 零拷贝 RX
 
-- **WHEN** StarryOS 演进到需要减少 RX 路径内存拷贝（如 Q21~Q23 ring/completion 路径）
+- **WHEN** StarryOS 演进到需要减少 RX 路径内存拷贝，且 O82 的触发条件成立
 - **THEN** MUST 评估 `mmap ring buffer 到用户空间` 的实现复杂度与安全边界
 - **AND** 收益 MUST 量化（当前 RX 路径 5 次拷贝的减少数）
 - **AND** 禁止在未评估前直接实施
@@ -176,13 +200,13 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-12 起，后续 UART 工作 MUST 先�
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
-| **O48** | memtrack 模块集成 | 🟢 低 | `kernel/src/pseudofs/dev/memtrack.rs` — 内存追踪功能已编写但从未集成（`run_memory_analysis` 无调用者）。Q22 维护性清理时评估；若 Q20/Q21 真板调试需要可提前启用 |
+| **O48** | memtrack 模块集成 | 🟢 低 | `kernel/src/pseudofs/dev/memtrack.rs` — 内存追踪功能已编写但从未集成（`run_memory_analysis` 无调用者）。Q26 维护性清理时评估；若后续真板调试需要可提前启用 |
 | **O49** | ProcessMode::Manual 移除 | 🟢 低 | `ldisc.rs:37` — Q7 后仅 External/None 模式被构造，Manual 变体可通过重构 match 分支移除（需更新 ldisc.rs:265 匹配） |
 | **O50** | 预留接口评估 | 🟢 低 | `create_pty_master`（tty/mod.rs）、`DeviceMmap::ReadOnly`（device.rs）、`clear_elf_cache`/`cleanup_task_tables`（memtrack 引用链）— 当前用 `#[allow(dead_code)]` 标注，未来如有需求可恢复或彻底移除 |
 
 #### Scenario: 评估 O48 memtrack 模块
 
-- **WHEN** Q20/Q21 真板调试需要内存调试工具
+- **WHEN** 后续真板调试需要内存调试工具
 - **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
 
 #### Scenario: 决定是否移除死代码
@@ -352,7 +376,7 @@ Q13 完成后性能测试显示 trait 抽象开销导致 +13% avg latency 退化
 - **改动**：需要 VisionFive2 DMA 控制器驱动
 - **收益**：接近零软件开销
 - **风险**：硬件依赖，实现复杂
-- **建议**：等待 VisionFive2 真板验证与 Q21 DMA 决策
+- **建议**：等待 VisionFive2 真板验证与 Q25 DMA 决策
 
 #### Scenario: 评估中长期优化
 

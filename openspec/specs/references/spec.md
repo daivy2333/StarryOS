@@ -138,7 +138,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1：memory-root `/bin/benchmark` 通过 `resolve/read` + eager ELF mapping；lazy COW SIGILL 另列 O80/L277 |
 | <!-- R13 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3：M2 equivalent command-entry 通过；M3/rootfs-probe、SDMMC/rootfs 取消当前规划 |
 | <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层、以及 StarryOS Q20 UART 复验检查清单 |
-| <!-- R15 --> `.claude/analysis/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；将 VisionFive2 / multi-hart O63 复验后置为硬件 gate |
+| <!-- R15 --> `.claude/analysis/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；2026-07-13 起 Q21/Q22/Q23 当前排期由 ADR-058 取代，仅保留为历史输入 |
 | <!-- R16 --> `.claude/analysis/q20-benchmark-gap-closure.md` | Q20 benchmark gap closure：现有 S10/S14/S20/S21/S31、TX debug ioctl、counter 输出和 raw evidence 缺口分析；为后续 propose/apply 提供任务拆分与 gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
