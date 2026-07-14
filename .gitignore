@@ -15,3 +15,6 @@
 *.swo
 __pycache__/
 *.pyc
+/.omo/
+# Independent crate lockfiles (workspace members excluded from root)
+crates/*/Cargo.lock

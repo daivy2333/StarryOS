@@ -21,8 +21,14 @@ extern crate axlog;
 // Each Lichee fullbench mode (path, command) is a single-mode
 // build target. Combining incompatible modes would produce unreachable code
 // paths or module exclusion failures.
-#[cfg(all(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
-compile_error!("lichee-d1-fullbench and lichee-d1-fullbench-command are mutually exclusive; select exactly one fullbench mode");
+#[cfg(all(
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
+compile_error!(
+    "lichee-d1-fullbench and lichee-d1-fullbench-command are mutually exclusive; select exactly \
+     one fullbench mode"
+);
 
 pub mod entry;
 

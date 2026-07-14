@@ -199,8 +199,7 @@ impl TxDebugCounters {
         self.no_progress_budget_exhausted
             .store(0, Ordering::Relaxed);
         self.slow_poll_exhausted.store(0, Ordering::Relaxed);
-        self.yield_retries_exhausted
-            .store(0, Ordering::Relaxed);
+        self.yield_retries_exhausted.store(0, Ordering::Relaxed);
     }
 }
 
@@ -311,7 +310,7 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
     /// Record a user-facing TX push operation.
     #[cfg(not(feature = "telemetry"))]
     #[inline(always)]
-    pub fn record_tx_push(&self, _requested: usize, _accepted: usize) {}
+    pub const fn record_tx_push(&self, _requested: usize, _accepted: usize) {}
 
     /// Reset diagnostic TX counters without changing TX data-path state.
     #[cfg(feature = "telemetry")]
@@ -321,7 +320,7 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
 
     /// Reset diagnostic TX counters without changing TX data-path state.
     #[cfg(not(feature = "telemetry"))]
-    pub fn reset_tx_debug(&self) {}
+    pub const fn reset_tx_debug(&self) {}
 
     /// Return a snapshot of diagnostic TX counters and drain state.
     #[cfg(feature = "telemetry")]
@@ -347,10 +346,7 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                 .tx_debug
                 .no_progress_budget_exhausted
                 .load(Ordering::Relaxed),
-            slow_poll_exhausted: self
-                .tx_debug
-                .slow_poll_exhausted
-                .load(Ordering::Relaxed),
+            slow_poll_exhausted: self.tx_debug.slow_poll_exhausted.load(Ordering::Relaxed),
             yield_retries_exhausted: self
                 .tx_debug
                 .yield_retries_exhausted

@@ -140,6 +140,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层、以及 StarryOS Q20 UART 复验检查清单 |
 | <!-- R15 --> `.claude/analysis/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；2026-07-13 起 Q21/Q22/Q23 当前排期由 ADR-058 取代，仅保留为历史输入 |
 | <!-- R16 --> `.claude/analysis/q20-benchmark-gap-closure.md` | Q20 benchmark gap closure：现有 S10/S14/S20/S21/S31、TX debug ioctl、counter 输出和 raw evidence 缺口分析；为后续 propose/apply 提供任务拆分与 gate |
+| <!-- R17 --> `.claude/analysis/clippy-test-baseline-cleanup.md` | Clippy 与测试基线清理：feature-scoped import、内嵌 uart manifest 漂移、workspace lint 泄漏、kernel host-test 边界、复现矩阵与分阶段 Gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

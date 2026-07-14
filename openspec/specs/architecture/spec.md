@@ -984,4 +984,23 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **AND** it MUST preserve `/dev/console` read/write fallback
 - **AND** it MUST define which metric improves: copy count, syscall count, tail latency, CPU proxy, or multi-writer fairness
 
+<!-- A059 -->
+### Requirement: ADR-059: lint 与测试 Gate 按 artifact、feature 和 target 分层
+
+**日期**: 2026-07-13
+**状态**: 候选，待后续 OpenSpec change 确认
+**约束**: 后续 clippy/test 清理 proposal MUST 明确每条命令的 artifact、feature、target、平台配置和环境前置条件。
+**决定**: 可复用 `uart_16550` crate 使用 host check/test/clippy；StarryOS kernel 使用目标架构 + 受支持 feature 的 compile gate；IRQ、TTY、rootfs 和用户进程行为使用 QEMU/真板 gate。裸 host `cargo test -p starry-kernel` 在建立 host-test 边界前不得作为全内核质量 Gate。
+**原因**: 当前 kernel 的 axfs/axnet/display/task-ext 是平台 feature 驱动的 optional dependency，裸 host test 会在测试执行前产生 42 个未解析依赖错误；同时 `uart_16550` 被自动纳入 workspace 后，其 `deny(clippy::cargo)` 会把 sibling package metadata 变成驱动 lint 错误。
+**影响**: 清理工作先恢复内嵌 uart manifest parity 和 feature import，再明确 workspace membership；纯逻辑 kernel 测试应通过最小 host-test feature 或小 crate 暴露，不能靠无条件启用全部设备依赖绕过。
+**替代方案**: 对所有失败加 `allow`，拒绝，无法区分产品问题与 Gate 配置问题；给 host test 无条件启用全部可选依赖，拒绝，会把平台耦合带入纯逻辑测试。
+**恢复入口**: R17、L288-L290。
+
+#### Scenario: Defining clippy and test gates
+
+- **WHEN** 后续 change 清理 StarryOS 或 `uart_16550` 的 warning、clippy 和 tests
+- **THEN** it MUST define separate gates for reusable crate, kernel target build, and system runtime
+- **AND** it MUST NOT classify an environment or unsupported feature combination failure as a source regression
+- **AND** it MUST keep supported QEMU/D1 feature imports warning-free without deleting feature-only functionality
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

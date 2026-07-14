@@ -871,6 +871,9 @@ API path quick-reference for post-Q13 module separation. All new async types and
 | <!-- L285 --> | 中断分层验证 | IRQ 验证拆成 claim、handler、device status、EOI。Q24 UART 记录 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake、complete 后重复触发。 | R14 |
 | <!-- L286 --> | QEMU/D1-first 重排 | 原计划：Q20~Q23 先做 QEMU/D1 latency+jitter+CPU/RX、completion queue、mmap ring/zero-copy、性能决策；multi-hart/VF2 O63 后置为 Q24。2026-07-13 被 ADR-058 收敛：Q20 已完成，Q21/Q22 取消当前规划，O82 仅保留可借鉴项。 | R15 / ADR-058 |
 | <!-- L287 --> | Q20 benchmark gap 入口 | Q20 不是从零写 benchmark；现有入口是 `tests/benchmark.c` 的 S10/S14/S20/S21/S31、`Makefile` 的 QEMU/D1 benchmark target、`kernel/src/syscall/fs/ctl.rs` 的 TX debug ioctl、`AsyncUartDriver::tx_debug_snapshot()` 和 `IRQ_COUNT`。缺口是统一 jitter ratio、QEMU+D1 同格式 counter delta、RX fixed payload PASS 和 raw log 归档。 | R16 |
+| <!-- L288 --> | 内嵌 uart manifest parity | `crates/uart_16550/Cargo.toml` 相比 `../uart_16550/Cargo.toml` 缺 `resolver = "3"`、optional `embedded-io` dependency、`assert2` dev-dependency，且 `embedded-io` feature 未连接 dependency；分别导致 unit test 与 all-features compile 失败。 | R17 |
+| <!-- L289 --> | workspace lint 边界 | workspace 目录内 path dependency 会被 Cargo 自动纳入 members；`uart_16550` 的 crate-level `deny(clippy::cargo)` 因此报告 StarryOS sibling metadata。执行可复用 crate lint 前必须先确认 workspace membership，不能把跨包 warning 误判成驱动源码问题。 | R17 |
+| <!-- L290 --> | kernel 测试 Gate 分层 | 裸 `cargo test -p starry-kernel --lib` 在 host/default feature 下缺 axfs/axnet/display/task-ext，不是当前有效 Gate。驱动用 host test，kernel 用 target+feature compile，系统行为用 QEMU/真板；纯逻辑测试需单独 host-test 边界。 | R17 |
 
 #### Scenario: 新增 Q13 层级 API
 

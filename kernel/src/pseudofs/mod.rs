@@ -11,9 +11,21 @@ mod tmp;
 use alloc::sync::Arc;
 
 use axerrno::LinuxResult;
-use axfs::{FS_CONTEXT, FsContext, ROOT_FS_CONTEXT};
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
+use axfs::ROOT_FS_CONTEXT;
+use axfs::{FS_CONTEXT, FsContext};
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
+use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    DirNodeOps, FileNodeOps, Filesystem, Mountpoint, NodePermission, WeakDirEntry,
+    DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry,
     path::{Path, PathBuf},
 };
 pub use tmp::MemoryFs;
@@ -49,7 +61,11 @@ impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
 const DIR_PERMISSION: NodePermission = NodePermission::from_bits_truncate(0o755);
 
 /// Initialize a memory-backed root filesystem for platforms without a block rootfs.
-#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
 pub fn init_memory_root() {
     let fs = MemoryFs::new();
     let mp = Mountpoint::new_root(&fs);

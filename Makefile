@@ -75,6 +75,11 @@ build run debug disasm: defconfig
 ci-test:
 	./scripts/ci-test.py $(ARCH)
 
+# Early-console pure-logic host tests (no kernel compilation needed)
+host-test:
+	rustc --edition=2024 --test tests/early-console-host-harness.rs -o /tmp/early-console-test
+	/tmp/early-console-test
+
 # Aliases
 rv:
 	$(MAKE) ARCH=riscv64 run
@@ -125,4 +130,4 @@ lichee-fullbench-command: benchmark-fullbench-elf
 		--output starry-lichee-fullbench-command-boot.img
 	@python3 tools/android_boot_image.py inspect starry-lichee-fullbench-command-boot.img
 
-.PHONY: build run justrun debug disasm clean lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf
+.PHONY: build run justrun debug disasm clean host-test lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf

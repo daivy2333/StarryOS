@@ -1,11 +1,20 @@
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
+use alloc::vec;
 use alloc::{
     string::{String, ToString},
     sync::Arc,
-    vec,
 };
 
 // ── D1 user/fullbench imports (full set for user processes) ──────────
-#[cfg(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
 use {
     crate::{
         drivers::ASYNC_TTY,
@@ -38,14 +47,17 @@ use {
     starry_process::{Pid, Process},
 };
 
+#[cfg(feature = "lichee-d1-async-uart")]
+use crate::drivers::bench;
 // ── D1 benchmark imports (kbench and userbench) ──────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::uart_init;
-#[cfg(feature = "lichee-d1-async-uart")]
-use crate::drivers::bench;
 #[cfg(feature = "lichee-d1-userbench")]
 use crate::mm::load_embedded_user_app;
-#[cfg(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))]
+#[cfg(any(
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
 use crate::mm::load_user_app_eager_from_path;
 
 /// Initialize and run initproc.
@@ -159,9 +171,19 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     ax_println!("[starry-d1] Lichee D1 fullbench memory-root path mode");
     #[cfg(feature = "lichee-d1-fullbench-command")]
     ax_println!("[starry-d1] Lichee D1 fullbench command-entry mode");
-    #[cfg(all(feature = "lichee-d1-userbench", not(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))))]
+    #[cfg(all(
+        feature = "lichee-d1-userbench",
+        not(any(
+            feature = "lichee-d1-fullbench",
+            feature = "lichee-d1-fullbench-command"
+        ))
+    ))]
     ax_println!("[starry-d1] Lichee D1 userbench mode");
-    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
+    #[cfg(not(any(
+        feature = "lichee-d1-userbench",
+        feature = "lichee-d1-fullbench",
+        feature = "lichee-d1-fullbench-command"
+    )))]
     ax_println!("[starry-d1] Lichee D1 kbench mode");
 
     // Phase 4: Initialize async UART hardware (D1 32-bit MMIO path)
@@ -172,7 +194,13 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     bench::run_startup_benchmark();
 
     // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
-    #[cfg(all(feature = "lichee-d1-userbench", not(any(feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command"))))]
+    #[cfg(all(
+        feature = "lichee-d1-userbench",
+        not(any(
+            feature = "lichee-d1-fullbench",
+            feature = "lichee-d1-fullbench-command"
+        ))
+    ))]
     {
         ax_println!("[starry-d1] Initializing memory rootfs...");
         pseudofs::init_memory_root();
@@ -362,9 +390,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
              eager_elf_mapping (equivalent_command_entry)"
         );
         ax_println!("[starry-d1] root_provider=d1-memory-root-path");
-        ax_println!(
-            "[starry-d1] shell_status=SKIPPED: no known-good static /bin/sh"
-        );
+        ax_println!("[starry-d1] shell_status=SKIPPED: no known-good static /bin/sh");
         ax_println!("[starry-d1] equivalent_entry={}", BENCH_PATH);
         ax_println!("[starry-d1] Initializing populated memory rootfs...");
         pseudofs::init_memory_root();
@@ -400,7 +426,8 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
                 ),
                 Err(err) => ax_println!(
                     "[starry-d1] evidence_path={} resolved=false error={:?}",
-                    INIT_SH_PATH, err
+                    INIT_SH_PATH,
+                    err
                 ),
             }
         }
@@ -417,7 +444,10 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
             "[starry-d1] argv_evidence=kernel-side-construction argv={},--q19c-m2-command-entry",
             BENCH_PATH
         );
-        ax_println!("[starry-d1] envp_count={} (kernel-side construction)", envs.len());
+        ax_println!(
+            "[starry-d1] envp_count={} (kernel-side construction)",
+            envs.len()
+        );
         ax_println!("[starry-d1] stdio=/dev/console");
         ax_println!(
             "[starry-d1] note=user-observed-argv-not-claimed (payload does not print argc/argv; \
@@ -494,7 +524,11 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     }
 
     // ── kbench mode: halt after kernel benchmark ─────────────────────
-    #[cfg(not(any(feature = "lichee-d1-userbench", feature = "lichee-d1-fullbench", feature = "lichee-d1-fullbench-command")))]
+    #[cfg(not(any(
+        feature = "lichee-d1-userbench",
+        feature = "lichee-d1-fullbench",
+        feature = "lichee-d1-fullbench-command"
+    )))]
     {
         ax_println!("[starry-d1] kernel benchmark complete, halting.");
         loop {

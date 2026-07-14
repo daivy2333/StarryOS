@@ -9,6 +9,7 @@ drivers).
 """
 edition = "2024"
 rust-version = "1.85.1"
+resolver = "3"
 keywords = ["uart-16550", "serial", "com", "driver", "tty"]
 categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc"]
 readme = "README.md"
@@ -25,10 +26,14 @@ bitflags = { version = "2.12", default-features = false, features = [] }
 embassy-sync = { version = "0.6.2", default-features = false, optional = true }
 embassy-hal-internal = { version = "0.2", default-features = false, optional = true }
 embedded-io-async = { version = "0.6.1", default-features = false, optional = true }
+embedded-io = { version = "0.7", optional = true, default-features = false }
+
+[dev-dependencies]
+assert2 = { version = "0.4.0", default-features = false }
 
 [features]
 default = []
-embedded-io = []
+embedded-io = ["dep:embedded-io"]
 async = ["dep:embassy-sync", "dep:embassy-hal-internal", "dep:embedded-io-async"]
 telemetry = []
 
