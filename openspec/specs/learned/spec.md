@@ -904,4 +904,123 @@ API path quick-reference for post-Q13 module separation. All new async types and
 - **AND** MUST 禁止在 `uart_init.rs` 等驱动初始化路径继续散落板级 base / irq / stride / access width 常量
 - **AND** MUST 先完成 polling early console smoke test，再接 async UART、PLIC、timer、rootfs 或 benchmark
 
+<!-- L291 -->
+### [io_uring 设计思想映射表]
+
+StarryOS 异步串口与 Linux io_uring 在关键设计上的同构关系：
+
+| io_uring 概念 | StarryOS 等价物 | 文件位置 |
+|--------------|----------------|---------|
+| SQ（提交队列） | `RingBufTx` / `RingBufRx`（`embassy_hal_internal::RingBuffer` SPSC） | `crates/uart_16550/src/async_/ring_buffer.rs:30` / `:134` |
+| completion 观测 | `TxCompletion`（全局 drain snapshot：ring_empty / copier_active / staged_bytes / transmitter_empty） | `crates/uart_16550/src/async_/driver.rs:104` |
+| `io_uring_submit` | `tx.push(buf)` | `crates/uart_16550/src/async_/device_ops.rs:107` |
+| `io_uring_wait_cqe` | `poll_fn` + `tx.register_waker` + `DRAIN_WAKER.register` | `crates/uart_16550/src/async_/device_ops.rs:131` |
+| SQE `user_data` 标签 | 无显式 SQE；隐式用 ring 位置对应请求 | — |
+| `io_uring_enter` 系统调用 | **无等价物**——每次 `sys_write/sys_read` 都进内核 | — |
+| `mmap` 共享内存 | **无等价物**——当前 UART/VFS 未暴露 user-visible shared ring | — |
+| SQPOLL 内核 polling | 弱化版：TX copier 任务在 `loop` 里 poll ring，但靠 ISR 唤醒硬件侧 | `crates/uart_16550/src/async_/driver.rs:456` |
+| `IORING_OP_*` 操作码 | 无——单设备单方向，没必要 | — |
+| Linked SQE（原子多步） | 无——UART 是流式设备，无原子 multi-step 场景 | — |
+| ISR 极简 | `uart_isr_handler` 严格 4 步（读 ISR → 禁中断 → wake → 返回） | `crates/uart_16550/src/async_/isr.rs:83` |
+
+**结论**：StarryOS 在**任务模型 + 批处理 + ISR 极简**层面和 io_uring 高度同构；缺少的部分（mmap / syscall 等价物 / 多 op）是当前 UART/VFS 架构的取舍，非当前目标下的设计缺陷，也不是单体内核的必然限制。
+
+#### Scenario: Using the io_uring mapping table
+
+- **WHEN** async UART design work references io_uring
+- **THEN** it MUST use this table as a mapping aid, not as proof that StarryOS has io_uring-compatible SQ/CQ semantics
+
+<!-- L292 -->
+### [TxCompletion 是全局 drain snapshot，不是 CQE 超集]
+
+`TxCompletion` 包含 4 个状态字段，用于观测 TX 链路是否整体排空：
+
+```rust
+// crates/uart_16550/src/async_/driver.rs:104
+pub struct TxCompletion {
+    pub ring_empty: bool,           // ① TX ring 已空
+    pub copier_active: bool,        // ② copier 不在 poll 循环里
+    pub staged_bytes: usize,        // ③ 没有"已 pop 但未写入 THR"的字节
+    pub transmitter_empty: bool,    // ④ UART 移位寄存器也空了
+}
+```
+
+它跨越了 ring buffer（软件）→ copier 任务（任务调度）→ UART FIFO（硬件）三层。io_uring CQE 是 per-request completion，带 request identity/result；`TxCompletion` 是全局 drain snapshot，回答"整条链路彻底空了"。二者都是完成状态观测，但不是包含关系。
+
+**可复用模式**：其他驱动（块设备、网络）的 drain / flush 可复用这 4 字段思路。
+
+#### Scenario: Comparing TxCompletion with CQE
+
+- **WHEN** a design compares `TxCompletion` with io_uring CQE
+- **THEN** it MUST describe `TxCompletion` as a global drain snapshot
+- **AND** it MUST NOT claim that it is a per-request CQE or CQE superset
+
+<!-- L293 -->
+### [AsyncUartWriter::Clone 潜在的 MPSC 隐患]
+
+`AsyncUartWriter` 实现 `Clone`（多个 writer 共享同一个 driver），但底层 `RingBufTx` 是 **SPSC**（单生产者单消费者）。
+
+```rust
+// crates/uart_16550/src/async_/device_ops.rs:92
+impl<...> Clone for AsyncUartWriter<...> {
+    fn clone(&self) -> Self { Self { driver: Arc::clone(&self.driver) } }
+}
+```
+
+**症状**：如果两个 task 同时调用 `tx.push()`，会产生数据竞争。
+**根因**：`Clone` 在 `Arc` 层面是安全的，但 `push()` 操作的 `Writer` 不是线程安全的。
+**当前缓解**：实际上目前只有一个 writer（TTY），Clone 是为未来扩展预留。
+**修复方向**：要么去掉 Clone，要么底层 ring 换 MPSC（复杂度上升）。
+
+#### Scenario: Auditing cloned UART writers
+
+- **WHEN** code introduces or relies on cloned `AsyncUartWriter` handles
+- **THEN** it MUST prove the handles cannot call `write()` concurrently
+- **AND** if concurrent writers are possible, it MUST add serialization or redesign the TX producer side
+
+<!-- L294 -->
+### [TX ring push 无阻塞 backpressure — 依赖调用方处理 short write]
+
+当前 `tx.push()` 满了直接返回实际写入字节数（可能 < 请求）。`TtyWrite` / VFS write 路径按 partial write 语义返回，不会在内核接口层谎报全部写完；但缺少阻塞式等待 ring 空间的路径。
+
+```rust
+// crates/uart_16550/src/async_/device_ops.rs:103
+fn write(&self, buf: &[u8]) -> usize {
+    let n = self.driver.tx.push(buf);
+    n   // ← 如果返回 < buf.len()，调用方必须按 short write 语义处理
+}
+```
+
+io_uring 的做法：SQ 满时 `io_uring_submit` 返回 `EBUSY`，调用方可以选择阻塞/重试/扩容。
+
+**借鉴方向**：当 `push` 返回字节数 < 请求字节数 时，为阻塞 fd 提供注册 waker 等待 ring 有空间的路径；非阻塞 fd 保持 partial / `WouldBlock` 语义，避免调用方忙重试。
+
+#### Scenario: Handling TX ring short writes
+
+- **WHEN** TX ring push accepts fewer bytes than requested
+- **THEN** blocking fd paths MUST have a way to wait for writable space
+- **AND** nonblocking fd paths MUST preserve partial write or `WouldBlock` semantics
+
+<!-- L295 -->
+### [UART TX backpressure 应复用 Pollable OUT 模式]
+
+`RingBufTx::pop()` / `pop_batch()` 已在释放空间后调用 `poll.wake()`，因此 TX writable wait 可以复用现有 waker 基础。推荐做法是让 `Tty::poll()` 的 `IoEvents::OUT` 绑定 TX ring 可用空间，让 `Tty::register()` 对 OUT 注册 TX ring waker，再用 `poll_io(self, IoEvents::OUT, nonblocking, || ...)` 包住 `write_at()` 的写入循环。参考实现是 `kernel/src/file/pipe.rs` 的写端 backpressure。
+
+#### Scenario: Implementing UART writable wait
+
+- **WHEN** Q27 implements UART TX writable wait
+- **THEN** it MUST bind `IoEvents::OUT` readiness to TX ring writable space
+- **AND** it MUST reuse the existing TX ring wake path released by `pop()` / `pop_batch()`
+
+<!-- L296 -->
+### [AsyncUartWriter::Clone 与 RingBufTx SPSC 契约必须收敛]
+
+`AsyncUartWriter` 的 `Clone` 注释暗示多个 producer 可共享 driver，但 `RingBufTx::push()` 的 SAFETY 前提是单 producer。近期应优先收紧 API 契约或在 producer 侧串行化 `push()`；只有 Q24 SMP 或新 workload 证明多 writer 公平性/吞吐是实际需求时，才进入 MPSC ring 设计。
+
+#### Scenario: Converging writer contract before MPSC
+
+- **WHEN** Q28 addresses writer concurrency
+- **THEN** it MUST first align `AsyncUartWriter::Clone` with the `RingBufTx` SPSC contract
+- **AND** it MUST NOT introduce an MPSC ring unless Q24 SMP or a new workload proves it is required
+
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

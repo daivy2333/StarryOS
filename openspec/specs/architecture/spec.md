@@ -1003,4 +1003,50 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **AND** it MUST NOT classify an environment or unsupported feature combination failure as a source regression
 - **AND** it MUST keep supported QEMU/D1 feature imports warning-free without deleting feature-only functionality
 
+<!-- A060 -->
+### Requirement: ADR-060: async UART 与 io_uring 同构点识别 + 借鉴方向定档
+
+**日期**: 2026-07-14
+**状态**: 候选，待后续 OpenSpec change 确认
+**触发**: 用户学习 io_uring 后要求对比当前异步串口设计，生成分析文档 `.claude/analysis/async-uart-vs-io_uring.md`（R18）。
+**约束**: 任何后续 async UART 优化 proposal MUST 先回答"借鉴哪个 io_uring 思想"以及"为什么当前实现不足"，避免重复发明 io_uring 已解决的问题。
+**决定**:
+1. StarryOS 异步串口在**任务模型**（copier 任务 + ISR wake + ring buffer）和**批处理**（一次 pop 多字节）上和 io_uring 高度同构，无需改造；
+2. StarryOS 在**共享内存 / 单系统调用提交 / 多 op 码 / CQE 用户态可见**上和 io_uring 不同，根因是当前 UART/VFS 架构选择和字符流设备需求，**不是当前目标下的设计缺陷**，也不是单体内核的必然限制；
+3. 可借鉴方向按价值定档（详见 R18 §6）：
+   - **高价值 A**：阻塞式 backpressure 缺失（L294/L295，ring 满时缺少 writable wait）+ MPSC 隐患（L293/L296，Clone 的 writer 共享 SPSC ring）；
+   - **高价值 B**：将 `TxCompletion` 这类全局 drain snapshot 的完成观测模式抽象为通用接口（L276），但不要把它等同为 per-request CQE；
+   - **中价值**：批处理协议在 `sys_writev` 路径上的显式覆盖；fixed buffer 精神已存在（ring 是 static），无需新增；
+   - **低价值**：Linked SQE 对流设备无意义，**不借鉴**。
+
+**原因**: 当前 ADR-058 已明确 Q21/Q22 不实施 user ring/completion queue（参见 R15）。本 ADR 进一步明确"借鉴 io_uring 哪些、不借鉴哪些、为什么"，避免后续 reopen。
+**影响**: 后续 Q24（多 hart 复验）和 Q26（维护性清理）中，触及 async UART 的优化点时 MUST 引用本 ADR 和 R18 的 §6 借鉴方向定档；任何新引入的 user ring / completion queue / 零拷贝 proposal MUST 先证伪 §6 高价值 A 的全部方向。
+后续 async UART optimization work MUST keep this ADR as the decision boundary for io_uring-inspired changes.
+**替代方案**: 不引入 ADR，继续按 milestone 临时决定优化方向，拒绝，会让"为什么借鉴 / 为什么不做"的知识散落在 commit message 里无法追溯。
+**恢复入口**: R18、L291-L294、A059（lint Gate 分层）、ADR-058（Q21/Q22 决策）。
+
+#### Scenario: Reusing io_uring ideas for async UART
+
+- **WHEN** a future async UART proposal cites io_uring as motivation
+- **THEN** it MUST state which io_uring idea is being reused and why the current UART path is insufficient
+- **AND** it MUST NOT reintroduce user ring, CQE, or zero-copy work without satisfying ADR-058 and O82 evidence gates
+
+<!-- A061 -->
+### Requirement: ADR-061: UART backpressure 与 writer 并发边界分阶段处理
+
+**日期**: 2026-07-14
+**状态**: 候选，待后续 OpenSpec change 确认
+**触发**: 基于 R18 的高价值优化点，进一步分析 backpressure 与 MPSC 两个近期候选方向，生成 R19。
+**决定**: 后续 UART TX 优化 SHOULD 先做阻塞式 backpressure / writable wait MVP，再收敛 `AsyncUartWriter::Clone` 与 `RingBufTx` SPSC 的安全契约；MPSC ring MUST 等实际多 writer 数据或 Q24 SMP stress 证据后再设计。
+**原因**: backpressure 可复用现有 `poll_io`、`Pollable::OUT` 和 `RingBufTx` pop wake，能修补阻塞 fd 行为而不重写数据结构。MPSC ring 会引入新队列、内存序、公平性和性能验证成本；当前只有理论隐患，没有数据证明必须替换 SPSC。
+**影响**: backpressure proposal 必须定义阻塞 fd、非阻塞 fd、poll/select/epoll 的 OUT readiness 语义；writer 并发 proposal 必须先说明是移除/限制 `Clone`、producer 侧互斥，还是引入 MPSC，并提供性能与并发 stress gate。
+**替代方案**: 直接实现 MPSC ring；拒绝，复杂度高且缺少现阶段证据。把 short write 完全交给用户态；拒绝，阻塞 fd 行为不符合现有 `poll_io` 体系可提供的能力。
+**恢复入口**: R19、L295-L296、ADR-060。
+
+#### Scenario: Scheduling UART backpressure and writer contract work
+
+- **WHEN** UART TX correctness or writer concurrency work is planned after R19
+- **THEN** the plan MUST schedule backpressure as Q27 and writer contract convergence as Q28
+- **AND** it MUST keep MPSC ring as O85 unless new SMP or workload evidence proves producer-side serialization insufficient
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
