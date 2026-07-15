@@ -336,7 +336,7 @@ UART MMIO `0x10000000` MUST 视为已正确映射（`READ | WRITE | DEVICE`）�
 
 共享硬件（同一 UART）的 reader/writer MUST 互斥访问，TX 共享 THR 时 MUST 保证同一批数据原子发送。
 
-<!-- tombstone: L123 --> Archived 2026-07-08 in ARC-202607081429 — copier/Console FIFO 竞争（Q2/Q3 已解决）；解决方案在 ADR-028，教训"互斥 drain"已沉淀。
+<!-- tombstone: L123 --> Archived 2026-07-08 in ARC-202607081429 — copier/Console FIFO 竞争（Q2/Q3 已解决）；解决方案 ADR-028（A064）已归档于 arc-202607152005，教训"互斥 drain"由 A062/Q29 延续。
 
 <!-- tombstone: L126 --> Archived 2026-07-08 in ARC-202607081429 — TX copier 与 ax_println! 交错（Q4 已解决）；解决方案在 ADR-029（cursor 追踪），教训"原子发送"已沉淀。
 
@@ -907,7 +907,7 @@ API path quick-reference for post-Q13 module separation. All new async types and
 <!-- L291 -->
 ### [io_uring 设计思想映射表]
 
-StarryOS 异步串口与 Linux io_uring 在关键设计上的同构关系：
+StarryOS 异步串口与 Linux io_uring 的关键设计映射：
 
 | io_uring 概念 | StarryOS 等价物 | 文件位置 |
 |--------------|----------------|---------|
@@ -933,21 +933,7 @@ StarryOS 异步串口与 Linux io_uring 在关键设计上的同构关系：
 <!-- L292 -->
 ### [TxCompletion 是全局 drain snapshot，不是 CQE 超集]
 
-`TxCompletion` 包含 4 个状态字段，用于观测 TX 链路是否整体排空：
-
-```rust
-// crates/uart_16550/src/async_/driver.rs:104
-pub struct TxCompletion {
-    pub ring_empty: bool,           // ① TX ring 已空
-    pub copier_active: bool,        // ② copier 不在 poll 循环里
-    pub staged_bytes: usize,        // ③ 没有"已 pop 但未写入 THR"的字节
-    pub transmitter_empty: bool,    // ④ UART 移位寄存器也空了
-}
-```
-
-它跨越了 ring buffer（软件）→ copier 任务（任务调度）→ UART FIFO（硬件）三层。io_uring CQE 是 per-request completion，带 request identity/result；`TxCompletion` 是全局 drain snapshot，回答"整条链路彻底空了"。二者都是完成状态观测，但不是包含关系。
-
-**可复用模式**：其他驱动（块设备、网络）的 drain / flush 可复用这 4 字段思路。
+`TxCompletion`（`crates/uart_16550/src/async_/driver.rs:104`）用 `ring_empty`、`copier_active`、`staged_bytes`、`transmitter_empty` 跨 ring → copier → UART FIFO 判断整链路排空；它是全局 drain snapshot，不是带 request identity/result 的 per-request CQE。块设备、网络的 drain/flush 可复用此四阶段模式。
 
 #### Scenario: Comparing TxCompletion with CQE
 
@@ -958,19 +944,7 @@ pub struct TxCompletion {
 <!-- L293 -->
 ### [AsyncUartWriter::Clone 潜在的 MPSC 隐患]
 
-`AsyncUartWriter` 实现 `Clone`（多个 writer 共享同一个 driver），但底层 `RingBufTx` 是 **SPSC**（单生产者单消费者）。
-
-```rust
-// crates/uart_16550/src/async_/device_ops.rs:92
-impl<...> Clone for AsyncUartWriter<...> {
-    fn clone(&self) -> Self { Self { driver: Arc::clone(&self.driver) } }
-}
-```
-
-**症状**：如果两个 task 同时调用 `tx.push()`，会产生数据竞争。
-**根因**：`Clone` 在 `Arc` 层面是安全的，但 `push()` 操作的 `Writer` 不是线程安全的。
-**当前缓解**：实际上目前只有一个 writer（TTY），Clone 是为未来扩展预留。
-**修复方向**：要么去掉 Clone，要么底层 ring 换 MPSC（复杂度上升）。
+Q28 前 `AsyncUartWriter::Clone`（原 `crates/uart_16550/src/async_/device_ops.rs:92`）允许多个 handle 共享 driver，而 `RingBufTx` 是 SPSC；两个 task 并发 `tx.push()` 会因非线程安全 `Writer` 产生数据竞争。当时仅单 TTY writer，Clone 为预留；修复选项是移除 Clone/串行化或改 MPSC。Q28 的实际收敛见 L296。
 
 #### Scenario: Auditing cloned UART writers
 
@@ -981,19 +955,7 @@ impl<...> Clone for AsyncUartWriter<...> {
 <!-- L294 -->
 ### [TX ring push 保持 short-write 原语，阻塞策略由 OS 层补齐]
 
-`tx.push()` 在 ring 满时仍只返回实际写入字节数（可能小于请求），crate 不承担 VFS 阻塞语义。Q27 已在 TTY 层补齐策略：UART 阻塞 fd 用 `poll_io` 等待可写空间后继续，UART 非阻塞 fd 保持 partial / `WouldBlock`，PTY writer 保持 short-write 且不等待完成。
-
-```rust
-// crates/uart_16550/src/async_/device_ops.rs:103
-fn write(&self, buf: &[u8]) -> usize {
-    let n = self.driver.tx.push(buf);
-    n   // ← 如果返回 < buf.len()，调用方必须按 short write 语义处理
-}
-```
-
-io_uring 的做法：SQ 满时 `io_uring_submit` 返回 `EBUSY`，调用方可以选择阻塞/重试/扩容。
-
-这一分层保留了 crate 的低成本 short-write 原语，同时让 OS 层按具体 writer 契约决定是否等待，避免把 StarryOS 的 fd 语义下沉到通用驱动 crate。
+`tx.push()`（原 `crates/uart_16550/src/async_/device_ops.rs:103`）在 ring 满时返回 accepted prefix 长度，crate 不承担 VFS 阻塞语义；Q27 在 TTY 层让 UART blocking fd 用 `poll_io` 等空间，nonblocking fd 保持 partial/`WouldBlock`，PTY 保持不等待的 short-write。该分层类似 SQ 满时由调用方处理 `EBUSY`，避免把 StarryOS fd 语义下沉到通用 crate。
 
 #### Scenario: Handling TX ring short writes
 
@@ -1038,14 +1000,30 @@ Q28 已将 `AsyncUartWriter` 收敛为不可 clone、提交需要 `&mut self`、
 <!-- L298 -->
 ### [TTY backpressure 必须同时区分字符映射边界与 writer 等待策略]
 
-Q27 review 暴露了两个不能只靠“已写字节数”推导的边界。ONLCR 将一个源字符 `\n` 扩展为 `\r\n`，非阻塞写必须只提交完整源字符对应的输出；用“累计输出长度大于零”判断完整边界会在 `a\n` 写成 `a\r` 时误判。另一方面，UART writer 的 short write 表示可等待 ring 空间，PTY writer 则始终可写且不保证一次接收全部数据；让 PTY 复用 UART 的等待/自唤醒策略会造成忙循环或永久等待。
-
-Q27 的处理是按完整源字符构造 ONLCR chunk，并由 writer 显式声明 short write 后是否等待 completion。映射原子性与等待策略因此都由契约表达，而不是从 writer 类型或正进度隐式猜测。
+Q27 review 暴露两个独立边界：ONLCR 将 `\n` 扩展为 `\r\n`，nonblocking write 必须停在完整源字符边界，否则 `a\n` 可能误提交为 `a\r`；UART short write 可等待 ring，PTY 始终可写但可能短写，复用 UART 等待会忙循环或永久等待。Q27 因此按完整源字符构造 chunk，并由 writer 显式声明是否等待 completion。
 
 #### Scenario: Preserving mapped writes across writer contracts
 
 - **WHEN** a TTY output transform expands one source character into multiple output bytes
 - **THEN** nonblocking writes MUST submit only prefixes ending at a complete source-character boundary
 - **AND** short-write retry or wait behavior MUST follow the concrete writer contract rather than generic TTY readiness
+
+<!-- L299 -->
+### [Q28 后 UART 并发边界必须按证据类型拆分]
+
+Q28 关闭的是 TX raw producer capability 与 SPSC 前提不一致的问题，不是所有 UART 并发语义。后续必须使用以下矩阵，避免把单次 accepted-prefix witness 扩大成未验证结论：
+
+| 问题 | 当前保证 | 证据/规划入口 |
+|------|----------|---------------|
+| 跨 hart write/flush/tcdrain | QEMU/D1 单 hart 回归通过；尚无 multi-hart 证明 | Q24 / O63 |
+| syscall 原子性、公平性、跨 write 交错 | 仅每次 raw submission 的 accepted prefix 连续；blocking retry 间允许其他 producer 插入 | Q30 / O86，真实 workload 触发 |
+| SPSC 与 MPSC | TX ring 仍为 SPSC，OS adapter 用 producer lock 串行化 | O85/Q30，锁不足证据触发 |
+| RX multi-consumer/clone | RX ring 依赖单 consumer，但 safe constructor/共享路径尚未形成完整唯一性 witness | O87/Q29，独立审计 |
+
+#### Scenario: Interpreting Q28 concurrency evidence
+
+- **WHEN** a report or proposal cites Q28 as concurrency evidence
+- **THEN** it MUST limit the claim to unique raw TX producer capability and accepted-prefix integrity
+- **AND** it MUST route multi-hart, syscall fairness/atomicity, MPSC, and RX consumer questions to their separate entries
 
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

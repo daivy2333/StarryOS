@@ -45,6 +45,8 @@ UART 设备 MUST 通过 `DeviceOps` trait + `Device` wrapper 注册到 `/dev`，
 
 ### Requirement: 缓冲策略 — ringbuf::HeapRb + axpoll::PollSet
 
+> ⚠️ STALE [2026-07-15] — 当前实现已迁移到 `atomic_ring_buffer` 与专用 readiness/waker；本条仅保留早期 ADR-004 的设计背景，现行并发契约见 ADR-061/ADR-062。
+
 每个方向（RX / TX）MUST 各自使用一个 `ringbuf::HeapRb<u8>` + `axpoll::PollSet`，硬件 FIFO 与内核 ringbuf 之间的搬运 MUST 由单一后台协程完成。
 
 **决策详情**（2026-05-24, ADR-004）：
@@ -79,6 +81,8 @@ UART 默认 MUST 运行在 raw 模式，termios 行规则 MUST 作为可选功�
 - **THEN** 必须保持 raw 数据通路零开销，行规则只在启用时介入
 
 ### Requirement: 硬件抽象 — AsyncUart trait
+
+> ⚠️ STALE [2026-07-15] — 当前抽象已演进为 `AsyncUartDriver` / `UartPort` / `OsRuntime` / `OsWakerSet`；本条仅保留 ADR-006 的早期设计背景，现行接口见 ADR-033/ADR-036。
 
 异步串口 MUST 定义 `AsyncUart` trait，初期实现 `Uart16550<MmioBackend>`，为 `DwApbUart` 等其他型号预留实现位。
 
@@ -127,11 +131,11 @@ DMA 探索 MUST 归入远期 M6，M0~M4 MUST 全程基于中断驱动 + NAPI 批
 - **WHEN** 开发者想改 `ax_println!` 走异步路径
 - **THEN** 不可行 — 该路径依赖外部 crate；必须保留 Console polling TX 作为内核日志通道
 
-<!-- tombstone: A014/A015 --> Archived 2026-07-08 in ARC-202607081429 — 被 ADR-025/027 替代；M3 失败（IRQ 风暴 + TX busy-loop），核心架构由 ADR-025/027 继承。
+<!-- tombstone: A014/A015 --> Archived 2026-07-08 in ARC-202607081429 — 被 ADR-025/027（A063，已归档于 arc-202607152005）替代；M3 失败（IRQ 风暴 + TX busy-loop），核心架构由 ADR-033/ADR-036 继续演进。
 
 <!-- tombstone: A016/A017 --> Archived 2026-07-08 in ARC-202607081429 — 方向 A 失败教训；"dump 寄存器"教训在 learned L79，stride 根因由 ADR-026 纠正。
 
-<!-- tombstone: A020/A021 --> Archived 2026-07-08 in ARC-202607081429 — 方向 B 已纠正；核心设想由 ADR-025/027 继承，stride 根因由 ADR-026 纠正，MMIO 权限由 ADR-024 澄清。
+<!-- tombstone: A020/A021 --> Archived 2026-07-08 in ARC-202607081429 — 方向 B 已纠正；核心设想由 ADR-025/027（A063，已归档于 arc-202607152005）继承并由 ADR-033/ADR-036 演进，stride 根因由 ADR-026 纠正，MMIO 权限由 ADR-024 澄清。
 
 ### Requirement: MMIO 权限纠正 — UART 在最终页表中已正确映射
 
@@ -174,41 +178,9 @@ NS16550 寄存器空间仅 8 字节，`UART_STRIDE` MUST 配置为 1。任何 st
 - **WHEN** 开发者初始化 `Uart16550<MmioBackend>::new_mmio(NonNull<u8>, stride)`
 - **THEN** stride 参数必须传 1（NS16550 寄存器物理布局），禁止传 4 或其他值
 
-### Requirement: 统一方向 — kernel 层独立实现异步串口
+<!-- tombstone: A063 --> Archived 2026-07-15 in arc-202607152005 — legacy ADR-025/027 的 kernel-only 实施边界已由 ADR-033 crate 提取与 ADR-036 两 trait 架构取代；完整原文见归档 carrier。
 
-异步串口 MUST 在 kernel 层完整实现（约 320 行新代码于 `kernel/src/drivers/`），不修改任何外部 crate。
-
-**决策详情**（2026-05-31, ADR-025 / ADR-027）：
-
-- **核心策略**：
-  1. UART 维护一个 `SpinNoIrq<Uart16550<MmioBackend>>` 实例（stride=1）
-  2. ISR → AtomicWaker → copier 任务模型（复用方向 A M1/M2 验证过的架构）
-  3. RX/TX copier 使用 `poll_fn + register_irq_waker` 模式（参考 Pipe/EventFd）
-  4. VFS 集成使用 `DeviceOps + Pollable` trait
-  5. Console 共存：earlycon polling TX 用于内核日志，AsyncUart 用于用户态 Shell
-- **不再需要**：修改 axplat、页表权限修复、方案 A/B/C 三选一
-- **Milestone**：Q0（Spike）→ Q1（driver 架构）→ Q2（VFS 集成）→ Q3（Console 共存/替换）→ Q4（性能优化）→ Q5（真板验证）
-- **2026-06-11 Q8 更新**：ISR 已无锁化（`read_isr_unlocked()` 替代 SpinNoIrq），copier 改用 `AtomicWaker` 替代 `register_irq_waker`。详见 ADR-025/027 原始决策上下文。
-
-#### Scenario: 添加新的异步串口功能
-
-- **WHEN** 开发者扩展串口能力（如增加 ioctl、添加新 Pollable 事件）
-- **THEN** 必须只在 `kernel/src/drivers/serial/` 范围内修改，禁止改动 `axhal` / `axplat` / `uart_16550` 外部 crate
-
-### Requirement: Q2 共存策略 — copier 与 Console 互斥读 UART
-
-在 Console 仍存在的阶段（Q2），RX copier MUST 不启动，由 Console 独占 UART；Q3 替换 Console 后 copier 才接管。
-
-**决策详情**（2026-05-31, ADR-028）：
-
-- **背景**：Q2 同时运行 Console 和 AsyncUart copier 时，Shell 无法接收键盘输入
-- **根因**：RX copier 的 `try_receive_byte()` 和 Console tty-reader 的 `read_bytes()` 都读同一个 UART RBR 寄存器。copier 先启动 → 抢在 tty-reader 之前把 FIFO 数据全部读走放入 ring buffer → tty-reader 看到空 FIFO，Shell 收不到输入
-- **影响**：Q2 的 `/dev/async_uart` 只提供设备节点和 DeviceOps 基础架构（read/write 在 ring buffer 上操作），实际数据通路（UART ↔ ring buffer）由 Q3 启用
-
-#### Scenario: 出现 reader 竞争
-
-- **WHEN** 项目中出现多个 reader 任务都想 drain 同一硬件 FIFO
-- **THEN** 必须设计互斥访问机制（独占控制 / 临界区 / 阶段切换），禁止并发 drain
+<!-- tombstone: A064 --> Archived 2026-07-15 in arc-202607152005 — legacy ADR-028 的 Q2/Q3 Console/copier 阶段已结束；单一 FIFO drainer 教训由 L123 与 A062/Q29 延续，完整原文见归档 carrier。
 
 ### Requirement: Q4 全异步 TX — TX copier 接管 UART 发送
 
@@ -929,23 +901,7 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **THEN** M3/rootfs-probe MUST NOT be required for completion
 - **AND** real SDMMC/block/rootfs work MUST be proposed separately before implementation
 
-<!-- A056 -->
-### Requirement: ADR-056: QEMU/D1 可验证 UART 工作前移，multi-hart 真板复验后置
-
-**日期**: 2026-07-12
-**状态**: 已接受；Q21/Q22/Q23 当前排期由 ADR-058 取代。
-**约束**: 本 ADR 的决定 MUST 作为对应阶段 gate；涉及 Q21/Q22/Q23 时 MUST 以 ADR-058 为准。
-**决定**: 原计划为 Q20 先补 latency / jitter / CPU 开销 / RX fixed payload；Q21 做 UART user completion queue MVP；Q22 做 mmap user ring / zero-copy prototype；Q23 做 ring/completion 性能决策；Q24 再做 VisionFive2 / 等价 SMP 的 O63 复验。2026-07-13 后，Q21/Q22/Q23 当前排期由 ADR-058 收敛。
-**原因**: QEMU 和 D1 已能跑同版 benchmark；`tests/benchmark.c` 覆盖 write+tcdrain、no-drain、batch drain、writev、FIFO boundary、FIONBIO、optional RX fixed payload；`DeviceOps::mmap()` / `sys_mmap()` 可承接 user ring 原型；D1 单 hart不能证明 O63，但可证明 UART 语义、tail latency、CPU/counter 和 user ring 原型。
-**影响**: optimization milestone 从 Q20 重排到 Q26；Q23 成为 ring/completion 保留、收窄或回滚 gate；Q24 仍必须覆盖并发 read/write、flush/tcdrain、IER enable/disable、waker、release/acquire。
-**恢复入口**: R15、L286、`.claude/analysis/uart-async-qemu-d1-first-replan.md`。
-
-#### Scenario: Planning UART async work after Q19C
-
-- **WHEN** 使用 ADR-056 规划 async UART 后续 milestone
-- **THEN** ADR-058 MUST be checked first for Q21/Q22/Q23 scope
-- **AND** multi-hart O63 proof MUST remain required before claiming SMP correctness
-- **AND** generic `io_uring` semantics MUST NOT be required unless a later ADR proves UART-specific rings are insufficient
+<!-- tombstone: A056 --> Archived 2026-07-15 in arc-202607152005 — Q21/Q22/Q23 原始 user ring/completion 排期已由 A058 取代；Q24 multi-hart 边界继续由 A062 约束，完整原文见归档 carrier。
 
 <!-- A057 -->
 ### Requirement: ADR-057: Q20 只收敛 benchmark 证据，不改变 UART 驱动语义
@@ -969,13 +925,11 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 <!-- A058 -->
 ### Requirement: ADR-058: 取消 Q21/Q22 user ring/completion 当前规划
 
-**日期**: 2026-07-13
-**状态**: 已接受
-**约束**: 本 ADR 取代 ADR-056 中 Q21/Q22/Q23 的当前排期；ADR-056 的历史重排背景保留。
+**日期/状态/约束**: 2026-07-13；已接受；取代 ADR-056（A056，已归档于 arc-202607152005）的 Q21/Q22/Q23 当前排期，但保留其历史背景。
 **决定**: 当前规划 MUST 不实施 Q21 UART user completion queue MVP，也不实施 Q22 `mmap` user ring / zero-copy prototype。Q23 ring/completion performance decision 以当前讨论和 Q20 数据完成：保留现有 TX ring + copier + `TxCompletion` + `write()` / `writev()` / `tcdrain()` 路径，不新增 user-visible SQ/CQ ring。
 **原因**: 当前异步 UART 已具备类似 `io_uring` 的提交/执行分离：`write()` 接受数据进入 TX ring，后台 copier 推进物理发送，`tcdrain()` / `flush()` 观察四阶段 drain。Q20 D1 数据显示 TX 已达 95.2%-99.1% 线速，主要瓶颈是 115200 bps 物理 UART；继续做 user ring/completion 复杂度高，收益难以在当前真板上体现。
 **影响**: `.claude/docs/tasks.md` 不再把 Q21/Q22 列为待做开发；`openspec/specs/optimization/spec.md` 以 O82 记录可借鉴但不实施的优化点。后续只有在高波特率、多 writer 公平性、细粒度 completion 追踪或 CPU proxy 数据证明需要时，才重新评估 user ring/completion。
-**替代方案**: 继续按 ADR-056 实施 Q21/Q22；拒绝，当前数据不支持投入。只改 RX 对称结构；拒绝，RX 没有证据驱动的重构需求。
+**替代方案**: 继续按 ADR-056（A056，已归档）实施 Q21/Q22；拒绝，当前数据不支持投入。只改 RX 对称结构；拒绝，RX 没有证据驱动的重构需求。
 
 #### Scenario: Reconsidering user ring or completion queue
 
@@ -987,8 +941,7 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 <!-- A059 -->
 ### Requirement: ADR-059: lint 与测试 Gate 按 artifact、feature 和 target 分层
 
-**日期**: 2026-07-13
-**状态**: 候选，待后续 OpenSpec change 确认
+**日期/状态**: 2026-07-13；候选，待后续 OpenSpec change 确认
 **约束**: 后续 clippy/test 清理 proposal MUST 明确每条命令的 artifact、feature、target、平台配置和环境前置条件。
 **决定**: 可复用 `uart_16550` crate 使用 host check/test/clippy；StarryOS kernel 使用目标架构 + 受支持 feature 的 compile gate；IRQ、TTY、rootfs 和用户进程行为使用 QEMU/真板 gate。裸 host `cargo test -p starry-kernel` 在建立 host-test 边界前不得作为全内核质量 Gate。
 **原因**: 当前 kernel 的 axfs/axnet/display/task-ext 是平台 feature 驱动的 optional dependency，裸 host test 会在测试执行前产生 42 个未解析依赖错误；同时 `uart_16550` 被自动纳入 workspace 后，其 `deny(clippy::cargo)` 会把 sibling package metadata 变成驱动 lint 错误。
@@ -1006,22 +959,16 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 <!-- A060 -->
 ### Requirement: ADR-060: async UART 与 io_uring 同构点识别 + 借鉴方向定档
 
-**日期**: 2026-07-14
-**状态**: 候选，待后续 OpenSpec change 确认
-**触发**: 用户学习 io_uring 后要求对比当前异步串口设计，生成分析文档 `.claude/analysis/async-uart-vs-io_uring.md`（R18）。
+Future io_uring-inspired UART proposals MUST identify the reused idea and prove the current path insufficient.
+
+**日期/状态/触发**: 2026-07-14；候选，待后续 OpenSpec change 确认；io_uring 对比分析 R18。
 **约束**: 任何后续 async UART 优化 proposal MUST 先回答"借鉴哪个 io_uring 思想"以及"为什么当前实现不足"，避免重复发明 io_uring 已解决的问题。
 **决定**:
-1. StarryOS 异步串口在**任务模型**（copier 任务 + ISR wake + ring buffer）和**批处理**（一次 pop 多字节）上和 io_uring 高度同构，无需改造；
-2. StarryOS 在**共享内存 / 单系统调用提交 / 多 op 码 / CQE 用户态可见**上和 io_uring 不同，根因是当前 UART/VFS 架构选择和字符流设备需求，**不是当前目标下的设计缺陷**，也不是单体内核的必然限制；
-3. 可借鉴方向按价值定档（详见 R18 §6）：
-   - **高价值 A**：阻塞式 backpressure 缺失（L294/L295，ring 满时缺少 writable wait）+ MPSC 隐患（L293/L296，Clone 的 writer 共享 SPSC ring）；
-   - **高价值 B**：将 `TxCompletion` 这类全局 drain snapshot 的完成观测模式抽象为通用接口（L276），但不要把它等同为 per-request CQE；
-   - **中价值**：批处理协议在 `sys_writev` 路径上的显式覆盖；fixed buffer 精神已存在（ring 是 static），无需新增；
-   - **低价值**：Linked SQE 对流设备无意义，**不借鉴**。
+1. 任务模型（copier+ISR wake+ring）与批处理已和 io_uring 同构，无需改造；共享内存、单 syscall、多 opcode、用户 CQE 的差异来自 UART/VFS 取舍，不是当前缺陷。
+2. R18 §6 定档：高价值 A=backpressure（L294/L295）与 writer/SPSC 隐患（L293/L296）；高价值 B=`TxCompletion` 全局 drain 抽象（非 per-request CQE）；中价值=`sys_writev` 批处理、现有 static ring；低价值=不借鉴 Linked SQE。
 
 **原因**: 当前 ADR-058 已明确 Q21/Q22 不实施 user ring/completion queue（参见 R15）。本 ADR 进一步明确"借鉴 io_uring 哪些、不借鉴哪些、为什么"，避免后续 reopen。
-**影响**: 后续 Q24（多 hart 复验）和 Q26（维护性清理）中，触及 async UART 的优化点时 MUST 引用本 ADR 和 R18 的 §6 借鉴方向定档；任何新引入的 user ring / completion queue / 零拷贝 proposal MUST 先证伪 §6 高价值 A 的全部方向。
-后续 async UART optimization work MUST keep this ADR as the decision boundary for io_uring-inspired changes.
+**影响**: Q24/Q26 的 async UART 优化 MUST 引用本 ADR/R18 §6；user ring/CQ/zero-copy proposal MUST 先证伪高价值 A，并以本 ADR 为 io_uring 借鉴边界。
 **替代方案**: 不引入 ADR，继续按 milestone 临时决定优化方向，拒绝，会让"为什么借鉴 / 为什么不做"的知识散落在 commit message 里无法追溯。
 **恢复入口**: R18、L291-L294、A059（lint Gate 分层）、ADR-058（Q21/Q22 决策）。
 
@@ -1034,9 +981,7 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 <!-- A061 -->
 ### Requirement: ADR-061: UART backpressure 与 writer 并发边界分阶段处理
 
-**日期**: 2026-07-14
-**状态**: 已实施：Q27a/Q27/Q28 已完成
-**触发**: 基于 R18 的高价值优化点，进一步分析 backpressure 与 MPSC 两个近期候选方向，生成 R19。
+**日期/状态/触发**: 2026-07-14；已实施（Q27a/Q27/Q28）；R18 高价值项与 R19 backpressure/MPSC 分析。
 **决定**: 后续 UART TX 优化 SHOULD 先做阻塞式 backpressure / writable wait MVP，再收敛 `AsyncUartWriter::Clone` 与 `RingBufTx` SPSC 的安全契约；MPSC ring MUST 等实际多 writer 数据或 Q24 SMP stress 证据后再设计。
 **原因**: backpressure 可复用现有 `poll_io`、`Pollable::OUT` 和 `RingBufTx` pop wake，能修补阻塞 fd 行为而不重写数据结构。MPSC ring 会引入新队列、内存序、公平性和性能验证成本；当前只有理论隐患，没有数据证明必须替换 SPSC。
 **影响**: backpressure proposal 必须定义阻塞 fd、非阻塞 fd、poll/select/epoll 的 OUT readiness 语义；writer 并发 proposal 必须先说明是移除/限制 `Clone`、producer 侧互斥，还是引入 MPSC，并提供性能与并发 stress gate。
@@ -1050,4 +995,28 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 - **THEN** the plan MUST schedule backpressure as Q27 and writer contract convergence as Q28
 - **AND** it MUST keep MPSC ring as O85 unless new SMP or workload evidence proves producer-side serialization insufficient
 
+<!-- A062 -->
+### Requirement: ADR-062: Q28 后 TX/RX 并发契约分流
+
+Post-Q28 UART concurrency work MUST separate multi-hart correctness, TX scheduling semantics, queue producer model, and RX consumer safety before choosing an implementation.
+
+**日期/状态/触发**: 2026-07-15；backlog 边界已确认（Q24 等硬件，Q29/Q30 待 `openspec-plan`）；Q28 review 证明 multi-hart、TX syscall 语义与 RX consumer 唯一性不能混为 MPSC 单一方案。
+**决定**:
+1. Q24 是跨 hart correctness 证据入口，必须在 VisionFive2 或等价 SMP 真板覆盖跨 hart write/flush/tcdrain、read 与 IER enable/disable；QEMU/D1 单 hart结果不得替代该 Gate。
+2. 当前 TX 契约只保证每次 serialized raw submission 的 accepted prefix 连续、无重复/丢失和字节级交织。blocking write 可被 backpressure 拆分，其他 producer 可在重试之间提交；不承诺整个 syscall 原子性、producer 公平性或不同 write 调用之间不交错。
+3. TX ring 保持 SPSC，StarryOS producer lock 是当前默认方案。MPSC ring 继续作为 O85 远期候选；只有 Q24 或新 workload 证明串行化造成饥饿、交互延迟或吞吐不足时，才与 O86/Q30 一并规划。
+4. RX ring 的单 consumer unsafe 前提独立登记为 O87/Q29。后续必须审计 safe `AsyncUartReader::new()`、TTY/共享 fd 与实际 RX pop 路径，再选择 unique raw reader、OS 层串行化或证明现状充分；不得未经证据直接引入 MPMC。
+**原因**: multi-hart memory ordering、TX 调度语义、队列生产者模型和 RX consumer 唯一性具有不同触发条件、正确性目标与验证方法。把它们都归结为“换 MPSC”既不能解决 RX 风险，也会在没有 workload 证据时引入额外内存序、公平性和性能成本。
+**影响**: Q24、Q29、Q30 必须独立规划和验收；在对应 Gate 完成前，文档和性能报告必须保留现有边界，不得把 Q28 的 accepted-prefix witness 扩大解释为 syscall 原子性、公平性、MPSC 或 multi-hart 证明。
+**替代方案**: 立即把 TX/RX 全部替换为多方队列；拒绝，缺少需求证据且扩大 unsafe/内存序范围。仅在 Q28 archive 中保留备注；拒绝，无法进入全局 roadmap 和后续 planning Gate。
+**恢复入口**: Q24/Q29/Q30、O63/O85/O86/O87、L299、Q28 archived proposal/design/tasks。
+
+#### Scenario: Planning post-Q28 concurrency work
+
+- **WHEN** 后续工作涉及跨 hart UART、TX 多 writer 语义或 RX 多 consumer 风险
+- **THEN** it MUST first classify the work as Q24, Q29, or Q30
+- **AND** it MUST preserve the current accepted-prefix and SPSC boundaries until the corresponding evidence Gate passes
+- **AND** it MUST NOT treat MPSC or MPMC as a default fix without a demonstrated workload requirement
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
+<!-- arc: arc-202607152005 --> 3 条 architecture 决策已归档 (2026-07-15) → ../../changes/archive/2026-07-15-arc-202607152005/proposal.md

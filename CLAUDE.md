@@ -14,6 +14,8 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 - **当前分支**：`uart-16550-lichee`（本地领先 origin 10 commits，用于 Lichee RV Dock 适配与验证）
 - **跨项目引用**：父项目 `../CLAUDE.md` — 跨项目文档索引；本仓库 `crates/uart_16550/` — 当前串口驱动库
 
+> 💡 SUGGEST-REVIEW [2026-07-15] — “当前状态/Q20”与分支领先提交数已漂移；本次归档不改规则/index 正文。
+
 ## 文档体系
 
 ### OpenSpec（需求规范管理）
@@ -27,6 +29,8 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 | `openspec/specs/optimization/` | 优化记录（Q0~Q19B 已完成 + Q17/Q20~Q23 待做） | `grep "关键词" openspec/specs/optimization/spec.md` |
 | `openspec/changes/` | 变更提案（含 rules domain 归档墓碑） | `openspec list` |
 | `openspec/project.md` | 项目上下文（技术栈 / 约束 / 目录） | `cat openspec/project.md` |
+
+> 💡 SUGGEST-REVIEW [2026-07-15] — optimization 行的 Q20~Q23 状态已漂移至 Q27/Q28 完成、Q29/Q30 backlog；本次归档仅提示维护者复核。
 
 ### 项目状态（日常维护）
 

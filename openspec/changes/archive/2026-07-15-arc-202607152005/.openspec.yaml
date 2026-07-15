@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-07-15
+goal: 保留历史可恢复性，同时收敛 active 文档视图
+change-type: archive

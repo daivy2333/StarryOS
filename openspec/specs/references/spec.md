@@ -116,16 +116,12 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 
 ### Requirement: 项目内部分析与设计文档索引
 
-`.claude/analysis/` 下的所有分析文档 MUST 在本规范登记；新增分析文档 MUST 同步注册索引条目。
-
-> **2026-06-11 迁移**：原有 `docs/analysis/` 下 9 份文档已迁移至 `.claude/analysis/`，按内容相似度融合为 6 份文档（删除 1 份已覆盖的 `uart-16550-crate-reuse.md`）。
-
-**项目分析文档**（`.claude/analysis/`）：
+`.claude/analysis/` 的分析文档 MUST 在此登记。**2026-06-11 迁移**：`docs/analysis/` 9 份迁入并融合为 6 份，删除已覆盖的 `uart-16550-crate-reuse.md`。
 
 | 文档 | 主题 |
 |------|------|
-| `architecture-overview.md` | 架构概览：仓库结构、构建系统、启动链、任务/进程模型、中断框架 |
-| `arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA 待 Q6 重新评估（O3/O40）、HAL trait 我们更精简（Q13 + ADR-036）、Q6 真板待采纳 trust u-boot（ADR-004）+ PLIC init_primary/percpu 分离（ADR-002）、arceos 自身未做异步 UART（OPT-001 我们是行业先例）。配套 optimization/spec.md O64~O73 借鉴清单 |
+| <!-- R21 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/architecture-overview.md` | 架构概览摘要：仓库结构、构建系统、启动链、任务/进程模型、中断框架；文件内含完整旧版恢复指针 |
+| <!-- R22 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA、HAL trait、真板 bring-up、PLIC 与异步 UART 对照；配套 optimization/spec.md O64~O73 借鉴清单 |
 | <!-- R2 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/optimization-milestone-replan.md` | Q15 后优化项 milestone 重规划：将 Q6 过载项拆分为 Q16 文档收敛、Q17 SMP 内存序、Q18 真板观测、Q19 VisionFive2 验证、Q20 DMA/高波特率决策、Q21 维护性清理、Q22 远期预研池 |
 | <!-- R3 --> `.claude/analysis/q17-smp-memory-ordering.md` | Q17 / O63 SMP 内存序实施前分析：`ier_cache` RMW 竞争、TX completion Release/Acquire 语义、无需按架构分叉的 Rust 原子模型依据、验证 Gate；2026-07-03 复核补充 D1 `UartPort` 边界与当前源码行号漂移 |
 | <!-- R4 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee/public-platform-notes.md` | Lichee RV Dock 公开资料与真板采集对照：D1 UART/PLIC/timer/boot image/RAM/启动链事实基线 |
@@ -137,7 +133,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R11 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md` | Q19C.8e TX/P99：slow-poll + yield 已验证 forward progress；P99 未改善，作为 O77/L275 known limitation，Q20 复验 |
 | <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1：memory-root `/bin/benchmark` 通过 `resolve/read` + eager ELF mapping；lazy COW SIGILL 另列 O80/L277 |
 | <!-- R13 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3：M2 equivalent command-entry 通过；M3/rootfs-probe、SDMMC/rootfs 取消当前规划 |
-| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层、以及 StarryOS Q20 UART 复验检查清单 |
+| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ⚠️ STALE [2026-07-15] — 摘要仍写 Q20，实际继续作为 Q24 输入；ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层 |
 | <!-- R15 --> `.claude/analysis/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；2026-07-13 起 Q21/Q22/Q23 当前排期由 ADR-058 取代，仅保留为历史输入 |
 | <!-- R16 --> `.claude/analysis/q20-benchmark-gap-closure.md` | Q20 benchmark gap closure：现有 S10/S14/S20/S21/S31、TX debug ioctl、counter 输出和 raw evidence 缺口分析；为后续 propose/apply 提供任务拆分与 gate |
 | <!-- R17 --> `.claude/analysis/clippy-test-baseline-cleanup.md` | Clippy 与测试基线清理：feature-scoped import、内嵌 uart manifest 漂移、workspace lint 泄漏、kernel host-test 边界、复现矩阵与分阶段 Gate |
@@ -159,6 +155,6 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 <!-- 由 openspec-liaison 写入，由 openspec-assistant 日常维护，由 openspec-archivist 周期清理。 -->
 <!-- 添加时格式: <!-- R{编号} --> | 子项目 | 路径 | 文档体系 | 摘要 | 最近更新 | -->
 
-<!-- R1 --> | `uart_16550` | `../uart_16550` | OpenSpec✓ config✓ specs✓ changes✗ cg✓ | 16550 UART 驱动库 v0.6.0，StarryOS 串口底层模块（path 依赖）。OpenSpec 4-domain 已建立（architecture / learned / optimization / references），`openspec/changes/` 仅 archive 无活跃变更，CodeGraph 索引 729KB 已建；旧 `.claude/docs/` 仍含 SNAPSHOT/tasks 与 4 份 `.bak` 备份。 | 2026-06-03 |
+<!-- R1 --> | `uart_16550` | `../uart_16550` | OpenSpec✓ config✓ specs✓ changes✗ cg✓ | v0.6.0 path 依赖；4-domain OpenSpec 已建，changes 仅 archive，CodeGraph 729KB；旧 `.claude/docs/` 保留 SNAPSHOT/tasks 和 4 份 `.bak`。 | 2026-06-03 |
 
 <!-- arc: ARC-202607021648 --> 1 组 references 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md
