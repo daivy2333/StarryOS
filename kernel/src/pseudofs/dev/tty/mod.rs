@@ -3,6 +3,7 @@ mod ptm;
 mod pts;
 mod pty;
 pub mod terminal;
+mod write;
 
 use alloc::sync::{Arc, Weak};
 use core::{
@@ -24,12 +25,15 @@ use linux_raw_sys::general::{ONLCR, OPOST};
 use starry_process::Process;
 use starry_vm::{VmMutPtr, VmPtr};
 
-use self::terminal::{
-    Terminal, WindowSize,
-    ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite},
-    termios::{Termios, Termios2},
-};
 pub use self::{ptm::Ptmx, pts::PtsDir, pty::PtyDriver};
+use self::{
+    terminal::{
+        Terminal, WindowSize,
+        ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, TtyWriteReady},
+        termios::{Termios, Termios2},
+    },
+    write::{ONLCR_BUF_SIZE, OnlcrChunk, ShortWriteAction, classify_short_write},
+};
 use crate::{
     pseudofs::{DeviceOps, SimpleFs},
     task::AsThread,
@@ -87,7 +91,65 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
     }
 }
 
-impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
+impl<R: TtyRead, W: TtyWriteReady> Tty<R, W> {
+    fn finish_write(&self, buf: &[u8], written: usize) -> AxResult<usize> {
+        let mut total = written;
+        block_on(poll_io(self, IoEvents::OUT, false, || {
+            total += self.writer.write(&buf[total..]);
+            if total == buf.len() {
+                Ok(total)
+            } else {
+                Err(AxError::WouldBlock)
+            }
+        }))
+    }
+
+    fn write_mapped_chunk(&self, chunk: &OnlcrChunk) -> AxResult<()> {
+        let bytes = chunk.bytes();
+        let written = self.writer.write(bytes);
+        if written == bytes.len() {
+            return Ok(());
+        }
+        self.finish_write(bytes, written).map(|_| ())
+    }
+
+    fn write_onlcr_blocking(&self, buf: &[u8]) -> AxResult<usize> {
+        let mut consumed = 0;
+        while consumed < buf.len() {
+            let chunk = OnlcrChunk::new(&buf[consumed..], ONLCR_BUF_SIZE);
+            self.write_mapped_chunk(&chunk)?;
+            consumed += chunk.source_len();
+        }
+        Ok(consumed)
+    }
+
+    fn write_onlcr_once(&self, buf: &[u8], zero_would_block: bool) -> AxResult<usize> {
+        let chunk = OnlcrChunk::new(buf, self.writer.writable_len());
+        if chunk.source_len() == 0 {
+            return if zero_would_block {
+                Err(AxError::WouldBlock)
+            } else {
+                Ok(0)
+            };
+        }
+        let accepted = chunk.accepted_source_len(self.writer.write(chunk.bytes()));
+        if accepted == 0 && zero_would_block {
+            Err(AxError::WouldBlock)
+        } else {
+            Ok(accepted)
+        }
+    }
+
+    fn write_onlcr(&self, buf: &[u8], nonblocking: bool) -> AxResult<usize> {
+        if !nonblocking && self.writer.waits_for_write_completion() {
+            self.write_onlcr_blocking(buf)
+        } else {
+            self.write_onlcr_once(buf, nonblocking)
+        }
+    }
+}
+
+impl<R: TtyRead, W: TtyWriteReady> DeviceOps for Tty<R, W> {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
         let nb = self.nonblocking.load(Ordering::Acquire);
         block_on(poll_io(
@@ -105,51 +167,33 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> AxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
         let term = self.terminal.load_termios();
-        if !term.has_oflag(OPOST) || !term.has_oflag(ONLCR) {
-            return Ok(self.writer.write(buf));
-        }
+        let onlcr = term.has_oflag(OPOST) && term.has_oflag(ONLCR);
 
-        let mut out = [0u8; 256];
-        let mut complete_at_prefix = [0usize; 257];
-        let mut out_len = 0usize;
-        let mut consumed = 0usize;
-        let mut segment_base = 0usize;
-
-        for &byte in buf {
-            let mapped = if byte == b'\n' {
-                b"\r\n".as_slice()
-            } else {
-                core::slice::from_ref(&byte)
-            };
-
-            if out_len + mapped.len() > out.len() {
-                let written = self.writer.write(&out[..out_len]);
-                if written < out_len {
-                    return Ok(segment_base + complete_at_prefix[written]);
-                }
-                out_len = 0;
-                segment_base = consumed;
-                complete_at_prefix[0] = 0;
+        if !onlcr {
+            let written = self.writer.write(buf);
+            if written == buf.len() {
+                return Ok(written);
             }
-
-            out[out_len..out_len + mapped.len()].copy_from_slice(mapped);
-            for prefix in out_len + 1..out_len + mapped.len() {
-                complete_at_prefix[prefix] = consumed - segment_base;
+            let nb = self.nonblocking.load(Ordering::Acquire);
+            match classify_short_write(
+                written,
+                buf.len(),
+                nb,
+                self.writer.waits_for_write_completion(),
+            ) {
+                ShortWriteAction::Return(written) => Ok(written),
+                ShortWriteAction::WouldBlock => Err(AxError::WouldBlock),
+                ShortWriteAction::Wait => self.finish_write(buf, written),
             }
-            out_len += mapped.len();
-            consumed += 1;
-            complete_at_prefix[out_len] = consumed - segment_base;
+        } else {
+            let nb = self.nonblocking.load(Ordering::Acquire);
+            self.write_onlcr(buf, nb)
         }
-
-        if out_len > 0 {
-            let written = self.writer.write(&out[..out_len]);
-            if written < out_len {
-                return Ok(segment_base + complete_at_prefix[written]);
-            }
-        }
-
-        Ok(consumed)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
@@ -241,9 +285,12 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 }
 
-impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
+impl<R: TtyRead, W: TtyWriteReady> Pollable for Tty<R, W> {
     fn poll(&self) -> IoEvents {
-        let mut events = IoEvents::OUT | self.terminal.job_control.poll();
+        let mut events = self.terminal.job_control.poll();
+        if self.writer.can_write() {
+            events |= IoEvents::OUT;
+        }
         if self.is_ptm || events.contains(IoEvents::IN) {
             events.set(IoEvents::IN, self.ldisc.lock().poll_read());
         }
@@ -256,6 +303,9 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
         }
         if events.contains(IoEvents::IN) {
             self.ldisc.lock().register_rx_waker(context.waker());
+        }
+        if events.contains(IoEvents::OUT) {
+            self.writer.register_writable_waker(context.waker());
         }
     }
 }

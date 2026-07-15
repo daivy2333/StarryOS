@@ -979,9 +979,9 @@ impl<...> Clone for AsyncUartWriter<...> {
 - **AND** if concurrent writers are possible, it MUST add serialization or redesign the TX producer side
 
 <!-- L294 -->
-### [TX ring push 无阻塞 backpressure — 依赖调用方处理 short write]
+### [TX ring push 保持 short-write 原语，阻塞策略由 OS 层补齐]
 
-当前 `tx.push()` 满了直接返回实际写入字节数（可能 < 请求）。`TtyWrite` / VFS write 路径按 partial write 语义返回，不会在内核接口层谎报全部写完；但缺少阻塞式等待 ring 空间的路径。
+`tx.push()` 在 ring 满时仍只返回实际写入字节数（可能小于请求），crate 不承担 VFS 阻塞语义。Q27 已在 TTY 层补齐策略：UART 阻塞 fd 用 `poll_io` 等待可写空间后继续，UART 非阻塞 fd 保持 partial / `WouldBlock`，PTY writer 保持 short-write 且不等待完成。
 
 ```rust
 // crates/uart_16550/src/async_/device_ops.rs:103
@@ -993,7 +993,7 @@ fn write(&self, buf: &[u8]) -> usize {
 
 io_uring 的做法：SQ 满时 `io_uring_submit` 返回 `EBUSY`，调用方可以选择阻塞/重试/扩容。
 
-**借鉴方向**：当 `push` 返回字节数 < 请求字节数 时，为阻塞 fd 提供注册 waker 等待 ring 有空间的路径；非阻塞 fd 保持 partial / `WouldBlock` 语义，避免调用方忙重试。
+这一分层保留了 crate 的低成本 short-write 原语，同时让 OS 层按具体 writer 契约决定是否等待，避免把 StarryOS 的 fd 语义下沉到通用驱动 crate。
 
 #### Scenario: Handling TX ring short writes
 
@@ -1004,7 +1004,7 @@ io_uring 的做法：SQ 满时 `io_uring_submit` 返回 `EBUSY`，调用方可�
 <!-- L295 -->
 ### [UART TX backpressure 应复用 Pollable OUT 模式]
 
-`RingBufTx::pop()` / `pop_batch()` 已在释放空间后调用 `poll.wake()`，因此 TX writable wait 可以复用现有 waker 基础。推荐做法是让 `Tty::poll()` 的 `IoEvents::OUT` 绑定 TX ring 可用空间，让 `Tty::register()` 对 OUT 注册 TX ring waker，再用 `poll_io(self, IoEvents::OUT, nonblocking, || ...)` 包住 `write_at()` 的写入循环。参考实现是 `kernel/src/file/pipe.rs` 的写端 backpressure。
+Q27 复用了 `RingBufTx::pop()` / `pop_batch()` 释放空间后的 `poll.wake()`：`Tty::poll()` 的 `IoEvents::OUT` 绑定 TX ring 可用空间，`Tty::register()` 对 OUT 注册 TX ring waker，`poll_io` 驱动 UART 阻塞写循环。QEMU 与 D1 验证中，S11 1024-byte workload 的 36 次 short write 降为 0，且关键吞吐和 p50 延迟未退化。
 
 #### Scenario: Implementing UART writable wait
 
@@ -1034,5 +1034,18 @@ io_uring 的做法：SQ 满时 `io_uring_submit` 返回 `EBUSY`，调用方可�
 - **THEN** it MUST NOT borrow the opposite role's `Reader` or `Writer` through `UnsafeCell`
 - **AND** its atomic snapshot ordering MUST match the ring implementation's publish/observe contract
 - **AND** tests MUST create data or free space spanning both sides of the storage boundary
+
+<!-- L298 -->
+### [TTY backpressure 必须同时区分字符映射边界与 writer 等待策略]
+
+Q27 review 暴露了两个不能只靠“已写字节数”推导的边界。ONLCR 将一个源字符 `\n` 扩展为 `\r\n`，非阻塞写必须只提交完整源字符对应的输出；用“累计输出长度大于零”判断完整边界会在 `a\n` 写成 `a\r` 时误判。另一方面，UART writer 的 short write 表示可等待 ring 空间，PTY writer 则始终可写且不保证一次接收全部数据；让 PTY 复用 UART 的等待/自唤醒策略会造成忙循环或永久等待。
+
+Q27 的处理是按完整源字符构造 ONLCR chunk，并由 writer 显式声明 short write 后是否等待 completion。映射原子性与等待策略因此都由契约表达，而不是从 writer 类型或正进度隐式猜测。
+
+#### Scenario: Preserving mapped writes across writer contracts
+
+- **WHEN** a TTY output transform expands one source character into multiple output bytes
+- **THEN** nonblocking writes MUST submit only prefixes ending at a complete source-character boundary
+- **AND** short-write retry or wait behavior MUST follow the concrete writer contract rather than generic TTY readiness
 
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

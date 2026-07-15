@@ -17,6 +17,7 @@ use alloc::sync::Arc;
 use core::{
     ptr::{NonNull, addr_of_mut},
     sync::atomic::{AtomicU8, Ordering},
+    task::Waker,
 };
 
 use axlog::info;
@@ -26,9 +27,11 @@ use memory_addr::VirtAddr;
 use spin::Once;
 use uart_16550::{
     async_::{
+        device_ops::AsyncUartWriter,
         driver::{AsyncUartDriver, UartPort},
         ring_buffer::{RingBufRx, RingBufTx},
     },
+    os::{OsRuntime, OsWakerSet},
     spec::registers::IER,
 };
 // ── QEMU NS16550 path ────────────────────────────────────────────────
@@ -46,6 +49,7 @@ use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
 use crate::{
     drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet},
     platform,
+    pseudofs::dev::tty::terminal::ldisc::TtyWriteReady,
 };
 
 /// Ring buffer 大小（64 KB）
@@ -178,6 +182,24 @@ pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
     ArceOsWakerSet,
     ArceOsD1UartPort,
 >;
+
+impl<R: OsRuntime + 'static, W: OsWakerSet + 'static, U: UartPort> TtyWriteReady
+    for AsyncUartWriter<R, W, U>
+{
+    fn waits_for_write_completion(&self) -> bool {
+        true
+    }
+
+    fn can_write(&self) -> bool {
+        AsyncUartWriter::can_write(self)
+    }
+    fn writable_len(&self) -> usize {
+        AsyncUartWriter::writable_len(self)
+    }
+    fn register_writable_waker(&self, waker: &Waker) {
+        AsyncUartWriter::register_writable_waker(self, waker)
+    }
+}
 
 // ── Ring buffer 静态存储 ─────────────────────────────────────────────
 

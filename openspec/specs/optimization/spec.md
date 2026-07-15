@@ -19,7 +19,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **Q22** | User ring + zero-copy prototype | O1/O36、ADR-056 → ADR-058 | 🧊 取消当前规划；D1 115200 bps 线速下收益不足 |
 | **Q23** | Ring/completion performance decision | ADR-058、O82 | ✅ 决策完成：不实施 Q21/Q22，保留现有 write/writev/tcdrain/batch 路径 |
 | **Q27a** | uart_16550 readiness 薄接口 | O83、ADR-061 | ✅ 2026-07-15 完成 RX/TX ring readiness hint + readable/writable waker 注册；不引入 OS fd 语义 |
-| **Q27** | TX backpressure / writable wait MVP | O83、ADR-061 | 基于 Q27a，阻塞 fd 等待 TX ring 空间；非阻塞 fd 保持 partial / WouldBlock |
+| **Q27** | TX backpressure / writable wait MVP | O83、ADR-061 | ✅ 2026-07-15 完成并归档；阻塞 fd 等待 TX ring 空间，非阻塞 fd 保持 partial / WouldBlock，QEMU/D1 Gate 通过 |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84、ADR-061 | `Clone` 与 SPSC 安全边界对齐；MPSC 后置 O85 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 并发 read/write、flush/tcdrain、IER enable/disable 无数据丢失或 hang |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69/O41 | 用 Q24 或新硬件数据决定实施或拒绝 |
@@ -31,7 +31,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **O77** | D1 P99 长尾根因未探明但不阻塞；Q20 补测 | 继续改 D1 TX copier、THRE wake、retry policy 时 |
 | **O80** | Memory-root lazy COW SIGILL 是 loader/mm 后续，不是 UART gate | 需要恢复 lazy file-backed loader parity 时 |
 | **O82** | io_uring-like user ring/completion 可借鉴但当前不实施 | 高波特率、多 writer 公平性、细粒度 completion 或 CPU 证据出现时 |
-| **O83** | uart readiness 薄接口 + TX backpressure / writable wait 应作为近期修正 | Q27a/Q27 |
+| **O83** | uart readiness 薄接口 + TX backpressure / writable wait 已完成 | Q27a/Q27 已归档 |
 | **O84** | `AsyncUartWriter::Clone` 与 SPSC 契约应作为近期修正 | Q28 |
 | **O85** | MPSC ring / 多 writer 公平性为远期候选 | Q24 SMP 或新 workload 证明需要时 |
 
@@ -134,7 +134,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q24 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q24 真板驱动开发 |
 | **O77** | Q19C D1 TX 诊断 | **D1 TX zero-send / P99 长尾优化（Q19C.8e 已完成）**：已实施 slow-poll（`TX_SLOW_POLL_LIMIT=4096` × `TX_SLOW_POLL_SPINS=256`）+ yield 重试（`TX_YIELD_RETRIES=4` 自唤醒）作为 budget exhausted 后的 fallback。真板三轮数据证明 slow-pool 100% 成功（`slow_poll_exh=0`），yield 重试从未触发（`yield_exh=0`），ISR 从未丢失。P99 长尾（size=256 P99=50.86ms，2.34x 线时）**根因未探明**——slow-pool/yield 重试均未改善，100 次迭代中约 1 次超出线时+10ms，确切成因待查。当前影响可接受（吞吐量 <2%），暂不继续优化，Q20 补测时再探明。`TX_FAST_RETRY_LIMIT=0` + drain `TX_WAKER` 已证伪，不得作为默认。 | ✅ 已完成（Q19C-M0） | P99 根因未探明，Q20 补测 |
 | **O80** | Q19C-M1 loader/mm 后续 | **Memory-root lazy file-backed COW SIGILL**：`load_user_app()` 从 `/bin/benchmark` lazy mapping 可进程化并处理 page fault/syscall，但 main 前在合法 RV64C `c.ld` 地址 SIGILL；eager VFS read + segment mapping 已通过完整 benchmark，说明问题不在 async UART、benchmark ELF 或通用 syscall。后续应检查 `CachedFile` 页缓存、`FileBackend::Cached`、`Backend::new_cow`、tmpfs offset/权限/取指路径，不作为 Q19C-M1 或 UART gate。 | 🟡 P1 | 需要恢复 lazy file-backed loader parity 时 |
-| **O83** | R19 / ADR-061 | **uart readiness 薄接口 + TX backpressure / writable wait MVP**：先在 `uart_16550` crate 暴露 RX/TX ring readiness hint 与 readable/writable waker 注册，不引入 StarryOS VFS/poll/syscall 语义；再由 OS 层复用 `poll_io`、`Pollable::OUT` 与 `RingBufTx` pop wake，做到阻塞 fd 等待、非阻塞 fd partial/`WouldBlock`、poll/select/epoll OUT readiness 与 ring 空间一致。 | 🔴 P0 | Q27a/Q27 |
+| **O83** | R19 / ADR-061 | **uart readiness 薄接口 + TX backpressure / writable wait MVP**：已由 Q27a/Q27 完成并归档。`uart_16550` 暴露 RX/TX ring readiness 与 waker 注册，OS 层复用 `poll_io`、`Pollable::OUT` 和 TX pop wake；UART 阻塞 fd 等待空间，非阻塞 fd 保持 partial/`WouldBlock`，PTY 保持非等待契约。QEMU、D1 Gate 通过，S11 short write 归零且关键性能无退化。 | ✅ 已完成（2026-07-15） | `2026-07-15-q27-tx-backpressure` |
 | **O84** | R19 / ADR-061 | **`AsyncUartWriter::Clone` 与 SPSC 契约收敛**：`AsyncUartWriter` 可 clone，但 `RingBufTx::push()` 的 SAFETY 前提是单 producer。近期应搜索真实 clone 使用点，优先移除/限制 clone 或在 producer 侧串行化 `push()`；不默认替换为 MPSC ring。 | 🔴 P0 | Q28 |
 <!-- tombstone: O67/O68/O70/O72/O73 --> Archived 2026-07-02 in ARC-202607021648 — 已采纳/已蕴含/已领先项从 active optimization 清单移除。
 
@@ -168,7 +168,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 |----------|----------|----------|
 | completion 观测增强 | 需要按单次提交追踪完成 | 保留 `TxCompletion` 全局 drain，暂不加 CQ |
 | submit batch id / watermark | 需要判断某次 write 是否已物理发送 | 暂不加 request id 或 offset watermark |
-| backpressure 可观测性 | blocking write / poll/select 需要更细 writable 信息 | 已提升为 O83 / Q27a+Q27 近期修正 |
+| backpressure 可观测性 | blocking write / poll/select 需要更细 writable 信息 | 已由 O83 / Q27a+Q27 完成并通过 QEMU、D1 Gate |
 | counter 分阶段细化 | 需要定位 P99 tail 或 CPU proxy | 继续使用 S40；需要时再扩展 |
 | 多 writer 公平性 | 日志刷屏影响交互或多 producer 抢占 | API 契约先由 O84 / Q28 收敛；MPSC ring 进入 O85 远期候选 |
 

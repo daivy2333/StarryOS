@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
 > Last updated: 2026-07-15
-> 分支：uart-16550-lichee — Q27a uart crate readiness 薄接口已完成；下一步 Q27 TX backpressure / Q28 writer 契约收敛；Q17 多 hart 复验仍 deferred
+> 分支：uart-16550-lichee — Q27 TX backpressure 已完成并归档；下一步 Q28 writer 契约收敛；Q17 多 hart 复验仍 deferred
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Q27a readiness 薄接口完成并通过 crate/QEMU Gate；Q27/Q28 待推进；Q17 multi-hart 复验待 Q24）
+**分支**: uart-16550-lichee（Q27 readiness + TX backpressure 已通过 crate/QEMU/D1 Gate 并归档；Q28 待推进；Q17 multi-hart 复验待 Q24）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层，uart_16550 提供完整异步栈。
@@ -25,9 +25,9 @@
 - Q20：QEMU+D1 TX jitter ratio、S40 counter proxy 和 raw evidence 已补齐；RX fixed payload 经用户确认排除；Q20 不声明 SMP 正确性。
 - Q21/Q22/Q23：基于 Q20 数据和当前架构评估，user completion queue 与 `mmap` user ring / zero-copy 取消当前规划；可借鉴优化降级为 O82 远期候选。
 - Q27a：`uart_16550` 新增 RX/TX readiness 总长度 hint、reader/writer waker facade 和 register-recheck 契约；59 unit tests、8 doctests、Clippy/rustdoc 与用户手动 QEMU `make run` 通过。
+- Q27：UART blocking write 在 TX ring 满时等待并完整提交，nonblocking 保持 partial/`WouldBlock`；ONLCR 与 PTY 边界测试通过，QEMU/D1 无性能退化；已归档 `2026-07-15-q27-tx-backpressure`。
 
 **当前待推进**:
-- Q27：基于 Q27a 实现 TX backpressure / writable wait MVP。
 - Q28：收敛 `AsyncUartWriter::Clone` 与 `RingBufTx` SPSC 安全契约。
 - Q24：VisionFive2 或等价 SMP 环境复验 O63。
 - Q25/Q26：仅在 Q24 或新需求提供数据后，再评估 DMA / 高波特率与维护性清理。
@@ -41,6 +41,7 @@
 | Q17 限制 | 当前只证明 QEMU 单 hart与 D1 已运行路径无明显功能/性能问题；O63 跨 hart 结论必须等 Q24 或等价 SMP stress。 |
 | Q19C 数据边界 | 64B 小包旧异常主要是测量污染；D1 FIFO 16B burst 和 TTY short-write 修复已验证有收益；TX P99 长尾接受为 known limitation；M1 eager path 和 M2 command-entry 已通过，lazy file-backed COW 仍待单独修复。Q19C 不再要求 shell、SDMMC、block 或真实 rootfs。 |
 | Q20 补测边界 | Q20 只补 TX latency/jitter/counter proxy 和 raw evidence，不改 driver 语义；D1 64B 约 96.7% 线速、1024B 约 98.8% 线速，S40 `slow_poll_exh=0`/`yield_exh=0`；RX fixed payload 不做；SMP 结论仍待 Q24。 |
+| Q27 TX backpressure | 阻塞 UART write 会等待 TX ring 空间并完整提交，PTY 保持 short-write；D1 S11 1024B 从 36 short writes/65536B 改善为 0/102400B，S10/S20 性能相对 Q20 持平。 |
 | Q21/Q22 决策 | 现有异步 UART 已具备 TX ring + copier + `TxCompletion` 的提交/执行分离；D1 115200 bps 线速已成为吞吐瓶颈，user ring/completion queue 当前不实施。 |
 
 <!-- tombstone: SNAPSHOT-history-blocks --> Archived 2026-07-03 in ARC-202607031929 — 旧关键发现表、阶段表、架构图、项目结构、技术栈、文档索引与代码路径速查已压缩归档，active SNAPSHOT 只保留当前态。

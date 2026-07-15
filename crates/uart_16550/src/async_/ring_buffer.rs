@@ -524,4 +524,34 @@ mod readiness_tests {
         tx.pop(&mut tmp);
         assert_eq!(tx.poll.wakes.load(Ordering::Relaxed), 2); // pop also wakes
     }
+
+    // ── writable_len integration ─────────────────────────────────────
+
+    #[test]
+    fn tx_vacant_len_equals_capacity_when_empty() {
+        let (_buf, ring) = make_ring(64);
+        let tx: RingBufTx<DummyWakerSet> = unsafe { RingBufTx::new(ring) };
+        assert_eq!(tx.vacant_len(), 64);
+    }
+
+    #[test]
+    fn tx_vacant_len_decreases_after_push() {
+        let (_buf, ring) = make_ring(64);
+        let tx: RingBufTx<DummyWakerSet> = unsafe { RingBufTx::new(ring) };
+        tx.push(&[0u8; 20]);
+        assert_eq!(tx.vacant_len(), 44);
+    }
+
+    #[test]
+    fn tx_vacant_len_non_modifying() {
+        let (_buf, ring) = make_ring(64);
+        let tx: RingBufTx<DummyWakerSet> = unsafe { RingBufTx::new(ring) };
+        tx.push(&[1, 2, 3]);
+        let before = tx.vacant_len();
+        // Querying vacant_len must not modify ring state
+        assert_eq!(tx.vacant_len(), before);
+        let mut out = [0u8; 3];
+        tx.pop(&mut out);
+        assert_eq!(out, [1, 2, 3]);
+    }
 }

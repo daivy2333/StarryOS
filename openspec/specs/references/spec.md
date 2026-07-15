@@ -143,6 +143,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R17 --> `.claude/analysis/clippy-test-baseline-cleanup.md` | Clippy 与测试基线清理：feature-scoped import、内嵌 uart manifest 漂移、workspace lint 泄漏、kernel host-test 边界、复现矩阵与分阶段 Gate |
 | <!-- R18 --> `.claude/analysis/async-uart-vs-io_uring.md` | StarryOS 异步串口与 Linux io_uring 的设计异同：任务模型/批处理/ISR 极简等同构点；mmap/syscall/SQE-CQE 等差异来自当前 UART/VFS 架构取舍；按价值排序的可借鉴方向（backpressure 缺失、MPSC 隐患、TxCompletion drain snapshot、fixed buffer 精神已存在） |
 | <!-- R19 --> `.claude/analysis/uart-backpressure-mpsc-plan.md` | UART backpressure 与 writer 并发边界分析：阻塞 fd writable wait、非阻塞 partial/WouldBlock、Tty poll/register 改造、`AsyncUartWriter::Clone` 与 SPSC 安全契约收敛、MPSC 后置条件 |
+| <!-- R20 --> `docs/d1_out.md` | Q27 D1 真板 raw evidence：完整启动与 benchmark 输出；用于对照 Q20 同板 baseline，证明阻塞 TX backpressure 消除 S11 short write，关键吞吐与 p50 延迟无退化，slow-poll/yield fallback 未耗尽 |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 

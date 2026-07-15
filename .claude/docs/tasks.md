@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支。
-> 当前主线（2026-07-15）：Q27a uart crate readiness 薄接口已完成；下一步是 Q27 TX backpressure 与 Q28 writer 契约收敛；Q24 等 VisionFive2 / 等价 SMP 的 O63 复验仍等待硬件。
+> 当前主线（2026-07-15）：Q27 TX backpressure 已完成并归档；下一步是 Q28 writer 契约收敛；Q24 等 VisionFive2 / 等价 SMP 的 O63 复验仍等待硬件。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -49,7 +49,7 @@
 | **Q22** | User ring + zero-copy prototype | `mmap` ring / zero-copy 原型复杂度高，当前 D1 115200 bps 无可见吞吐收益 | 🧊 取消当前规划 |
 | **Q23** | Ring/completion performance decision | 基于 Q20 数据决策：不实施 Q21/Q22；保留现有 batch/writev/tx counter 路径 | ✅ 决策完成 |
 | **Q27a** | uart_16550 readiness 薄接口 | O83 前置：RX/TX ring 状态观测 + readable/writable waker 注册，不引入 OS 语义 | ✅ (2026-07-15) |
-| **Q27** | TX backpressure / writable wait MVP | O83：基于 Q27a，阻塞 fd 等待 TX ring 空间，非阻塞保持 partial/WouldBlock | ⏳ 待做 |
+| **Q27** | TX backpressure / writable wait MVP | O83：基于 Q27a，阻塞 fd 等待 TX ring 空间，非阻塞保持 partial/WouldBlock | ✅ 已归档 `2026-07-15-q27-tx-backpressure` |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84：`Clone` 与 `RingBufTx` SPSC 安全边界对齐；MPSC 后置 O85 | ⏳ 待做 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q24 或新硬件数据 | ⏳ 等待数据 |
@@ -59,7 +59,7 @@
 
 ## 当前执行态
 
-D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；Q21/Q22 经 2026-07-13 决策取消当前规划。Q27a 于 2026-07-15 完成 uart crate readiness hint、waker facade、wrap-around 测试与 QEMU 回归；当前下一步是 Q27 TX backpressure MVP 和 Q28 writer 契约收敛，MPSC ring 保留为 O85 远期候选。
+D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；Q21/Q22 经 2026-07-13 决策取消当前规划。Q27a/Q27 于 2026-07-15 完成 readiness facade 与 TTY TX backpressure，QEMU/D1 均无性能退化；当前下一步是 Q28 writer 契约收敛，MPSC ring 保留为 O85 远期候选。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -131,14 +131,14 @@ D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖
 <!-- Q27a.3 --> - [x] 文档标明 readiness hint 不保证后续 push/pop 成功，OS 层必须 register 后 recheck
 <!-- Q27a.4 --> - [x] Gate Q27a: crate fmt/check/test/clippy/rustdoc 通过（59 unit tests + 8 doctests）；用户手动 QEMU `make run` 并确认正常工作与测试
 
-### Q27: TX backpressure / writable wait MVP ⏳ 待做
+### Q27: TX backpressure / writable wait MVP ✅ (2026-07-15)
 
-> 来源：R19、ADR-061、L295、O83。目标是基于 Q27a 修补阻塞 fd 在 TX ring 满时只能 short write 的行为，不重新打开 user ring/CQ。
+> 来源：OpenSpec change `q27-tx-backpressure`，R19、ADR-061、L295、O83。目标是基于 Q27a 修补阻塞 fd 在 TX ring 满时只能 short write 的行为，不重新打开 user ring/CQ。
 
-<!-- Q27.1 --> - [ ] 依赖 Q27a 的 `can_write()` / `register_writable_waker()` 接口接入 StarryOS TTY
-<!-- Q27.2 --> - [ ] 修改 `Tty::poll()` / `Tty::register()`：`IoEvents::OUT` 绑定 TX ring 可用空间，而不是无条件 ready
-<!-- Q27.3 --> - [ ] 修改 `Tty::write_at()`：阻塞 fd 用 `poll_io(... OUT ...)` 循环到请求完成或错误；非阻塞 fd 保持 partial / `WouldBlock`
-<!-- Q27.4 --> - [ ] Gate Q27: QEMU `write`/`writev`/`tcdrain`/FIONBIO 回归通过；必要时用小 TX ring 或大输出证明阻塞写不忙等、不丢前缀
+<!-- Q27.1 --> - [x] 接入 Q27a writer readiness，UART OUT 绑定 TX ring 空间并注册 writable waker；PTY 保留 always-OUT/short-write
+<!-- Q27.2 --> - [x] 阻塞 UART short write 通过 `poll_io(... OUT ...)` 累计完成；非阻塞保持 partial/`WouldBlock`，空写保持 fast path
+<!-- Q27.3 --> - [x] ONLCR 以完整源字符边界映射，覆盖 0/1/2B 空间、混合换行、255/256B chunk 与 retry 无重复/丢失
+<!-- Q27.4 --> - [x] Gate Q27: 6 个聚焦测试、uart crate 62 tests + 8 doctests、fmt/clippy/kernel build/OpenSpec/QEMU/D1 通过；D1 64B 96.8%、1024B 98.8% 线速且无性能退化
 
 ### Q28: AsyncUartWriter writer 契约收敛 ⏳ 待做
 

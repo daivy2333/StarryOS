@@ -57,6 +57,42 @@ pub struct TtyConfig<R, W> {
 
 pub use uart_16550::{TtyRead, TtyWrite};
 
+/// Kernel-local writer readiness contract.
+///
+/// Extends [`TtyWrite`] with writable readiness hints and waker
+/// registration, binding TX ring space (UART) or ring buffer vacancy
+/// (PTY) to [`IoEvents::OUT`] in the VFS poll layer.
+///
+/// # Register-Recheck Protocol
+///
+/// OS adapters MUST use the check → register → recheck protocol
+/// before parking a task on writable readiness:
+///
+/// 1. Call [`can_write`](TtyWriteReady::can_write).
+/// 2. If not ready, call [`register_writable_waker`](TtyWriteReady::register_writable_waker).
+/// 3. Recheck [`can_write`](TtyWriteReady::can_write) before parking.
+///
+/// Spurious wakeups are allowed.
+pub trait TtyWriteReady: TtyWrite {
+    /// Whether blocking writes wait until the complete request is accepted.
+    #[must_use]
+    fn waits_for_write_completion(&self) -> bool;
+
+    /// Whether the writer has space to accept at least one byte.
+    #[must_use]
+    fn can_write(&self) -> bool;
+
+    /// Number of bytes the writer can currently accept (hint, not
+    /// a reservation — the value may change between this call and
+    /// a subsequent [`TtyWrite::write`]).
+    #[must_use]
+    fn writable_len(&self) -> usize;
+
+    /// Register a waker to be notified when writable readiness
+    /// transitions from false to true.
+    fn register_writable_waker(&self, waker: &Waker);
+}
+
 struct InputReader<R, W> {
     terminal: Arc<Terminal>,
 

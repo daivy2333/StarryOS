@@ -128,6 +128,17 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartWriter<R, W, U> {
         self.driver.tx.has_space()
     }
 
+    /// Readiness hint: number of bytes the TX ring can currently accept.
+    ///
+    /// This is a snapshot — returns the total writable byte count
+    /// across all ring segments. Same hint semantics as
+    /// [`can_write`](Self::can_write) apply: no reservation guarantee.
+    #[must_use]
+    #[inline]
+    pub fn writable_len(&self) -> usize {
+        self.driver.tx.vacant_len()
+    }
+
     /// Register a waker to be notified when TX ring space frees up.
     ///
     /// OS adapters MUST use the check → register → recheck protocol:
