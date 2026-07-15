@@ -1035,12 +1035,12 @@ Shared async UART state that participates in cross-hart control flow MUST use Ru
 ### Requirement: ADR-061: UART backpressure 与 writer 并发边界分阶段处理
 
 **日期**: 2026-07-14
-**状态**: 部分实施：Q27a/Q27 已完成并归档；Q28 待实施
+**状态**: 已实施：Q27a/Q27/Q28 已完成
 **触发**: 基于 R18 的高价值优化点，进一步分析 backpressure 与 MPSC 两个近期候选方向，生成 R19。
 **决定**: 后续 UART TX 优化 SHOULD 先做阻塞式 backpressure / writable wait MVP，再收敛 `AsyncUartWriter::Clone` 与 `RingBufTx` SPSC 的安全契约；MPSC ring MUST 等实际多 writer 数据或 Q24 SMP stress 证据后再设计。
 **原因**: backpressure 可复用现有 `poll_io`、`Pollable::OUT` 和 `RingBufTx` pop wake，能修补阻塞 fd 行为而不重写数据结构。MPSC ring 会引入新队列、内存序、公平性和性能验证成本；当前只有理论隐患，没有数据证明必须替换 SPSC。
 **影响**: backpressure proposal 必须定义阻塞 fd、非阻塞 fd、poll/select/epoll 的 OUT readiness 语义；writer 并发 proposal 必须先说明是移除/限制 `Clone`、producer 侧互斥，还是引入 MPSC，并提供性能与并发 stress gate。
-**实施结果（2026-07-15）**: Q27a/Q27 已按本决策完成，归档于 `openspec/changes/archive/2026-07-15-q27-tx-backpressure/`。UART 阻塞 fd 在 TX ring 满时等待可写空间，非阻塞 fd 保持 partial / `WouldBlock`，PTY 保持非等待契约；QEMU 与 D1 Gate 均通过，S11 的 1024-byte workload 从 36 次 short write 收敛为 0，未见吞吐或 p50 延迟退化。writer Clone 契约仍由 Q28 收敛。
+**实施结果（2026-07-15）**: Q27a/Q27 已归档于 `openspec/changes/archive/2026-07-15-q27-tx-backpressure/`；Q28 已归档于 `openspec/changes/archive/2026-07-15-q28-async-uart-writer-contract/`。Q28 将裸 `AsyncUartWriter` 收敛为不可 clone、`&mut self` 提交且 unsafe 唯一构造的 producer capability，StarryOS 以共享 `SpinNoPreempt` adapter 保留 direct-output/echo clone。UART blocking/nonblocking、ONLCR、readiness、PTY 与 drain 契约保持，QEMU/D1 单次 Gate 均未超过 3% 退化；MPSC 与真实 multi-hart 证明继续后置 O85/Q24。
 **替代方案**: 直接实现 MPSC ring；拒绝，复杂度高且缺少现阶段证据。把 short write 完全交给用户态；拒绝，阻塞 fd 行为不符合现有 `poll_io` 体系可提供的能力。
 **恢复入口**: R19、L295-L296、ADR-060。
 

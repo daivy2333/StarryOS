@@ -22,11 +22,14 @@ pub fn run_startup_benchmark() {
     let iterations = 100;
 
     let start_time = monotonic_time_nanos();
+    let mut total_bytes = 0;
     for _ in 0..iterations {
-        driver.tx.push(&test_data);
+        // SAFETY: startup benchmarks run immediately after driver initialization,
+        // before ASYNC_TTY constructs the unique raw writer. This function is the
+        // only TX producer during this loop and each call finishes synchronously.
+        total_bytes += unsafe { driver.bench_tx_push(&test_data) };
     }
     let elapsed_ns = monotonic_time_nanos() - start_time;
-    let total_bytes = iterations * 1024;
     let elapsed_s = elapsed_ns as f64 / 1_000_000_000.0;
     let throughput_kbps = total_bytes as f64 / elapsed_s / 1024.0;
 

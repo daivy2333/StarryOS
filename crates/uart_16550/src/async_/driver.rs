@@ -371,6 +371,17 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
         }
     }
 
+    /// Push bytes directly for the pre-TTY startup benchmark.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no [`AsyncUartWriter`](super::device_ops::AsyncUartWriter)
+    /// exists for this driver and that no other TX producer call overlaps this call.
+    #[doc(hidden)]
+    pub unsafe fn bench_tx_push(&self, data: &[u8]) -> usize {
+        self.tx.push(data)
+    }
+
     /// Get a reference to the telemetry counters (only available with `telemetry` feature).
     #[cfg(feature = "telemetry")]
     pub const fn telemetry(&self) -> &crate::async_::telemetry::Telemetry {

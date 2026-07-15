@@ -99,7 +99,7 @@ lichee-d1-fullbench-command = [
     "axfeat/paging",
     "starry-kernel/lichee-d1-fullbench-command",
 ]
-smp = ["axfeat/smp", "axplat-riscv64-visionfive2?/smp"]
+smp = ["axfeat/smp", "starry-kernel/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]
 

@@ -15,6 +15,8 @@ pub mod d1_uart;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub mod ntty_async;
 pub mod os_arceos;
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+mod serialized_writer;
 pub mod uart_init;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub use ntty_async::ASYNC_TTY;

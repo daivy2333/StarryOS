@@ -14,10 +14,11 @@
 //! - UartPort: 硬件访问抽象
 
 use alloc::sync::Arc;
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+use core::task::Waker;
 use core::{
     ptr::{NonNull, addr_of_mut},
     sync::atomic::{AtomicU8, Ordering},
-    task::Waker,
 };
 
 use axlog::info;
@@ -25,13 +26,13 @@ use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use lazy_static::lazy_static;
 use memory_addr::VirtAddr;
 use spin::Once;
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+use uart_16550::{TtyWrite, async_::device_ops::AsyncUartWriter};
 use uart_16550::{
     async_::{
-        device_ops::AsyncUartWriter,
         driver::{AsyncUartDriver, UartPort},
         ring_buffer::{RingBufRx, RingBufTx},
     },
-    os::{OsRuntime, OsWakerSet},
     spec::registers::IER,
 };
 // ── QEMU NS16550 path ────────────────────────────────────────────────
@@ -43,13 +44,16 @@ use {
     uart_16550::{Uart16550, backend::MmioBackend, spec::registers::ISR},
 };
 
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+use super::serialized_writer::SerializedWriter;
 // ── D1 DW APB UART path ──────────────────────────────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+use crate::pseudofs::dev::tty::terminal::ldisc::TtyWriteReady;
 use crate::{
     drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet},
     platform,
-    pseudofs::dev::tty::terminal::ldisc::TtyWriteReady,
 };
 
 /// Ring buffer 大小（64 KB）
@@ -173,31 +177,55 @@ pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
     ArceOsD1UartPort,
 >;
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
-pub type ArceOsWriter =
-    uart_16550::async_::device_ops::AsyncUartWriter<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
-#[cfg(feature = "lichee-d1-async-uart")]
-pub type ArceOsWriter = uart_16550::async_::device_ops::AsyncUartWriter<
-    ArceOsRuntime,
-    ArceOsWakerSet,
-    ArceOsD1UartPort,
->;
+#[cfg(all(
+    not(feature = "lichee-d1-async-uart"),
+    not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench"))
+))]
+pub(crate) struct RawArceOsWriter(
+    pub(crate) AsyncUartWriter<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>,
+);
+#[cfg(all(
+    feature = "lichee-d1-async-uart",
+    not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench"))
+))]
+pub(crate) struct RawArceOsWriter(
+    pub(crate) AsyncUartWriter<ArceOsRuntime, ArceOsWakerSet, ArceOsD1UartPort>,
+);
 
-impl<R: OsRuntime + 'static, W: OsWakerSet + 'static, U: UartPort> TtyWriteReady
-    for AsyncUartWriter<R, W, U>
-{
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[derive(Clone)]
+pub struct ArceOsWriter(SerializedWriter<RawArceOsWriter>);
+
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+impl ArceOsWriter {
+    pub(crate) fn new(raw: RawArceOsWriter) -> Self {
+        Self(SerializedWriter::new(raw))
+    }
+}
+
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+impl TtyWrite for ArceOsWriter {
+    fn write(&self, buf: &[u8]) -> usize {
+        self.0.with_lock(|raw| raw.0.try_write(buf))
+    }
+}
+
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+impl TtyWriteReady for ArceOsWriter {
     fn waits_for_write_completion(&self) -> bool {
         true
     }
 
     fn can_write(&self) -> bool {
-        AsyncUartWriter::can_write(self)
+        self.0.with_lock(|raw| raw.0.can_write())
     }
+
     fn writable_len(&self) -> usize {
-        AsyncUartWriter::writable_len(self)
+        self.0.with_lock(|raw| raw.0.writable_len())
     }
+
     fn register_writable_waker(&self, waker: &Waker) {
-        AsyncUartWriter::register_writable_waker(self, waker)
+        self.0.with_lock(|raw| raw.0.register_writable_waker(waker));
     }
 }
 

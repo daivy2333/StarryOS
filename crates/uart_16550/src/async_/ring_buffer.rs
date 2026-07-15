@@ -204,12 +204,12 @@ impl<W: OsWakerSet> RingBufTx<W> {
         }
     }
 
-    /// Push data into the ring buffer (called by producers like TtyWrite).
+    /// Push data into the ring buffer (called by the unique TX producer).
     ///
     /// Returns the number of bytes pushed. Wakes all registered wakers
     /// if at least one byte was pushed (notifying the TX copier).
     #[inline(always)]
-    pub fn push(&self, data: &[u8]) -> usize {
+    pub(crate) fn push(&self, data: &[u8]) -> usize {
         // SAFETY: SPSC — only one producer writes to the TX buffer.
         let n = unsafe { &mut *self.writer.get() }.push(|buf| {
             let len = data.len().min(buf.len());
@@ -273,7 +273,7 @@ impl<W: OsWakerSet> RingBufTx<W> {
     /// Returns the total writable byte count across all ring segments
     /// (`capacity − occupied`), not just the first contiguous chunk. This
     /// is an instantaneous snapshot — the value may change between this
-    /// call and a subsequent [`push`](Self::push). Callers MUST NOT treat
+    /// call and a subsequent producer `push`. Callers MUST NOT treat
     /// a non-zero return as a reservation; a later push may still accept
     /// fewer bytes (or zero) if another producer has filled the ring in
     /// the meantime.

@@ -1015,7 +1015,7 @@ Q27 复用了 `RingBufTx::pop()` / `pop_batch()` 释放空间后的 `poll.wake()
 <!-- L296 -->
 ### [AsyncUartWriter::Clone 与 RingBufTx SPSC 契约必须收敛]
 
-`AsyncUartWriter` 的 `Clone` 注释暗示多个 producer 可共享 driver，但 `RingBufTx::push()` 的 SAFETY 前提是单 producer。近期应优先收紧 API 契约或在 producer 侧串行化 `push()`；只有 Q24 SMP 或新 workload 证明多 writer 公平性/吞吐是实际需求时，才进入 MPSC ring 设计。
+Q28 已将 `AsyncUartWriter` 收敛为不可 clone、提交需要 `&mut self`、构造需要 unsafe 唯一性证明的 raw producer capability，并把 `RingBufTx::push()` 收窄为 crate-private。StarryOS 用 `Arc<SpinNoPreempt<RawArceOsWriter>>` 让 direct-output 与 ldisc-echo clone 共享同一 producer lock；锁只覆盖单次 nonblocking push，不跨 `poll_io`、await 或等待点。只有 Q24 SMP 或新 workload 证明多 writer 公平性/吞吐是实际需求时，才进入 MPSC ring 设计。
 
 #### Scenario: Converging writer contract before MPSC
 

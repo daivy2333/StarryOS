@@ -28,6 +28,7 @@ qemu = [
     "axfeat/net-ng",
     "axfeat/task-ext",
 ]
+smp = ["axfeat/smp"]
 vsock = ["axfeat/vsock"]
 
 [dependencies]
