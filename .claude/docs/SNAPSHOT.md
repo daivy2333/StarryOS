@@ -1,13 +1,13 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-07-13
-> 分支：uart-16550-lichee — Q20 benchmark gap closure 已完成；Q21/Q22 user ring/completion 优化取消当前规划；活跃 change 剩 q17-smp-memory-ordering 多 hart deferred
+> Last updated: 2026-07-15
+> 分支：uart-16550-lichee — Q27a uart crate readiness 薄接口已完成；下一步 Q27 TX backpressure / Q28 writer 契约收敛；Q17 多 hart 复验仍 deferred
 
 ---
 
 ## 当前状态
 
-**分支**: uart-16550-lichee（Q19/Q19B/Q19C D1 真板异步 UART 验证已结束；Q20 TX latency/jitter/counter 补测完成；Q21/Q22 取消当前规划；Q17 QEMU 修复完成，multi-hart 复验待 Q24）
+**分支**: uart-16550-lichee（Q27a readiness 薄接口完成并通过 crate/QEMU Gate；Q27/Q28 待推进；Q17 multi-hart 复验待 Q24）
 **前分支**: asyncuart-dev / feat/uart-16550-async（Q0~Q18 历史开发与整合分支）
 **成果**:
 - kernel 层异步串口适配层，uart_16550 提供完整异步栈。
@@ -24,8 +24,11 @@
 - Q19/Q19B/Q19C：D1 smoke、kbench/userbench、memory-root path/command 均完成；Q19C closeout 已归档。
 - Q20：QEMU+D1 TX jitter ratio、S40 counter proxy 和 raw evidence 已补齐；RX fixed payload 经用户确认排除；Q20 不声明 SMP 正确性。
 - Q21/Q22/Q23：基于 Q20 数据和当前架构评估，user completion queue 与 `mmap` user ring / zero-copy 取消当前规划；可借鉴优化降级为 O82 远期候选。
+- Q27a：`uart_16550` 新增 RX/TX readiness 总长度 hint、reader/writer waker facade 和 register-recheck 契约；59 unit tests、8 doctests、Clippy/rustdoc 与用户手动 QEMU `make run` 通过。
 
 **当前待推进**:
+- Q27：基于 Q27a 实现 TX backpressure / writable wait MVP。
+- Q28：收敛 `AsyncUartWriter::Clone` 与 `RingBufTx` SPSC 安全契约。
 - Q24：VisionFive2 或等价 SMP 环境复验 O63。
 - Q25/Q26：仅在 Q24 或新需求提供数据后，再评估 DMA / 高波特率与维护性清理。
 

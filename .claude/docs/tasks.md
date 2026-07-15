@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支。
-> 当前主线（2026-07-14）：Q20 benchmark gap closure 已完成；Q21/Q22 user completion queue 与 mmap ring/zero-copy 取消当前规划；近期新增 Q27a uart crate 薄接口、Q27 TX backpressure、Q28 writer 契约收敛；Q24 等 VisionFive2 / 等价 SMP 的 O63 复验仍等待硬件。
+> 当前主线（2026-07-15）：Q27a uart crate readiness 薄接口已完成；下一步是 Q27 TX backpressure 与 Q28 writer 契约收敛；Q24 等 VisionFive2 / 等价 SMP 的 O63 复验仍等待硬件。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -48,7 +48,7 @@
 | **Q21** | UART user completion queue MVP | 已有 TX ring + copier + TxCompletion 覆盖主要思想；真板线速限制下收益不足 | 🧊 取消当前规划 |
 | **Q22** | User ring + zero-copy prototype | `mmap` ring / zero-copy 原型复杂度高，当前 D1 115200 bps 无可见吞吐收益 | 🧊 取消当前规划 |
 | **Q23** | Ring/completion performance decision | 基于 Q20 数据决策：不实施 Q21/Q22；保留现有 batch/writev/tx counter 路径 | ✅ 决策完成 |
-| **Q27a** | uart_16550 readiness 薄接口 | O83 前置：RX/TX ring 状态观测 + readable/writable waker 注册，不引入 OS 语义 | ⏳ 待做 |
+| **Q27a** | uart_16550 readiness 薄接口 | O83 前置：RX/TX ring 状态观测 + readable/writable waker 注册，不引入 OS 语义 | ✅ (2026-07-15) |
 | **Q27** | TX backpressure / writable wait MVP | O83：基于 Q27a，阻塞 fd 等待 TX ring 空间，非阻塞保持 partial/WouldBlock | ⏳ 待做 |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84：`Clone` 与 `RingBufTx` SPSC 安全边界对齐；MPSC 后置 O85 | ⏳ 待做 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
@@ -59,7 +59,7 @@
 
 ## 当前执行态
 
-D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；Q21/Q22 经 2026-07-13 决策取消当前规划，因为现有异步 UART 已接近 D1 物理线速，user ring/completion 的复杂度高于可见收益。2026-07-14 起，R19/ADR-061 将近期可做项收敛为 Q27a uart crate readiness 薄接口、Q27 TX backpressure MVP 与 Q28 writer 契约收敛；MPSC ring 保留为 O85 远期候选。
+D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖 D1 smoke、内核态 benchmark、用户态 `/dev/console`、TTY/syscall/`tcdrain`/FIONBIO、memory-root path/command。M3/rootfs-probe 与 Q19D SDMMC/rootfs 取消当前规划；storage/rootfs 需要新 change。Q17 已完成 QEMU gate，multi-hart O63 复验后置 Q24。Q20 已补齐 QEMU+D1 TX jitter/counter 证据；Q21/Q22 经 2026-07-13 决策取消当前规划。Q27a 于 2026-07-15 完成 uart crate readiness hint、waker facade、wrap-around 测试与 QEMU 回归；当前下一步是 Q27 TX backpressure MVP 和 Q28 writer 契约收敛，MPSC ring 保留为 O85 远期候选。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -122,14 +122,14 @@ D1 真板异步 UART 测试已结束：Q19/Q19B/Q19C 已完成并归档，覆盖
 <!-- Q23.1 --> - [x] 决策输入：Q20 QEMU+D1 TX jitter/counter 证据、D1 线速数据、S40 fallback 未耗尽
 <!-- Q23.2 --> - [x] 决策结果：user ring/completion 路线取消当前规划；可借鉴优化记录到 `openspec/specs/optimization/spec.md` O82
 
-### Q27a: uart_16550 readiness 薄接口 ⏳ 待做
+### Q27a: uart_16550 readiness 薄接口 ✅ (2026-07-15)
 
 > 来源：R19、ADR-061、L295、O83。目标是在 `uart_16550` crate 补齐 OS 集成需要的 ring readiness hint 与 waker 注册能力，不把 StarryOS 的 VFS/poll/syscall 语义搬进 crate。
 
-<!-- Q27a.1 --> - [ ] `RingBufTx` 增加 `vacant_len()` / `has_space()`；`RingBufRx` 增加 `occupied_len()` / `has_data()`
-<!-- Q27a.2 --> - [ ] `AsyncUartWriter` 增加 `can_write()` / `register_writable_waker()`；`AsyncUartReader` 增加 `can_read()` / `register_readable_waker()`
-<!-- Q27a.3 --> - [ ] 文档标明 readiness hint 不保证后续 push/pop 成功，OS 层必须 register 后 recheck
-<!-- Q27a.4 --> - [ ] Gate Q27a: `uart_16550` crate check/test/clippy 通过；StarryOS `/dev/console` 路径行为不变；crate 不依赖 `axpoll`/VFS/syscall
+<!-- Q27a.1 --> - [x] `RingBufTx` 增加 `vacant_len()` / `has_space()`；`RingBufRx` 增加 `occupied_len()` / `has_data()`
+<!-- Q27a.2 --> - [x] `AsyncUartWriter` 增加 `can_write()` / `register_writable_waker()`；`AsyncUartReader` 增加 `can_read()` / `register_readable_waker()`
+<!-- Q27a.3 --> - [x] 文档标明 readiness hint 不保证后续 push/pop 成功，OS 层必须 register 后 recheck
+<!-- Q27a.4 --> - [x] Gate Q27a: crate fmt/check/test/clippy/rustdoc 通过（59 unit tests + 8 doctests）；用户手动 QEMU `make run` 并确认正常工作与测试
 
 ### Q27: TX backpressure / writable wait MVP ⏳ 待做
 

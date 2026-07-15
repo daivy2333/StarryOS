@@ -7,7 +7,11 @@
 //! and the [`embedded_io_async`] standard async I/O interface.
 
 use alloc::sync::Arc;
-use core::{fmt, future::poll_fn, task::Poll};
+use core::{
+    fmt,
+    future::poll_fn,
+    task::{Poll, Waker},
+};
 
 use super::{
     driver::{AsyncUartDriver, UartPort},
@@ -32,6 +36,32 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartReader<R, W, U> {
     #[must_use]
     pub const fn new(driver: Arc<AsyncUartDriver<R, W, U>>) -> Self {
         Self { driver }
+    }
+
+    /// Readiness hint: whether the RX ring has data available to read.
+    ///
+    /// This is a snapshot — the ring state may change between this
+    /// call and a subsequent read. See
+    /// [`RingBufRx::has_data`](crate::async_::ring_buffer::RingBufRx::has_data)
+    /// for the full readiness-hint contract.
+    #[must_use]
+    #[inline]
+    pub fn can_read(&self) -> bool {
+        self.driver.rx.has_data()
+    }
+
+    /// Register a waker to be notified when RX data arrives.
+    ///
+    /// OS adapters MUST use the check → register → recheck protocol:
+    /// 1. Call [`can_read`](Self::can_read) first.
+    /// 2. If not ready, call this method.
+    /// 3. Recheck [`can_read`](Self::can_read) before parking the task.
+    ///
+    /// Spurious wakeups are allowed; the caller must always recheck
+    /// readiness after waking.
+    #[inline]
+    pub fn register_readable_waker(&self, waker: &Waker) {
+        self.driver.rx.register_waker(waker);
     }
 }
 
@@ -80,6 +110,36 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartWriter<R, W, U> {
     #[must_use]
     pub const fn new(driver: Arc<AsyncUartDriver<R, W, U>>) -> Self {
         Self { driver }
+    }
+
+    /// Readiness hint: whether the TX ring has free space for writing.
+    ///
+    /// This is a snapshot — the ring state may change between this
+    /// call and a subsequent write. See
+    /// [`RingBufTx::has_space`](crate::async_::ring_buffer::RingBufTx::has_space)
+    /// for the full readiness-hint contract.
+    ///
+    /// Note: writable readiness is about TX ring space, NOT about
+    /// physical drain or completion — use [`flush`](embedded_io_async::Write::flush)
+    /// or [`AsyncUartDriver::tx_completion`] for that.
+    #[must_use]
+    #[inline]
+    pub fn can_write(&self) -> bool {
+        self.driver.tx.has_space()
+    }
+
+    /// Register a waker to be notified when TX ring space frees up.
+    ///
+    /// OS adapters MUST use the check → register → recheck protocol:
+    /// 1. Call [`can_write`](Self::can_write) first.
+    /// 2. If not ready, call this method.
+    /// 3. Recheck [`can_write`](Self::can_write) before parking the task.
+    ///
+    /// Spurious wakeups are allowed; the caller must always recheck
+    /// readiness after waking.
+    #[inline]
+    pub fn register_writable_waker(&self, waker: &Waker) {
+        self.driver.tx.register_waker(waker);
     }
 }
 

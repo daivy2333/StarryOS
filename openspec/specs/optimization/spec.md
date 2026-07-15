@@ -2,7 +2,7 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q0~Q15 已完成；Q20 已完成；Q21/Q22 取消当前规划；Q27/Q28 待做）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q15 已完成；Q20/Q27a 已完成；Q21/Q22 取消当前规划；Q27/Q28 待做）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
 ## Requirements
 ### Requirement: Q20 后续优化 Roadmap — Q21/Q22 已取消当前规划
 
@@ -18,7 +18,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **Q21** | UART user completion queue MVP | ADR-056 → ADR-058 | 🧊 取消当前规划；现有 TX ring + copier + `TxCompletion` 已覆盖主要思想 |
 | **Q22** | User ring + zero-copy prototype | O1/O36、ADR-056 → ADR-058 | 🧊 取消当前规划；D1 115200 bps 线速下收益不足 |
 | **Q23** | Ring/completion performance decision | ADR-058、O82 | ✅ 决策完成：不实施 Q21/Q22，保留现有 write/writev/tcdrain/batch 路径 |
-| **Q27a** | uart_16550 readiness 薄接口 | O83、ADR-061 | RX/TX ring readiness hint + readable/writable waker 注册；不引入 OS fd 语义 |
+| **Q27a** | uart_16550 readiness 薄接口 | O83、ADR-061 | ✅ 2026-07-15 完成 RX/TX ring readiness hint + readable/writable waker 注册；不引入 OS fd 语义 |
 | **Q27** | TX backpressure / writable wait MVP | O83、ADR-061 | 基于 Q27a，阻塞 fd 等待 TX ring 空间；非阻塞 fd 保持 partial / WouldBlock |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84、ADR-061 | `Clone` 与 SPSC 安全边界对齐；MPSC 后置 O85 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 并发 read/write、flush/tcdrain、IER enable/disable 无数据丢失或 hang |

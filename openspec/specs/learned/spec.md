@@ -1023,4 +1023,16 @@ io_uring 的做法：SQ 满时 `io_uring_submit` 返回 `EBUSY`，调用方可�
 - **THEN** it MUST first align `AsyncUartWriter::Clone` with the `RingBufTx` SPSC contract
 - **AND** it MUST NOT introduce an MPSC ring unless Q24 SMP or a new workload proves it is required
 
+<!-- L297 -->
+### [SPSC readiness 快照必须保持 reader/writer 角色归属]
+
+`embassy_hal_internal::atomic_ring_buffer` 的 `Reader` / `Writer` 方法要求 `&mut self`。即使 `push_bufs()` 只读取原子索引，consumer 也不能为了查询 RX occupied length 而通过 `UnsafeCell` 借用 producer 的 `Writer`，否则会破坏 SPSC 对每个 handle 唯一调用方的安全前提。Q27a 的做法是直接对底层 ring 原子索引取快照：RX consumer 先 Acquire 读 `end`再读 `start`，TX producer 先 Acquire 读 `start`再读 `end`，用模 `2 * capacity` 的距离得到跨 wrap-around 的总长度。
+
+#### Scenario: Adding SPSC readiness queries
+
+- **WHEN** a readiness API observes an SPSC ring from the reader or writer side
+- **THEN** it MUST NOT borrow the opposite role's `Reader` or `Writer` through `UnsafeCell`
+- **AND** its atomic snapshot ordering MUST match the ring implementation's publish/observe contract
+- **AND** tests MUST create data or free space spanning both sides of the storage boundary
+
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
