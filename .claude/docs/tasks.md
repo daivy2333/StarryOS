@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 由 assistant 维护，uart-16550-lichee 分支。
-> 当前主线（2026-07-15）：Q27 TX backpressure 与 Q28 writer 契约收敛均已完成并归档；Q24 SMP 复验仍等待硬件；Q29 RX consumer 契约与 Q30 TX 多 producer 语义已登记为后续规划项。
+> 由 assistant 维护，uart-16550-lichee 分支（已同步 origin，领先 0 commits）。
+> 当前主线（2026-07-16）：Q27 TX backpressure 与 Q28 writer 契约收敛均已完成并归档；Q24 SMP 复验仍等待硬件；Q29 RX consumer 契约与 Q30 TX 多 producer 语义已登记为后续规划项。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。

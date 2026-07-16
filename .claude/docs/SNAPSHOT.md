@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-07-15
-> 分支：uart-16550-lichee — Q28 已归档；Q24 等待 SMP 硬件；Q29/Q30 并发契约 backlog 已登记
+> Last updated: 2026-07-16
+> 分支：uart-16550-lichee（已同步 origin，领先 0 commits）— Q28 已归档；Q24 等待 SMP 硬件；Q29/Q30 并发契约 backlog 已登记；CLAUDE.md 状态漂移已同步
 
 ---
 
