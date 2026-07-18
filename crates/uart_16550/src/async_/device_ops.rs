@@ -27,14 +27,80 @@ use crate::{
 /// Implements [`TtyRead`] and [`embedded_io_async::Read`] for consuming
 /// bytes received by the UART. Data is pulled from the RX ring buffer
 /// that is filled by the driver's RX copier task.
+///
+/// This type represents a *unique* RX consumer capability — it does not
+/// implement [`Clone`]. Only one reader may be constructed per driver to
+/// uphold the SPSC (single-consumer) safety contract of
+/// [`RingBufRx`](crate::async_::ring_buffer::RingBufRx).
+///
+/// Safe crate-external code cannot construct a raw reader:
+///
+/// ```compile_fail
+/// extern crate alloc;
+/// use alloc::sync::Arc;
+/// use uart_16550::{
+///     async_::{device_ops::AsyncUartReader, driver::{AsyncUartDriver, UartPort}},
+///     os::{OsRuntime, OsWakerSet},
+/// };
+///
+/// fn safe_construction_is_forbidden<R: OsRuntime, W: OsWakerSet, U: UartPort>(
+///     driver: Arc<AsyncUartDriver<R, W, U>>,
+/// ) {
+///     let _ = AsyncUartReader::new(driver);
+/// }
+/// ```
+///
+/// The raw reader itself is not cloneable:
+///
+/// ```compile_fail
+/// use uart_16550::{
+///     async_::{device_ops::AsyncUartReader, driver::UartPort},
+///     os::{OsRuntime, OsWakerSet},
+/// };
+///
+/// fn require_clone<T: Clone>() {}
+/// fn raw_reader_is_unique<R: OsRuntime, W: OsWakerSet, U: UartPort>() {
+///     require_clone::<AsyncUartReader<R, W, U>>();
+/// }
+/// ```
+///
+/// The RX ring consumer operation is not crate-external API:
+///
+/// ```compile_fail
+/// use uart_16550::{async_::ring_buffer::RingBufRx, os::OsWakerSet};
+///
+/// fn direct_pop_is_forbidden<W: OsWakerSet>(rx: &RingBufRx<W>) {
+///     let mut buf = [0u8; 16];
+///     let _ = rx.pop(&mut buf);
+/// }
+/// ```
+///
+/// The RX ring producer operation is not crate-external API:
+///
+/// ```compile_fail
+/// use uart_16550::{async_::ring_buffer::RingBufRx, os::OsWakerSet};
+///
+/// fn direct_push_is_forbidden<W: OsWakerSet>(rx: &RingBufRx<W>) {
+///     let _ = rx.push(b"bypass");
+/// }
+/// ```
 pub struct AsyncUartReader<R: OsRuntime, W: OsWakerSet, U: UartPort> {
     driver: Arc<AsyncUartDriver<R, W, U>>,
 }
 
 impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartReader<R, W, U> {
-    /// Create a new reader from a shared driver reference.
+    /// Create a unique RX consumer from a shared driver reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that no second [`AsyncUartReader`] is
+    /// constructed for the same [`AsyncUartDriver`]. This ensures the
+    /// SPSC (single-consumer) contract of
+    /// [`RingBufRx`](crate::async_::ring_buffer::RingBufRx) is upheld.
+    /// The driver's RX field uses [`UnsafeCell`](core::cell::UnsafeCell) and is only safe with
+    /// a single consumer.
     #[must_use]
-    pub const fn new(driver: Arc<AsyncUartDriver<R, W, U>>) -> Self {
+    pub const unsafe fn new(driver: Arc<AsyncUartDriver<R, W, U>>) -> Self {
         Self { driver }
     }
 

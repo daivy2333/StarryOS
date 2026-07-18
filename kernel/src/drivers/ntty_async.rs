@@ -20,7 +20,18 @@ lazy_static! {
     pub static ref ASYNC_TTY: Arc<AsyncTty> = Tty::new(
         Arc::default(),
         TtyConfig {
-            reader: AsyncUartReader::new(uart_init::driver()),
+            reader: {
+                // SAFETY: ASYNC_TTY is constructed exactly once via lazy_static.
+                // No other code constructs a raw reader for this driver. The
+                // startup benchmark and UART initialization complete before TTY
+                // init, and no second raw reader is constructed in any feature
+                // path (QEMU default / qemu,smp / lichee-d1-async-uart). The
+                // reader is subsequently moved into the unique tty-reader task
+                // via ProcessMode::External and is never shared or cloned.
+                //
+                // This upholds the SPSC single-consumer contract of RingBufRx.
+                unsafe { AsyncUartReader::new(uart_init::driver()) }
+            },
             writer: {
                 // SAFETY: ASYNC_TTY is constructed exactly once. The startup
                 // benchmark finishes before TTY initialization, and no other code

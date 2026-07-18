@@ -93,6 +93,12 @@ pub fn init(args: &[String], envs: &[String]) {
         // Run kernel-side benchmark (ring buffer throughput/latency, memory, NAPI, IRQ)
         crate::drivers::bench::run_startup_benchmark();
 
+        // Start async UART copier tasks (must run after benchmark to avoid
+        // SPSC producer conflict on RX/TX ring buffers)
+        // SAFETY: This boot path runs once, after the startup benchmark, and
+        // the mutually exclusive D1 path cannot start the same driver tasks.
+        unsafe { uart_init::start_copiers() };
+
         pseudofs::mount_all().expect("Failed to mount pseudofs");
         spawn_alarm_task();
 
@@ -192,6 +198,12 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
 
     // Phase 4: Run kernel ring buffer benchmark
     bench::run_startup_benchmark();
+
+    // Start async UART copier tasks (must run after benchmark to avoid
+    // SPSC producer conflict on RX/TX ring buffers)
+    // SAFETY: This boot path runs once, after the startup benchmark, and
+    // the mutually exclusive QEMU path cannot start the same driver tasks.
+    unsafe { uart_init::start_copiers() };
 
     // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
     #[cfg(all(

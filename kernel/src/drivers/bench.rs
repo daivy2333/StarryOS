@@ -79,32 +79,30 @@ pub fn run_startup_benchmark() {
     }
 
     // ── 测试 6: Ring buffer 读取吞吐量 ────────────────────────────
-    run_rx_throughput_test(&driver.rx);
+    run_rx_throughput_test(&driver);
 
     // ── 测试 7: Ring buffer 读取延迟 ──────────────────────────────
-    run_rx_latency_test(&driver.rx);
+    run_rx_latency_test(&driver);
 
     ax_println!("[BENCH] Startup benchmark complete");
     ax_println!("[BENCH] Note: actual throughput limited by UART line rate (11.52 KB/s)");
 }
 
-use uart_16550::{async_::ring_buffer::RingBufRx, os::OsWakerSet};
-
-fn run_rx_throughput_test<W: OsWakerSet>(rx: &RingBufRx<W>) {
+fn run_rx_throughput_test(driver: &uart_init::ArceOsDriver) {
     ax_println!("[BENCH] Running RX ring buffer throughput test...");
 
     let test_data = vec![0u8; 1024];
     let iterations = 100;
 
     for _ in 0..iterations {
-        rx.push_batch(&test_data);
+        unsafe { driver.bench_rx_push(&test_data) };
     }
 
     let start_time = monotonic_time_nanos();
     let mut read_buf = vec![0u8; 1024];
     let mut total_read = 0;
     for _ in 0..iterations {
-        total_read += rx.pop(&mut read_buf);
+        total_read += unsafe { driver.bench_rx_pop(&mut read_buf) };
     }
     let elapsed_ns = monotonic_time_nanos() - start_time;
 
@@ -119,7 +117,7 @@ fn run_rx_throughput_test<W: OsWakerSet>(rx: &RingBufRx<W>) {
     );
 }
 
-fn run_rx_latency_test<W: OsWakerSet>(rx: &RingBufRx<W>) {
+fn run_rx_latency_test(driver: &uart_init::ArceOsDriver) {
     ax_println!("[BENCH] Running RX ring buffer latency test...");
 
     let iterations = 100;
@@ -128,11 +126,11 @@ fn run_rx_latency_test<W: OsWakerSet>(rx: &RingBufRx<W>) {
 
     for i in 0..iterations {
         let test_byte = [b'A' + (i % 26) as u8];
-        rx.push_batch(&test_byte);
+        unsafe { driver.bench_rx_push(&test_byte) };
 
         let mut read_buf = [0u8; 1];
         let start = monotonic_time_nanos();
-        let n = rx.pop(&mut read_buf);
+        let n = unsafe { driver.bench_rx_pop(&mut read_buf) };
         let end = monotonic_time_nanos();
 
         if n == 1 {

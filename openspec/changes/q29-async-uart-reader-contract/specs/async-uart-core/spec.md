@@ -36,6 +36,12 @@ The async UART core MUST reserve RX ring producer operations for the unique RX c
 - **THEN** it MUST remain able to push those bytes into the RX ring
 - **AND** the push MUST wake registered readable wakers when data is accepted
 
+#### Scenario: Copier startup preserves unique ring roles
+
+- **WHEN** an OS adapter starts the RX or TX copier for a driver
+- **THEN** startup MUST require an explicit unsafe uniqueness contract or an equivalent one-time mechanism
+- **AND** the adapter MUST establish that each copier direction is started exactly once for that driver
+
 ### Requirement: StarryOS single RX consumer witness
 
 StarryOS MUST construct exactly one raw `AsyncUartReader` for the global async UART driver and MUST transfer that capability to exactly one `tty-reader` task. Shared file descriptors MUST consume the line-discipline ring rather than constructing or sharing additional raw UART readers.

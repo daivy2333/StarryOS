@@ -146,11 +146,15 @@ impl OsRuntime for MyOsRuntime { ... }
 
 // 2. Create driver and start copier tasks
 let driver = AsyncUartDriver::new(rx, tx, &uart_port);
-driver.start_rx_copier(enable_rx_intr);
-driver.start_tx_copier(enable_tx_intr);
+// SAFETY: start each copier exactly once for this driver.
+unsafe {
+    driver.start_rx_copier();
+    driver.start_tx_copier();
+}
 
 // 3. Use AsyncUartReader/Writer for async I/O
-let reader = AsyncUartReader::new(Arc::clone(&driver));
+// SAFETY: the caller must ensure only one reader is constructed per driver.
+let reader = unsafe { AsyncUartReader::new(Arc::clone(&driver)) };
 ```
 
 ## License

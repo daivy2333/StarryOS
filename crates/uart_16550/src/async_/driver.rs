@@ -226,6 +226,42 @@ impl TxCompletion {
 /// The driver is created as a `&'static` reference (typically via `static`)
 /// and passed to `start_rx_copier` / `start_tx_copier` to spawn the
 /// background tasks.
+///
+/// Copier startup requires an explicit uniqueness proof:
+///
+/// ```compile_fail
+/// use uart_16550::{
+///     async_::driver::{AsyncUartDriver, UartPort},
+///     os::{OsRuntime, OsWakerSet},
+/// };
+///
+/// fn safe_rx_copier_start_is_forbidden<
+///     R: OsRuntime,
+///     W: OsWakerSet,
+///     U: UartPort,
+/// >(
+///     driver: &'static AsyncUartDriver<R, W, U>,
+/// ) {
+///     driver.start_rx_copier();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use uart_16550::{
+///     async_::driver::{AsyncUartDriver, UartPort},
+///     os::{OsRuntime, OsWakerSet},
+/// };
+///
+/// fn safe_tx_copier_start_is_forbidden<
+///     R: OsRuntime,
+///     W: OsWakerSet,
+///     U: UartPort,
+/// >(
+///     driver: &'static AsyncUartDriver<R, W, U>,
+/// ) {
+///     driver.start_tx_copier();
+/// }
+/// ```
 pub struct AsyncUartDriver<R: OsRuntime, W: OsWakerSet, U: UartPort> {
     /// RX ring buffer — data flows from UART to consumers.
     pub rx: RingBufRx<W>,
@@ -382,6 +418,28 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
         self.tx.push(data)
     }
 
+    /// Push test data directly into the RX ring buffer (benchmark-only).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no [`AsyncUartReader`](super::device_ops::AsyncUartReader)
+    /// exists for this driver and that the RX copier task is not running.
+    #[doc(hidden)]
+    pub unsafe fn bench_rx_push(&self, data: &[u8]) -> usize {
+        self.rx.push(data)
+    }
+
+    /// Pop test data directly from the RX ring buffer (benchmark-only).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no [`AsyncUartReader`](super::device_ops::AsyncUartReader)
+    /// exists for this driver and that the RX copier task is not running.
+    #[doc(hidden)]
+    pub unsafe fn bench_rx_pop(&self, buf: &mut [u8]) -> usize {
+        self.rx.pop(buf)
+    }
+
     /// Get a reference to the telemetry counters (only available with `telemetry` feature).
     #[cfg(feature = "telemetry")]
     pub const fn telemetry(&self) -> &crate::async_::telemetry::Telemetry {
@@ -393,7 +451,12 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
     /// Spawns an async task that continuously reads from the UART and
     /// pushes data into the RX ring buffer. Uses NAPI-style interrupt
     /// coalescing for high throughput.
-    pub fn start_rx_copier(&'static self) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must invoke this method exactly once per driver and must
+    /// not start any other task that produces bytes into the same RX ring.
+    pub unsafe fn start_rx_copier(&'static self) {
         R::spawn(
             async move {
                 self.rx_copier_loop().await;
@@ -406,7 +469,12 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
     ///
     /// Spawns an async task that continuously pops from the TX ring
     /// buffer and writes data to the UART.
-    pub fn start_tx_copier(&'static self) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must invoke this method exactly once per driver and must
+    /// not start any other task that consumes bytes from the same TX ring.
+    pub unsafe fn start_tx_copier(&'static self) {
         R::spawn(
             async move {
                 self.tx_copier_loop().await;

@@ -75,7 +75,7 @@ impl<W: OsWakerSet> RingBufRx<W> {
     /// Returns the number of bytes pushed. Wakes all registered wakers
     /// if at least one byte was pushed.
     #[inline(always)]
-    pub fn push(&self, data: &[u8]) -> usize {
+    pub(crate) fn push(&self, data: &[u8]) -> usize {
         // SAFETY: SPSC — only the RX copier task calls push().
         let n = unsafe { &mut *self.writer.get() }.push(|buf| {
             let len = data.len().min(buf.len());
@@ -93,7 +93,7 @@ impl<W: OsWakerSet> RingBufRx<W> {
     /// Returns the number of bytes pushed. Wakes all registered wakers
     /// if at least one byte was pushed.
     #[inline(always)]
-    pub fn push_batch(&self, data: &[u8]) -> usize {
+    pub(crate) fn push_batch(&self, data: &[u8]) -> usize {
         // SAFETY: SPSC — only the RX copier task calls push().
         let n = unsafe { &mut *self.writer.get() }.push(|buf| {
             let len = data.len().min(buf.len());
@@ -109,7 +109,7 @@ impl<W: OsWakerSet> RingBufRx<W> {
     /// Pop data from the ring buffer (called by consumers like TtyRead).
     ///
     /// Returns the number of bytes popped.
-    pub fn pop(&self, buf: &mut [u8]) -> usize {
+    pub(crate) fn pop(&self, buf: &mut [u8]) -> usize {
         // SAFETY: SPSC — only one consumer reads at a time.
         unsafe { &mut *self.reader.get() }.pop(|data| {
             let len = data.len().min(buf.len());
@@ -127,10 +127,9 @@ impl<W: OsWakerSet> RingBufRx<W> {
     ///
     /// Returns the total readable byte count across all ring segments,
     /// not just the first contiguous chunk. This is an instantaneous
-    /// snapshot — the value may change between this call and a subsequent
-    /// [`pop`](Self::pop). Callers MUST NOT treat a non-zero return as a
-    /// reservation; a later pop may still return fewer bytes (or zero)
-    /// if another consumer has drained the ring in the meantime.
+    /// snapshot — the value may change before the unique reader consumes
+    /// data. Callers MUST NOT treat a non-zero return as a reservation; the
+    /// consuming operation's return value remains authoritative.
     ///
     /// This method is non-blocking, finite, and does not consume data.
     #[inline]

@@ -374,10 +374,25 @@ pub fn init_uart_hardware() {
         );
     }
 
-    // Step 6: Start copier tasks
-    driver_ref().start_rx_copier();
-    driver_ref().start_tx_copier();
-    ax_println!("[UART INIT] async UART ready");
+    // Step 6: Start copier tasks (started after benchmark in entry.rs)
+    ax_println!("[UART INIT] async UART hardware initialized (copiers not started yet)");
+}
+
+/// Start RX and TX copier tasks. Must be called after startup benchmarks
+/// complete to avoid SPSC producer conflicts on the ring buffers.
+///
+/// # Safety
+///
+/// The caller must invoke this function exactly once after
+/// [`init_uart_hardware`] and after all direct ring benchmarks complete.
+pub unsafe fn start_copiers() {
+    // SAFETY: The caller guarantees one startup per direction and that the
+    // pre-copier benchmark no longer accesses either ring.
+    unsafe {
+        driver_ref().start_rx_copier();
+        driver_ref().start_tx_copier();
+    }
+    ax_println!("[UART INIT] async UART copiers started");
 }
 
 // ── QEMU: 寄存器状态日志 ──────────────────────────────────────────────
