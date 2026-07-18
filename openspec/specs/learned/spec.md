@@ -1038,4 +1038,99 @@ Q29 证明只把 raw reader 标为不可 `Clone` 不足以封闭 SPSC：safe con
 - **AND** safe crate-external APIs MUST NOT bypass those roles
 - **AND** startup benchmarks that mutate the ring MUST finish before background copiers start
 
+<!-- L301 -->
+### [UART 异步方法可迁移到 NIC，但字节 ring 不可直接迁移]
+
+UART 已验证的最小 ISR、register-recheck、显式背压、完成语义、唯一后台角色和 QEMU/真板分层证据可以迁移到网卡。NIC 数据面必须把基本单位改为 DMA descriptor 与 packet buffer ownership；逐字节 SPSC ring 和 copier 只适用于 UART，不足以表达 cache、bus address、scatter-gather、offload 和 multiqueue。
+
+#### Scenario: Reusing async UART experience for NIC work
+
+- **WHEN** a future network proposal cites the async UART architecture
+- **THEN** it MUST identify which wake, backpressure, completion, ownership, or validation rule is reused
+- **AND** it MUST model packet buffers and DMA descriptors instead of copying the UART byte-ring layout
+
+<!-- L302 -->
+### [Embassy 网络 driver contract 的核心是 Context 感知 readiness 与 token ownership]
+
+`embassy-net-driver::Driver` 让 `receive()`、`transmit()` 和 `link_state()` 接收 `Context`，并通过 RxToken/TxToken 转移 packet buffer 使用权。该模型适合补足当前 `NetDriverOps::can_receive/can_transmit` 只有布尔快照、无法注册设备 readiness waker 的缺口；StarryOS 可先复制语义到本地 adapter，不必立即替换 axdriver 或引入完整 embassy-net。
+
+#### Scenario: Defining an asynchronous NIC driver boundary
+
+- **WHEN** StarryOS defines a NIC receive, transmit, or link readiness API
+- **THEN** it MUST provide a race-free waker registration path
+- **AND** packet buffer ownership MUST be represented by a bounded token or equivalent handle
+- **AND** the API MUST NOT require a hard IRQ handler to poll the global network stack
+
+<!-- L303 -->
+### [Embassy driver-channel 证明 packet slot 应循环回收而非通过字节消息复制]
+
+`embassy-net-driver-channel` 把硬件 `Runner` 与协议栈 `Device` 分开，RX/TX 使用 `embassy-sync::zerocopy_channel` 循环交接可复用 slot。对通用 OS，slot 应扩展为 descriptor/buffer handle，携带 queue、DMA mapping、cache state 和 metadata；静态二维字节数组只是嵌入式实现，不是 StarryOS 必须复制的布局。
+
+#### Scenario: Adding a packet channel between NIC and stack
+
+- **WHEN** a queue task hands packets to a protocol-stack runner
+- **THEN** it MUST recycle bounded packet or descriptor handles
+- **AND** it MUST preserve queue and DMA ownership metadata
+- **AND** it MUST expose full/empty backpressure instead of hiding pressure in an unbounded queue
+
+<!-- L304 -->
+### [ArceOS 网络代码应复用 DMA 与 descriptor 证据，不应复制 IRQ 内全栈 poll]
+
+`work/arceos` 的 DWMAC、`axdma`、`DwmacHal`、`NetBufPtr` 和 smoltcp token adapter 为 VisionFive2 提供了高价值本地证据；但其部分网络 ISR 会打印、持设备锁并调用 `poll_interfaces()`，driver readiness 不携带 waker，`AcceptFuture` 还存在 `WouldBlock` 后未注册 accept waker 的风险。StarryOS 应让 ISR 只处理 cause/ack/mask/wake，由 bounded queue task 和 stack runner 在任务上下文推进。
+
+#### Scenario: Borrowing ArceOS network work
+
+- **WHEN** StarryOS reuses ArceOS NIC, DMA, or smoltcp code
+- **THEN** it MUST separately review hardware ownership evidence and asynchronous wake behavior
+- **AND** hard IRQ context MUST NOT run an unbounded protocol-stack poll
+- **AND** every Pending future MUST have a corresponding race-free wake source
+
+<!-- L305 -->
+### [NIC completion 必须区分 descriptor 回收与链路交付]
+
+UART 的 `TxCompletion` 已证明“提交成功”不等于“物理发送完成”。网卡同样需要区分 token 分配、descriptor 提交、doorbell、DMA/device completion 和 descriptor reclaim。NIC TX completion 默认只证明 buffer 可安全回收，不证明对端接收、TCP ACK 或应用处理；RX completion 还必须确认 descriptor owner、长度/状态有效和 CPU cache 已同步。
+
+#### Scenario: Reporting NIC completion
+
+- **WHEN** a NIC API, metric, or test reports RX or TX completion
+- **THEN** it MUST state the exact descriptor and buffer ownership transition
+- **AND** TX reclaim MUST NOT be described as peer delivery
+- **AND** real-board RX completion MUST include the required DMA/cache synchronization evidence
+
+<!-- L306 -->
+### [单槽 AtomicWaker 不能隐式承担 NIC 多 waiter]
+
+UART 的单 reader/writer 后台角色适合单槽 `AtomicWaker`，但 NIC 可能有多个 socket、queue 或控制任务等待同一条件。设备层应优先让每接口 stack runner 成为唯一 waiter，再由 socket set/axpoll 分发多 waiter；若设备层直接支持多个 waiter，必须使用 wait queue、event counter 或等价协议，不能让后注册者静默覆盖先注册者。
+
+#### Scenario: Selecting a NIC waiter structure
+
+- **WHEN** more than one task can wait for the same NIC RX, TX, link, or error condition
+- **THEN** the design MUST use a multi-waiter primitive or serialize them through one documented runner
+- **AND** it MUST NOT use a single-slot waker without proving a single-waiter contract
+
+<!-- L307 -->
+### [CPU 原子序不能替代 NIC 的 DMA 与 MMIO publication 协议]
+
+NIC TX 必须先写 payload/descriptor，再执行平台要求的 DMA write barrier，最后发布 owner/index 并 doorbell；RX 必须在观察 completion 后执行 DMA read barrier/cache invalidate，再读取状态与 payload。Rust Acquire/Release 只组织 CPU 共享状态，不能替代 cache maintenance、DMA barrier 或 posted MMIO write flush。
+
+#### Scenario: Publishing or reclaiming NIC descriptors
+
+- **WHEN** CPU transfers a descriptor or packet-buffer ownership to or from a NIC
+- **THEN** the implementation MUST identify CPU atomic, DMA, cache, and MMIO ordering separately
+- **AND** it MUST publish the valid or owner bit only after descriptor initialization
+- **AND** it MUST NOT reclaim a device-owned buffer before the device completion protocol releases it
+
+<!-- L308 -->
+### [异步 NIC 生命周期必须用 generation 隔离 reset 前后对象]
+
+网卡不仅有 steady-state 收发，还必须覆盖 probe、start、quiesce、reset、suspend、resume、remove。quiesce 后停止新提交；reset/remove 处理 stack-token、device-owned、completed-unreclaimed 三类对象；generation 防止迟到 completion 命中新 queue。future 被丢弃只停止通知还是撤销硬件操作也必须明确。
+
+#### Scenario: Resetting or removing an asynchronous NIC
+
+- **WHEN** a NIC is reset, suspended, removed, or enters a fatal error
+- **THEN** it MUST stop new submissions and resolve every in-flight ownership state
+- **AND** late completions MUST be rejected or completed against their original generation
+- **AND** bus mastering or DMA MUST stop before backing memory is reclaimed
+- **AND** all affected waiters MUST receive a stable error or state transition
+
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

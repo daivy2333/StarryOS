@@ -1018,5 +1018,36 @@ Post-Q28 UART concurrency work MUST separate multi-hart correctness, TX scheduli
 - **AND** it MUST preserve the current accepted-prefix and SPSC boundaries until the corresponding evidence Gate passes
 - **AND** it MUST NOT treat MPSC or MPMC as a default fix without a demonstrated workload requirement
 
+<!-- A063 -->
+### Requirement: ADR-063: 异步高性能网卡采用队列任务与协议栈 runner 分层
+
+Future asynchronous NIC work MUST keep hard IRQ, hardware queue service, protocol-stack polling, and socket readiness as separate execution layers.
+
+**日期/状态/触发**: 2026-07-18；候选，待 `openspec-plan` 创建首个网络 change 后确认；R23-R26 初步探索。
+**决定**:
+1. 首阶段保留 StarryOS 现有 axnet-ng、smoltcp、VFS/axpoll 和 axtask，不引入 Embassy executor，也不整体替换协议栈。
+2. 硬中断只处理 interrupt cause、ack/mask、错误快照和 queue wake；descriptor reap/refill/reclaim 必须由有 budget 的 queue task 完成，smoltcp poll 必须由任务上下文中的 stack runner 完成。
+3. 异步 driver adapter 应采用 `embassy-net-driver` 式的 Context 感知 readiness 与 RxToken/TxToken 所有权；可先在本地兼容当前 axdriver，不要求首版新增 Embassy crate 依赖。
+4. RX/TX 数据面使用 DMA descriptor 与 packet buffer ownership，不复制 UART 字节 ring/copier 布局；每个 queue 首先采用唯一 owner task，multiqueue/RSS 由后续证据触发。
+5. ArceOS DWMAC、axdma、NetBuf 和 smoltcp adapter 作为硬件与 DMA 参考；硬中断内全栈 poll、平台 IRQ 硬编码、全局大锁和独立 axasync executor 不进入目标架构。
+6. 首个实施 change 应优先覆盖 QEMU 单设备单队列 MVP；VisionFive2 DWMAC、SMP/multiqueue 和用户态零拷贝分别设置独立 Gate。
+7. 设备状态必须覆盖 probe/start/quiesce/reset/suspend/remove；reset 使用 generation 隔离迟到 completion，remove 前停止 bus mastering/DMA 并处理全部 in-flight ownership。
+8. 设备层单槽 waker 只能用于已证明的单 waiter；首版优先让每接口 stack runner 成为设备层唯一 waiter，多 socket waiter 继续由 socket set/axpoll 管理。
+**原因**: UART 已证明最小 ISR、waker、背压和完成分层能稳定工作；Embassy 证明 driver token/channel/runner 可把设备 readiness 与协议栈 poll 解耦；ArceOS 则证明 DWMAC/DMA 路径可行，同时暴露 IRQ 内持锁轮询协议栈和 lost wakeup 的风险。渐进式 adapter 能在不重写现有 socket 栈的情况下验证最关键异步边界。
+**影响**: 后续网络 proposal 必须定义 descriptor 状态机、IRQ rearm、register-recheck、TX/RX 背压、DMA/cache barrier、budget、公平性和可观测性。QEMU、真板和 SMP 证据必须分开；TX descriptor reclaim 不得被解释为对端交付。
+**替代方案**: 直接采用完整 `embassy-net`；暂不采用，现有 axnet-ng/VFS 集成替换成本过高。复制 ArceOS IRQ 内 `poll_interfaces()`；拒绝，ISR 时长和锁范围不可控。直接实现用户 mmap ring 或 multiqueue；后置，当前没有数据证明单队列 token adapter 不足。
+**恢复入口**: R23、R24、R25、R26、L301-L308。
+
+#### Scenario: Planning the first asynchronous NIC change
+
+- **WHEN** `openspec-plan` creates the first StarryOS asynchronous NIC change
+- **THEN** it MUST preserve axnet-ng, smoltcp, axpoll, and axtask for the initial MVP
+- **AND** hard IRQ work MUST be bounded to cause, ack/mask, snapshot, and wake
+- **AND** descriptor service and protocol-stack polling MUST run outside hard IRQ context
+- **AND** the plan MUST define token ownership, backpressure, completion, DMA/cache, and register-recheck Gates
+- **AND** it MUST define the single-waiter or multi-waiter contract
+- **AND** it MUST define reset generation and in-flight ownership cleanup
+- **AND** QEMU evidence MUST NOT be presented as real-board or SMP proof
+
 <!-- arc: ARC-202607081429 --> 4 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md
 <!-- arc: arc-202607152005 --> 3 条 architecture 决策已归档 (2026-07-15) → ../../changes/archive/2026-07-15-arc-202607152005/proposal.md

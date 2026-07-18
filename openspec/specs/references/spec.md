@@ -140,6 +140,10 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R18 --> `.claude/analysis/async-uart-vs-io_uring.md` | StarryOS 异步串口与 Linux io_uring 的设计异同：任务模型/批处理/ISR 极简等同构点；mmap/syscall/SQE-CQE 等差异来自当前 UART/VFS 架构取舍；按价值排序的可借鉴方向（backpressure 缺失、MPSC 隐患、TxCompletion drain snapshot、fixed buffer 精神已存在） |
 | <!-- R19 --> `.claude/analysis/uart-backpressure-mpsc-plan.md` | UART backpressure 与 writer 并发边界分析：阻塞 fd writable wait、非阻塞 partial/WouldBlock、Tty poll/register 改造、`AsyncUartWriter::Clone` 与 SPSC 安全契约收敛、MPSC 后置条件 |
 | <!-- R20 --> `docs/d1_out.md` | Q27 D1 真板 raw evidence：完整启动与 benchmark 输出；用于对照 Q20 同板 baseline，证明阻塞 TX backpressure 消除 S11 short write，关键吞吐与 p50 延迟无退化，slow-poll/yield fallback 未耗尽 |
+| <!-- R23 --> `.claude/analysis/async-network-project-overview.md` | StarryOS 异步高性能网卡探索总览：UART 经验迁移、Embassy 模块数量、ArceOS 借鉴边界、目标架构、风险与 N0-N5 路线 |
+| <!-- R24 --> `.claude/analysis/embassy-network-module-evaluation.md` | Embassy 网络模块评估：核对 12 个网络相关 crate/模块，归纳 8 类可用能力和 3 类近期采用候选，明确 executor/time 的本地适配边界 |
+| <!-- R25 --> `.claude/analysis/arceos-async-network-driver-analysis.md` | ArceOS 异步网卡分析：NetDriverOps、NetBuf、smoltcp adapter、DWMAC、axdma 与真板证据；识别硬中断全栈 poll、lost wakeup 和全局锁风险 |
+| <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
