@@ -30,7 +30,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | 编号 | 当前结论 | 触发条件 |
 |------|----------|----------|
 | **O74/O75** | 平台 descriptor + early console 已落地 | 新平台适配时继续沿用 |
-| **O77** | D1 P99 长尾根因未探明但不阻塞；Q20 补测 | 继续改 D1 TX copier、THRE wake、retry policy 时 |
+| **O77** | D1 THRE IRQ 不可靠时以 bounded slow-poll 保证 forward progress；功能和线速达标，但 CPU/MMIO 空轮询成本高 | 优化 D1 TX wake/watchdog，并验证其他真板是否需要同一 fallback |
 | **O80** | Memory-root lazy COW SIGILL 是 loader/mm 后续，不是 UART gate | 需要恢复 lazy file-backed loader parity 时 |
 | **O82** | io_uring-like user ring/completion 可借鉴但当前不实施 | 高波特率、多 writer 公平性、细粒度 completion 或 CPU 证据出现时 |
 | **O83** | uart readiness 薄接口 + TX backpressure / writable wait 已完成 | Q27a/Q27 已归档 |
@@ -39,7 +39,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **O86** | TX syscall/message 原子性、公平性与跨 write 交错不在当前保证内 | workload 明确要求且现有 accepted-prefix 契约不足时进入 Q30 |
 | **O87** | RX SPSC 单 consumer capability 已收敛 | ✅ Q29 完成 |
 
-<!-- tombstone: O76/O77 --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 已完成并归档，active roadmap 不再保留已完成 Lichee 条目。
+<!-- tombstone: O76/O77 original Q19B scope --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 原范围已完成；O77 后因 Q19C/Q20/D1 polling 证据以 follow-up optimization 重新开放。
 <!-- tombstone: O78/O79/O81 --> Archived 2026-07-11 in ARC-202607111510 — Q19C memory-root path/command 已完成，Q19D/O79 与 M3/O81 取消当前规划。
 
 #### Scenario: Roadmap-driven scheduling
@@ -132,7 +132,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **O66** | arceos TIP-004 | **`print_preserved_status()` 验证函数**：UART / PLIC / Clock init 前后 dump 当前寄存器状态，与 U-Boot/Linux 预期对比。arceos `DwmacHalImpl::configure_platform` 实现此模式。**Q20 真板观测必备**（O64 的前置依赖）。 | 🔴 P0 | VisionFive2 硬件到位 |
 | **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q25 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q25 决策 | Q24 或新硬件数据 + O3 评估 |
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q24 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q24 真板驱动开发 |
-| **O77** | Q19C D1 TX 诊断 | **已完成 fallback，P99 根因未明**：`TX_SLOW_POLL_LIMIT=4096`×`TX_SLOW_POLL_SPINS=256`、`TX_YIELD_RETRIES=4`；三轮 `slow_poll_exh=0`、`yield_exh=0`、ISR 无丢失。size=256 P99=50.86ms（2.34x 线时），约 1/100 超线时+10ms，吞吐影响 <2%；`TX_FAST_RETRY_LIMIT=0` + drain `TX_WAKER` 已证伪。 | ✅ 已完成（Q19C-M0） | P99 根因未探明，Q20 补测 |
+| <!-- O77 --> **O77** | Q19C/Q20/Q29 后 D1 TX 诊断 | **已接受的正确性妥协，效率待优化**：D1 THRE IRQ/IIR no-pending 路径不能作为唯一进展来源，当前通用 copier 使用 `TX_FAST_RETRY_LIMIT=32` + `TX_SLOW_POLL_LIMIT=4096`×`TX_SLOW_POLL_SPINS=256` + bounded yield fallback。2026-07-18 D1 fullbench 达物理线速约 95.3%-99.1%，退出码 0，且 `slow_poll_exh=0`/`yield_exh=0`；但 13,834,811 次 hardware send 中 13,813,186 次返回 0（99.84%，41,834.7 zero/KiB），说明发送期间以大量 CPU/MMIO polling 换取 forward progress。QEMU 因不仿真真实线时几乎不进入 slow-poll；其他真板的 THRE IRQ 可靠性和 fallback 成本尚未验证。 | 🟡 功能保留 / 效率待优化 | 优先调查 D1 THRE/PLIC 时序；目标为 IRQ-first + 定时 watchdog，或将 D1 workaround 平台化；不得回退为无软件 fallback 的纯 IRQ |
 | **O80** | Q19C-M1 loader/mm 后续 | **lazy file-backed COW SIGILL**：`load_user_app()` 可处理 fault/syscall，但 main 前在合法 RV64C `c.ld` SIGILL；eager VFS mapping 完整通过，排除 UART/ELF/通用 syscall。检查 `CachedFile`、`FileBackend::Cached`、`Backend::new_cow`、tmpfs offset/权限/取指；非 UART gate。 | 🟡 P1 | 需要恢复 lazy file-backed loader parity 时 |
 | **O83** | R19 / ADR-061 | **uart readiness 薄接口 + TX backpressure / writable wait MVP**：已由 Q27a/Q27 完成并归档。`uart_16550` 暴露 RX/TX ring readiness 与 waker 注册，OS 层复用 `poll_io`、`Pollable::OUT` 和 TX pop wake；UART 阻塞 fd 等待空间，非阻塞 fd 保持 partial/`WouldBlock`，PTY 保持非等待契约。QEMU、D1 Gate 通过，S11 short write 归零且关键性能无退化。 | ✅ 已完成（2026-07-15） | `2026-07-15-q27-tx-backpressure` |
 | **O84** | R19 / ADR-061 | **`AsyncUartWriter::Clone` 与 SPSC 契约收敛**：Q28 已移除 raw writer `Clone`/共享 `TtyWrite`，改为 unsafe 唯一构造与 `&mut self` 提交；StarryOS direct-output/echo 通过共享 `SpinNoPreempt` adapter 串行化单次 push。compile-fail、并发 accepted-prefix、Q27 回归及 QEMU/D1 单次性能 Gate 均通过；不引入 MPSC。 | ✅ 已完成（2026-07-15） | `2026-07-15-q28-async-uart-writer-contract` |
@@ -151,6 +151,8 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 - **THEN** MUST 先证明 `make lichee-userbench` 产物在真板上能越过 `benchmark process spawned` 并完整输出 benchmark exit code 0
 - **AND** MUST 用 gated TX debug snapshot 记录 `hw_send_zero`、`no_progress_budget_exhausted`、`hw_send_max_chunk`、`ring_pop_bytes` 与 final/second drain
 - **AND** MUST 不得把 `TX_FAST_RETRY_LIMIT=0` + drain-side `TX_WAKER` 注册作为默认修复，除非另有软件 fallback 证明不会丢失 forward progress
+- **AND** MUST 区分 D1-specific THRE/PLIC workaround、QEMU timing model 与其他真板实测结果，不得因 QEMU fast path 正常就声明所有硬件可纯 IRQ 前进
+- **AND** SHOULD 优先比较 IRQ-first + timer watchdog、D1 platform-gated fallback 与现有 continuous slow-poll；验收同时覆盖 forward progress、线速比例、zero/KiB、copier busy time/cycles 和 P99
 
 #### Scenario: Q25 评估 O69（DMA 决策树）
 
