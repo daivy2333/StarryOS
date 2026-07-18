@@ -97,6 +97,32 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 | `openspec validate <domain>` | 验证单个 spec 格式合规 | 写完 spec 后 |
 | `openspec list` | 列出所有变更提案 | 任务规划时 |
 
+## Skill 职责
+
+| Skill | 职责 | 写入 |
+|-------|------|------|
+| `openspec-assistant` | 只读查询规则、状态、任务、变更、架构、知识、参考与优化 | — |
+| `openspec-plan` | 需求探索、BDD 缺口扫描、计划制定和 OpenSpec 变更创建 | `openspec/changes/` |
+| `openspec-act` | TDD 实施、Gate 验证、两阶段 Review 和归档收尾 | `openspec/changes/` |
+| `openspec-docs-maintainer` | 维护 tasks、SNAPSHOT、architecture、learned、references、optimization | `.claude/docs/`、`openspec/specs/` |
+| `openspec-explorer` | 深度分析并生成 `.claude/analysis/` 文档 | `.claude/analysis/` |
+| `openspec-compressor` | 原地压缩活跃文档，不改变规则或状态 | `.claude/docs/`、`openspec/specs/` |
+| `openspec-archivist` | 生命周期清理和 carrier 归档 | `openspec/changes/archive/` |
+
+## 通用能力
+
+流程描述使用能力语义，不绑定平台工具名：
+
+| 语义 | 要求 |
+|------|------|
+| 任务追踪 | 记录 Phase、Task、Gate、状态和跳过原因 |
+| 用户决策 | 对需求、风险和不可逆动作取得明确选择 |
+| 文件读取 | 完整读取所选规则和引用 |
+| 精准编辑 | 只修改相关片段，不覆盖用户无关改动 |
+| 命令执行 | 保留命令、输出和退出码 |
+| 并行委托 | 仅在环境支持且任务可独立时使用 |
+| OpenSpec 集成 | 创建、应用、验证、归档 change |
+
 ## 技术栈与约束
 
 **技术栈**：Rust nightly-2026-02-25 / RISC-V 64-bit / ArceOS 0.3.0-preview.2 / `axtask::future` + `embassy_sync::AtomicWaker` / `uart_16550` v0.6.0 本地 crate
