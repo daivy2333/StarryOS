@@ -2,11 +2,11 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q0~Q15、Q20、Q27a/Q27/Q28 已完成；Q21/Q22 取消当前规划；Q29/Q30 已登记为后续并发契约 backlog）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q15、Q20、Q27a/Q27/Q28/Q29 已完成；Q21/Q22 取消当前规划；Q30 保持证据触发）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
 ## Requirements
-### Requirement: UART 后续优化 Roadmap — Q27/Q28 已完成，Q29/Q30 已登记
+### Requirement: UART 后续优化 Roadmap — Q27/Q28/Q29 已完成，Q30 证据触发
 
-Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。Q27a/Q27/Q28 已于 2026-07-15 完成；后续并发工作分流为 Q24 multi-hart 复验、Q29 RX consumer 契约审计和证据触发的 Q30 TX 多 producer 语义决策。MPSC/MPMC 均不得作为默认方案。
+Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。Q27a/Q27/Q28 已于 2026-07-15 完成，Q29 于 2026-07-18 完成；后续并发工作分流为 Q24 multi-hart 复验和证据触发的 Q30 TX 多 producer 语义决策。MPSC/MPMC 均不得作为默认方案。
 
 **重排依据**: ADR-058、ADR-061、ADR-062、Q20 benchmark report、R19、L299、O82/O83/O84/O85/O86/O87。
 **历史边界**: Q16~Q20 已完成；Q19D、M3/rootfs-probe、O79/O81、Q21/Q22 取消当前规划。Storage/rootfs 需要新 change。
@@ -21,7 +21,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **Q27a** | uart_16550 readiness 薄接口 | O83、ADR-061 | ✅ 2026-07-15 完成 RX/TX ring readiness hint + readable/writable waker 注册；不引入 OS fd 语义 |
 | **Q27** | TX backpressure / writable wait MVP | O83、ADR-061 | ✅ 2026-07-15 完成并归档；阻塞 fd 等待 TX ring 空间，非阻塞 fd 保持 partial / WouldBlock，QEMU/D1 Gate 通过 |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84、ADR-061 | ✅ 已归档 `2026-07-15-q28-async-uart-writer-contract`；MPSC 后置 O85 |
-| **Q29** | AsyncUartReader consumer 契约审计 | O87、ADR-062 | 待 `openspec-plan` 审计 safe constructor、共享/复制路径与 RX SPSC 单 consumer witness |
+| **Q29** | AsyncUartReader consumer 契约审计 | O87、ADR-062 | ✅ 已归档 `2026-07-18-q29-async-uart-reader-contract`；unsafe unique reader、RX mutation 封闭、单次 copier 启动 |
 | **Q30** | TX 多 producer 语义决策 | O85/O86、ADR-062 | 仅在 Q24 或新 workload 证明消息原子性、公平性、锁竞争或吞吐需求时启动 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 至少两个 hart 跨 hart write/flush/tcdrain，并覆盖 read 与 IER enable/disable |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69/O41 | 用 Q24 或新硬件数据决定实施或拒绝 |
@@ -37,7 +37,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **O84** | `AsyncUartWriter::Clone` 与 SPSC 契约已收敛 | ✅ Q28 完成 |
 | **O85** | MPSC ring / 多 writer 公平性为远期候选 | Q24 SMP 或新 workload 证明需要时 |
 | **O86** | TX syscall/message 原子性、公平性与跨 write 交错不在当前保证内 | workload 明确要求且现有 accepted-prefix 契约不足时进入 Q30 |
-| **O87** | RX SPSC 单 consumer capability 尚需独立审计 | Q29 先证明构造/共享/pop 路径，再决定是否收敛 API |
+| **O87** | RX SPSC 单 consumer capability 已收敛 | ✅ Q29 完成 |
 
 <!-- tombstone: O76/O77 --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 已完成并归档，active roadmap 不再保留已完成 Lichee 条目。
 <!-- tombstone: O78/O79/O81 --> Archived 2026-07-11 in ARC-202607111510 — Q19C memory-root path/command 已完成，Q19D/O79 与 M3/O81 取消当前规划。
@@ -186,7 +186,7 @@ Q28 后续优化 MUST 将 TX 调度语义、队列 producer 模型与 RX consume
 |------|----------------|-------------|----------|
 | **O85** | TX ring 仍是 SPSC；MPSC 只可能改善 producer lock 竞争、吞吐或调度策略，不自动提供 syscall 原子性 | 🧊 远期候选 / Q30 | Q24 或新 workload 证明现有 producer serialization 不足 |
 | <!-- O86 --> **O86** | Q28 只保证每次 raw submission 的 accepted prefix 连续；blocking syscall 可分段，其他 producer 可在重试间提交，不保证整个 syscall/message 原子性、producer 公平性或跨 write 不交错 | 🧊 证据触发 / Q30 | 真实应用要求消息边界，或观测到饥饿、交互延迟、优先级反转 |
-| <!-- O87 --> **O87** | RX ring 依赖 SPSC 单 consumer；`AsyncUartReader::new()` 是 safe constructor，当前文档尚无覆盖 TTY、共享 fd 与所有 pop 路径的唯一 consumer witness | ⏳ 待规划 / Q29 | 用 `openspec-plan` 审计并选择 unique raw reader、OS 层串行化或证明现状充分 |
+| <!-- O87 --> **O87** | RX ring 保持 SPSC；`AsyncUartReader::new()` 已改为 unsafe unique constructor，RX mutation 已封闭，StarryOS 唯一 reader 移入单 `tty-reader`，共享 fd 只消费 ldisc ring | ✅ Q29 完成 | 新 raw multi-consumer 需求出现时重新规划，不默认引入 MPMC |
 
 #### Scenario: TX workload requires stronger multi-producer semantics
 
@@ -195,10 +195,10 @@ Q28 后续优化 MUST 将 TX 调度语义、队列 producer 模型与 RX consume
 - **AND** it MUST compare SPSC serialization, submission granularity, explicit scheduling, and MPSC instead of assuming MPSC solves every target
 - **AND** absent such evidence, the current accepted-prefix contract and O85 far-future status MUST remain unchanged
 
-#### Scenario: RX consumer contract is planned
+#### Scenario: RX consumer contract remains enforced
 
-- **WHEN** Q29 audits `AsyncUartReader` construction or sharing
-- **THEN** it MUST trace every constructor and RX pop path and establish one consumer witness
+- **WHEN** 后续修改 `AsyncUartReader` construction、RX mutation 或 TTY reader ownership
+- **THEN** it MUST preserve the unique raw consumer witness and audit every constructor and RX pop path
 - **AND** it MUST preserve readiness register/recheck semantics and test for duplicate, lost, or concurrently consumed bytes
 - **AND** it MUST NOT introduce MPMC unless a real multi-consumer requirement is demonstrated
 

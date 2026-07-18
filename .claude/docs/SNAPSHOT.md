@@ -1,7 +1,7 @@
 # SNAPSHOT.md - 项目快照
 
-> Last updated: 2026-07-16
-> 分支：uart-16550-lichee（已同步 origin，领先 0 commits）— Q28 已归档；Q24 等待 SMP 硬件；Q29/Q30 并发契约 backlog 已登记；CLAUDE.md 状态漂移已同步
+> Last updated: 2026-07-18
+> 分支：uart-16550-lichee — Q29 已归档；Q24 等待 SMP 硬件；Q30 维持证据触发
 
 ---
 
@@ -16,10 +16,10 @@
 - Q19~Q23：D1 smoke/kbench/userbench/memory-root、Q20 jitter/S40/raw evidence 完成；RX fixed payload 排除，Q20 不证明 SMP；Q21/Q22 user CQ/`mmap` ring 取消，O82 远期保留。
 - Q27a：readiness+waker+register-recheck 完成，59 tests+8 doctests、Clippy/rustdoc 通过；Q27：blocking backpressure 完成，nonblocking/ONLCR/PTY 保持，QEMU/D1 通过并归档。
 - Q28：raw `AsyncUartWriter` 已收敛为不可 clone、unsafe 唯一构造与 `&mut self` 提交；StarryOS serialized adapter 保留 direct-output/echo clone，compile-fail、并发 accepted-prefix、Q27 回归及静态 Gate 通过。QEMU/D1 单次候选关键指标均未退化超过 3%；已归档 `2026-07-15-q28-async-uart-writer-contract`。
+- Q29：raw `AsyncUartReader` 已收敛为 unsafe 唯一构造，RX mutation crate-private，RX/TX copier 启动要求显式单次契约；benchmark-before-copier 消除启动期 SPSC 角色冲突。62 unit + 8 doctest + 10 compile-fail、Clippy/rustdoc/OpenSpec 通过；QEMU build+boot 与 D1 command-entry benchmark 退出码 0；已归档 `2026-07-18-q29-async-uart-reader-contract`。
 
 **当前待推进**:
 - Q24：VisionFive2 或等价 SMP 环境复验 O63，重点覆盖跨 hart write/flush/tcdrain、read 与 IER enable/disable。
-- Q29：通过 `openspec-plan` 审计 RX safe constructor/共享路径与 SPSC 单 consumer 契约；当前未启动 change。
 - Q30：仅在 Q24 或真实 workload 提供消息原子性、公平性、锁竞争证据时规划；当前维持 SPSC + producer serialization。
 - Q26：维护性清理（O48/O49/O50 + release LTO 检查）。
 
@@ -33,7 +33,7 @@
 | Q20 补测边界 | Q20 只补 TX latency/jitter/counter proxy 和 raw evidence，不改 driver 语义；D1 64B 约 96.7% 线速、1024B 约 98.8% 线速，S40 `slow_poll_exh=0`/`yield_exh=0`；RX fixed payload 不做；SMP 结论仍待 Q24。 |
 | Q27 TX backpressure | 阻塞 UART write 会等待 TX ring 空间并完整提交，PTY 保持 short-write；D1 S11 1024B 从 36 short writes/65536B 改善为 0/102400B，S10/S20 性能相对 Q20 持平。 |
 | Q28 writer 契约 | raw writer 是唯一 SPSC producer capability；StarryOS clone 共享 task-context producer lock，锁不跨等待。QEMU 关键 P50 改善 7.36%-15.75%，D1 最大退化为 64B P50 +0.107%；单样本不声明统计显著性或 multi-hart 正确性。 |
-| Q28 后并发边界 | TX 仅保证 accepted prefix 连续；blocking retry 间可交错，不保证 syscall 原子性/公平性（O86/Q30）。TX 维持 SPSC+串行化，MPSC 为 O85 证据候选；RX 单 consumer witness 待 O87/Q29 审计。 |
+| Q29 reader 契约 | 每个 driver 仅允许一个 unsafe raw reader，RX producer/consumer mutation 不向 crate 外 safe API 开放；唯一 reader 移入单 `tty-reader`，共享 fd 只消费 ldisc ring。copier 各方向恰好启动一次且晚于 direct-ring benchmark；不扩展为 SMP 证明。 |
 | Q21/Q22 决策 | 现有异步 UART 已具备 TX ring + copier + `TxCompletion` 的提交/执行分离；D1 115200 bps 线速已成为吞吐瓶颈，user ring/completion queue 当前不实施。 |
 
 <!-- tombstone: SNAPSHOT-history-blocks --> Archived 2026-07-03 in ARC-202607031929 — 旧关键发现表、阶段表、架构图、项目结构、技术栈、文档索引与代码路径速查已压缩归档，active SNAPSHOT 只保留当前态。

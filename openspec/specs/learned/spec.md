@@ -1018,12 +1018,24 @@ Q28 关闭的是 TX raw producer capability 与 SPSC 前提不一致的问题，
 | 跨 hart write/flush/tcdrain | QEMU/D1 单 hart 回归通过；尚无 multi-hart 证明 | Q24 / O63 |
 | syscall 原子性、公平性、跨 write 交错 | 仅每次 raw submission 的 accepted prefix 连续；blocking retry 间允许其他 producer 插入 | Q30 / O86，真实 workload 触发 |
 | SPSC 与 MPSC | TX ring 仍为 SPSC，OS adapter 用 producer lock 串行化 | O85/Q30，锁不足证据触发 |
-| RX multi-consumer/clone | RX ring 依赖单 consumer，但 safe constructor/共享路径尚未形成完整唯一性 witness | O87/Q29，独立审计 |
+| RX multi-consumer/clone | Q29 已将 raw reader 改为 unsafe 唯一构造，RX mutation crate-private；共享 fd 只消费 ldisc ring | O87/Q29 已完成；新 multi-consumer 需求需独立规划 |
 
 #### Scenario: Interpreting Q28 concurrency evidence
 
 - **WHEN** a report or proposal cites Q28 as concurrency evidence
 - **THEN** it MUST limit the claim to unique raw TX producer capability and accepted-prefix integrity
 - **AND** it MUST route multi-hart, syscall fairness/atomicity, MPSC, and RX consumer questions to their separate entries
+
+<!-- L300 -->
+### [SPSC capability 必须覆盖构造、mutation 与后台角色启动]
+
+Q29 证明只把 raw reader 标为不可 `Clone` 不足以封闭 SPSC：safe constructor 可重复取得 consumer，公开 RX `push`/`pop` 可绕过角色边界，重复启动 copier 也会创建第二 producer/consumer。完整边界是 unsafe unique raw reader、crate-private RX mutation、每方向 unsafe exactly-once copier startup；StarryOS 还必须在 direct-ring benchmark 完成后再启动 copier，并让共享 fd 只消费 ldisc ring。
+
+#### Scenario: Maintaining an SPSC adapter
+
+- **WHEN** OS adapter 新增 reader constructor、direct ring benchmark 或 copier startup path
+- **THEN** it MUST prove exactly one producer and one consumer for each SPSC ring role
+- **AND** safe crate-external APIs MUST NOT bypass those roles
+- **AND** startup benchmarks that mutate the ring MUST finish before background copiers start
 
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

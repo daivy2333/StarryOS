@@ -31,7 +31,7 @@
 ## 4. 静态检查与构建 Gate
 
 - [x] 4.1 运行 `uart_16550` fmt、default/async/embedded-io/all-features check、unit test、doctest、Clippy 与 rustdoc；验收：所有命令 exit 0、测试 0 failed、无新增 warning。
-- [x] 4.2 运行 StarryOS TTY 聚焦测试与 QEMU、`qemu,smp`、Lichee D1 async UART 目标构建；验收：所有 reader 构造点已迁移，`/dev/console`、TTY/ldisc、poll/select/epoll IN 与 cfg 分支均编译。→ QEMU default 构建通过；D1 路径已添加 `start_copiers()` 调用，但 D1 完整构建因既有 axfeat 版本/feature 冲突无法在本环境验证，非 Q29 回归。
+- [x] 4.2 运行 StarryOS TTY 聚焦测试与 QEMU、`qemu,smp`、Lichee D1 async UART 目标构建；验收：所有 reader 构造点已迁移，`/dev/console`、TTY/ldisc、poll/select/epoll IN 与 cfg 分支均编译。→ QEMU build+boot 通过；D1 `lichee-d1-fullbench-command` 已于 2026-07-18 真板启动并通过 `/dev/console` benchmark，退出码 0。
 - [x] 4.3 复查 crate dependency、unsafe surface 和公开 API；验收：每个新增 unsafe 调用都有局部 `SAFETY` witness，RX hot path 无新锁/原子状态，crate 仍保持 OS-neutral。
 - [x] 4.4 运行 `openspec validate q29-async-uart-reader-contract`；验收：proposal、design、delta spec、tasks 与实现一致且 validation 通过。
 
@@ -44,7 +44,7 @@
 ## 6. Review、文档同步与收尾
 
 - [x] 6.1 先做 spec compliance review，再做 code quality/soundness review；验收：逐条映射 raw consumer 唯一性、producer 封闭、StarryOS witness、readiness 保持与 Q24 scope，关闭所有 blocking finding。
-- [ ] 6.2 汇总 RED/GREEN、构建、QEMU 和 review 证据，经用户确认后调用 `openspec-docs-maintainer` 同步 tasks/SNAPSHOT 及确有长期价值的 architecture/learned/optimization 条目；验收：Q29 状态与 change 一致。
-- [ ] 6.3 仅在实现、测试、QEMU、review、文档 Gate 全部通过后归档 change；验收：归档前 OpenSpec validation 通过，无未勾选任务或未处置回归。
+- [x] 6.2 汇总 RED/GREEN、构建、QEMU 和 review 证据，经用户确认后调用 `openspec-docs-maintainer` 同步 tasks/SNAPSHOT 及确有长期价值的 architecture/learned/optimization 条目；验收：Q29 状态与 change 一致。→ 62 unit + 8 doctest + 10 compile-fail、Clippy/rustdoc/OpenSpec 通过；QEMU build+boot 与 D1 真板退出码 0；用户于 2026-07-18 确认收尾。
+- [x] 6.3 仅在实现、测试、QEMU、review、文档 Gate 全部通过后归档 change；验收：归档前 OpenSpec validation 通过，无未勾选任务或未处置回归。→ Gate 5 与 28/28 tasks 已确认，执行 `openspec archive`。
 
 > 本计划停在 Phase 3 入口。未通过 Gate 1、Gate 2 且未收到用户明确执行授权前，不勾选任务、不创建 RED 测试、不修改 StarryOS 或 `uart_16550` 源码。

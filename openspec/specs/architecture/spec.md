@@ -1000,16 +1000,16 @@ Future io_uring-inspired UART proposals MUST identify the reused idea and prove 
 
 Post-Q28 UART concurrency work MUST separate multi-hart correctness, TX scheduling semantics, queue producer model, and RX consumer safety before choosing an implementation.
 
-**日期/状态/触发**: 2026-07-15；backlog 边界已确认（Q24 等硬件，Q29/Q30 待 `openspec-plan`）；Q28 review 证明 multi-hart、TX syscall 语义与 RX consumer 唯一性不能混为 MPSC 单一方案。
+**日期/状态/触发**: 2026-07-18；Q29 已完成 unique raw reader、RX mutation 封闭与 copier 单次启动契约；Q24 等硬件，Q30 继续由真实 workload 触发。Q28/Q29 证明 multi-hart、TX syscall 语义与 RX consumer 唯一性不能混为 MPSC 单一方案。
 **决定**:
 1. Q24 是跨 hart correctness 证据入口，必须在 VisionFive2 或等价 SMP 真板覆盖跨 hart write/flush/tcdrain、read 与 IER enable/disable；QEMU/D1 单 hart结果不得替代该 Gate。
 2. 当前 TX 契约只保证每次 serialized raw submission 的 accepted prefix 连续、无重复/丢失和字节级交织。blocking write 可被 backpressure 拆分，其他 producer 可在重试之间提交；不承诺整个 syscall 原子性、producer 公平性或不同 write 调用之间不交错。
 3. TX ring 保持 SPSC，StarryOS producer lock 是当前默认方案。MPSC ring 继续作为 O85 远期候选；只有 Q24 或新 workload 证明串行化造成饥饿、交互延迟或吞吐不足时，才与 O86/Q30 一并规划。
-4. RX ring 的单 consumer unsafe 前提独立登记为 O87/Q29。后续必须审计 safe `AsyncUartReader::new()`、TTY/共享 fd 与实际 RX pop 路径，再选择 unique raw reader、OS 层串行化或证明现状充分；不得未经证据直接引入 MPMC。
+4. RX ring 的单 consumer unsafe 前提由 O87/Q29 收敛：`AsyncUartReader::new()` 要求 unsafe 唯一性证明，RX mutation 为 crate-private，唯一 reader 移入单 `tty-reader`，共享 fd 只消费 ldisc ring；不得未经证据引入 MPMC。
 **原因**: multi-hart memory ordering、TX 调度语义、队列生产者模型和 RX consumer 唯一性具有不同触发条件、正确性目标与验证方法。把它们都归结为“换 MPSC”既不能解决 RX 风险，也会在没有 workload 证据时引入额外内存序、公平性和性能成本。
 **影响**: Q24、Q29、Q30 必须独立规划和验收；在对应 Gate 完成前，文档和性能报告必须保留现有边界，不得把 Q28 的 accepted-prefix witness 扩大解释为 syscall 原子性、公平性、MPSC 或 multi-hart 证明。
 **替代方案**: 立即把 TX/RX 全部替换为多方队列；拒绝，缺少需求证据且扩大 unsafe/内存序范围。仅在 Q28 archive 中保留备注；拒绝，无法进入全局 roadmap 和后续 planning Gate。
-**恢复入口**: Q24/Q29/Q30、O63/O85/O86/O87、L299、Q28 archived proposal/design/tasks。
+**恢复入口**: Q24/Q30、O63/O85/O86、L299/L300、Q28 与 `2026-07-18-q29-async-uart-reader-contract` archived proposal/design/tasks。
 
 #### Scenario: Planning post-Q28 concurrency work
 

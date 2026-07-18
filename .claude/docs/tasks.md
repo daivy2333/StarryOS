@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支（已同步 origin，领先 0 commits）。
-> 当前主线（2026-07-16）：Q27 TX backpressure 与 Q28 writer 契约收敛均已完成并归档；Q24 SMP 复验仍等待硬件；Q29 RX consumer 契约与 Q30 TX 多 producer 语义已登记为后续规划项。
+> 当前主线（2026-07-18）：Q27 TX backpressure、Q28 writer 契约与 Q29 reader 契约均已完成并归档；Q24 SMP 复验仍等待硬件；Q30 TX 多 producer 语义保持证据触发。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -51,7 +51,7 @@
 | **Q27a** | uart_16550 readiness 薄接口 | O83 前置：RX/TX ring 状态观测 + readable/writable waker 注册，不引入 OS 语义 | ✅ (2026-07-15) |
 | **Q27** | TX backpressure / writable wait MVP | O83：基于 Q27a，阻塞 fd 等待 TX ring 空间，非阻塞保持 partial/WouldBlock | ✅ 已归档 `2026-07-15-q27-tx-backpressure` |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84：`Clone` 与 `RingBufTx` SPSC 安全边界对齐；MPSC 后置 O85 | ✅ 已归档 `2026-07-15-q28-async-uart-writer-contract` |
-| **Q29** | AsyncUartReader consumer 契约审计 | O87：核对 safe constructor、共享/复制路径与 RX SPSC 单 consumer 前提 | ⏳ 待 `openspec-plan` |
+| **Q29** | AsyncUartReader consumer 契约审计 | O87：unsafe unique raw reader + crate-private RX mutation + 单次 copier 启动 | ✅ 已归档 `2026-07-18-q29-async-uart-reader-contract` |
 | **Q30** | TX 多 producer 语义决策 | O85/O86：syscall 原子性、公平性、跨 write 交错与 MPSC ROI | 🧊 等待真实 workload / Q24 证据 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q24 或新硬件数据 | ⏳ 等待数据 |
@@ -61,7 +61,7 @@
 
 ## 当前执行态
 
-Q19/Q19B/Q19C、Q27a/Q27/Q28 已完成；Q17 multi-hart 后置 Q24。Q28 已通过 unique raw writer、serialized adapter、API/并发/Q27 回归、构建及 QEMU/D1 单次 Gate 并归档；后续分为 Q29 RX consumer 审计与证据触发的 Q30 TX 原子性/公平性/MPSC。
+Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；Q17 multi-hart 后置 Q24。Q29 已将 raw reader、RX mutation 与 copier startup 收敛到显式唯一性边界，并通过 API/字节完整性/readiness、QEMU 和 D1 单 hart Gate；Q30 TX 原子性/公平性/MPSC 仍由新证据触发。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -151,14 +151,14 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28 已完成；Q17 multi-hart 后置 Q24。Q28 已通�
 <!-- Q28.3 --> - [x] StarryOS 以 `Arc<SpinNoPreempt<RawArceOsWriter>>` 保留 cloneable adapter，锁不跨等待点；SMP feature 显式传播
 <!-- Q28.4 --> - [x] Gate Q28：4 compile-fail、Q28 并发 2/2、Q27 回归 6/6、crate/kernel 构建与 OpenSpec 通过；QEMU/D1 单次关键指标均未退化超过 3%
 
-### Q29: AsyncUartReader consumer 契约审计 ⏳ 待 `openspec-plan`
+### Q29: AsyncUartReader consumer 契约审计 ✅ 已归档（2026-07-18）
 
-> 来源：Q28 review、ADR-062/L299/O87；RX 为 SPSC，但 safe constructor、TTY/共享 fd/未来 clone 尚无唯一 consumer witness；不得预设 MPMC。
+> 来源：Q28 review、ADR-062/L299/O87、归档 `2026-07-18-q29-async-uart-reader-contract`；RX 保持 SPSC，不引入 MPMC。
 
-<!-- Q29.1 --> - [ ] `openspec-plan` 审计 reader 构造/移动、共享 fd、TTY/ldisc 与全部 RX pop，形成唯一 consumer witness
-<!-- Q29.2 --> - [ ] 选择最小契约：unique raw reader、OS 串行化，或证明现有单 consumer 充分
-<!-- Q29.3 --> - [ ] 规划 API/compile-fail 与并发 read witness；验收无重复/丢失/重入且保持 register/recheck
-<!-- Q29.4 --> - [ ] Gate Q29：RX SPSC unsafe 前提可由类型/API/单一构造点证明；除非 workload 证据要求，不引入 MPMC ring
+<!-- Q29.1 --> - [x] 审计 reader 构造/移动、共享 fd、TTY/ldisc 与全部 RX pop；确认唯一 raw reader 移入单 `tty-reader`，共享 fd 只消费 ldisc ring
+<!-- Q29.2 --> - [x] `AsyncUartReader::new` 改为 unsafe unique constructor，RX `push`/`push_batch`/`pop` 收窄为 crate-private，copier startup 改为 unsafe 单次启动
+<!-- Q29.3 --> - [x] 10 个 compile-fail + RX 空读/partial/wrap-around/字节顺序与 readiness register-recheck witness 通过
+<!-- Q29.4 --> - [x] Gate Q29：62 unit + 8 doctest + 10 compile-fail、Clippy/rustdoc/OpenSpec、QEMU build+boot 与 D1 `/dev/console` benchmark 退出码 0；不声明 multi-hart
 
 ### Q30: TX 多 producer 语义决策 🧊 证据触发
 
