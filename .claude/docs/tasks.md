@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
 > 由 assistant 维护，uart-16550-lichee 分支（已同步 origin，领先 0 commits）。
-> 当前主线（2026-07-18）：Q27 TX backpressure、Q28 writer 契约与 Q29 reader 契约均已完成并归档；Q24 SMP 复验仍等待硬件；Q30 TX 多 producer 语义保持证据触发。
+> 当前主线（2026-07-18）：Q27 TX backpressure、Q28 writer 契约与 Q29 reader 契约均已完成并归档；下一项为 Q26 维护性清理；Q24 及其 stress 脚手架等待多 hart 真板；Q30 保留为工业化、证据触发的多逻辑 producer 语义工作。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -52,16 +52,16 @@
 | **Q27** | TX backpressure / writable wait MVP | O83：基于 Q27a，阻塞 fd 等待 TX ring 空间，非阻塞保持 partial/WouldBlock | ✅ 已归档 `2026-07-15-q27-tx-backpressure` |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84：`Clone` 与 `RingBufTx` SPSC 安全边界对齐；MPSC 后置 O85 | ✅ 已归档 `2026-07-15-q28-async-uart-writer-contract` |
 | **Q29** | AsyncUartReader consumer 契约审计 | O87：unsafe unique raw reader + crate-private RX mutation + 单次 copier 启动 | ✅ 已归档 `2026-07-18-q29-async-uart-reader-contract` |
-| **Q30** | TX 多 producer 语义决策 | O85/O86：syscall 原子性、公平性、跨 write 交错与 MPSC ROI | 🧊 等待真实 workload / Q24 证据 |
+| **Q30** | TX 多逻辑 producer 工业化语义决策 | O85/O86：单 UART 上 kernel log、TTY echo、共享 fd 的原子性、公平性、跨 write 交错与 MPSC ROI | 🧊 等待真实 workload / Q24 证据 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q24 或新硬件数据 | ⏳ 等待数据 |
-| **Q26** | 维护性清理 | O48/O49/O50 + release LTO 检查 | ⏳ 待做 |
+| **Q26** | 维护性清理 | O48/O49/O50 + release LTO 检查 | NEXT：下一项，待 `openspec-plan` |
 
 ---
 
 ## 当前执行态
 
-Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；Q17 multi-hart 后置 Q24。Q29 已将 raw reader、RX mutation 与 copier startup 收敛到显式唯一性边界，并通过 API/字节完整性/readiness、QEMU 和 D1 单 hart Gate；Q30 TX 原子性/公平性/MPSC 仍由新证据触发。
+Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；下一项是 Q26 维护性清理。Q17 multi-hart 与 Q24 stress 脚手架等真板到手；O77 D1 polling 性能已接受、暂不继续优化；O80 loader/mm lazy COW 退出当前规划；Q30 面向单 UART 多逻辑 producer 的工业化原子性/公平性/MPSC，仍由新 workload 或 Q24 证据触发。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -160,16 +160,16 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；Q17 multi-hart 后置 Q24。Q29 已
 <!-- Q29.3 --> - [x] 10 个 compile-fail + RX 空读/partial/wrap-around/字节顺序与 readiness register-recheck witness 通过
 <!-- Q29.4 --> - [x] Gate Q29：62 unit + 8 doctest + 10 compile-fail、Clippy/rustdoc/OpenSpec、QEMU build+boot 与 D1 `/dev/console` benchmark 退出码 0；不声明 multi-hart
 
-### Q30: TX 多 producer 语义决策 🧊 证据触发
+### Q30: TX 多逻辑 producer 工业化语义决策 🧊 证据触发
 
-> 来源：Q28、ADR-062/L299/O85/O86；仅保证每次 accepted prefix 连续，blocking retry 间可插入其他 producer，不保证 syscall 原子性/公平性/跨 write 不交错。
+> 来源：Q28、ADR-062/L299/O85/O86；即使只有一个物理 UART，kernel log、TTY echo、共享 fd 和多个任务也可形成多个逻辑 producer。当前仅保证每次 accepted prefix 连续，尚无 workload 证明需要更强 syscall 原子性、公平性或 MPSC。
 
 <!-- Q30.1 --> - [ ] 仅当 Q24/新 workload 发现消息边界、饥饿、交互延迟或 producer-lock 吞吐问题时启动 `openspec-plan`
 <!-- Q30.2 --> - [ ] 区分 atomicity、fairness、锁竞争与吞吐目标，禁止用 MPSC 一次性代替全部问题
 <!-- Q30.3 --> - [ ] 比较 SPSC+串行化、提交粒度、调度队列、MPSC，并量化内存序、公平性、延迟、复杂度
 <!-- Q30.4 --> - [ ] Gate Q30：并发 stress 证明目标语义；未满足触发 Gate 时维持当前 accepted-prefix 契约和 O85 远期状态
 
-### Q24: VisionFive2 / multi-hart revalidation ⏳ 等待硬件
+### Q24: VisionFive2 / multi-hart revalidation ⏳ 等待硬件（含 stress 脚手架）
 
 <!-- Q24.1 --> - [ ] O66 `print_preserved_status()`：UART / PLIC / Clock 状态 dump
 <!-- Q24.2 --> - [ ] O64 trust-u-boot 脚手架：明确 PLIC/Clock 只观察或最小补丁，UART 可正常 re-init
@@ -187,7 +187,7 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；Q17 multi-hart 后置 Q24。Q29 已
 <!-- Q25.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q24 或新硬件数据证明需要后实施
 <!-- Q25.3 --> - [ ] Gate Q25: 用 Q24 或新硬件数据决定实施 / 拒绝 DMA 与高波特率扩展
 
-### Q26: 维护性清理 ⏳ 待做
+### Q26: 维护性清理 NEXT — 下一项，待 `openspec-plan`
 
 <!-- Q26.1 --> - [ ] O48 memtrack 是否集成：调试需要则启用，否则记录保留/移除决策
 <!-- Q26.2 --> - [ ] O49 `ProcessMode::Manual` 移除评估

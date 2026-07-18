@@ -2,11 +2,11 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q0~Q15、Q20、Q27a/Q27/Q28/Q29 已完成；Q21/Q22 取消当前规划；Q30 保持证据触发）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q15、Q20、Q27a/Q27/Q28/Q29 已完成；Q21/Q22/O80 退出当前规划；Q26 为下一项；O77/Q30 保留为证据触发的后续优化）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
 ## Requirements
 ### Requirement: UART 后续优化 Roadmap — Q27/Q28/Q29 已完成，Q30 证据触发
 
-Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。Q27a/Q27/Q28 已于 2026-07-15 完成，Q29 于 2026-07-18 完成；后续并发工作分流为 Q24 multi-hart 复验和证据触发的 Q30 TX 多 producer 语义决策。MPSC/MPMC 均不得作为默认方案。
+Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。Q27a/Q27/Q28 已于 2026-07-15 完成，Q29 于 2026-07-18 完成；Q26 维护性清理是下一项工作。Q24 multi-hart 复验及其 stress 脚手架等待真板，O77 D1 polling 效率保持后续优化，Q30 作为单设备多逻辑 producer 的工业化语义储备但仍由 workload 证据触发，O80 loader/mm lazy COW 不进入当前规划。MPSC/MPMC 均不得作为默认方案。
 
 **重排依据**: ADR-058、ADR-061、ADR-062、Q20 benchmark report、R19、L299、O82/O83/O84/O85/O86/O87。
 **历史边界**: Q16~Q20 已完成；Q19D、M3/rootfs-probe、O79/O81、Q21/Q22 取消当前规划。Storage/rootfs 需要新 change。
@@ -22,21 +22,21 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **Q27** | TX backpressure / writable wait MVP | O83、ADR-061 | ✅ 2026-07-15 完成并归档；阻塞 fd 等待 TX ring 空间，非阻塞 fd 保持 partial / WouldBlock，QEMU/D1 Gate 通过 |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84、ADR-061 | ✅ 已归档 `2026-07-15-q28-async-uart-writer-contract`；MPSC 后置 O85 |
 | **Q29** | AsyncUartReader consumer 契约审计 | O87、ADR-062 | ✅ 已归档 `2026-07-18-q29-async-uart-reader-contract`；unsafe unique reader、RX mutation 封闭、单次 copier 启动 |
-| **Q30** | TX 多 producer 语义决策 | O85/O86、ADR-062 | 仅在 Q24 或新 workload 证明消息原子性、公平性、锁竞争或吞吐需求时启动 |
-| **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 至少两个 hart 跨 hart write/flush/tcdrain，并覆盖 read 与 IER enable/disable |
+| **Q30** | TX 多 producer 工业化语义决策 | O85/O86、ADR-062 | 单个 UART 也可有 kernel log、TTY echo、共享 fd 等多个逻辑 producer；仅在 Q24 或新 workload 证明原子性、公平性、锁竞争或吞吐需求时启动 |
+| **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 等真板到手后建设并运行 stress；至少两个 hart 覆盖 read/write/flush/tcdrain 与 IER enable/disable |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69/O41 | 用 Q24 或新硬件数据决定实施或拒绝 |
-| **Q26** | 维护性清理 | O48/O49/O50、ADR-034 | memtrack、Manual mode、预留接口、release LTO 有结论 |
+| **Q26** | 维护性清理 | O48/O49/O50、ADR-034 | NEXT：memtrack、Manual mode、预留接口、release LTO 有明确结论 |
 
 | 编号 | 当前结论 | 触发条件 |
 |------|----------|----------|
 | **O74/O75** | 平台 descriptor + early console 已落地 | 新平台适配时继续沿用 |
-| **O77** | D1 THRE IRQ 不可靠时以 bounded slow-poll 保证 forward progress；功能和线速达标，但 CPU/MMIO 空轮询成本高 | 优化 D1 TX wake/watchdog，并验证其他真板是否需要同一 fallback |
-| **O80** | Memory-root lazy COW SIGILL 是 loader/mm 后续，不是 UART gate | 需要恢复 lazy file-backed loader parity 时 |
+| **O77** | D1 THRE IRQ 不可靠时以 bounded slow-poll 保证 forward progress；功能和线速已达标，暂不为 CPU/MMIO 空轮询成本继续改动 | 后续出现 CPU/功耗需求时优化 D1 TX wake/watchdog，并验证其他真板是否需要同一 fallback |
+| **O80** | Memory-root lazy COW SIGILL 属于 loader/mm，eager path 已满足当前 benchmark 与 UART 目标 | 退出当前规划；未来明确需要 lazy file-backed loader parity 时重新 propose |
 | **O82** | io_uring-like user ring/completion 可借鉴但当前不实施 | 高波特率、多 writer 公平性、细粒度 completion 或 CPU 证据出现时 |
 | **O83** | uart readiness 薄接口 + TX backpressure / writable wait 已完成 | Q27a/Q27 已归档 |
 | **O84** | `AsyncUartWriter::Clone` 与 SPSC 契约已收敛 | ✅ Q28 完成 |
-| **O85** | MPSC ring / 多 writer 公平性为远期候选 | Q24 SMP 或新 workload 证明需要时 |
-| **O86** | TX syscall/message 原子性、公平性与跨 write 交错不在当前保证内 | workload 明确要求且现有 accepted-prefix 契约不足时进入 Q30 |
+| **O85** | MPSC ring / 多逻辑 writer 公平性为工业化远期候选；不要求存在多个物理 UART | Q24 SMP 或新 workload 证明当前 producer serialization 不足时 |
+| **O86** | 单 UART 上的 kernel log、TTY echo、共享 fd 等逻辑 producer 仍不保证 syscall/message 原子性、公平性与跨 write 不交错 | workload 明确要求且现有 accepted-prefix 契约不足时进入 Q30 |
 | **O87** | RX SPSC 单 consumer capability 已收敛 | ✅ Q29 完成 |
 
 <!-- tombstone: O76/O77 original Q19B scope --> Archived 2026-07-02 in ARC-202607021648 — Q19/Q19B 原范围已完成；O77 后因 Q19C/Q20/D1 polling 证据以 follow-up optimization 重新开放。
@@ -133,7 +133,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **O69** | arceos axdma + DwmacHal | **DMA 一致性内存抽象**：`DMAInfo { cpu_addr, bus_addr }` 二元组 + UNCACHED 映射 + cache_flush_range。**⏳ 与 O3/O40 合并**：JH7110 是否有外部 DMA 控制器未知，Q25 按 O3/O40 决策树走。如引入，**借鉴** axdma + DwmacHal cache_flush_range 模式。 | ⏳ Q25 决策 | Q24 或新硬件数据 + O3 评估 |
 | **O71** | arceos TIP-005 | **PAC 类型安全寄存器访问**：用 `jh7110_vf2_13b_pac` 而非 `write_volatile(magic_offset)`。编译期类型检查 + IDE 自动补全。**⏳ 待评估**：Q24 真板驱动开发时考虑引入，避免 magic offset。 | 🟡 P1 | Q24 真板驱动开发 |
 | <!-- O77 --> **O77** | Q19C/Q20/Q29 后 D1 TX 诊断 | **已接受的正确性妥协，效率待优化**：D1 THRE IRQ/IIR no-pending 路径不能作为唯一进展来源，当前通用 copier 使用 `TX_FAST_RETRY_LIMIT=32` + `TX_SLOW_POLL_LIMIT=4096`×`TX_SLOW_POLL_SPINS=256` + bounded yield fallback。2026-07-18 D1 fullbench 达物理线速约 95.3%-99.1%，退出码 0，且 `slow_poll_exh=0`/`yield_exh=0`；但 13,834,811 次 hardware send 中 13,813,186 次返回 0（99.84%，41,834.7 zero/KiB），说明发送期间以大量 CPU/MMIO polling 换取 forward progress。QEMU 因不仿真真实线时几乎不进入 slow-poll；其他真板的 THRE IRQ 可靠性和 fallback 成本尚未验证。 | 🟡 功能保留 / 效率待优化 | 优先调查 D1 THRE/PLIC 时序；目标为 IRQ-first + 定时 watchdog，或将 D1 workaround 平台化；不得回退为无软件 fallback 的纯 IRQ |
-| **O80** | Q19C-M1 loader/mm 后续 | **lazy file-backed COW SIGILL**：`load_user_app()` 可处理 fault/syscall，但 main 前在合法 RV64C `c.ld` SIGILL；eager VFS mapping 完整通过，排除 UART/ELF/通用 syscall。检查 `CachedFile`、`FileBackend::Cached`、`Backend::new_cow`、tmpfs offset/权限/取指；非 UART gate。 | 🟡 P1 | 需要恢复 lazy file-backed loader parity 时 |
+| **O80** | Q19C-M1 loader/mm 后续 | **退出当前规划**：lazy file-backed COW 路径在 main 前触发 `SIGILL`，但 eager VFS mapping 已完整通过并满足当前 UART benchmark。该问题属于 loader/mm，不再占用 UART 或多 hart 真板前工作；未来明确需要按需文件映射/COW parity 时重新 propose。 | 🧊 当前不做 | 明确恢复 lazy file-backed loader parity 时 |
 | **O83** | R19 / ADR-061 | **uart readiness 薄接口 + TX backpressure / writable wait MVP**：已由 Q27a/Q27 完成并归档。`uart_16550` 暴露 RX/TX ring readiness 与 waker 注册，OS 层复用 `poll_io`、`Pollable::OUT` 和 TX pop wake；UART 阻塞 fd 等待空间，非阻塞 fd 保持 partial/`WouldBlock`，PTY 保持非等待契约。QEMU、D1 Gate 通过，S11 short write 归零且关键性能无退化。 | ✅ 已完成（2026-07-15） | `2026-07-15-q27-tx-backpressure` |
 | **O84** | R19 / ADR-061 | **`AsyncUartWriter::Clone` 与 SPSC 契约收敛**：Q28 已移除 raw writer `Clone`/共享 `TtyWrite`，改为 unsafe 唯一构造与 `&mut self` 提交；StarryOS direct-output/echo 通过共享 `SpinNoPreempt` adapter 串行化单次 push。compile-fail、并发 accepted-prefix、Q27 回归及 QEMU/D1 单次性能 Gate 均通过；不引入 MPSC。 | ✅ 已完成（2026-07-15） | `2026-07-15-q28-async-uart-writer-contract` |
 <!-- tombstone: O67/O68/O70/O72/O73 --> Archived 2026-07-02 in ARC-202607021648 — 已采纳/已蕴含/已领先项从 active optimization 清单移除。
@@ -182,12 +182,12 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 
 ### Requirement: Q28 后并发契约 backlog
 
-Q28 后续优化 MUST 将 TX 调度语义、队列 producer 模型与 RX consumer 安全分别评估，禁止把它们合并为“改多方 ring”单一任务。
+Q28 后续优化 MUST 将 TX 调度语义、队列 producer 模型与 RX consumer 安全分别评估，禁止把它们合并为“改多方 ring”单一任务。Q30 面向工业化的多逻辑 producer 语义：即使只有一个物理 UART，kernel log、TTY echo、共享/复制 fd 和多个任务也可能形成多个 producer；但当前 StarryOS 没有证据表明 serialized SPSC adapter 不足，因此只保留远期能力入口。
 
 | 编号 | 问题与当前边界 | 优先级/状态 | 触发条件 |
 |------|----------------|-------------|----------|
-| **O85** | TX ring 仍是 SPSC；MPSC 只可能改善 producer lock 竞争、吞吐或调度策略，不自动提供 syscall 原子性 | 🧊 远期候选 / Q30 | Q24 或新 workload 证明现有 producer serialization 不足 |
-| <!-- O86 --> **O86** | Q28 只保证每次 raw submission 的 accepted prefix 连续；blocking syscall 可分段，其他 producer 可在重试间提交，不保证整个 syscall/message 原子性、producer 公平性或跨 write 不交错 | 🧊 证据触发 / Q30 | 真实应用要求消息边界，或观测到饥饿、交互延迟、优先级反转 |
+| **O85** | TX ring 仍是 SPSC；MPSC 只可能改善单 UART 上多个逻辑 producer 的锁竞争、吞吐或调度策略，不自动提供 syscall 原子性 | 🧊 工业化远期候选 / Q30 | Q24 或新 workload 证明现有 producer serialization 不足 |
+| <!-- O86 --> **O86** | Q28 只保证每次 raw submission 的 accepted prefix 连续；blocking syscall 可分段，kernel log、TTY echo、共享 fd 等 producer 可在重试间提交，不保证整个 syscall/message 原子性、公平性或跨 write 不交错 | 🧊 证据触发 / Q30 | 真实应用要求消息边界，或观测到饥饿、交互延迟、优先级反转 |
 | <!-- O87 --> **O87** | RX ring 保持 SPSC；`AsyncUartReader::new()` 已改为 unsafe unique constructor，RX mutation 已封闭，StarryOS 唯一 reader 移入单 `tty-reader`，共享 fd 只消费 ldisc ring | ✅ Q29 完成 | 新 raw multi-consumer 需求出现时重新规划，不默认引入 MPMC |
 
 #### Scenario: TX workload requires stronger multi-producer semantics
