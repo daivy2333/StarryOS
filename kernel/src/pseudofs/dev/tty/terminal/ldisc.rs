@@ -2,6 +2,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     future::poll_fn,
+    marker::PhantomData,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
@@ -27,15 +28,7 @@ const BUF_SIZE: usize = 256;
 type ReadBuf = Arc<ringbuf::StaticRb<u8, BUF_SIZE>>;
 
 /// How should we process inputs?
-#[allow(dead_code)]
 pub enum ProcessMode {
-    /// Process inputs only on call to `read`
-    ///
-    /// This is the fallback strategy and is rather limited. For instance, you
-    /// can't interrupt a running program by Ctrl+C unless it's not blocked on a
-    /// `read` call to the terminal, since the signal is emitted only when
-    /// inputs are being processed.
-    Manual,
     /// Spawns task for processing inputs, relying on external events to wake
     /// up.
     ///
@@ -252,8 +245,7 @@ impl<R: TtyRead> SimpleReader<R> {
     }
 }
 
-enum Processor<R, W> {
-    Manual(InputReader<R, W>),
+enum Processor<R> {
     External(Arc<PollSet>),
     None(SimpleReader<R>, Arc<PollSet>),
 }
@@ -263,7 +255,8 @@ pub struct LineDiscipline<R, W> {
     buf_rx: UnsafeCell<CachingCons<ReadBuf>>,
     poll_tx: Arc<PollSet>,
     clear_line_buf: Arc<AtomicBool>,
-    processor: Processor<R, W>,
+    processor: Processor<R>,
+    _phantom: PhantomData<W>,
 }
 
 struct WaitPollable<'a>(Option<&'a Arc<PollSet>>);
@@ -303,7 +296,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
         let poll_tx = Arc::new(PollSet::new());
         let processor = match config.process_mode {
-            ProcessMode::Manual => Processor::Manual(reader),
             ProcessMode::External(register) => {
                 let poll_rx = Arc::new(PollSet::new());
                 axtask::spawn_with_name(
@@ -346,6 +338,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             poll_tx,
             clear_line_buf,
             processor,
+            _phantom: PhantomData,
         }
     }
 
@@ -366,21 +359,14 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     pub fn poll_read(&mut self) -> bool {
-        match &mut self.processor {
-            Processor::Manual(reader) => {
-                reader.poll();
-            }
-            Processor::None(reader, _) => reader.poll(),
-            _ => {}
+        if let Processor::None(reader, _) = &mut self.processor {
+            reader.poll();
         }
         !self.buf_rx().is_empty()
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
-            Processor::Manual(_) => {
-                waker.wake_by_ref();
-            }
             Processor::External(set) | Processor::None(_, set) => {
                 set.register(waker);
             }
@@ -413,7 +399,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 }
                 let mut total_read = 0;
                 let set = match &self.processor {
-                    Processor::Manual(_) => None,
                     Processor::External(set) => Some(set),
                     _ => unreachable!(),
                 };
@@ -444,7 +429,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
         let mut total_read = 0;
         let set = match &self.processor {
-            Processor::Manual(_) => None,
             Processor::External(set) => Some(set),
             _ => unreachable!(),
         };

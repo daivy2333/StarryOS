@@ -19,7 +19,7 @@ export AX_LIB := axfeat
 export APP_FEATURES := qemu
 
 ifeq ($(MEMTRACK), y)
-	APP_FEATURES += starry-api/memtrack
+	APP_FEATURES += starry-kernel/memtrack
 endif
 
 default: build
@@ -79,6 +79,8 @@ ci-test:
 host-test:
 	rustc --edition=2024 --test tests/early-console-host-harness.rs -o /tmp/early-console-test
 	/tmp/early-console-test
+	rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
+	/tmp/memtrack-session-test
 
 # Aliases
 rv:

@@ -257,7 +257,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(114, 514),
-            Arc::new(memtrack::MemTrack),
+            Arc::new(memtrack::MemTrack::new()),
         ),
     );
 

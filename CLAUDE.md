@@ -10,11 +10,11 @@
 
 StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，基于 ArceOS 组件化架构。**核心目标**：实现高性能异步串口通信。
 
-- **当前状态**：Q27 TX backpressure 与 Q28 writer 契约收敛已完成并归档（2026-07-15）；D1 真板异步 UART 测试（Q19/Q19B/Q19C）已正式结束；当前主线待推进 Q24 SMP 硬件复验 / Q29 RX consumer 契约审计 / Q30 TX 多 producer 语义（证据触发）
-- **当前分支**：`uart-16550-lichee`（已同步 origin，用于 Lichee RV Dock 适配与验证）
+- **当前状态**：Q26 维护性清理与 Q27/Q28/Q29 UART 契约工作已完成并归档；当前主线为 Q24 SMP 硬件复验，Q30 TX 多 producer 语义由证据触发
+- **当前分支**：`uart-16550-lichee`（领先 origin 1 commit，用于 Lichee RV Dock 适配与验证）
 - **跨项目引用**：父项目 `../CLAUDE.md` — 跨项目文档索引；本仓库 `crates/uart_16550/` — 当前串口驱动库
 
-> ✅ RESOLVED [2026-07-16] — 当前状态行与领先提交数已由 docs-maintainer 同步至最新（领先 origin 0 commits）。
+> HISTORY [2026-07-16] — 当时分支与 origin 同步；当前领先数见上方。
 
 ## 文档体系
 
@@ -26,11 +26,12 @@ StarryOS 是一个基于 RISC-V 的宏内核操作系统，使用 Rust 编写，
 | `openspec/specs/architecture/` | 架构决策 ADR-001~031（按主题分组） | `grep "关键词" openspec/specs/architecture/spec.md` |
 | `openspec/specs/learned/` | 学习记忆（API 路径、踩坑、技巧模式） | `grep "关键词" openspec/specs/learned/spec.md` |
 | `openspec/specs/references/` | 外部参考与依赖索引 | `grep "关键词" openspec/specs/references/spec.md` |
-| `openspec/specs/optimization/` | 优化记录（Q0~Q28 已完成 + Q24/Q25/Q26/Q29/Q30 待做） | `grep "关键词" openspec/specs/optimization/spec.md` |
+| `openspec/specs/optimization/` | 优化记录（Q26/Q27/Q28/Q29 已归档；Q24/Q25 等待证据；Q30 证据触发） | `grep "关键词" openspec/specs/optimization/spec.md` |
 | `openspec/changes/` | 变更提案（含 rules domain 归档墓碑） | `openspec list` |
 | `openspec/project.md` | 项目上下文（技术栈 / 约束 / 目录） | `cat openspec/project.md` |
 
-> ✅ RESOLVED [2026-07-16] — optimization 行已由 docs-maintainer 同步为 Q0~Q28 已完成 + Q24/Q25/Q26/Q29/Q30 待做。
+> HISTORY [2026-07-16] — 当时 optimization 路线已同步；当前状态见表格。
+> ✅ RESOLVED [2026-07-20] — Q26/Q29 归档状态与当前 Q24/Q25/Q30 路线已同步。
 
 ### 项目状态（日常维护）
 

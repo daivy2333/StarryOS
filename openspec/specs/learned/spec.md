@@ -630,7 +630,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 #### QEMU benchmark 交叉编译 → 部署流程
 
-<!-- L265 -->
+<!-- L311 -->
 - **交叉编译**：`export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH && make tests/benchmark`
 - **挂载部署**：`sudo mount -o loop make/disk.img /mnt && sudo cp tests/benchmark /mnt/bin/benchmark && sudo umount /mnt`
 - **运行**：`make run` → QEMU 内 `./benchmark`
@@ -640,29 +640,29 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 
 #### benchmark 测试代码设计原则
 
-<!-- L266 -->
+<!-- L312 -->
 - **填充字节用 `\0`**：`memset(buf, 0, sz)`。UART 正常传输，终端零显示。禁止用可见字符（`'A'`）或不可打印字符（`0xFF`），前者刷屏、后者显示乱码 `�`
 - **新增测试尺寸不与现有重叠**：`test_tx_throughput` 已覆盖 64/256/1024/4096B，新增矩阵只测 FIFO 边界尺寸 1/15/16/17/31/32/33/48/49
 - **排序算法匹配现有风格**：新函数用 bubble sort（与 `test_tx_latency` 一致），不引入 `qsort` + 独立 comparator
 - **输出格式对齐**：缩进 + 单位标注（`ms`），匹配 `test_tx_latency` 的 `n=X avg=Y ms P50=Z ms` 格式
 
-<!-- L267 -->
+<!-- L313 -->
 - **数据量意识**：QEMU 115200 bps 下每 KB 数据 ≈ 87ms 传输时间。FIFO 边界矩阵 9 尺寸 × 100 迭代 ≈ 24KB（~2s）。避免尺寸重复导致数据量翻倍（曾因 64/256/1024/4096 重复导致 ~572KB → ~50s）
 
 #### ArceOS 借鉴参考（DMA / HAL / async 模式）
 
-<!-- L268 -->
+<!-- L314 -->
 | `axdma::alloc_coherent` | `others/arceos/modules/axdma/src/lib.rs:46` | DMA 一致性内存分配（返回 `DMAInfo { cpu_addr, bus_addr }` 二元组）。**仅模式参考**：NS16550 16 字节 FIFO 不需要 DMA，引入对齐约束 + cache flush 复杂度反而过度设计。未来做高速外设（NIC/块设备）可强借鉴。 | 2026-06-26 |
-<!-- L269 -->
+<!-- L315 -->
 | `axdriver_net::dwmac::DwmacHal` | `others/arceos/axdriver_crates/axdriver_net/src/dwmac/mod.rs:32-54` | DWMAC HAL trait（7 方法：`dma_alloc` / `dma_dealloc` / `mmio_phys_to_virt` / `mmio_virt_to_phys` / `wait_until` / `configure_platform` / `cache_flush_range`）。我们 `UartPort`（4 方法）+ `OsRuntime`/`OsWakerSet`（2 trait）= 6 接口，比 DwmacHal 7 方法**更精简且正交性更好**（ADR-036 已印证）。 | 2026-06-26 |
-<!-- L270 -->
+<!-- L316 -->
 | `axasync::waker::wake_at` | `others/arceos/modules/axasync/src/waker.rs:102` | timer-based waker（`BinaryHeap<TimerEventEntry>` + `set_oneshot_timer`）。**等价实现**：我们 `axtask::future::timeout(fut, dur)`（Q9）通过 `axtask::ax_wait_timer` + waker 实现相同语义，不引入 BinaryHeap/oneshot_timer。 | 2026-06-26 |
-<!-- L271 -->
+<!-- L317 -->
 | `axnet::smoltcp_impl::RecvFuture::poll` | `others/arceos/modules/axnet/src/smoltcp_impl/future.rs:31-64` | "Init Flag + Waker" Future 模式：首次 poll 做一次性初始化（连接状态检查），主循环注册 waker + Pending。**PIT-006 教训**：AcceptFuture 遗漏 `register_accept_waker` → 永久 Pending。我们 ISR 极简（read_isr + 禁中断 + wake + 返回）+ AtomicWaker 直接 wake（O17 教训）已蕴含此不变量。 | 2026-06-26 |
 
 #### 内存序踩坑（2026-06-26 O63 代码验证）
 
-<!-- L272 -->
+<!-- L318 -->
 **[ier_cache RMW 竞争 — Q6 SMP P0 阻塞]**
 
 - **症状**：真板 4 核下 ISR (hart 0) 和 copier (hart N) 并发调用 `update_ier()` 时，IER 中断使能位可能被对端覆盖丢失，导致 RX 或 TX 彻底停滞
@@ -670,7 +670,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **解决**：把 `ier_cache` RMW 搬进 `SpinNoIrq::lock()` 内，或改用 `AtomicU8::fetch_or`/`fetch_and` 配合 `AcqRel` 排序
 - **预防**：跨 hart 访问的 Atomic 变量做 RMW 时，如用 load+store 两步，必须将两步放在同一个锁临界区内；或直接用 `fetch_*` 原子操作
 
-<!-- L273 -->
+<!-- L319 -->
 **[tx_copier_active / tx_staged_bytes 跨 hart 读写排序 — Q6 SMP P1]**
 
 - **症状**：真板多核下 flush/tcdrain （user task on hart N）可能看到 TX copier (hart M) 的陈旧 active/staged 值，导致 tcdrain 过早返回或 hang
@@ -678,7 +678,7 @@ M0 见证层（FIFO 边界矩阵 benchmark + telemetry 计数器）实施中积�
 - **解决**：写端 → `Ordering::Release`；读端 → `Ordering::Acquire`；`fetch_add/sub` → `Ordering::AcqRel`
 - **预防**：SMP 场景下，跨 hart 共享的 flag/counter 必须建立 happens-before 边。rule of thumb：store 用 Release，load 用 Acquire
 
-<!-- L274 -->
+<!-- L320 -->
 **[QEMU 单核掩盖 SMP 内存序问题]**
 
 - **现象**：Q15 全部 Relaxed 用法在 QEMU (max-cpu-num=1) 下完全正常，`cargo check` + benchmark 0 问题
@@ -1132,5 +1132,31 @@ NIC TX 必须先写 payload/descriptor，再执行平台要求的 DMA write barr
 - **AND** late completions MUST be rejected or completed against their original generation
 - **AND** bus mastering or DMA MUST stop before backing memory is reclaimed
 - **AND** all affected waiters MUST receive a stable error or state transition
+
+<!-- L309 -->
+### [Q26 memtrack API 漂移修复]
+
+memtrack 调试模块因 API 迁移而失活：Makefile 传旧 `starry-api/memtrack` feature（实际 feature 已在 `starry-kernel` 中），源码引用迁移前路径（`axalloc::current_generation`→`axalloc::tracking::*`、`crate::vfs::*`→`crate::pseudofs::*`）。Q26 修复了 Makefile feature 路径和全部源码 API 适配，引入三态 session（Idle/Active/Analyzing）保证非法命令不 panic，统一使用 `axalloc::tracking` 入口点。
+
+#### Scenario: 修复 memtrack 类调试模块
+
+- **WHEN** 开发者为 memtrack 等调试模块修复 API 适配
+- **THEN** MUST 先 grep 该模块引用的 crate 路径是否匹配当前 API 版本
+- **AND** MUST 修复 feature gate 传播路径（Makefile / Cargo.toml / cfg）
+- **AND** MUST 为状态转换添加防御性处理，避免非法命令导致内核 panic
+
+<!-- L310 -->
+### [Q26 ProcessMode::Manual 删除 — TTY 收敛教训]
+
+Q7 引入 `ProcessMode`（`Manual` / `External` / `None`）以区分不同轮询策略，但 `Manual` 变体自 Q7 后从未被构造（仅 `External` 和 `None` 被使用），其内部 match 分支（`new`/`poll`/`waker`/`VTIME`/`read`）成为死代码。Q26 删除了整个 `Manual` 变体与关联分支，TTY/PTY 行为通过 QEMU boot 和编译期 match 完整性验证无退化。
+
+**教训**：引入模式枚举时，若某个变体没有构造路径且超过两个 milestone 未使用，应直接删除而非保留"预留"，避免死代码在后续 API 迁移中累积维护成本。
+
+#### Scenario: 清理 ProcessMode 类遗留枚举
+
+- **WHEN** 开发者发现 ProcessMode 等有未构造变体的枚举
+- **THEN** MUST 先确认变体是否在所有 cfg 组合下均无构造路径
+- **AND** MUST 删除变体及其内部 match 分支
+- **AND** MUST 通过 benchmark 或 Manual QA 验证行为无退化
 
 <!-- arc: ARC-202607081429 --> 16 条已归档 (2026-07-08) → ../changes/archive/2026-07-08-ARC-202607081429/proposal.md

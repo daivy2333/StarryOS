@@ -34,16 +34,7 @@ use self::{
     },
     write::{ONLCR_BUF_SIZE, OnlcrChunk, ShortWriteAction, classify_short_write},
 };
-use crate::{
-    pseudofs::{DeviceOps, SimpleFs},
-    task::AsThread,
-};
-
-pub fn create_pty_master(fs: Arc<SimpleFs>) -> AxResult<Arc<PtyDriver>> {
-    let (master, slave) = pty::create_pty_pair();
-    pts::add_slave(fs, slave)?;
-    Ok(master)
-}
+use crate::{pseudofs::DeviceOps, task::AsThread};
 
 /// Tty device
 pub struct Tty<R, W> {

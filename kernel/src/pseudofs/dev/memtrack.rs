@@ -6,14 +6,19 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use axalloc::tracking::{allocations_in, current_generation, disable_tracking, enable_tracking};
 use axbacktrace::Backtrace;
-use axfs_ng_vfs::{NodeFlags, VfsResult};
+use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
+use axsync::Mutex;
 
+use self::session::{Command, SessionState, parse_command};
 use crate::{
     mm::clear_elf_cache,
+    pseudofs::DeviceOps,
     task::{cleanup_task_tables, tasks},
-    vfs::DeviceOps,
 };
+
+mod session;
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -101,10 +106,10 @@ fn run_memory_analysis() {
     );
 
     let from = STAMPED_GENERATION.load(Ordering::SeqCst);
-    let to = axalloc::current_generation();
+    let to = current_generation();
 
     let mut allocations: BTreeMap<MemoryCategory, Vec<Layout>> = BTreeMap::new();
-    axalloc::allocations_in(from..to, |info| {
+    allocations_in(from..to, |info| {
         let category = MemoryCategory::new(&info.backtrace);
         allocations.entry(category).or_default().push(info.layout);
     });
@@ -131,27 +136,60 @@ fn run_memory_analysis() {
     }
 }
 
-pub(crate) struct MemTrack;
+pub(crate) struct MemTrack {
+    state: Mutex<SessionState>,
+}
+
+impl MemTrack {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(SessionState::new()),
+        }
+    }
+
+    fn try_start_tracking(&self) -> VfsResult<usize> {
+        let mut state = self.state.lock();
+        state.try_start().map_err(|()| VfsError::InvalidInput)?;
+        let generation = current_generation();
+        STAMPED_GENERATION.store(generation, Ordering::SeqCst);
+        ax_println!("Memory allocation generation stamped: {}", generation);
+        enable_tracking();
+        Ok(0)
+    }
+
+    fn try_end_tracking(&self) -> VfsResult<usize> {
+        let mut state = self.state.lock();
+        state
+            .try_begin_analysis()
+            .map_err(|()| VfsError::InvalidInput)?;
+        // Drop the lock before running the analysis so that a panic during
+        // analysis does not poison the mutex.  In a no_std kernel, a panic in
+        // run_memory_analysis() halts execution — disable_tracking() and the
+        // state reset below will not run in that case.
+        drop(state);
+
+        run_memory_analysis();
+
+        // Always disable tracking and return to Idle after analysis.
+        disable_tracking();
+        self.state.lock().finish_analysis();
+        Ok(0)
+    }
+}
 
 impl DeviceOps for MemTrack {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         Ok(buf.len())
     }
 
-    fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        if offset == 0 && !buf.is_empty() {
-            match buf {
-                b"start\n" => {
-                    let generation = axalloc::current_generation();
-                    STAMPED_GENERATION.store(generation, Ordering::SeqCst);
-                    ax_println!("Memory allocation generation stamped: {}", generation);
-                    axalloc::enable_tracking();
-                }
-                b"end\n" => {
-                    run_memory_analysis();
-                    axalloc::disable_tracking();
-                }
-                _ => {}
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        match parse_command(buf).map_err(|()| VfsError::InvalidInput)? {
+            Command::Noop => {}
+            Command::Start => {
+                self.try_start_tracking()?;
+            }
+            Command::End => {
+                self.try_end_tracking()?;
             }
         }
         Ok(buf.len())

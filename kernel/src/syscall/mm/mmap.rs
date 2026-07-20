@@ -182,7 +182,6 @@ pub fn sys_mmap(
         MmapFlags::SHARED | MmapFlags::SHARED_VALIDATE => {
             if let Some(file) = file {
                 let file = file.inner();
-                let backend = file.backend()?.clone();
                 match file.backend()?.clone() {
                     FileBackend::Cached(cache) => {
                         // TODO(mivik): file mmap page size
@@ -203,9 +202,6 @@ pub fn sys_mmap(
                         match device.mmap() {
                             DeviceMmap::None => {
                                 return Err(AxError::NoSuchDevice);
-                            }
-                            DeviceMmap::ReadOnly => {
-                                Backend::new_cow(start, page_size, backend, offset as u64, None)
                             }
                             DeviceMmap::Physical(mut range) => {
                                 range.start += offset;

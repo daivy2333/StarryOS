@@ -2,11 +2,11 @@
 
 ## Purpose
 
-汇总 StarryOS 异步串口项目各阶段（Q0~Q15、Q20、Q27a/Q27/Q28/Q29 已完成；Q21/Q22/O80 退出当前规划；Q26 为下一项；O77/Q30 保留为证据触发的后续优化）的性能与正确性优化条目，包含问题描述、当前影响、建议方案、优先级与状态。Q 编号对应 milestone，O 编号保留历史优化项身份。
+汇总 StarryOS 异步串口项目各阶段（Q0~Q15、Q20、Q27a/Q27/Q28/Q29 已完成；Q21/Q22/O80 退出当前规划；Q26 已实施并归档，部分运行时 Gate 为 ENV BLOCK；O77/Q30 保留为证据触发的后续优化）的性能与正确性优化条目。Q 编号对应 milestone，O 编号保留历史优化项身份。
 ## Requirements
 ### Requirement: UART 后续优化 Roadmap — Q27/Q28/Q29 已完成，Q30 证据触发
 
-Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。Q27a/Q27/Q28 已于 2026-07-15 完成，Q29 于 2026-07-18 完成；Q26 维护性清理是下一项工作。Q24 multi-hart 复验及其 stress 脚手架等待真板，O77 D1 polling 效率保持后续优化，Q30 作为单设备多逻辑 producer 的工业化语义储备但仍由 workload 证据触发，O80 loader/mm lazy COW 不进入当前规划。MPSC/MPMC 均不得作为默认方案。
+Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUST 不再把 user completion queue 与 `mmap` user ring / zero-copy 作为当前开发任务推进。Q27a/Q27/Q28 已于 2026-07-15 完成，Q29 于 2026-07-18 完成；Q26 于 2026-07-20 实施并归档，部分运行时 Gate 为 ENV BLOCK。Q24 multi-hart 复验等待真板；Q30 仍由 workload 证据触发。MPSC/MPMC 均不得作为默认方案。
 
 **重排依据**: ADR-058、ADR-061、ADR-062、Q20 benchmark report、R19、L299、O82/O83/O84/O85/O86/O87。
 **历史边界**: Q16~Q20 已完成；Q19D、M3/rootfs-probe、O79/O81、Q21/Q22 取消当前规划。Storage/rootfs 需要新 change。
@@ -25,7 +25,7 @@ Q19/Q19B/Q19C 已完成并归档。2026-07-13 起，后续 UART 优化规划 MUS
 | **Q30** | TX 多 producer 工业化语义决策 | O85/O86、ADR-062 | 单个 UART 也可有 kernel log、TTY echo、共享 fd 等多个逻辑 producer；仅在 Q24 或新 workload 证明原子性、公平性、锁竞争或吞吐需求时启动 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 | 等真板到手后建设并运行 stress；至少两个 hart 覆盖 read/write/flush/tcdrain 与 IER enable/disable |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69/O41 | 用 Q24 或新硬件数据决定实施或拒绝 |
-| **Q26** | 维护性清理 | O48/O49/O50、ADR-034 | NEXT：memtrack、Manual mode、预留接口、release LTO 有明确结论 |
+| **Q26** | 维护性清理 | O48/O49/O50、ADR-034 | <!-- Q26 --> ✅ 已归档；部分运行时 Gate 为 ENV BLOCK |
 
 | 编号 | 当前结论 | 触发条件 |
 |------|----------|----------|
@@ -234,14 +234,15 @@ Q28 后续优化 MUST 将 TX 调度语义、队列 producer 模型与 RX consume
 
 | 编号 | 内容 | 优先级 | 说明 |
 |------|------|--------|------|
-| **O48** | memtrack 模块集成 | 🟢 低 | `kernel/src/pseudofs/dev/memtrack.rs` — 内存追踪功能已编写但从未集成（`run_memory_analysis` 无调用者）。Q26 维护性清理时评估；若后续真板调试需要可提前启用 |
-| **O49** | ProcessMode::Manual 移除 | 🟢 低 | `ldisc.rs:37` — Q7 后仅 External/None 模式被构造，Manual 变体可通过重构 match 分支移除（需更新 ldisc.rs:265 匹配） |
-| **O50** | 预留接口评估 | 🟢 低 | `create_pty_master`（tty/mod.rs）、`DeviceMmap::ReadOnly`（device.rs）、`clear_elf_cache`/`cleanup_task_tables`（memtrack 引用链）— 当前用 `#[allow(dead_code)]` 标注，未来如有需求可恢复或彻底移除 |
+| **O48** | memtrack 模块集成 | 🟢 低 | <!-- Q26 --> ✅ feature 路径、三态 session 和 `axalloc::tracking` API 已修复；8 个 host tests 通过，运行时交互为 ENV BLOCK |
+| **O49** | ProcessMode::Manual 移除 | 🟢 低 | <!-- Q26 --> ✅ Q26 已完成：Manual 变体、内部 match 分支、ProcessMode eval 已删除，TTY/PTY 行为保持 |
+| **O50** | 预留接口评估 | 🟢 低 | <!-- Q26 --> ✅ Q26 已完成：create_pty_master / DeviceMmap::ReadOnly 已删除，memtrack helpers 收敛到 feature 内部 |
 
-#### Scenario: 评估 O48 memtrack 模块
+#### Scenario: 修复 O48 memtrack 模块
 
-- **WHEN** 后续真板调试需要内存调试工具
-- **THEN** 可恢复 `memtrack.rs` 的集成调用（当前代码完整，仅缺 `/dev/memtrack` 的设备注册）
+- **WHEN** Q26 启用 `MEMTRACK=y` 验证内存调试工具
+- **THEN** MUST 修复 Cargo feature 传播和当前 API 适配
+- **AND** `/dev/memtrack` 的非法命令或状态转换 MUST NOT 导致内核 panic
 
 #### Scenario: 决定是否移除死代码
 

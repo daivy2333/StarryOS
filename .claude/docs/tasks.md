@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 由 assistant 维护，uart-16550-lichee 分支（已同步 origin，领先 0 commits）。
-> 当前主线（2026-07-18）：Q27 TX backpressure、Q28 writer 契约与 Q29 reader 契约均已完成并归档；下一项为 Q26 维护性清理；Q24 及其 stress 脚手架等待多 hart 真板；Q30 保留为工业化、证据触发的多逻辑 producer 语义工作。
+> 由 assistant 维护，uart-16550-lichee 分支（领先 origin 1 commit）。
+> 当前主线（2026-07-20）：Q26 已实施并归档；host/static Gate 通过，部分运行时 Gate 为 ENV BLOCK。Q24 等待多 hart 真板；Q30 保留为证据触发的多逻辑 producer 语义工作。
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
@@ -55,13 +55,13 @@
 | **Q30** | TX 多逻辑 producer 工业化语义决策 | O85/O86：单 UART 上 kernel log、TTY echo、共享 fd 的原子性、公平性、跨 write 交错与 MPSC ROI | 🧊 等待真实 workload / Q24 证据 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q24 或新硬件数据 | ⏳ 等待数据 |
-| **Q26** | 维护性清理 | O48/O49/O50 + release LTO 检查 | NEXT：下一项，待 `openspec-plan` |
+| **Q26** | 维护性清理 | O48/O49/O50 + release LTO 检查 | <!-- Q26 --> ✅ 已归档；部分运行时 Gate 为 ENV BLOCK |
 
 ---
 
 ## 当前执行态
 
-Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；下一项是 Q26 维护性清理。Q17 multi-hart 与 Q24 stress 脚手架等真板到手；O77 D1 polling 性能已接受、暂不继续优化；O80 loader/mm lazy COW 退出当前规划；Q30 面向单 UART 多逻辑 producer 的工业化原子性/公平性/MPSC，仍由新 workload 或 Q24 证据触发。
+Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成。Q26 已实施并归档；host/static Gate 通过，memtrack 交互、VTIME、PTY 双向 I/O 和 framebuffer mmap 为 ENV BLOCK。Q17 multi-hart 与 Q24 stress 脚手架等待真板；Q30 仍由新 workload 或 Q24 证据触发。
 
 
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
@@ -187,13 +187,16 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成；下一项是 Q26 维护性清理。
 <!-- Q25.2 --> - [ ] O41 高速波特率支持（230400+），仅在 Q24 或新硬件数据证明需要后实施
 <!-- Q25.3 --> - [ ] Gate Q25: 用 Q24 或新硬件数据决定实施 / 拒绝 DMA 与高波特率扩展
 
-### Q26: 维护性清理 NEXT — 下一项，待 `openspec-plan`
+### Q26: 维护性清理 <!-- Q26 --> ✅ 已归档 / 部分运行时 Gate ENV BLOCK
 
-<!-- Q26.1 --> - [ ] O48 memtrack 是否集成：调试需要则启用，否则记录保留/移除决策
-<!-- Q26.2 --> - [ ] O49 `ProcessMode::Manual` 移除评估
-<!-- Q26.3 --> - [ ] O50 预留接口评估（超过 90 天未用则移除或留明确注释）
-<!-- Q26.4 --> - [ ] ADR-034 发布前 LTO 检查：开发期不启用，release 前恢复
-<!-- Q26.5 --> - [ ] Gate Q26: 维护性债务有明确处理结论，不阻塞 Q20~Q25
+> 来源：`openspec/changes/archive/2026-07-20-q26-maintenance-cleanup/`。25 项均有处理结论，6/6 requirements 已映射；host/static Gate 通过，运行时阻塞见归档 tasks。
+
+<!-- Q26.0 --> - [x] 完成 BDD、proposal、design、`maintenance-cleanup` delta spec、tasks 和 6/6 Requirements Traceability Matrix
+<!-- Q26.1 --> - [x] O48：修复 opt-in memtrack feature/API，加入三态 session（Idle/Active/Analyzing），非法命令无 panic Gate
+<!-- Q26.2 --> - [x] O49：删除无构造者的 `ProcessMode::Manual` 及其内部 match 分支，TTY/PTY 行为保持
+<!-- Q26.3 --> - [x] O50：删除 `create_pty_master`、`DeviceMmap::ReadOnly`；memtrack helpers 收敛到 feature 内部
+<!-- Q26.4 --> - [x] ADR-034：验证 `LTO=y` Makefile 入口可用，开发默认继续关闭
+<!-- Q26.5 --> - [x] Gate Q26：QEMU 与 D1 benchmark 均正常结束；memtrack 交互、VTIME、PTY 双向 I/O 和 framebuffer mmap 保留 ENV BLOCK
 
 <!-- tombstone: Q8-Q11 archive pointers --> Archived 2026-07-02 in ARC-202607021648 — Q8~Q11 已在 Milestone 表与 archive 目录中可定位，删除重复小节。
 
