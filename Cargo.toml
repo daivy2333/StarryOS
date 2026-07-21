@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["kernel"]
-exclude = ["arceos", "crates/uart_16550"]
+exclude = ["arceos"]
 
 [workspace.package]
 version = "0.2.0-preview.2"
@@ -70,32 +70,24 @@ lichee-d1 = [
     "axplat-riscv64-lichee-d1/irq-if",
     "axfeat/bus-mmio",
     "starry-kernel/lichee-d1",
+    "starry-kernel/lichee-d1-console",
+]
+lichee-d1-smoke = [
+    "lichee-d1",
     "starry-kernel/lichee-d1-smoke",
 ]
-lichee-d1-async-uart = [
-    "dep:axplat-riscv64-lichee-d1",
-    "dep:page_table_entry",
-    "axplat-riscv64-lichee-d1/irq",
-    "axfeat/bus-mmio",
-    "starry-kernel/lichee-d1",
-    "starry-kernel/lichee-d1-async-uart",
-]
-lichee-d1-kbench = [
-    "lichee-d1-async-uart",
-    "starry-kernel/lichee-d1-kbench",
-]
 lichee-d1-userbench = [
-    "lichee-d1-async-uart",
+    "lichee-d1",
     "axfeat/paging",
     "starry-kernel/lichee-d1-userbench",
 ]
 lichee-d1-fullbench = [
-    "lichee-d1-async-uart",
+    "lichee-d1",
     "axfeat/paging",
     "starry-kernel/lichee-d1-fullbench",
 ]
 lichee-d1-fullbench-command = [
-    "lichee-d1-async-uart",
+    "lichee-d1",
     "axfeat/paging",
     "starry-kernel/lichee-d1-fullbench-command",
 ]

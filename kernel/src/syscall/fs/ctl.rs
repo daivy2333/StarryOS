@@ -1,9 +1,7 @@
 use alloc::{ffi::CString, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
-    future::poll_fn,
     mem::offset_of,
-    task::Poll,
     time::Duration,
 };
 
@@ -11,12 +9,12 @@ use axerrno::{AxError, AxResult};
 use axfs::{FS_CONTEXT, FsContext};
 use axfs_ng_vfs::{MetadataUpdate, NodePermission, NodeType, path::Path};
 use axhal::time::wall_time;
-use axtask::{current, future::block_on};
+use axtask::current;
 use linux_raw_sys::{
     general::*,
     ioctl::{FIONBIO, TIOCGWINSZ},
 };
-use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
+use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
     file::{Directory, FileLike, get_file_like, resolve_at, with_fs},
@@ -24,53 +22,6 @@ use crate::{
     task::AsThread,
     time::TimeValueLike,
 };
-
-const UART_TXDBG_SNAPSHOT: u32 = 0x5458_4431;
-const UART_TXDBG_RESET: u32 = 0x5458_4432;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UartTxDebugSnapshot {
-    user_push_calls: u64,
-    user_push_requested_bytes: u64,
-    user_push_accepted_bytes: u64,
-    ring_pop_calls: u64,
-    ring_pop_bytes: u64,
-    hw_send_calls: u64,
-    hw_send_bytes: u64,
-    hw_send_zero: u64,
-    hw_send_max_chunk: u64,
-    no_progress_budget_exhausted: u64,
-    slow_poll_exhausted: u64,
-    yield_retries_exhausted: u64,
-    ring_empty: u64,
-    copier_active: u64,
-    staged_bytes: u64,
-    transmitter_empty: u64,
-}
-
-impl From<uart_16550::async_::driver::TxDebugSnapshot> for UartTxDebugSnapshot {
-    fn from(value: uart_16550::async_::driver::TxDebugSnapshot) -> Self {
-        Self {
-            user_push_calls: value.user_push_calls,
-            user_push_requested_bytes: value.user_push_requested_bytes,
-            user_push_accepted_bytes: value.user_push_accepted_bytes,
-            ring_pop_calls: value.ring_pop_calls,
-            ring_pop_bytes: value.ring_pop_bytes,
-            hw_send_calls: value.hw_send_calls,
-            hw_send_bytes: value.hw_send_bytes,
-            hw_send_zero: value.hw_send_zero,
-            hw_send_max_chunk: value.hw_send_max_chunk,
-            no_progress_budget_exhausted: value.no_progress_budget_exhausted,
-            slow_poll_exhausted: value.slow_poll_exhausted,
-            yield_retries_exhausted: value.yield_retries_exhausted,
-            ring_empty: value.ring_empty,
-            copier_active: value.copier_active,
-            staged_bytes: value.staged_bytes,
-            transmitter_empty: value.transmitter_empty,
-        }
-    }
-}
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
@@ -87,43 +38,16 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         let _ = f.ioctl(cmd, nb as usize);
         return Ok(0);
     }
-    if cmd == UART_TXDBG_RESET {
-        crate::drivers::uart_init::driver().reset_tx_debug();
-        return Ok(0);
-    }
-    if cmd == UART_TXDBG_SNAPSHOT {
-        let snapshot: UartTxDebugSnapshot = crate::drivers::uart_init::driver()
-            .tx_debug_snapshot()
-            .into();
-        (arg as *mut UartTxDebugSnapshot).vm_write(snapshot)?;
-        return Ok(0);
-    }
-    // TCSBRK (0x5409): tcdrain — wait for all TX stages (ring → copier → FIFO → wire)
+
+    // TCSBRK (0x5409): tcdrain — wait for transmitter shift register empty (TEMT)
     if cmd == 0x5409 {
-        use uart_16550::async_::isr::DRAIN_WAKER;
-
-        use crate::drivers::uart_init;
-        let result = block_on(poll_fn(|cx| {
-            let driver = uart_init::driver();
-            let c = driver.tx_completion();
-            if c.is_drained() {
-                return Poll::Ready(Ok(0isize));
+        use crate::platform::polling::with_console_port_tx;
+        with_console_port_tx(|port| {
+            while !port.temt() {
+                core::hint::spin_loop();
             }
-
-            // Register waker before recheck (M1 D3 order: register → check)
-            if !c.ring_empty || c.copier_active || c.staged_bytes > 0 {
-                driver.tx.register_waker(cx.waker());
-            }
-            DRAIN_WAKER.register(cx.waker());
-
-            let c2 = driver.tx_completion();
-            if c2.is_drained() {
-                Poll::Ready(Ok(0isize))
-            } else {
-                Poll::Pending
-            }
-        }));
-        result
+        });
+        return Ok(0);
     } else {
         f.ioctl(cmd, arg)
             .map(|result| result as isize)

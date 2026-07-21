@@ -9,6 +9,21 @@ use alloc::{
     sync::Arc,
 };
 
+// ── QEMU imports (no D1 feature at all) ──────────────────────────────
+#[cfg(not(feature = "lichee-d1"))]
+use {
+    crate::{
+        file::FD_TABLE,
+        mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
+        pseudofs,
+        task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    },
+    axfs::FS_CONTEXT,
+    axhal::uspace::UserContext,
+    axsync::Mutex,
+    axtask::{AxTaskExt, spawn_task},
+    starry_process::{Pid, Process},
+};
 // ── D1 user/fullbench imports (full set for user processes) ──────────
 #[cfg(any(
     feature = "lichee-d1-userbench",
@@ -17,7 +32,6 @@ use alloc::{
 ))]
 use {
     crate::{
-        drivers::ASYNC_TTY,
         file::FD_TABLE,
         mm::{copy_from_kernel, new_user_aspace_empty},
         pseudofs,
@@ -30,28 +44,8 @@ use {
     axtask::{AxTaskExt, spawn_task},
     starry_process::{Pid, Process},
 };
-// ── QEMU imports (no D1 feature at all) ──────────────────────────────
-#[cfg(not(feature = "lichee-d1"))]
-use {
-    crate::{
-        drivers::{ASYNC_TTY, uart_init},
-        file::FD_TABLE,
-        mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
-        pseudofs,
-        task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
-    },
-    axfs::FS_CONTEXT,
-    axhal::uspace::UserContext,
-    axsync::Mutex,
-    axtask::{AxTaskExt, spawn_task},
-    starry_process::{Pid, Process},
-};
 
-#[cfg(feature = "lichee-d1-async-uart")]
-use crate::drivers::bench;
-// ── D1 benchmark imports (kbench and userbench) ──────────────────────
-#[cfg(feature = "lichee-d1-async-uart")]
-use crate::drivers::uart_init;
+// ── D1 benchmark-specific loader imports ─────────────────────────────
 #[cfg(feature = "lichee-d1-userbench")]
 use crate::mm::load_embedded_user_app;
 #[cfg(any(
@@ -66,7 +60,11 @@ pub fn init(args: &[String], envs: &[String]) {
     #[cfg(all(
         target_arch = "riscv64",
         feature = "lichee-d1",
-        not(feature = "lichee-d1-async-uart")
+        not(any(
+            feature = "lichee-d1-userbench",
+            feature = "lichee-d1-fullbench",
+            feature = "lichee-d1-fullbench-command"
+        ))
     ))]
     {
         let _ = (args, envs);
@@ -77,8 +75,16 @@ pub fn init(args: &[String], envs: &[String]) {
         }
     }
 
-    // ── D1 benchmark mode (kbench or userbench) ──────────────────────
-    #[cfg(all(target_arch = "riscv64", feature = "lichee-d1-async-uart"))]
+    // ── D1 benchmark mode (userbench, fullbench, fullbench-command) ──
+    #[cfg(all(
+        target_arch = "riscv64",
+        feature = "lichee-d1",
+        any(
+            feature = "lichee-d1-userbench",
+            feature = "lichee-d1-fullbench",
+            feature = "lichee-d1-fullbench-command"
+        )
+    ))]
     {
         lichee_d1_init(args, envs);
     }
@@ -86,19 +92,12 @@ pub fn init(args: &[String], envs: &[String]) {
     // ── QEMU mode ────────────────────────────────────────────────────
     #[cfg(not(feature = "lichee-d1"))]
     {
-        // Initialize UART hardware + async driver (MMIO, ring buffers, ISR, copiers)
-        uart_init::init_uart_hardware();
-        ax_println!("[kernel] Async UART driver initialized");
-
-        // Run kernel-side benchmark (ring buffer throughput/latency, memory, NAPI, IRQ)
-        crate::drivers::bench::run_startup_benchmark();
-
-        // Start async UART copier tasks (must run after benchmark to avoid
-        // SPSC producer conflict on RX/TX ring buffers)
-        // SAFETY: This boot path runs once, after the startup benchmark, and
-        // the mutually exclusive D1 path cannot start the same driver tasks.
-        unsafe { uart_init::start_copiers() };
-
+        // Initialize polling console port from platform descriptor.
+        // SAFETY: called once after axhal MMIO setup, before any Console TTY access.
+        unsafe {
+            let descriptor = crate::platform::descriptor();
+            crate::platform::polling::init_console_port(&descriptor.console);
+        }
         pseudofs::mount_all().expect("Failed to mount pseudofs");
         spawn_alarm_task();
 
@@ -129,7 +128,9 @@ pub fn init(args: &[String], envs: &[String]) {
         let proc = Process::new_init(pid);
         proc.add_thread(pid);
 
-        ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
+        crate::pseudofs::dev::tty::console::CONSOLE_TTY
+            .bind_to(&proc)
+            .expect("Failed to bind console tty");
 
         let proc = ProcessData::new(
             proc,
@@ -167,9 +168,13 @@ pub fn init(args: &[String], envs: &[String]) {
     }
 }
 
-// ── D1 benchmark init (kbench + userbench) ───────────────────────────
+// ── D1 benchmark init (userbench + fullbench + fullbench-command) ────
 
-#[cfg(feature = "lichee-d1-async-uart")]
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command"
+))]
 fn lichee_d1_init(args: &[String], envs: &[String]) {
     let _ = (args, envs);
 
@@ -192,20 +197,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
     )))]
     ax_println!("[starry-d1] Lichee D1 kbench mode");
 
-    // Phase 4: Initialize async UART hardware (D1 32-bit MMIO path)
-    uart_init::init_uart_hardware();
-    ax_println!("[kernel] Async UART driver initialized (D1)");
-
-    // Phase 4: Run kernel ring buffer benchmark
-    bench::run_startup_benchmark();
-
-    // Start async UART copier tasks (must run after benchmark to avoid
-    // SPSC producer conflict on RX/TX ring buffers)
-    // SAFETY: This boot path runs once, after the startup benchmark, and
-    // the mutually exclusive QEMU path cannot start the same driver tasks.
-    unsafe { uart_init::start_copiers() };
-
-    // Phase 5-6: Userbench path (mount devfs, load user benchmark payload)
+    // ── Userbench path (mount devfs, load user benchmark payload) ────
     #[cfg(all(
         feature = "lichee-d1-userbench",
         not(any(
@@ -248,7 +240,14 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         let pid = task.id().as_u64() as Pid;
         let proc = Process::new_init(pid);
         proc.add_thread(pid);
-        ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
+        // Initialize polling console port before first Console TTY access.
+        // SAFETY: called once after axhal MMIO setup, before bind_to.
+        unsafe {
+            crate::platform::polling::init_console_port(&crate::platform::descriptor().console);
+        }
+        crate::pseudofs::dev::tty::console::CONSOLE_TTY
+            .bind_to(&proc)
+            .expect("Failed to bind console tty");
 
         let proc = ProcessData::new(
             proc,
@@ -353,7 +352,13 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         let pid = task.id().as_u64() as Pid;
         let proc = Process::new_init(pid);
         proc.add_thread(pid);
-        ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
+        // SAFETY: called once after MMIO setup, before bind_to.
+        unsafe {
+            crate::platform::polling::init_console_port(&crate::platform::descriptor().console);
+        }
+        crate::pseudofs::dev::tty::console::CONSOLE_TTY
+            .bind_to(&proc)
+            .expect("Failed to bind console tty");
 
         let proc = ProcessData::new(
             proc,
@@ -499,7 +504,13 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         let pid = task.id().as_u64() as Pid;
         let proc = Process::new_init(pid);
         proc.add_thread(pid);
-        ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
+        // SAFETY: called once after MMIO setup, before bind_to.
+        unsafe {
+            crate::platform::polling::init_console_port(&crate::platform::descriptor().console);
+        }
+        crate::pseudofs::dev::tty::console::CONSOLE_TTY
+            .bind_to(&proc)
+            .expect("Failed to bind console tty");
 
         let proc = ProcessData::new(
             proc,
@@ -535,7 +546,7 @@ fn lichee_d1_init(args: &[String], envs: &[String]) {
         }
     }
 
-    // ── kbench mode: halt after kernel benchmark ─────────────────────
+    // ── kbench mode: halt after boot (no TTY needed) ─────────────────
     #[cfg(not(any(
         feature = "lichee-d1-userbench",
         feature = "lichee-d1-fullbench",

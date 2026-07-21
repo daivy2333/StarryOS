@@ -175,5 +175,6 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R38 --> | 增量融合 Runbook | `.claude/runbooks/incremental-merge.md` | 多 commit 合入的依赖排序、逐步 apply、Gate 与退化处理 |
 | <!-- R39 --> | 回归验证 Gate Runbook | `.claude/runbooks/regression-gate.md` | Phase/change 收尾标准五层验证链与 ENV BLOCK 处理 |
 | <!-- R40 --> | 真板 bring-up 阶梯 Runbook | `.claude/runbooks/board-bringup-ladder.md` | 新板 L0-L7 逐层适配、每层单变量约束与 Gate |
+| <!-- R41 --> | Console benchmark QEMU/D1 部署 Runbook | `.claude/runbooks/console-benchmark-qemu-d1.md` | 当前分支 musl payload 构建、QEMU rootfs 注入、D1 TF 卡复制与 boot 备份/烧录、串口取证和恢复 |
 | <!-- arc: MIG-20260720-legacy-specs --> Learned reference entries merged: Legacy `openspec/specs/learned/spec.md` (hash: f09d4cae) → new R28-R34. |
 <!-- arc: ARC-202607021648 --> 1 组 references 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md

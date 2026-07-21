@@ -12,12 +12,11 @@ repository.workspace = true
 dev-log = []
 input = ["dep:axinput", "axfeat/input"]
 lichee-d1 = []
+lichee-d1-console = []
 lichee-d1-smoke = []
-lichee-d1-async-uart = ["uart_16550/telemetry"]
-lichee-d1-kbench = ["lichee-d1-async-uart"]
-lichee-d1-userbench = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
-lichee-d1-fullbench = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
-lichee-d1-fullbench-command = ["lichee-d1-async-uart", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
+lichee-d1-userbench = ["dep:axfs", "axfeat/paging", "axfeat/task-ext"]
+lichee-d1-fullbench = ["dep:axfs", "axfeat/paging", "axfeat/task-ext"]
+lichee-d1-fullbench-command = ["dep:axfs", "axfeat/paging", "axfeat/task-ext"]
 memtrack = ["axfeat/dwarf", "axalloc/tracking", "dep:gimli"]
 qemu = [
     "dep:axdisplay",
@@ -56,6 +55,7 @@ axinput = { workspace = true, optional = true }
 axlog.workspace = true
 axmm.workspace = true
 axnet = { workspace = true, optional = true }
+axplat = "=0.3.1-pre.6"
 axruntime.workspace = true
 axsync.workspace = true
 axtask.workspace = true
@@ -115,10 +115,7 @@ weak-map = "0.1.1"
 xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
 
-# AsyncUart dependencies
-uart_16550 = { path = "../crates/uart_16550", features = ["async"] }  # Local 16550 UART driver (v0.6.0)
-embassy-sync = "0.6.2"  # AtomicWaker (ISR-safe)
-embedded-io-async = "0.6.1"  # Standard async I/O traits (Read/Write)
+embassy-sync = "0.6.2"  # AtomicWaker (ISR-safe, used by kernel event/pipe/signal modules)
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

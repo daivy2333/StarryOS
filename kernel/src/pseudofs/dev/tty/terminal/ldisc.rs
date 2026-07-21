@@ -40,6 +40,13 @@ pub enum ProcessMode {
     /// This is only used by the master side of pseudo tty. The argument is the
     /// [`PollSet`] for incoming data.
     None(Arc<PollSet>),
+    /// Polling-mode input processing.
+    ///
+    /// Used by the Console (real UART) when no interrupt-driven reader task
+    /// exists. The processor holds a full [`InputReader`] so that ICRNL,
+    /// canonical, echo, erase, ISIG, and VMIN/VTIME all work. Blocking reads
+    /// self-wake (yield → recheck) instead of waiting for an external event.
+    Polling,
 }
 
 pub struct TtyConfig<R, W> {
@@ -48,7 +55,7 @@ pub struct TtyConfig<R, W> {
     pub process_mode: ProcessMode,
 }
 
-pub use uart_16550::{TtyRead, TtyWrite};
+pub use super::super::traits::{TtyRead, TtyWrite};
 
 /// Kernel-local writer readiness contract.
 ///
@@ -245,9 +252,13 @@ impl<R: TtyRead> SimpleReader<R> {
     }
 }
 
-enum Processor<R> {
+enum Processor<R, W> {
     External(Arc<PollSet>),
     None(SimpleReader<R>, Arc<PollSet>),
+    /// Polling mode — holds a full [`InputReader`] so that ICRNL,
+    /// canonical, echo, erase, ISIG, and VMIN/VTIME all work correctly.
+    /// Wakers use self-wake (yield → recheck) instead of PollSet.
+    Polling(InputReader<R, W>),
 }
 
 pub struct LineDiscipline<R, W> {
@@ -255,7 +266,7 @@ pub struct LineDiscipline<R, W> {
     buf_rx: UnsafeCell<CachingCons<ReadBuf>>,
     poll_tx: Arc<PollSet>,
     clear_line_buf: Arc<AtomicBool>,
-    processor: Processor<R>,
+    processor: Processor<R, W>,
     _phantom: PhantomData<W>,
 }
 
@@ -331,6 +342,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     poll_rx,
                 )
             }
+            ProcessMode::Polling => Processor::Polling(reader),
         };
         Self {
             terminal,
@@ -359,8 +371,12 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     pub fn poll_read(&mut self) -> bool {
-        if let Processor::None(reader, _) = &mut self.processor {
-            reader.poll();
+        match &mut self.processor {
+            Processor::None(reader, _) => reader.poll(),
+            Processor::Polling(reader) => {
+                reader.poll();
+            }
+            _ => {}
         }
         !self.buf_rx().is_empty()
     }
@@ -370,14 +386,22 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             Processor::External(set) | Processor::None(_, set) => {
                 set.register(waker);
             }
+            Processor::Polling(_) => {
+                // Self-wake: the blocking reader yields and re-polls.
+                // No external event source exists, so wake_by_ref keeps
+                // the poll_io loop alive.
+                waker.wake_by_ref();
+            }
         }
     }
 
-    pub fn read(&self, buf: &mut [u8], nonblocking: bool) -> AxResult<usize> {
+    pub fn read(&mut self, buf: &mut [u8], nonblocking: bool) -> AxResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
         if matches!(self.processor, Processor::None(_, _)) {
+            // Poll the reader first to push data into buf_rx, then pop.
+            self.poll_read();
             let read = self.buf_rx().pop_slice(buf);
             return if read == 0 {
                 Err(AxError::WouldBlock)
@@ -398,14 +422,16 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     return Err(AxError::WouldBlock);
                 }
                 let mut total_read = 0;
-                let set = match &self.processor {
-                    Processor::External(set) => Some(set),
+                let set: Option<Arc<PollSet>> = match &self.processor {
+                    Processor::External(set) => Some(set.clone()),
+                    Processor::Polling(_) => None,
                     _ => unreachable!(),
                 };
-                let pollable = WaitPollable(set);
+                let pollable = WaitPollable(set.as_ref());
                 return match block_on(axtask::future::timeout(
                     Some(dur),
                     poll_io(&pollable, IoEvents::IN, nonblocking, || {
+                        self.poll_read();
                         total_read += self.buf_rx().pop_slice(&mut buf[total_read..]);
                         self.poll_tx.wake();
                         if total_read > 0 {
@@ -428,12 +454,14 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
 
         let mut total_read = 0;
-        let set = match &self.processor {
-            Processor::External(set) => Some(set),
+        let set: Option<Arc<PollSet>> = match &self.processor {
+            Processor::External(set) => Some(set.clone()),
+            Processor::Polling(_) => None,
             _ => unreachable!(),
         };
-        let pollable = WaitPollable(set);
+        let pollable = WaitPollable(set.as_ref());
         block_on(poll_io(&pollable, IoEvents::IN, nonblocking, || {
+            self.poll_read();
             total_read += self.buf_rx().pop_slice(&mut buf[total_read..]);
             self.poll_tx.wake();
             (total_read >= vmin)

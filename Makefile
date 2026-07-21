@@ -81,6 +81,8 @@ host-test:
 	/tmp/early-console-test
 	rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
 	/tmp/memtrack-session-test
+	rustc --edition=2024 --test tests/tty-console-contract-harness.rs -o /tmp/tty-console-test
+	/tmp/tty-console-test
 
 # Aliases
 rv:
@@ -93,20 +95,12 @@ vf2:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=mmio build
 
 lichee:
-	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
+	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1-smoke MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
 	@echo "Packing Android boot image (smoke)..."
 	@python3 tools/android_boot_image.py pack \
 		--kernel StarryOS_riscv64-lichee-d1.bin \
 		--output starry-lichee-boot.img
 	@python3 tools/android_boot_image.py inspect starry-lichee-boot.img
-
-lichee-kbench:
-	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1-kbench MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
-	@echo "Packing Android boot image (kbench)..."
-	@python3 tools/android_boot_image.py pack \
-		--kernel StarryOS_riscv64-lichee-d1.bin \
-		--output starry-lichee-kbench-boot.img
-	@python3 tools/android_boot_image.py inspect starry-lichee-kbench-boot.img
 
 lichee-userbench: benchmark-userbench-elf
 	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1-userbench MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
@@ -132,4 +126,4 @@ lichee-fullbench-command: benchmark-fullbench-elf
 		--output starry-lichee-fullbench-command-boot.img
 	@python3 tools/android_boot_image.py inspect starry-lichee-fullbench-command-boot.img
 
-.PHONY: build run justrun debug disasm clean host-test lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf
+.PHONY: build run justrun debug disasm clean host-test lichee lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf

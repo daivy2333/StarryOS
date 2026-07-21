@@ -835,7 +835,7 @@ dependencies = [
  "log",
  "loongArch64",
  "page_table_entry",
- "uart_16550 0.4.0",
+ "uart_16550",
 ]
 
 [[package]]
@@ -880,7 +880,7 @@ dependencies = [
  "riscv_goldfish",
  "riscv_plic",
  "sbi-rt",
- "uart_16550 0.4.0",
+ "uart_16550",
 ]
 
 [[package]]
@@ -899,7 +899,7 @@ dependencies = [
  "riscv_goldfish",
  "riscv_plic",
  "sbi-rt",
- "uart_16550 0.4.0",
+ "uart_16550",
 ]
 
 [[package]]
@@ -920,7 +920,7 @@ dependencies = [
  "multiboot",
  "percpu",
  "raw-cpuid 11.6.0",
- "uart_16550 0.4.0",
+ "uart_16550",
  "x2apic",
  "x86",
  "x86_64",
@@ -3082,6 +3082,7 @@ dependencies = [
  "axlog",
  "axmm",
  "axnet-ng",
+ "axplat",
  "axpoll",
  "axruntime",
  "axsync",
@@ -3094,7 +3095,6 @@ dependencies = [
  "downcast-rs",
  "embassy-hal-internal",
  "embassy-sync",
- "embedded-io-async",
  "enum_dispatch",
  "event-listener",
  "extern-trait",
@@ -3127,7 +3127,6 @@ dependencies = [
  "starry-vm",
  "strum 0.28.0",
  "syscalls",
- "uart_16550 0.6.0",
  "uluru",
  "weak-map",
  "x86",
@@ -3398,16 +3397,6 @@ dependencies = [
  "bitflags 2.13.0",
  "rustversion",
  "x86",
-]
-
-[[package]]
-name = "uart_16550"
-version = "0.6.0"
-dependencies = [
- "bitflags 2.13.0",
- "embassy-hal-internal",
- "embassy-sync",
- "embedded-io-async",
 ]
 
 [[package]]

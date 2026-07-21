@@ -23,5 +23,5 @@ fn main() {
 #[cfg(feature = "vf2")]
 extern crate axplat_riscv64_visionfive2;
 
-#[cfg(any(feature = "lichee-d1", feature = "lichee-d1-async-uart"))]
+#[cfg(any(feature = "lichee-d1"))]
 extern crate axplat_riscv64_lichee_d1;

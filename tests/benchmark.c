@@ -56,6 +56,7 @@
 #ifndef BENCH_RX_FIXED_BYTES
 #define BENCH_RX_FIXED_BYTES 0
 #endif
+#define BENCH_BACKEND "polling-console"
 
 static const int TX_THROUGHPUT_SIZES[] = {64, 256, 1024};
 static const int TX_BREAK_EVEN_SIZES[] = {64, 128, 256};
@@ -267,6 +268,7 @@ static size_t run_write_drain_iters(int fd, const char *buf, int size, int iters
 static void print_manifest(void) {
     printf("=== [S00] Benchmark Manifest ===\r\n");
     printf("  version=%s\r\n", BENCH_VERSION);
+    printf("  backend=%s\r\n", BENCH_BACKEND);
     printf("  target_mode=%s\r\n", BENCH_TARGET_MODE);
     printf("  startup_chain=%s\r\n", BENCH_STARTUP_CHAIN);
     printf("  root_provider=%s\r\n", BENCH_ROOT_PROVIDER);
@@ -281,7 +283,7 @@ static void print_manifest(void) {
     printf("\r\n");
     printf("  tx_throughput_iters=%d\r\n", TX_THROUGHPUT_ITERS);
     printf("  tx_baseline_drain_policy=tcdrain-after-each-write\r\n");
-    printf("  tx_enqueue_policy=no-drain-during-measure-final-tcdrain-after\r\n");
+    printf("  tx_transmit_policy=blocking\r\n");
     printf("  tx_batch_drain_every=%d\r\n", TX_BATCH_DRAIN_EVERY);
     printf("  tx_writev_fragments=%d\r\n", TX_WRITEV_FRAGMENTS);
     printf("  tx_writev_fragment_size=%d\r\n", TX_WRITEV_FRAGMENT_SIZE);
@@ -343,9 +345,9 @@ static void test_tx_throughput(void) {
     printf("\r\n");
 }
 
-/* ── TX enqueue: write without per-iteration drain, final tcdrain outside timing ── */
+/* ── S11 Blocking Transmit: write without per-iteration drain, final tcdrain outside timing ── */
 static void test_tx_enqueue_no_drain(void) {
-    printf("=== [S11] TX Enqueue Cost (write loop, final drain outside timing) ===\r\n");
+    printf("=== [S11] Blocking Transmit (write loop, final drain outside timing) ===\r\n");
     prepare_section("S11");
 
     int fd = open(DEVICE_PATH, O_WRONLY);
@@ -623,6 +625,11 @@ static void test_tx_latency_matrix(void) {
 
 /* ── non-blocking read test (FIONBIO) ───────────────────────────── */
 static void test_nonblock_read(void) {
+#ifdef BENCH_D1_DIAG
+    printf("=== [S30] RX Empty Non-blocking Read (FIONBIO) ===\r\n");
+    printf("  status=UNSUPPORTED reason=D1-UART-RX-not-implemented\r\n\r\n");
+    return;
+#endif
     printf("=== [S30] RX Empty Non-blocking Read (FIONBIO) ===\r\n");
     prepare_section("S30");
 
@@ -719,8 +726,9 @@ static void print_tx_counter_summary(int fd) {
     txdbg_snapshot_t s;
     int rc = txdbg_snapshot(fd, &s);
     if (rc < 0) {
-        printf("  status=FAIL ioctl_error=%d errno=%d error=%s\r\n\r\n",
-               rc, errno, strerror(errno));
+        printf("  status=UNSUPPORTED reason=backend-polling-console-no-telemetry\r\n");
+        printf("  proxy=not-available\r\n");
+        printf("\r\n");
         return;
     }
 
@@ -782,6 +790,10 @@ int main(void) {
     printf("====================\r\n\r\n");
 
     print_manifest();
+
+    /* Startup ring — not applicable in polling-console mode (no async driver). */
+    printf("=== [S05] Startup Ring ===\r\n");
+    printf("  status=SKIPPED reason=no-async-driver\r\n\r\n");
 
     /* Reset TX debug counters before benchmark run for clean delta */
     int fd_counter = open(DEVICE_PATH, O_WRONLY);

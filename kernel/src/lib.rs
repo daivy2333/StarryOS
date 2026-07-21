@@ -35,18 +35,18 @@ pub mod entry;
 mod config;
 #[cfg(not(feature = "lichee-d1-smoke"))]
 mod drivers;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(feature = "lichee-d1-smoke"))]
 mod file;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(feature = "lichee-d1-smoke"))]
 mod mm;
 pub mod platform;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(feature = "lichee-d1-smoke"))]
 mod pseudofs;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(feature = "lichee-d1-smoke"))]
 mod syscall;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(feature = "lichee-d1-smoke"))]
 mod task;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(feature = "lichee-d1-smoke"))]
 mod time;
 
 // Critical section implementation for embassy-sync AtomicWaker
