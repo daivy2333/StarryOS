@@ -1,6 +1,7 @@
 # Analysis Index
 
-> Last updated: 2026-07-11
+> Last updated: 2026-07-21
+> 2026-07-21 update: `console-performance-measurement-design.md` → `_archive/2026-07-21-console-performance-measurement-design.md`（console 分支专属分析）。
 > 2026-07-11 update: Q19C/D1 async UART closeout analysis moved to `_archive/2026-07-11-q19c-d1-async-uart-closeout/`.
 > 2026-07-04 update: 16 active-path tombstones (8 top-level + 8 in `lichee/`) were consolidated into `_archive/README.md`.
 
@@ -16,6 +17,7 @@
 
 ## Archived
 
+- `_archive/2026-07-21-console-performance-measurement-design.md` — Console 性能与测量设计（`console-lichee` 分支专属，I11/I12 输入材料）。
 - `_archive/2026-07-04-q19-lichee-analysis/` — Q18/Q19/Q19B historical plans, Lichee platform capture logs, Q19B board evidence, and the official boot partition backup (8 files + `lichee/` subdir).
 - `_archive/2026-07-11-q19c-d1-async-uart-closeout/` — Q19C planning, TX optimization, M1/M2/M3 analysis, and D1 board evidence logs after D1 async UART testing ended.
 - `_archive/2026-06-24-q0-q15-analysis/` — older Q0~Q15 architecture, UART extraction, M4/Q15, and performance analysis material (14 files).

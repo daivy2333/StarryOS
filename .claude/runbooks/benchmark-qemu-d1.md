@@ -1,13 +1,13 @@
-# Console benchmark 的 QEMU 与 D1 部署
+# Benchmark 的 QEMU 与 D1 部署
 
 ## 适用范围
 
-本 Runbook 用于在 `console-polling-baseline` 分支复跑与 async UART 基线相同的 benchmark：
+本 Runbook 用于在 QEMU 和 D1 真板上复跑 UART benchmark：
 
 - QEMU：编译 musl payload、注入 ext4 rootfs、交互运行并保存日志。
 - D1：构建 command-entry Android boot image、复制到 TF 卡、备份与写入 boot 分区、采集串口并恢复官方 Linux。
 
-通用构建说明见 `qemu-build.md` 和 `d1-build-and-flash.md`，测试判据见 `benchmark-guide.md`。本文以当前 Makefile 为准，不使用已删除的 `lichee-kbench` 目标。
+通用构建说明见 `qemu-build.md` 和 `d1-build-and-flash.md`，测试判据见 `benchmark-guide.md`。本文以当前分支 Makefile 为准。
 
 ## 前置条件
 
@@ -28,24 +28,16 @@ command -v readelf rg script picocom /sbin/debugfs
 
 | 用途 | 文件 | 规则 |
 |---|---|---|
-| 冻结 async QEMU 基线 | `docs/qemu_out.md` | 不覆盖、不追加 |
-| 新 Console QEMU 日志 | `docs/qemu_console_out.md` | 本轮写入 |
-| 冻结 async D1 基线 | `docs/d1_out.md` | 不覆盖、不追加 |
-| 新 Console D1 日志 | `docs/d1_console_out.md` | 本轮写入 |
-
-当前冻结输入的 SHA256 是：
-
-```text
-d2f2486aa1f4df452ae14880c22ad3d08467561ae5f7799affc768b972ae15d2  docs/qemu_out.md
-b98af673ca56ab983c55f3ddaf4f7f39228f7a4ec69f88b6b1f0a907731947cc  docs/d1_out.md
-```
+| 冻结 QEMU 基线 | `docs/qemu_out.md` | 不覆盖、不追加 |
+| 本轮 QEMU 日志 | `docs/qemu_run.md` | 本轮写入 |
+| 冻结 D1 基线 | `docs/d1_out.md` | 不覆盖、不追加 |
+| 本轮 D1 日志 | `docs/d1_run.md` | 本轮写入 |
 
 D1 写盘会覆盖 boot 分区。开始前必须具备：
 
 - 可正常启动的 D1 官方 Linux。
 - TF 卡 `exUDISK` 分区和足够的备份空间。
 - 115200 8N1 串口连接。
-- 已验证的 attach-only Console 实现：不得重写 U-Boot 留下的 divisor、LCR、FCR 或 MCR。
 
 ## 操作步骤
 
@@ -57,10 +49,10 @@ file tests/benchmark
 readelf -h tests/benchmark
 readelf -l tests/benchmark
 sha256sum tests/benchmark
-strings tests/benchmark | rg 'polling-console|S05|Blocking Transmit|UNSUPPORTED'
+strings tests/benchmark | rg 'S00|S05|S10|S20|S30|S40|Done\.'
 ```
 
-检查结果应为静态 RISC-V 64-bit ELF；manifest 和 section 标签必须来自当前 Console 源码。
+检查结果应为静态 RISC-V 64-bit ELF；manifest 和 section 标签必须来自当前分支源码。
 
 ### 2. 准备 QEMU rootfs
 
@@ -83,12 +75,12 @@ make rootfs
 verify_dir=$(mktemp -d)
 /sbin/debugfs -R "dump /bin/benchmark ${verify_dir}/benchmark" make/disk.img
 sha256sum tests/benchmark "${verify_dir}/benchmark"
-strings "${verify_dir}/benchmark" | rg 'polling-console|S05|Blocking Transmit|UNSUPPORTED'
+strings "${verify_dir}/benchmark" | rg 'S00|S05|S10|S20|S30|S40|Done\.'
 ```
 
 两个 SHA256 必须相同。
 
-若 `debugfs` 不可用，可以用旧 learned 中的 loop mount 方式。挂载成功后才复制，结束后必须卸载：
+若 `debugfs` 不可用，可以用 loop mount 方式。挂载成功后才复制，结束后必须卸载：
 
 ```bash
 sudo mkdir -p /mnt/starry-rootfs
@@ -105,7 +97,7 @@ sudo umount /mnt/starry-rootfs
 
 ```bash
 make NET=n build
-script -q -f -c 'make NET=n justrun' docs/qemu_console_out.md
+script -q -f -c 'make NET=n justrun' docs/qemu_run.md
 ```
 
 进入 shell 后执行：
@@ -116,7 +108,7 @@ printf 'x\n'
 echo $?
 ```
 
-确认 benchmark 结束后，用 QEMU 的 `Ctrl-A X` 退出。不要把输出重定向到 `docs/qemu_out.md`。
+确认 benchmark 结束后，用 QEMU 的 `Ctrl-A X` 退出。不要把输出重定向到基线日志文件。
 
 ### 4. 构建和检查 D1 image
 
@@ -126,7 +118,7 @@ echo $?
 make lichee-fullbench-command
 file kernel/resources/benchmark.elf
 readelf -h kernel/resources/benchmark.elf
-strings kernel/resources/benchmark.elf | rg 'polling-console|S05|Blocking Transmit|UNSUPPORTED'
+strings kernel/resources/benchmark.elf | rg 'S00|S05|S10|S20|S30|S40|Done\.'
 python3 tools/android_boot_image.py inspect starry-lichee-fullbench-command-boot.img
 sha256sum kernel/resources/benchmark.elf starry-lichee-fullbench-command-boot.img
 ls -lh starry-lichee-fullbench-command-boot.img
@@ -164,7 +156,7 @@ PC 卸载完成后，将 TF 卡插回 D1 并先启动官方 Linux，再执行后
 
 ```bash
 ls -l /dev/serial/by-id/ /dev/ttyUSB* 2>/dev/null
-script -q -f -c 'picocom -b 115200 /dev/ttyUSB0' docs/d1_console_out.md
+script -q -f -c 'picocom -b 115200 /dev/ttyUSB0' docs/d1_run.md
 ```
 
 不要在 StarryOS 启动后才开始记录，日志必须包含 U-Boot、kernel、benchmark 和进程退出状态。若串口设备不是 `/dev/ttyUSB0`，把命令中的路径改为实际设备。
@@ -190,7 +182,7 @@ ls -lh /mnt/exUDISK/boot-official-backup.img
 sha256sum /mnt/exUDISK/boot-official-backup.img
 ```
 
-确认备份存在后写入 Console image：
+确认备份存在后写入 image：
 
 ```bash
 dd if=/mnt/exUDISK/starry-lichee-fullbench-command-boot.img of=/dev/by-name/boot bs=1M conv=fsync
@@ -205,35 +197,31 @@ reboot -f
 ### QEMU
 
 ```bash
-rg -n 'backend=polling-console|S05|Blocking Transmit|S40|Done\.|drain_errors|exit' docs/qemu_console_out.md
-sha256sum docs/qemu_out.md
+rg -n 'S00|S05|S10|S20|S30|S40|Done\.|drain_errors|exit' docs/qemu_run.md
 ```
 
 通过条件：
 
-- shell 输入、回显和 blocking read 正常。
-- manifest 含 `backend=polling-console`。
-- S05 为 `SKIPPED`，S11 为 `Blocking Transmit`，S40 为 `UNSUPPORTED`。
+- shell 输入、回显正常。
 - 运行到 `Done.`，进程退出码为 0，所有 `drain_errors=0`。
-- 冻结 async QEMU 日志 hash 未变化。
+- 基线日志 hash 未变化。
 
 QEMU 只提供功能与同环境相对开销证据，不提供物理串口线速结论。
 
 ### D1
 
 ```bash
-rg -n 'backend=polling-console|S05|Blocking Transmit|S30|S31|S40|Done\.|drain_errors|exit' docs/d1_console_out.md
-sha256sum docs/d1_out.md
+rg -n 'S00|S05|S10|S20|S30|S40|Done\.|drain_errors|exit' docs/d1_run.md
 ```
 
 通过条件：
 
 - 日志包含 D1 启动链、stdio 绑定和完整 S00-S40 顺序。
 - 运行到 `Done.`，进程退出码为 0，所有 `drain_errors=0`。
-- S30、S31、S40 按 Console 实际能力标记 `UNSUPPORTED` 或 `SKIPPED`，不得伪装为 PASS。
-- 冻结 async D1 日志 hash 未变化。
+- 不支持的 section 按实际能力标记 `UNSUPPORTED` 或 `SKIPPED`，不得伪装为 PASS。
+- 基线日志 hash 未变化。
 
-只有 D1 真板结果可以形成物理线速结论。对比时逐项核对 workload、总字节、iterations、timer 和 drain policy；不把 blocking S11 称为 enqueue。
+只有 D1 真板结果可以形成物理线速结论。对比时逐项核对 workload、总字节、iterations、timer 和 drain policy。
 
 ## 失败处理
 
@@ -246,7 +234,7 @@ sha256sum docs/d1_out.md
 | QEMU 报磁盘锁定 | 退出占用 `make/disk.img` 的旧 QEMU 进程；不要删除镜像 |
 | QEMU 报 host 网络端口占用 | 使用 `make NET=n build` 和 `make NET=n justrun` |
 | D1 image header、地址或尺寸不符 | 停止烧录，回到构建与 inspect Gate |
-| D1 烧录后无输出或乱码 | 停止重复写盘，核对 115200 8N1、串口设备、attach-only UART 和完整启动日志；随后恢复官方 boot |
+| D1 烧录后无输出或乱码 | 停止重复写盘，核对 115200 8N1、串口设备、UART 初始化和完整启动日志；随后恢复官方 boot |
 | D1 benchmark 未到 `Done.` | 保存完整串口日志，记录最后 section 和 fault；不生成性能对比结论 |
 
 ## 回滚

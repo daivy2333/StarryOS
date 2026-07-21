@@ -163,43 +163,11 @@ Q26 维护性清理 MUST 视为已完成并归档；后续类似清理 MUST 参�
 - **THEN** MUST 参照 Q26 的 Gate 分层（host/static vs 运行时）
 - **AND** MUST 将无法在当前环境验证的 Gate 标记为 ENV BLOCK
 
-### Requirement: I11 — polling Console 实现优化
-
-polling Console 的同步完成吞吐和延迟数据不足以认定其系统效率优于 async UART。当前 D1 Console 的 S10 线速为 99.0%-99.4%，S20 单字节平均延迟为 0.106 ms；async UART 分别为 96.8%-98.8% 和 0.192 ms。现有 benchmark 未采集 CPU 时间、idle tick、IRQ-off 窗口或并发任务延迟。
-
-**状态**: 🟡 证据触发 | **数据源**: `docs/benchmark-report-async.md` | **触发**: polling Console 用于正式架构，或需要比较系统效率、实时性与并发影响
-
-- **当前差异**: main 的 QEMU Console 每字节获取平台 UART `SpinNoIrq` 锁；当前分支在每次 `ConsoleWriter::write` 和 TEMT drain 期间持有 `axplat::console::CONSOLE_LOCK` 与本地 port 锁。启用 ONLCR 时 TTY 以最多 256B 分块；raw/no-ONLCR 路径可把整个请求交给 writer。
-- **风险**: 115200 bps 下 256B 和 1024B 的物理发送时间约为 22.2 ms 和 88.9 ms，对应路径可能形成同量级的本地 IRQ-off 窗口；该风险尚未实测。
-- **测量项**: CPU/wall time、idle tick、最大 IRQ-off 时间、timer/IRQ latency、并发 workload latency，并保留现有 S10-S21 与 S30 口径。
-- **锁优化**: 在保持单次 write 字节不交错和 TEMT drain 语义的前提下，评估分块锁定、缩小 IRQ-off 范围或拆分日志与 TTY 的同步域。
-- **drain 归属**: `TCSBRK` MUST 下沉到目标 Console 设备；非 Console fd MUST NOT drain 全局 Console 后返回成功。
-- **RX 优化**: 正式路径 SHOULD 使用 UART IRQ 或有界退避，避免 blocking read 持续 self-wake；纯 polling MAY 保留为测量基线。
-- **平台访问**: SHOULD 评估合并 axplat UART 与本地 polling port 的重复 MMIO 状态，同时保持 attach-only 初始化。
-
-#### Scenario: 比较 polling Console 与 async UART 的系统效率
-
-- **WHEN** 开发者依据同步完成吞吐或延迟选择正式 UART 架构
-- **THEN** MUST 在同平台、同 workload、同 drain policy 下补采 CPU 与 IRQ latency 证据
-- **AND** MUST 分开报告提交延迟、物理完成时间和系统占用
-
-#### Scenario: 调整 polling Console 锁粒度
-
-- **WHEN** 开发者缩小 write 或 drain 的锁范围
-- **THEN** MUST 验证并发 kernel log 与 `/dev/console` 写入不发生字节级交错
-- **AND** MUST 验证 `tcdrain()` 仍等待 TEMT
-
-#### Scenario: 收敛 Console RX 与 ioctl 作用域
-
-- **WHEN** polling Console 进入正式架构
-- **THEN** MUST 验证 idle RX 不产生无界 self-wake
-- **AND** MUST 验证 `TCSBRK` 只作用于目标 Console fd
-
 ### Requirement: I12 — UART benchmark 测量优化
 
 UART benchmark MUST 区分提交、THR 接受和 TEMT 完成。QEMU 数据只用于软件路径和回归比较；D1 数据用于物理线速。CPU、内存和完整性 MUST 使用可复核的测量方法。
 
-**状态**: 🟡 方法待补强 | **数据源**: `docs/benchmark-report-async.md`、历史提交 `24d926d` | **触发**: 下一轮 Console/async 性能比较
+**状态**: 🟡 方法待补强 | **数据源**: `docs/benchmark-report-async.md`、历史提交 `24d926d` | **触发**: 下一轮 async UART 性能比较或架构决策
 
 - **设备见证**: 每组输出设备路径和 `fstat` 设备号。UART TX、压力和完整性测试 MUST 写 `/dev/console`，不得以 `/dev/null` 数据代表串口。
 - **时间口径**: 分开报告 write-only、enqueue、drain-each、batch-drain 和 final-drain。不同完成点 MUST NOT 计算性能倍率。
@@ -229,4 +197,4 @@ UART benchmark MUST 区分提交、THR 接受和 TEMT 完成。QEMU 数据只用
 - **THEN** MUST 提供 `/dev/console` 写入、接收或 capture 校验和完成状态
 - **AND** `/dev/null` 结果 MAY 作为 syscall/VFS 对照，但 MUST NOT 作为 UART 证据
 
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/optimization/spec.md (hash: 2ffa3af2), 439 lines. Active improvements extracted as I01-I10; I11-I12 added from console/async comparison evidence. Completed/archived entries preserved as tombstones. Archive carriers: ARC-202607021535, ARC-202607021648, ARC-202607031929, ARC-202607111510.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/optimization/spec.md (hash: 2ffa3af2), 439 lines. Active improvements extracted as I01-I10; I11 removed (console-specific, archived to `console-lichee` branch); I12 added from async UART benchmark measurement evidence. Completed/archived entries preserved as tombstones. Archive carriers: ARC-202607021535, ARC-202607021648, ARC-202607031929, ARC-202607111510.
