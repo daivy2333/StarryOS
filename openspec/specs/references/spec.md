@@ -145,6 +145,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R25 --> `.claude/analysis/arceos-async-network-driver-analysis.md` | ArceOS 异步网卡分析：NetDriverOps、NetBuf、smoltcp adapter、DWMAC、axdma 与真板证据；识别硬中断全栈 poll、lost wakeup 和全局锁风险 |
 | <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
 | <!-- R27 --> `.claude/analysis/console-lichee-baseline-branch.md` | Console 性能基线分支分析：从冻结的当前异步提交选择性适配 polling Console，界定 TTY、生命周期、TEMT drain、benchmark 语义和 QEMU/D1 对照 Gate |
+| <!-- R42 --> `.claude/analysis/console-performance-measurement-design.md` | I11/I12 Console 性能与测量设计：TX/RX 调用链、CPU/idle/内存口径、IRQ-off、延迟与抖动、线端完整性、QEMU/D1 对照矩阵和分阶段 Gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
