@@ -146,6 +146,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
 | <!-- R27 --> `.claude/analysis/console-lichee-baseline-branch.md` | Console 性能基线分支分析：从冻结的当前异步提交选择性适配 polling Console，界定 TTY、生命周期、TEMT drain、benchmark 语义和 QEMU/D1 对照 Gate |
 | <!-- R42 --> `.claude/analysis/_archive/2026-07-21-console-performance-measurement-design.md` | [ARCHIVED 2026-07-21] I11/I12 Console 性能与测量设计（console 分支专属，`uart-lichee` 不适用） |
+| <!-- R43 --> `.claude/analysis/async-uart-cpu-efficiency-metrics.md` | 异步 UART CPU 效率指标与测试落地：盘点现有 S00-S40 覆盖，定义 submit fraction、通信—计算重叠、instret/byte、分段 counter delta 与证据边界 |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
