@@ -187,24 +187,66 @@ Pending.
 
 ## Plan Review
 
-- Status: pending
+- Status: no-follow-up
 
 **Review Result**
 
-Pending.
+accepted-for-analysis。QEMU 与 D1 Console 日志已经完整结束，D1 数据与 Q31 Async 的
+共同字段足以进行 S41、S42、S43 横向分析。测试优化和运行采集不再创建下一轮 iteration；
+evidence 冻结、comparison、任务核销和 change 归档改由收尾同步清单承接。
 
 **Findings**
 
-Pending.
+1. **PASS — D1 运行证据完整。** `docs/d1_console.md` 包含 S41 三种 payload 各 5/5
+   valid rounds、S42 5/5 PASS、S43 idle 5/5 PASS、loaded 5/5
+   `not-applicable reason=no-overlap-window`、无 loaded aggregate、`Done` 和 exit 0。
+2. **PASS — 横向分析输入充分。** Q31/Q32 D1 日志都提供 completed bytes、instret delta、
+   S41 instructions/byte、S42 useful work/overlap 和 S43 idle aggregate。Console loaded
+   不适用是同步写耗尽窗口后的能力差异，不是缺失数据。
+3. **PASS — IRQ 根因已修复。** smoke feature 仍只有平台 `irq-if`；userbench、fullbench、
+   fullbench-command 均启用平台 `irq`，且四种模式都没有 Async UART feature。D1 S43 连续
+   完成 250 个 idle absolute sleeps，证明真实 timer IRQ 唤醒路径已经工作。
+4. **PASS — 回归 Gate。** 26 个 benchmark classification tests、12 个 time math tests、
+   平台 IRQ target check、ELF/image shape、OpenSpec strict/global validations 和
+   `git diff --check` 全部通过。
+5. **DEVIATION — 没有独立 timer smoke。** 实现没有增加计划中的单次 5 ms readiness
+   输出。完整 S43 足以支持本次结果分析，但不能声称逐字满足 A4 的独立 smoke 条款。
+6. **DEVIATION — feature 组合形式不同。** 三个 runtime feature 直接启用平台 `/irq`，
+   没有新增 `lichee-d1-runtime-irq` 组合。当前 feature matrix 满足运行语义，但存在三处
+   重复接线；本次不为纯结构整理追加 iteration。
+7. **PROCESS — Response 写入了上一轮。** 实际实施说明和 D1 验证表位于 iteration 001 的
+   Act Response；本文件 Act Response 仍为 pending。Review 以提交 `f61def3`、实际 diff、
+   产物和日志为准，不把 pending 字样解释为未执行。
+8. **CLOSEOUT — 当前还不是 archive-ready。** Q32 evidence README 仍记录旧 HEAD/hash，
+   最新 QEMU/D1 日志只在 `docs/` 中，comparison 和若干 tasks 尚未核销。这些是证据生命周期
+   与文档收尾问题，不要求重新运行测试。
+9. **LIMITATION — S43 aggregate 不能由日志独立复算。** 每组只打印前三个 raw samples；
+   后续报告可使用 hash 锚定的 reported aggregate，但必须标注
+   `not-independently-recomputed`。QEMU 只用于协议和功能检查，不作为 D1 性能证据。
 
 **Evidence**
 
-Pending.
+- Console QEMU log：`docs/qemu_console.md`，SHA-256
+  `67b7bb0260b717ad91adee3112c65bbc308f44a2d2a681dcc05ffad0094e227c`。
+- Console D1 log：`docs/d1_console.md`，SHA-256
+  `b3f11fce62696e92077cd3f9693520708df739f42ed755f1eab8ffb513555aaf`。
+- Q31 Async QEMU/D1 log：SHA-256 分别为 `a9ce8a34431ff6b9a609ffde83da2096228f17c37c3f900ec35f3c10939ce8ef`
+  和 `50a2a87666045c1379391bec46e3453026967e028fa586abbcae8155576f0789`。
+- Console D1 S41 median instructions/byte：64/256/1024 B =
+  1194.25/1105.27/1105.50；Async = 32818.08/32792.23/44715.58。
+- Console D1 S42 median overlap efficiency = 0.0000；Async = 0.5353。
+- Console D1 S43 idle aggregate P50/P95/P99 = 8.424/8.772/8.772 ms；Async =
+  9.533/9.823/15.847 ms。Console loaded 为 not-applicable；Async loaded P50/P95/P99 =
+  25.782/47.332/49.626 ms。
+- 当前 benchmark、D1 ELF、boot image SHA-256 分别为 `2ce5c072...`、`2f0d869a...`、
+  `1e85b612...`；格式检查为静态 RISC-V ELF、无 relocation、Android boot image。
 
 **Follow-up Decision**
 
-Pending.
+不创建新的实现或采集 iteration。按
+`docs/q32-console-cpu-efficiency-doc-sync.md` 冻结两平台 Console 日志、生成受限 comparison、
+核销或明确豁免剩余 tasks，再同步并归档 Q31/Q32。
 
 **Next Iteration**
 
-Pending.
+None.

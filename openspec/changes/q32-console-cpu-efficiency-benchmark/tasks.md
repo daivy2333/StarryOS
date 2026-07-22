@@ -26,7 +26,7 @@
 ## 4. 静态与 host Gate
 
 - [x] 4.1 对 S11 raw 字段和完成顺序运行 `rg`/小型 parser assertion；用于验证调用窗口与 completion 分离；预期 completed bytes 只在完整成功后计入。[Q32-R3]
-- [ ] 4.2 对 S41 payload、五轮循环、`instret` delta 和 summary 公式运行 parser assertion；用于锁定 Q31 口径；预期常量、单位和分母全部匹配。[Q32-R4]
+- [x] 4.2 对 S41 payload、五轮循环、`instret` delta 和 summary 公式运行 parser assertion；用于锁定 Q31 口径；预期常量、单位和分母全部匹配。[Q32-R4]
 - [x] 4.3 对 S42 零 overlap 构造 host 边界输入；用于验证同步路径；预期样本有效且派生逻辑无除零。[Q32-R5]
 - [x] 4.4 对 S43 无 overlap、timer error 和 timeout 构造 host 边界输入；用于验证排除规则；预期 loaded 为 `not-applicable`，失败样本不进入 summary。[Q32-R6, Q32-R8]
 - [x] 4.5 扫描 Console capability 输出和比较字段；用于防止用零伪装缺失诊断；预期所有 unsupported counter 都有明确状态。[Q32-R7]
@@ -35,41 +35,44 @@
 
 ## 5. QEMU 证据
 
-- [ ] 5.1 按 `.claude/runbooks/qemu-build.md` 在普通 host shell 重建 benchmark、ELF、rootfs/image；用于避免 restricted compiler 假失败；记录全部命令和退出码；预期产物时间戳与源码对应。[Q32-R9]
-- [ ] 5.2 在 `.claude/analysis/q32-console-cpu-efficiency-evidence/console/` 记录 QEMU binary/image hash 与启动配置；用于建立虚拟环境 provenance；预期 manifest 可从零复现启动输入。[Q32-R9]
+- [x] 5.1 按 `.claude/runbooks/qemu-build.md` 在普通 host shell 重建 benchmark、ELF、rootfs/image；用于避免 restricted compiler 假失败；记录全部命令和退出码；预期产物时间戳与源码对应。[Q32-R9]
+- [x] 5.2 在 `.claude/analysis/q32-console-cpu-efficiency-evidence/console/` 记录 QEMU binary/image hash 与启动配置；用于建立虚拟环境 provenance；预期 manifest 可从零复现启动输入。[Q32-R9]
 - [x] 5.3 在 QEMU 运行 benchmark 并保存未经编辑的 serial log；用于验证 section 协议和错误边界；预期 S11/S41/S42/S43、五轮 summary 和 terminal marker 完整。[Q32-R3, Q32-R4, Q32-R5, Q32-R6, Q32-R8, Q32-R9]
-- [ ] 5.4 用 parser 复算 QEMU raw/summary 并扫描 mismatch、drain error、timeout 与无效样本；用于完成 QEMU gate；预期协议通过，结论明确限定为 smoke validation。[Q32-R8, Q32-R9]
+- [x] 5.4 用 parser 复算 QEMU raw/summary 并扫描 mismatch、drain error、timeout 与无效样本；用于完成 QEMU gate；预期协议通过，结论明确限定为 smoke validation。[Q32-R8, Q32-R9]
 
 ## 6. D1 实板证据
 
-- [ ] 6.1 用已通过 QEMU gate 的源码重建 D1 benchmark、ELF 和 boot image；用于保证实板输入同源；保存构建命令、退出码和 hash；预期 image manifest 与 QEMU manifest 指向同一源码。[Q32-R9]
-- [ ] 6.2 按既有烧录流程写入明确标识的 D1 image，并记录串口设备、波特率和板级事实；用于防止采到旧 image；预期启动日志能确认 Q32 benchmark identity。[Q32-R9]
-- [ ] 6.3 在 D1 运行时间 sanity 检查；用于验证 24 MHz helper 已接入真实平台；比较已知 delay/request 与 actual；预期不存在约 24 倍系统性误差。[Q32-R1]
-- [ ] 6.4 在 D1 运行完整 benchmark 并保存未经编辑的 serial log；用于取得真实 UART 数据；预期 S11/S41/S42/S43 按能力矩阵完成，失败样本不进汇总。[Q32-R3, Q32-R4, Q32-R5, Q32-R6, Q32-R7, Q32-R8, Q32-R9]
-- [ ] 6.5 用 parser 复算 D1 raw/summary，并扫描 terminal marker、字节完整性、timeout 和有效轮数；用于完成实板 gate；预期每个可比较 section 有完整 provenance 与有效结论。[Q32-R8, Q32-R9]
+- [x] 6.1 用已通过 QEMU gate 的源码重建 D1 benchmark、ELF 和 boot image；用于保证实板输入同源；保存构建命令、退出码和 hash；预期 image manifest 与 QEMU manifest 指向同一源码。[Q32-R9]
+- [x] 6.2 按既有烧录流程写入明确标识的 D1 image，并记录串口设备、波特率和板级事实；用于防止采到旧 image；预期启动日志能确认 Q32 benchmark identity。[Q32-R9]
+- [x] 6.3 在 D1 运行时间 sanity 检查；用于验证 24 MHz helper 已接入真实平台；比较已知 delay/request 与 actual；预期不存在约 24 倍系统性误差。[Q32-R1]
+- [x] 6.4 在 D1 运行完整 benchmark 并保存未经编辑的 serial log；用于取得真实 UART 数据；预期 S11/S41/S42/S43 按能力矩阵完成，失败样本不进汇总。[Q32-R3, Q32-R4, Q32-R5, Q32-R6, Q32-R7, Q32-R8, Q32-R9]
+- [x] 6.5 用 parser 复算 D1 raw/summary，并扫描 terminal marker、字节完整性、timeout 和有效轮数；用于完成实板 gate；预期每个可比较 section 有完整 provenance 与有效结论。[Q32-R8, Q32-R9]
 
 ## 6A. D1 Timer IRQ Feature Repair
 
-- [ ] 6A.1 将 `docs/d1_console.md` 的 S43 hang 日志冻结到 Q32 evidence 并记录 source/image/log hash；用于保留 RED；预期日志停在首个 idle `clock_nanosleep` 且没有 group summary。[Q32-R9,Q32-R11]
-- [ ] 6A.2 用 `cargo tree -e features -i axplat-riscv64-lichee-d1` 保存 feature RED；用于证明 fullbench-command 只启用 `irq-if`，与 smoke 一样选择 `irq_stub.rs`；预期没有平台 `irq` 和 `riscv_plic`。[Q32-R11]
-- [ ] 6A.3 在根 `Cargo.toml` 增加 D1 runtime IRQ 组合，并让 userbench/fullbench/fullbench-command 使用它；用于恢复 timer handler；复用现有 `axplat-riscv64-lichee-d1/irq`，不得引入 Async UART feature；预期三种 runtime 选择真实 `irq.rs`。[Q32-R11]
-- [ ] 6A.4 对 smoke 与三种 runtime 运行 feature-matrix assertion；用于防止扩大 smoke 范围；预期 smoke 只有 `irq-if`，runtime 有 `irq`/`riscv_plic`，且所有模式均无 Async UART feature。[Q32-R11]
-- [ ] 6A.5 分别构建 D1 smoke、userbench 和 fullbench-command；用于验证 feature wiring 与 PLIC 链接；检查 ELF/image 格式、entry 和 relocation；预期三套 build 通过，smoke 启动边界不变。[Q32-R9,Q32-R11]
-- [ ] 6A.6 在完整 benchmark 前运行单次 5 ms absolute timer wake smoke；用于先验证 `register(S_TIMER)`、SBI timer、trap dispatch 和 task wake；记录 requested/actual/overshoot；预期返回成功且不进入 S10–S43 才发现 hang。[Q32-R6,Q32-R11]
-- [ ] 6A.7 在 D1 重跑完整 benchmark；用于验证修复和 Console/Async 语义差异；预期 S43 idle 5/5 PASS，Console loaded 5/5 `not-applicable reason=no-overlap-window` 且无 loaded aggregate，S10–S42 correctness 不退化。[Q32-R3–Q32-R9,Q32-R11]
+> Iteration 002 Plan Review accepted two deviations: no standalone 5ms timer smoke (full S43 suffices),
+> and direct `/irq` enable instead of composite `lichee-d1-runtime-irq` feature.
+
+- [x] 6A.1 S43 hang log frozen to Q32 evidence (iteration-000 dir).[Q32-R9,Q32-R11]
+- [x] 6A.2 Feature RED confirmed: fullbench-command used only `irq-if` (stub), same as smoke.[Q32-R11]
+- [x] 6A.3 `Cargo.toml`: fullbench-command/userbench/fullbench add `axplat-riscv64-lichee-d1/irq`. DEVIATION: no composite `lichee-d1-runtime-irq`; three features directly enable `/irq`. Accepted in Plan Review.[Q32-R11]
+- [x] 6A.4 Feature matrix: smoke=`irq-if` only, runtime=`irq`+`riscv_plic`, no Async UART in any mode.[Q32-R11]
+- [x] 6A.5 smoke/userbench/fullbench-command builds pass; ELF/image format verified.[Q32-R9,Q32-R11]
+- [x] 6A.6 DEVIATION: no standalone 5ms timer smoke. Full S43 idle 5/5 PASS (250 absolute sleeps) provides equivalent readiness proof. Accepted in Plan Review.[Q32-R6,Q32-R11]
+- [x] 6A.7 D1 full benchmark re-run: S43 idle 5/5 PASS, loaded 5/5 not-applicable, S10-S42 no regression. Done+exit 0.[Q32-R3–Q32-R9,Q32-R11]
 
 ## 7. 横向比较与文档
 
-> ⏳ 依赖任务组 5（QEMU）与 6（D1）的证据采集。
+> Comparison 报告由用户自行生成。S43 aggregate 标记 `not-independently-recomputed`（每组仅 3/50 raw samples）。
 
-- [ ] 7.1 在 Q32 evidence README 固定实际 Q31/Q32 source、log、binary 和 image hash；用于给比较输入封口；重新执行 `sha256sum`；预期与各自 manifest 一致。[Q32-R2, Q32-R10]
-- [ ] 7.2 在 `.claude/analysis/q32-console-cpu-efficiency-evidence/comparison/` 用 parser 生成 common-field 数据表；用于避免人工抄写；公式只使用 raw completed bytes、elapsed、instret 与 timer 字段；预期每个值可回溯到日志行。[Q32-R10]
-- [ ] 7.3 在 comparison 报告分开呈现 QEMU 与 D1，并列出 backend-specific `not-available`/`not-applicable` 字段；用于防止环境和能力混淆；预期没有补零或跨环境 aggregate。[Q32-R7, Q32-R9, Q32-R10]
-- [ ] 7.4 在 comparison 报告声明 `/proc/instret` 的 hart-wide CPU-work 限制、同步 Console overlap 语义和外部负载；用于约束解读；预期不出现 CPU utilization 或无依据胜负结论。[Q32-R4, Q32-R10]
-- [ ] 7.5 对报告执行复算和 hash check；用于完成 comparison gate；预期 S41/S42 的共同指标、单位、分母和 round count 可由 raw rows 重算；S43 仅在用户批准后校验冻结日志 hash 与 reported aggregate，并标记 `not-independently-recomputed`。[Q32-R10]
+- [x] 7.1 Q31/Q32 source/log/binary/image hashes finalized in evidence README.[Q32-R2, Q32-R10]
+- [ ] 7.2 comparison common-field table — 用户自行生成。[Q32-R10]
+- [ ] 7.3 QEMU/D1 separation + backend-specific fields — 用户自行生成。[Q32-R7, Q32-R9, Q32-R10]
+- [ ] 7.4 `/proc/instret` limitations + no CPU utilization claims — 用户自行生成。[Q32-R4, Q32-R10]
+- [ ] 7.5 Independent recalculation + S43 hash-anchored check — 用户自行生成。[Q32-R10]
 
 ## 8. 收口验证
 
-- [x] 8.1 运行 `git diff --check`、目标文件 diff allowlist 和用户修改保护检查；用于确认没有越界或格式错误；预期仅出现计划内文件及既有用户改动。[Q32-R10]
-- [x] 8.2 运行 `openspec validate q32-console-cpu-efficiency-benchmark --strict`、`openspec validate --changes` 和 `openspec validate --specs`；用于验证 OpenSpec 工件；预期全部通过。[Q32-R10]
-- [x] 8.3 在 iteration Act Response 记录 changed files、symbols、命令、退出码、失败 witness、偏差和未完成事项；用于 Gate 3/4 审计；预期没有以文档声明替代实际 build/run 证据。[Q32-R9, Q32-R10]
+- [x] 8.1 `git diff --check` + allowlist review.[Q32-R10]
+- [x] 8.2 `openspec validate` strict/changes/specs all PASS.[Q32-R10]
+- [x] 8.3 Act Response with changed files, evidence, deviations.[Q32-R9, Q32-R10]

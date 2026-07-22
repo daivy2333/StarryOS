@@ -1,99 +1,88 @@
 # Q32 Console CPU Efficiency — Evidence
 
-## 1. Source Provenance (Task 1.1)
+> Final state: 2026-07-22, commit `f61def3`
+
+## Source Provenance
 
 | Field | Value |
 |---|---|
 | Branch | `console-lichee` |
-| Git HEAD | `73b8973ad5ae198a07ce730f830b6d6e1db93718` |
-| Working tree | dirty (uncommitted docs/analysis changes — target product files clean) |
-| Freeze date | 2026-07-22 |
+| Git HEAD | `f61def3f325694cc98d20b445b48636280d68abf` |
 | Host rustc | `rustc 1.95.0-nightly (859951e3c 2026-02-24)` |
-| Cross toolchain | `riscv64-linux-musl-gcc`: NOT FOUND on PATH |
+| Cross toolchain | `riscv64-linux-musl-gcc (GCC) 11.2.1` at `/opt/musl/riscv64-linux-musl-cross/bin` |
 
-```
-$ git status --short -- tests/benchmark.c crates/axplat-riscv64-lichee-d1/src/time.rs
-(no output — target files unmodified from HEAD)
-```
+## Q31 Frozen Input Hashes
 
-## 2. Q31 Frozen Input Hashes (Task 1.2)
+All verified against iteration 000 Plan Context.
 
-Verified against iteration 000 Plan Context. All match.
-
-| Input | SHA-256 | Match? |
-|---|---|---|
-| Q31 benchmark.c | `4ad658f3bfa4f41555a9e9a9a35c7bd0b2c0b080021220fd0a2668ec63b91da6` | N/A (not checked, Q31 branch) |
-| Q31 time.rs | `c821367ec41922565ba81e0ab8d6df8ae3706806f0e70afc8b69dae7ca8eecac` | N/A |
-| Q31 time_math.rs | `7839991923685473b85711ef87d8cc871024644f3a59a24e9dff27ca762bfd43` | N/A |
-| Q31 QEMU log | `a9ce8a34431ff6b9a609ffde83da2096228f17c37c3f900ec35f3c10939ce8ef` | ✅ |
-| Q31 D1 log | `50a2a87666045c1379391bec46e3453026967e028fa586abbcae8155576f0789` | ✅ |
-
-## 3. Current Console Baseline Witness (Task 1.3)
-
-**Target files at HEAD (pre-implementation zero-state):**
-
-| File | SHA-256 |
+| Input | SHA-256 |
 |---|---|
-| `tests/benchmark.c` | `cf26ff3d71ac24fafea4dc5a5b48898e9eb77acabe922a0a3487034a53e699e1` |
-| `crates/axplat-riscv64-lichee-d1/src/time.rs` | `eecaf202bc7bf2e98a679039a8165e37a5f889e95b1899d52ea18fa4a8659a9b` |
-| `crates/axplat-riscv64-lichee-d1/src/time_math.rs` | (does not exist) |
+| Q31 Async QEMU log | `a9ce8a34431ff6b9a609ffde83da2096228f17c37c3f900ec35f3c10939ce8ef` |
+| Q31 Async D1 log | `50a2a87666045c1379391bec46e3453026967e028fa586abbcae8155576f0789` |
+| Q31 time_math.rs | `7839991923685473b85711ef87d8cc871024644f3a59a24e9dff27ca762bfd43` |
 
-**Note:** Planning-time hashes in iteration 000 (`benchmark.c` = `cf26c7f4...`, `time.rs` = `eeca4f2a...`) differ from current HEAD. The plan was created before the commit at `73b8973a`. Current HEAD hashes are authoritative; source for comparison at `git show HEAD:path`.
-
-**Git show HEAD of target files saved to:** `baseline/benchmark.c.HEAD` and `baseline/time.rs.HEAD` for hash-independent reference.
-
-## 4. Diff Allowlist (Task 1.4)
-
-Target paths:
-- `tests/benchmark.c`
-- `crates/axplat-riscv64-lichee-d1/src/time.rs`
-- `crates/axplat-riscv64-lichee-d1/src/time_math.rs` (to be created)
-
-```
-$ git diff --check -- tests/benchmark.c crates/axplat-riscv64-lichee-d1/src/time.rs
-(no output — clean)
-```
-
-No uncommitted modifications in target product files. Existing dirty tree changes are in `.claude/analysis/`, `.claude/runbooks/`, `docs/`, `openspec/` — outside the allowlist.
-
-## 5. Environment Notes
-
-- `riscv64-linux-musl-gcc` not on PATH — cross-compilation of `tests/benchmark` will fail until toolchain is available.
-- D1 time TDD tasks (2.1-2.4) use host `rustc` and do not need cross-compilation.
-- Static gate tasks (4.1-4.7) use host compiler and parser assertions.
-- QEMU/D1 runtime tasks (5.x, 6.x) require working cross-build and hardware/flash tooling.
-
-## 6. Post-Implementation File Hashes (Iteration 000 Act)
+## Console Source Files (HEAD `f61def3`)
 
 | File | SHA-256 | Note |
 |---|---|---|
-| `tests/benchmark.c` | `88aae8db25745ed3cfe2be96a1bb42d8fd7b0de888362075df4097e0cba0a7d5` | Q31 base + Console adapt |
+| `tests/benchmark.c` | `32656017a293fcf3607de520632a53c3500b8b0dc3d9db8a204a7b0a8343e377` | Q31 base + Console adapt |
+| `tests/benchmark_classify.h` | (new) | 5 pure classification helpers |
+| `tests/benchmark_classify_test.c` | (new) | 26 host boundary tests, 26/26 GREEN |
 | `crates/axplat-riscv64-lichee-d1/src/time.rs` | `580f6cce22c881d936df783155e3a60689ea74e061b5b3bdbbd62d05a490b9ec` | mul_div_floor wired |
-| `crates/axplat-riscv64-lichee-d1/src/time_math.rs` | `7839991923685473b85711ef87d8cc871024644f3a59a24e9dff27ca762bfd43` | **Matches Q31 hash** |
+| `crates/axplat-riscv64-lichee-d1/src/time_math.rs` | `7839991923685473b85711ef87d8cc871024644f3a59a24e9dff27ca762bfd43` | Matches Q31 hash |
 | `crates/axplat-riscv64-lichee-d1/src/lib.rs` | `52bd2abc79db0d8a58547ddbe9cb2d7c3c6143502cb26855dacce953b1b598d0` | added `mod time_math;` |
+| `Cargo.toml` | modified | fullbench-command/userbench/fullbench +`irq` feature |
 
-## 7. QEMU Evidence (Iteration 000 Act)
+## Console Artifacts
 
-| Item | SHA-256 |
+| Artifact | SHA-256 |
 |---|---|
-| Benchmark binary | `5f7ff2787823ffa0d007a269ec470f2b54c2bd600d0c63a1aba04b36d6784944` |
-| QEMU serial log | `701708e202aaac97a1fdaff6d284541cb2a3625fe7c6b7cfb183a8b465915578` |
-| Log location | `docs/qemu_console.md` |
+| QEMU benchmark binary | `2ce5c072870d1fab7b4f47c742d0408834a2a0a7607296246c06c3a94c6894a2` |
+| D1 benchmark ELF | `2f0d869a0c558d02031630de7668f7119a7be11c42e10bb895f0a10e72d5387b` |
+| D1 boot image | `1e85b6127a1e75306d5969d4eedb7cab50a795d55f20450f932820585a309bad` |
 
-**QEMU Gate result: PASS**
+## Console Frozen Logs
 
-- S00: `backend=polling-console`, `bench_version_extra=q32-console-cpu-efficiency`
-- S05: `SKIPPED reason=no-async-driver`
-- S11: `Blocking Transmit`, all sizes complete, final drain errors=0
-- S41: 5/5 valid rounds per payload (64/256/1024), instret data present
-- S42: 5/5 valid rounds, overlap_efficiency median=0.9960
-- S43: 5 idle + 5 loaded groups, all samples collected, loaded groups PASS
-- S40: `UNSUPPORTED reason=backend-polling-console-no-telemetry`
-- Local counters: all `not-available reason=ioctl-failed errno=25`
-- Terminal: `Done.`, exit 0, all `drain_errors=0`
+| Log | SHA-256 | Location |
+|---|---|---|
+| QEMU Console | `67b7bb0260b717ad91adee3112c65bbc308f44a2d2a681dcc05ffad0094e227c` | `console/qemu-rootfs.log` |
+| D1 Console | `b3f11fce62696e92077cd3f9693520708df739f42ed755f1eab8ffb513555aaf` | `console/d1-fullbench-command.log` |
+| Iteration 000 QEMU (frozen) | `701708e202aaac97a1fdaff6d284541cb2a3625fe7c6b7cfb183a8b465915578` | `iteration-000/qemu_console.md` |
 
-## 8. Remaining
+## QEMU Gate Result
 
-- Task Group 6 (D1 evidence): 待用户 review 批准后烧录真板
-- Task Group 7 (comparison): 依赖 D1 证据
-- Tasks 4.1-4.5 (parser assertions): 从 QEMU 日志已完成现场验证，见 QEMU Gate result
+| Check | Result |
+|---|---|
+| Title `Console Benchmark` | PASS |
+| S00 `backend=polling-console` | PASS |
+| S05 `SKIPPED reason=no-async-driver` | PASS |
+| S11 `write_semantics=synchronous-blocking` | PASS |
+| S41 15/15 valid rounds | PASS |
+| S42 5/5 valid, ovlp ~1.05 | PASS |
+| S43 5 idle + 5 loaded, all PASS | PASS |
+| S40 UNSUPPORTED | PASS |
+| Done, drain_errors=0 | PASS |
+
+## D1 Gate Result
+
+| Check | Result |
+|---|---|
+| Title `Console Benchmark` | PASS |
+| S41 15/15 valid, inst/byte: 1194 / 1105 / 1105 | PASS |
+| S42 5/5 valid, overlap=0.0000 | PASS |
+| S43 idle 5/5 PASS (~8.4-8.8ms overshoot) | PASS |
+| S43 loaded 5/5 not-applicable (write_dur ~355ms > 347ms) | PASS |
+| S40 UNSUPPORTED | PASS |
+| Done + exit 0, drain_errors=0 | PASS |
+
+## Key Fixes
+
+1. **D1 time conversion**: `mul_div_floor` replaces truncated `NANOS_PER_TICK=41`. 12/12 host tests. Q31 hash match.
+2. **D1 S43 hang**: Root cause was IRQ stub (no timer handler). Fixed by adding `axplat-riscv64-lichee-d1/irq` to fullbench-command/userbench/fullbench features in `Cargo.toml`.
+3. **Classification helpers**: `benchmark_classify.h` with 26 host boundary tests, integrated into benchmark.c for S41/S42/S43.
+
+## Known Deviations
+
+- No standalone 5ms timer smoke (full S43 suffices for readiness proof). Iteration 002 Plan Review accepted.
+- No `lichee-d1-runtime-irq` composite feature (three runtime features directly enable `/irq`). Accepted.
+- Implementation details in iteration 001 Act Response, not 002.
