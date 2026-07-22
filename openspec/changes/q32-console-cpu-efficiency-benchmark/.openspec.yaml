@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-07-22
+goal: Make Console and Async UART CPU-efficiency measurements directly
+  comparable without changing Console runtime semantics.
