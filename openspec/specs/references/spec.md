@@ -178,5 +178,10 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R39 --> | 回归验证 Gate Runbook | `.claude/runbooks/regression-gate.md` | Phase/change 收尾标准五层验证链与 ENV BLOCK 处理 |
 | <!-- R40 --> | 真板 bring-up 阶梯 Runbook | `.claude/runbooks/board-bringup-ladder.md` | 新板 L0-L7 逐层适配、每层单变量约束与 Gate |
 | <!-- R41 --> | Benchmark QEMU/D1 部署 Runbook | `.claude/runbooks/benchmark-qemu-d1.md` | musl payload 构建、QEMU rootfs 注入、D1 TF 卡复制与 boot 备份/烧录、串口取证和恢复 |
+| <!-- R42 --> | Q31 Async CPU-Efficiency Benchmark Spec | `openspec/specs/uart-cpu-efficiency-benchmark/spec.md`（7 reqs）。Evidence: `.claude/analysis/q31-cpu-efficiency-evidence/async/`。Frozen logs: QEMU `a9ce8a34...`, D1 `50a2a876...`。Archived: `openspec/changes/archive/2026-07-22-q31-async-uart-cpu-efficiency-benchmark/` | Async CPU-efficiency measurement contract |
+| <!-- R43 --> | Q32 Console CPU-Efficiency Benchmark Spec | `openspec/specs/console-cpu-efficiency-benchmark/spec.md`（10 reqs）。Evidence: `.claude/analysis/q32-console-cpu-efficiency-evidence/`。Frozen logs: QEMU `67b7bb02...`, D1 `b3f11fce...`。Archived: `openspec/changes/archive/2026-07-22-q32-console-cpu-efficiency-benchmark/` | Console CPU-efficiency measurement contract |
+| <!-- R44 --> | Console Benchmark QEMU/D1 Runbook | `.claude/runbooks/console-benchmark-qemu-d1.md` | Console 分支 benchmark 构建、QEMU rootfs 注入、D1 烧录和验证 |
+| <!-- R45 --> | Q31→Q32 Console Port Analysis | `.claude/analysis/q31-console-cpu-efficiency-port.md` | 移植范围、D1 time 修复、S43 hang 根因（IRQ stub）、Console/Async 差异 |
+| <!-- R46 --> | Q32 Doc Sync Checklist | `docs/q32-console-cpu-efficiency-doc-sync.md` | cross-branch 同步清单、comparison 边界、归档前验证 |
 | <!-- arc: MIG-20260720-legacy-specs --> Learned reference entries merged: Legacy `openspec/specs/learned/spec.md` (hash: f09d4cae) → new R28-R34. |
 <!-- arc: ARC-202607021648 --> 1 组 references 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md

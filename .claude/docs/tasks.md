@@ -5,6 +5,7 @@
 > 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
 > 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
 > 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
+> 2026-07-22：Q31/Q32 CPU-efficiency 采集已完成。Q31 Async 日志冻结于 `a9ce8a34...`/`50a2a876...`；Q32 Console 日志同步自 `console-lichee`（`67b7bb02...`/`b3f11fce...`）。comparison 报告待用户生成后归档两项 change。
 
 ---
 

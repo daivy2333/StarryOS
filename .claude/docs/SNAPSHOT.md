@@ -1,7 +1,7 @@
 # SNAPSHOT.md — 项目快照
 
-> Last updated: 2026-07-21
-> Branch: uart-lichee — 异步 UART 开发主线；Q24 等待 SMP 硬件；Q30 维持证据触发
+> Last updated: 2026-07-22
+> Branch: uart-lichee — Q31/Q32 CPU-efficiency 对照已完成；Q24 等待 SMP 硬件；Q30 维持证据触发
 
 ## 项目概览
 
@@ -22,6 +22,7 @@
 - Q19~Q23：D1 smoke/kbench/userbench/memory-root、Q20 jitter/S40/raw evidence 完成。Q21/Q22 取消当前规划。
 - Q27a/Q27/Q28/Q29：readiness/backpressure/writer 契约/reader 契约全部完成并归档。QEMU/D1 通过。
 - Q26：维护性清理已归档。
+- Q31/Q32：Async 与 Console CPU 效率同口径 D1 benchmark 对照完成。Q31 Async 证据冻结（SHA-256 `a9ce8a34...`/`50a2a876...`），Q32 Console 证据同步自 `console-lichee` 分支。comparison 待用户生成报告后归档两项 change。
 
 ## 当前待推进
 
@@ -40,6 +41,7 @@
 | TX backpressure | 阻塞 fd writable wait + 非阻塞 partial/WouldBlock，ONLCR 完整映射 |
 | Port init | attach-only + width-correct IER disable，不重写 U-Boot 配置 |
 | TX lock | `axplat::console::CONSOLE_LOCK` → local `CONSOLE_PORT`，drain 单次持锁到 TEMT |
+| D1 CPU-efficiency | Async S41 inst/byte: 32818/32792/44716 (64/256/1024B)；Console: 1194/1105/1106。S42 Async ovlp 0.54，Console 0.00。S43 idle: Async 9.5ms，Console 8.4ms。S43 loaded: Async 25.8ms，Console not-applicable。QEMU 不作硬件证据。 |
 
 ## OpenSpec 体系
 
