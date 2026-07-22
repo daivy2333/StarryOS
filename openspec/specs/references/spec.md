@@ -146,6 +146,8 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
 | <!-- R27 --> `.claude/analysis/console-lichee-baseline-branch.md` | Console 性能基线分支分析：从冻结的当前异步提交选择性适配 polling Console，界定 TTY、生命周期、TEMT drain、benchmark 语义和 QEMU/D1 对照 Gate |
 | <!-- R42 --> `.claude/analysis/console-performance-measurement-design.md` | I11/I12 Console 性能与测量设计：TX/RX 调用链、CPU/idle/内存口径、IRQ-off、延迟与抖动、线端完整性、QEMU/D1 对照矩阵和分阶段 Gate |
+| <!-- R43 --> `.claude/analysis/async-uart-cpu-efficiency-metrics.md` | 异步 UART CPU 效率指标与测试落地：盘点现有 S00-S40 覆盖，定义 submit fraction、通信—计算重叠、instret/byte、分段 counter delta 与证据边界 |
+| <!-- R44 --> `.claude/analysis/q31-console-cpu-efficiency-port.md` | Q31 Console CPU 效率测试移植：还原 Async Q31 代码改动，映射 Console 适配白名单、S11/S41-S43 比较口径及 QEMU/D1 Gate |
 
 **已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
 
@@ -176,6 +178,6 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R38 --> | 增量融合 Runbook | `.claude/runbooks/incremental-merge.md` | 多 commit 合入的依赖排序、逐步 apply、Gate 与退化处理 |
 | <!-- R39 --> | 回归验证 Gate Runbook | `.claude/runbooks/regression-gate.md` | Phase/change 收尾标准五层验证链与 ENV BLOCK 处理 |
 | <!-- R40 --> | 真板 bring-up 阶梯 Runbook | `.claude/runbooks/board-bringup-ladder.md` | 新板 L0-L7 逐层适配、每层单变量约束与 Gate |
-| <!-- R41 --> | Console benchmark QEMU/D1 部署 Runbook | `.claude/runbooks/console-benchmark-qemu-d1.md` | 当前分支 musl payload 构建、QEMU rootfs 注入、D1 TF 卡复制与 boot 备份/烧录、串口取证和恢复 |
+| <!-- R41 --> | Benchmark QEMU/D1 部署 Runbook | `.claude/runbooks/benchmark-qemu-d1.md` | musl payload 构建、QEMU rootfs 注入、D1 TF 卡复制与 boot 备份/烧录、串口取证和恢复 |
 | <!-- arc: MIG-20260720-legacy-specs --> Learned reference entries merged: Legacy `openspec/specs/learned/spec.md` (hash: f09d4cae) → new R28-R34. |
 <!-- arc: ARC-202607021648 --> 1 组 references 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md

@@ -15,6 +15,7 @@ mod irq_stub;
 mod mem;
 mod power;
 mod time;
+mod time_math;
 
 pub mod config {
     //! Platform configuration module.

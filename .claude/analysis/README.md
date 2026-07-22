@@ -1,6 +1,6 @@
 # Analysis Index
 
-> Last updated: 2026-07-11
+> Last updated: 2026-07-22
 > 2026-07-11 update: Q19C/D1 async UART closeout analysis moved to `_archive/2026-07-11-q19c-d1-async-uart-closeout/`.
 > 2026-07-04 update: 16 active-path tombstones (8 top-level + 8 in `lichee/`) were consolidated into `_archive/README.md`.
 
@@ -9,6 +9,8 @@
 - `q17-smp-memory-ordering.md` — Q17 SMP / memory-ordering analysis; still referenced by Q20 multi-hart revalidation.
 - `uart-async-qemu-d1-first-replan.md` — UART async milestone replan; moves QEMU/D1 benchmark gaps and user ring/completion/zero-copy ahead of multi-hart board validation.
 - `q20-benchmark-gap-closure.md` — Q20 focused analysis; maps current benchmark code, jitter/counter/RX fixed-payload gaps, raw evidence layout, and plan inputs.
+- `async-uart-cpu-efficiency-metrics.md` — Q31 异步 UART CPU 效率指标与测试落地：S00-S40 覆盖盘点、submit fraction、通信—计算重叠、instret/byte、分段 counter delta 与证据边界。
+- `q31-cpu-efficiency-evidence/` — Q31 CPU 效率证据目录：Async baseline、无效/有效历史、iteration 002 日志、Console 冻结 baseline。
 
 ## Special binary tombstone
 

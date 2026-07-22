@@ -79,16 +79,19 @@ lichee-d1-smoke = [
 lichee-d1-userbench = [
     "lichee-d1",
     "axfeat/paging",
+    "axplat-riscv64-lichee-d1/irq",
     "starry-kernel/lichee-d1-userbench",
 ]
 lichee-d1-fullbench = [
     "lichee-d1",
     "axfeat/paging",
+    "axplat-riscv64-lichee-d1/irq",
     "starry-kernel/lichee-d1-fullbench",
 ]
 lichee-d1-fullbench-command = [
     "lichee-d1",
     "axfeat/paging",
+    "axplat-riscv64-lichee-d1/irq",
     "starry-kernel/lichee-d1-fullbench-command",
 ]
 smp = ["axfeat/smp", "starry-kernel/smp", "axplat-riscv64-visionfive2?/smp"]

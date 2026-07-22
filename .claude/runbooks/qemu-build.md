@@ -46,11 +46,15 @@ make rv                       # 别名 = make ARCH=riscv64 run
 ### benchmark
 
 ```bash
-make tests/benchmark          # 交叉编译 C 测试程序
+# 交叉编译 C 测试程序（新版，含 polling manifest）
+make BENCH_CC=/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc tests/benchmark
 
-# 运行：将 benchmark 放入 rootfs
-# cp tests/benchmark make/disk.img:/bin/benchmark
-# make run → QEMU 内 ./benchmark
+# 注入新 payload 到 QEMU rootfs
+#   注意：make run 使用 make/disk.img，不是项目根目录的 disk.img
+sudo mount -o loop make/disk.img /tmp/rootfs_mnt
+sudo cp tests/benchmark /tmp/rootfs_mnt/bin/benchmark
+sudo umount /tmp/rootfs_mnt
+make run   # 进入 shell 后 ./benchmark
 ```
 
 ### 构建前验证
@@ -74,6 +78,7 @@ make run     # 看到 shell 提示符 $ 或 benchmark manifest
 | `make build` 报 musl cc 找不到 | musl 工具链未在 PATH | `export PATH=/opt/musl/riscv64-linux-musl-cross/bin:$PATH` |
 | `make rootfs` 下载失败 | 网络问题 | 手动下载 `rootfs-riscv64.img.xz` 到项目根并 `xz -d` |
 | `make run` 报 disk.img not found | 未准备 rootfs | `make rootfs` |
+| benchmark manifest 缺 polling 标签 | rootfs 中为旧 payload | 重新注入：`sudo mount -o loop make/disk.img /tmp/rootfs_mnt && sudo cp tests/benchmark /tmp/rootfs_mnt/bin/benchmark && sudo umount /tmp/rootfs_mnt` |
 
 ## 平台事实
 

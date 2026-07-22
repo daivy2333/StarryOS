@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-07-21
+goal: 补齐异步 UART CPU 效率的可复核 benchmark 与 Async/Console 同口径证据
