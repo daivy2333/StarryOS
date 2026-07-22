@@ -1,18 +1,11 @@
 # tasks.md — 任务追踪
 
-> 由 assistant 维护，uart-16550-lichee 分支（领先 origin 1 commit）。
-> 当前主线（2026-07-20）：Q26 已实施并归档；host/static Gate 通过，部分运行时 Gate 为 ENV BLOCK。Q24 等待多 hart 真板；Q30 保留为证据触发的多逻辑 producer 语义工作。
-> 已完成边界：Q15 Manual QA、Q17 QEMU 修复、Q18 platform descriptor、Q19/Q19B/Q19C D1 真板异步 UART 验证均已完成；Q19D SDMMC/rootfs、M3/rootfs-probe 取消当前规划。
-> 归档入口：Q0~Q15、Q18/Q19、Q19C 逐项证据分别见 ARC-202607021648、ARC-202607031929、ARC-202607111510 及 `.claude/analysis/_archive/`。
-> 条目格式: `<!-- Q{编号} -->` 或 `<!-- P{编号} -->`，支持 grep 精确定位。
-> 2026-07-22：Q31/Q32 CPU-efficiency 采集已完成。Q31 Async 日志冻结于 `a9ce8a34...`/`50a2a876...`；Q32 Console 日志同步自 `console-lichee`（`67b7bb02...`/`b3f11fce...`）。comparison 报告待用户生成后归档两项 change。
+> 最后更新: 2026-07-22 | 分支: uart-lichee | grep: `<!-- Q{编号} -->`
+> Q31/Q32 CPU-efficiency 采集完成，comparison 报告待用户生成后归档两项 change。Q26 已归档（部分运行时 Gate ENV BLOCK）。Q24 等待多 hart 真板；Q30 证据触发。
 
 ---
 
 ## 当前: 方向 C — kernel 层独立实现（uart-16550-lichee）
-
-> 2026-06-03 完成文档体系迁移：`.claude/docs/{architecture,learned,references,optimization,rules}.md` → `openspec/specs/`，核心 5 个 spec 域完成迁移；后续 archived changes 追加 capability specs。
-> 2026-06-01 完成性能分析：发现 3 层 yield storm、Manual 模式缺陷、benchmark 不测 UART、FIONBIO 不传播。
 
 ### Milestone 概览
 
@@ -60,11 +53,6 @@
 
 ---
 
-## 当前执行态
-
-Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成。Q26 已实施并归档；host/static Gate 通过，memtrack 交互、VTIME、PTY 双向 I/O 和 framebuffer mmap 为 ENV BLOCK。Q17 multi-hart 与 Q24 stress 脚手架等待真板；Q30 仍由新 workload 或 Q24 证据触发。
-
-
 <!-- tombstone: Q0-Q15 sub-tasks --> Archived 2026-06-23 — all sub-tasks and verification evidence from Q0 through Q15 collapsed into milestone summary above. Full details preserved in openspec/archive/ and git history.
 <!-- tombstone: tasks-final-status/key-experience --> Archived 2026-07-03 in ARC-202607031929 — `最终状态` 与 `关键经验` 长历史已压缩归档，active tasks 只保留 milestone 表和当前/后续任务。
 
@@ -89,15 +77,14 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成。Q26 已实施并归档；host/stati
 
 ### Q18: 平台参数解耦 / early console 基础 ✅ (2026-06-28)
 
-> 来源：OpenSpec change `q18-platform-descriptor-early-console`（已归档 `openspec/changes/archive/2026-06-28-q18-platform-descriptor-early-console/`），`.claude/analysis/platform-parameter-decoupling.md`，ADR-044，learned L217-L220。
+> 来源：q18-platform-descriptor-early-console (archived)、platform-parameter-decoupling.md、ADR-044、L217-L220
 
 <!-- tombstone: Q18.1-Q18.6 --> Archived 2026-07-02 in ARC-202607021648 — Q18 子任务已收敛为摘要；完整任务见 Q18 archived change 和 carrier spec。
 <!-- Q18.summary --> - [x] 完成 platform descriptor + early console 分层，QEMU 行为保持，板级 base/irq/stride/width 不再散落在驱动初始化路径。
 
 ### Q19: Lichee RV Dock D1 axplat bring-up ✅ 真板 smoke complete (2026-06-29)
 
-> 来源：OpenSpec change `q19-lichee-d1-early-smoke`，`.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md`、`.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md`。
-> 2026-06-29：D1 axplat、Android boot image、DW APB UART0 polling early console、C906 PTE 属性和 Lichee smoke feature gate 已通过真板最小验证。串口输出 `platform = riscv64-lichee-d1`、`sbi_version: 0.2`、`[starry-d1] early boot`、`[starry-d1] smoke complete, halting.`。Q19a 到此完成；PLIC/Timer/SDMMC/rootfs/TTY/benchmark 属于后续独立阶段。
+> 来源：q19-lichee-d1-early-smoke、d1-axplat-bringup-plan.md、lichee-rv-dock-adaptation-plan.md。真板 smoke 输出 `[starry-d1] smoke complete, halting.`；PLIC/Timer/SDMMC/rootfs 属后续阶段。
 
 <!-- tombstone: Q19.1-Q19.13 --> Archived 2026-07-02 in ARC-202607021648 — Q19 子任务已收敛为摘要；完整任务见 Q19 archived change、`lichee-d1-early-smoke` spec 和 carrier spec。
 <!-- Q19.summary --> - [x] 完成 D1 axplat、Android boot image、DW APB UART0 polling early console、C906 PTE 属性、feature gate 与真板 smoke 输出 `[starry-d1] smoke complete, halting.`
@@ -108,7 +95,7 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成。Q26 已实施并归档；host/stati
 
 ### Q20: Benchmark gap closure ✅ (2026-07-13)
 
-> 来源：ADR-056（A056，已归档于 arc-202607152005）、ADR-057、R15/R16、L286/L287、`.claude/analysis/q20-evidence/`。目标是先补齐 QEMU+D1 当前可验证的 TX latency/jitter/counter 指标，不改驱动语义。RX fixed payload 经用户确认排除在 Q20 scope 外。
+> 来源：ADR-056 (arc-202607152005)、ADR-057、R15/R16、L286/L287、q20-evidence/。RX fixed payload 用户确认排除。
 
 <!-- Q20.1 --> - [x] 增加 jitter summary：S10/S14/S20/S21 输出 `p99_p50_ratio`、`max_p50_ratio`、`slow_over_line_plus10ms`
 <!-- Q20.2 --> - [x] 增加 CPU/counter proxy summary：S40 输出 user/ring/hw/no-progress/drain counters；D1 输出有效派生 proxy，QEMU 明确 not-available
@@ -199,8 +186,4 @@ Q19/Q19B/Q19C、Q27a/Q27/Q28/Q29 已完成。Q26 已实施并归档；host/stati
 <!-- Q26.4 --> - [x] ADR-034：验证 `LTO=y` Makefile 入口可用，开发默认继续关闭
 <!-- Q26.5 --> - [x] Gate Q26：QEMU 与 D1 benchmark 均正常结束；memtrack 交互、VTIME、PTY 双向 I/O 和 framebuffer mmap 保留 ENV BLOCK
 
-<!-- tombstone: Q8-Q11 archive pointers --> Archived 2026-07-02 in ARC-202607021648 — Q8~Q11 已在 Milestone 表与 archive 目录中可定位，删除重复小节。
-
-<!-- arc: ARC-202607021648 --> Q18/Q19 详细任务与 Q8-Q11 重复指针已归档/压缩 (2026-07-02) → ../../openspec/changes/archive/2026-07-02-ARC-202607021648/proposal.md
-<!-- arc: ARC-202607031929 --> tasks `最终状态` / `关键经验` 历史小节已压缩归档 (2026-07-03) → ../../openspec/changes/archive/2026-07-03-ARC-202607031929/proposal.md
-<!-- arc: ARC-202607111510 --> Q19C/Q19D 逐项收尾任务已归档 (2026-07-11) → ../../openspec/changes/archive/2026-07-11-ARC-202607111510/proposal.md
+<!-- tombstone: Q8-Q11 + ARC-202607021648/202607031929/202607111510 --> Q8~Q19 子任务与历史小节已归档，见各 archive proposal.md。
