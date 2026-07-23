@@ -42,7 +42,7 @@ QEMU UART 模型不仿真物理线延迟，`line_rate_pct` > 100% 是预期现�
 S10 drain-each：64B/256B/1024B 各 100 次 `write_full()` + `tcdrain()`，计入从写入到 drain 返回的时间。测"用户认为已发送完成"的吞吐和尾部延迟。
 
 | Payload | QEMU async KB/s | QEMU Console KB/s | QEMU 差值 | D1 async 线速 | D1 Console 线速 | D1 差值 |
-|---|---|---|---:|---:|---:|---:|
+|---|---|---:|---:|---:|---:|---:|
 | 64B | 151.54 | 177.17 | +16.9% | 96.8% | 99.0% | +2.2 pp |
 | 256B | 177.84 | 183.12 | +3.0% | 97.3% | 99.3% | +2.0 pp |
 | 1024B | 181.59 | 169.08 | -6.9% | 98.8% | 99.4% | +0.6 pp |
@@ -60,7 +60,7 @@ D1 Console S10 P99 接近 P50。D1 async 256B/1024B 各有一个 `line+10ms` tai
 S12 batch-drain：连续写 100 次，每 8 次一次 `tcdrain()`，末尾补一次 drain。测批量提交能否摊薄 drain 开销。
 
 | Payload | QEMU async KB/s | QEMU Console KB/s | QEMU 差值 | D1 async 线速 | D1 Console 线速 | D1 差值 |
-|---|---|---|---:|---:|---:|---:|
+|---|---|---:|---:|---:|---:|---:|
 | 64B | 170.50 | 174.38 | +2.3% | 98.8% | 99.4% | +0.6 pp |
 | 256B | 185.36 | 179.03 | -3.4% | 98.5% | 99.4% | +0.9 pp |
 | 1024B | 191.50 | 165.47 | -13.6% | 99.1% | 99.4% | +0.3 pp |
@@ -68,7 +68,7 @@ S12 batch-drain：连续写 100 次，每 8 次一次 `tcdrain()`，末尾补一
 S13 测 `writev()` fragment aggregation：4 个 64B `iovec`，每轮一次 `writev()` 后 drain。S14 测小包 break-even：64B/128B/256B drain-each。
 
 | Section | QEMU async/Console KB/s | QEMU 差值 | D1 async/Console 线速 | D1 差值 |
-|---|---|---|---|
+|---|---|---|---|---|
 | S13 writev 4×64B | 167.85 / 161.37 | -3.9% | 98.7% / 99.3% | +0.6 pp |
 | S14 64B | 124.22 / 155.64 | +25.3% | 96.8% / 99.0% | +2.2 pp |
 | S14 128B | 143.03 / 159.94 | +11.8% | 95.3% / 99.2% | +3.9 pp |
@@ -81,7 +81,7 @@ D1 async S14 128B/256B 各有一个 `line+10ms` tail，Console 三组均为 0。
 S11 两组语义不同。async 计时窗口测 ring enqueue，随后 final drain。Console 的 write loop 已同步发送完毕，`enqueue_kbps` 不适用。表格并列行为，不算倍率。
 
 | 平台 | Payload | async loop KB/s | async final drain | Console loop KB/s | Console final drain |
-|---|---|---|---:|---:|---:|---:|
+|---|---|---:|---:|---:|---:|
 | QEMU | 64B | 5223.13 | 32 ms | 157.67 | 1 ms |
 | QEMU | 256B | 23516.13 | 125 ms | 163.09 | 1 ms |
 | QEMU | 1024B | 506.81 | 316 ms | 168.87 | 0 ms |
@@ -96,7 +96,7 @@ S11 两组语义不同。async 计时窗口测 ring enqueue，随后 final drain
 S20 单字节 `write + tcdrain` 延迟：100 次，每次 1B 后立即 drain。测最小 payload 同步完成延迟。
 
 | 指标 | QEMU async | QEMU Console | D1 async | D1 Console |
-|---|---|---|---|
+|---|---|---|---|---|
 | n | 100 | 100 | 100 | 100 |
 | avg | 0.176 ms | 0.037 ms | 0.192 ms | 0.106 ms |
 | P50 | 0.171 ms | 0.037 ms | 0.191 ms | 0.106 ms |
@@ -130,7 +130,7 @@ D1 async size≥15 每组各有一个 `line+10ms` tail（24–27 ms），Console
 在 `instret` 区间内完成 100 次 `write_full()` + `tcdrain()` 完整发送链，64B/256B/1024B 三种 payload 各 5 轮。`instret` 是 hart-wide CPU-work proxy。
 
 | 指标 | QEMU async | QEMU Console | D1 async | D1 Console |
-|---|---|---|---|
+|---|---|---|---|---|
 | 64B inst/byte median | 14358 | 14779 | 32818 | 1194 |
 | 256B inst/byte median | 13504 | 14173 | 32792 | 1105 |
 | 1024B inst/byte median | 13843 | 13757 | 44716 | 1106 |
