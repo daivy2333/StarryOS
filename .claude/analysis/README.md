@@ -1,6 +1,7 @@
 # Analysis Index
 
 > Last updated: 2026-07-25
+> 2026-07-25 UART cleanup (ARC-202607251326): 3 UART-completed analysis → `_archive/`（q17, q20, async-uart-cpu-efficiency）；3 UART-only runbooks → `.claude/runbooks/_archive/`；spec 条目归档（M/D/K/R/I）。
 > 2026-07-25 relocate: `q20-evidence/`、`q31-cpu-efficiency-evidence/`、`q32-console-cpu-efficiency-evidence/` → 各自归档 change 的 `evidence/` 目录（符合 OpenSpec 规范：Change Evidence 属于 change，不驻留 `.claude/analysis/`）。
 > 2026-07-22 archive: 5 UART-completed analysis + 1 Console runbook → `_archive/`（Q27-Q32 全部完成，对应输入分析归档）。
 > 2026-07-22 update: Q31/Q32 CPU-efficiency evidence and comparison synced from `console-lichee`.
@@ -10,15 +11,12 @@
 
 ## Active
 
-- `q17-smp-memory-ordering.md` — Q17 SMP / memory-ordering analysis; still referenced by active change Q17 and Q24 multi-hart revalidation.
-- `q20-benchmark-gap-closure.md` — Q20 focused analysis; maps current benchmark code, jitter/counter/RX fixed-payload gaps, and plan inputs. Evidence relocated to `openspec/changes/archive/2026-07-13-q20-benchmark-gap-closure/evidence/`.
-- `async-uart-cpu-efficiency-metrics.md` — CPU efficiency measurement methodology: submit fraction, overlap, instret/byte, counter deltas, and evidence boundaries. Evidence relocated to `openspec/changes/archive/2026-07-22-q31-async-uart-cpu-efficiency-benchmark/evidence/`.
-- `q31-console-cpu-efficiency-port.md` — Q31→Q32 Console benchmark 移植分析：范围、差异、D1 time 修复、S43 hang 根因（IRQ stub）。Evidence relocated to `openspec/changes/archive/2026-07-22-q32-console-cpu-efficiency-benchmark/evidence/`.
-- `arceos-true-board-validation.md` — ArceOS 真板验证方法：启动链可观测、寄存器优先、U-Boot 状态 dump、中断分层；Q17/Q24 参考。
-- `async-network-project-overview.md` — StarryOS 异步高性能网卡探索总览。
-- `arceos-async-network-driver-analysis.md` — ArceOS 异步网卡驱动分析。
-- `embassy-network-module-evaluation.md` — Embassy 网络模块评估。
-- `starryos-async-network-roadmap.md` — StarryOS 异步高性能网卡路线图。
+- `async-network-project-overview.md` — StarryOS 异步高性能网卡探索总览（NIC 开发主线）。
+- `arceos-async-network-driver-analysis.md` — ArceOS 异步网卡驱动分析（NIC 硬件参考）。
+- `embassy-network-module-evaluation.md` — Embassy 网络模块评估（NIC 接口参考）。
+- `starryos-async-network-roadmap.md` — StarryOS 异步高性能网卡路线图（NIC N0-N5 Gate）。
+- `arceos-true-board-validation.md` — ArceOS 真板验证方法（NIC VF2 bring-up 适用）。
+- `q31-console-cpu-efficiency-port.md` — Q31→Q32 Console benchmark 移植分析（跨模块方法参考）。
 
 ## Special binary tombstone
 

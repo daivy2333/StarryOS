@@ -1,66 +1,73 @@
 # SNAPSHOT.md — 项目快照
 
 > Last updated: 2026-07-25
-> Branch: uart-lichee — Q31/Q32 CPU-efficiency 对照、报告已生成并归档；Q24 等待 SMP 硬件；Q30 维持证据触发
+> Branch: net-k3 — 异步 NIC 开发主线；UART 阶段 (Q0-Q32) 全部完成并归档 (ARC-202607251326)
 
 ## 项目概览
 
 - **项目**: StarryOS — 基于 RISC-V 的宏内核 OS（Rust / ArceOS 组件化架构）
 - **技术栈**: Rust nightly-2026-02-25 / RISC-V 64-bit / ArceOS 0.3.0-preview.2 / `axtask::future`
-- **构建**: Makefile (`make build`, `make run`, `make lichee-userbench`, `make lichee-fullbench-command`)
-- **测试**: QEMU virt + Lichee RV Dock D1 真板
+- **构建**: Makefile (`make build`, `make run`)
+- **测试**: QEMU virt（当前）；VisionFive2（后续真板）
 - **格式化/Lint**: `cargo fmt` + `cargo clippy`
-- **源码目录**: `kernel/`, `crates/uart_16550/`, `crates/axplat-riscv64-lichee-d1/`
+- **源码目录**: `kernel/`, `crates/uart_16550/`
 
 ## 当前分支
 
-`uart-lichee` — 异步 UART 开发主线。Q0~Q18（spike/驱动/VFS/Shell/性能/文档/QEMU修复/平台解耦）、Q19~Q23（D1 bring-up/benchmark/决策）、Q27a/Q27/Q28/Q29（readiness/backpressure/writer/reader 契约）已全部完成并归档。Q26 维护性清理已归档。
-
-## 近期完成
-
-- Q17：QEMU 修复完成；ier_cache RMW 临界区化，TX completion 原子序升级。多 hart 未实测。
-- Q19~Q23：D1 smoke/kbench/userbench/memory-root、Q20 jitter/S40/raw evidence 完成。Q21/Q22 取消当前规划。
-- Q27a/Q27/Q28/Q29：readiness/backpressure/writer 契约/reader 契约全部完成并归档。QEMU/D1 通过。
-- Q26：维护性清理已归档。
-- Q31/Q32：Async 与 Console CPU 效率同口径 D1 benchmark 对照完成并归档（Q31: `2026-07-22-q31-async-uart-cpu-efficiency-benchmark`，Q32: `2026-07-22-q32-console-cpu-efficiency-benchmark`）。交叉对比报告 `docs/benchmark-report-async.md` 已生成。Q31 Async 证据冻结（SHA-256 `a9ce8a34...`/`50a2a876...`），Q32 Console 证据同步自 `console-lichee` 分支。
+`net-k3`（从 `uart-lichee` 分出）— 异步 NIC 开发。UART 阶段 (Q0-Q32) 已全部完成并归档到 `openspec/changes/archive/`。UART 专属 spec 条目 (M/D/K/R/I) 已归档到 `ARC-202607251326`。
 
 ## 当前待推进
 
-- Q24：VisionFive2 或等价 SMP 环境复验 O63，覆盖跨 hart write/flush/tcdrain、read 与 IER enable/disable。
-- Q30：仅在 Q24 或真实 workload 提供消息原子性、公平性、锁竞争证据时规划。
+- **N0**: 基线固化 — 梳理 axnet-ng/axdriver 调用路径，确认 QEMU 首发设备，固化同步基线与计数器
+- **N1**: QEMU virtio-net 异步 MVP — queue task + stack runner + driver readiness + token
+- **N2**: 压力与恢复 — burst/bidirectional/ring full/reset/cancel/long soak
+- **N3**: SMP 与 multiqueue — 跨 hart 唤醒、queue affinity
+- **N4**: VisionFive2 DWMAC 真板 — DMA/cache/barrier/PLIC/clock
+- **N5**: 数据驱动优化 — batching/moderation/offload/zero-copy
 
 ## 关键事实
 
 | 主题 | 结论 |
-|---|---|
-| QEMU benchmark | `make run` 进入 rootfs，`/bin/benchmark` 适合功能/回归验证，不适合声明真板线速 |
-| D1 async UART | 96.6%-99.1% 线速，D1 真板 fullbench-command Done/exit 0/drain_errors=0 |
-| D1 Console polling | 99.0-99.4% 线速（`console-lichee` 分支，仅供参考对比） |
-| Writer 契约 | `AsyncUartWriter` unsafe 唯一构造，`RingBufTx` crate-private，SPSC 安全 |
-| Reader 契约 | `AsyncUartReader` unsafe 唯一构造，`RingBufRx` crate-private，copier 单次启动 |
-| TX backpressure | 阻塞 fd writable wait + 非阻塞 partial/WouldBlock，ONLCR 完整映射 |
-| Port init | attach-only + width-correct IER disable，不重写 U-Boot 配置 |
-| TX lock | `axplat::console::CONSOLE_LOCK` → local `CONSOLE_PORT`，drain 单次持锁到 TEMT |
-| D1 CPU-efficiency | Async S41 inst/byte: 32818/32792/44716 (64/256/1024B)；Console: 1194/1105/1106。S42 Async ovlp 0.54，Console 0.00。S43 idle: Async 9.5ms，Console 8.4ms。S43 loaded: Async 25.8ms，Console not-applicable。QEMU 不作硬件证据。 |
+|------|------|
+| Async runtime | `axtask::future` + `embassy-sync::AtomicWaker`，禁止 embassy-executor |
+| ISR 原则 | 最小化：读 cause → ack/mask → wake → 返回；数据搬运在任务上下文 |
+| NIC 架构 (M36) | ISR → queue task (budget) → stack runner → socket readiness，4 层分离 |
+| NIC 决策 (D20) | 保留 axnet-ng、smoltcp、axpoll、axtask；不引入 Embassy executor |
+| UART→NIC 迁移 (K26) | ISR/waker/backpressure/completion 可迁移；字节 ring→DMA descriptor |
+| SMP 内存序 (M39) | 按语义选 Ordering，不按架构分叉 |
+| PLIC/Clock (M37/M38) | VF2 bring-up: trust-u-boot 保留 PLIC+Clock，init_primary/percpu 分离 |
+| OS 接口 (M14) | 2-trait 最小接口 (`OsRuntime` + `OsWakerSet`)，只保留实际调用代码 |
+| SPSC 边界 (K25) | unsafe unique constructor + crate-private mutation + exactly-once startup |
+
+## UART 阶段回顾
+
+Q0-Q32 已全部完成并归档。关键成果：
+- D1 真板 async UART 96.6%-99.1% 线速
+- 完整 backpressure/writer/reader 契约收敛
+- SMP 内存序修复 (Q17, QEMU 完成，multi-hart 待 Q24/VF2)
+- 跨模块 async 经验提取为 M/D/K 保留条目
+
+详细历史见 `uart-lichee` 分支和 `openspec/changes/archive/`。
 
 ## OpenSpec 体系
 
-- `openspec/specs/project-model/` — 40 个当前有效跨模块约束（M01-M40）
-- `openspec/specs/decisions/` — 21 个决策记录（D01-D21）
-- `openspec/specs/knowledge/` — 27 个已验证知识条目（K01-K27）
-- `openspec/specs/references/` — 34 个参考索引（R01-R42）
-- `openspec/specs/improvements/` — 11 个改进机会（I01-I10, I12）
-- `openspec/changes/` — 活跃变更（q17-smp-memory-ordering）与归档
-- `CLAUDE.md` — 公共规则单一来源
-- `AGENTS.md` — 入口适配器
+| 域 | 条目数 | 备注 |
+|----|--------|------|
+| `openspec/specs/project-model/` | 12 (M01-M39) | 跨模块约束；UART 专属已归档 |
+| `openspec/specs/decisions/` | 5 (D01-D21) | 决策记录；UART 专属已归档 |
+| `openspec/specs/knowledge/` | 12 (K01-K27) | 已归档 18 条 UART 专属知识 |
+| `openspec/specs/references/` | 活跃 ~10 | 已归档 11 条 UART 专属参考 |
+| `openspec/specs/improvements/` | 3 (I05,I06,I12) | 活跃改进；UART 专属已归档 |
+| `openspec/changes/` | 活跃: q17-smp-memory-ordering | 归档: Q0-Q32, ARC-202607251326 |
+| `.claude/analysis/` | 6 | NIC 分析 4 篇 + 真板验证 + 移植分析 |
+| `.claude/runbooks/` | 4 | benchmark-guide, board-bringup-ladder, incremental-merge, regression-gate |
 
 ## 证据文件
 
-- `docs/qemu_out.md` — 冻结 async QEMU 基线（SHA256 `d2f2486a...`）
-- `docs/d1_out.md` — 冻结 async D1 基线（SHA256 `b98af673...`）
-- `docs/benchmark-report-async.md` — async UART 与 polling Console 交叉对比报告
+- `docs/benchmark-report-async.md` — async UART 与 polling Console 交叉对比报告（UART 阶段参考）
+- NIC 证据待 N1+ 建立
 
 ## 迁移记录
 
+2026-07-25：`net-k3` 分支从 `uart-lichee` 分出。UART 专属条目归档到 `openspec/changes/ARC-202607251326/`。
 2026-07-20：旧体系 spec 迁移至 M/D/K/R/I。Migration carrier: `openspec/changes/archive/mig-20260720-legacy-specs/`。
-2026-07-21：从 `console-lichee` 同步文档体系（分析归档、Runbook 通用化、改进/参考去 console 专属内容）。

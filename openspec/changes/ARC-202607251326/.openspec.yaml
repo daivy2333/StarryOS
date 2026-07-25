@@ -1,0 +1,4 @@
+type: archive
+purpose: archive-uart-cleanup
+description: Archive UART-specific entries from M/D/K/R/I/analysis/runbooks/tasks/SNAPSHOT for net-k3 branch transition
+created: 2026-07-25T13:26:00+08:00
