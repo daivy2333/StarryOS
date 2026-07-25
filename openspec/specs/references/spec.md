@@ -109,11 +109,13 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | 文档 | 主题 |
 |------|------|
 | <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层 — 当前作为 N4 VisionFive2 DWMAC 真板参考 |
-| <!-- R23 --> `.claude/analysis/async-network-project-overview.md` | StarryOS 异步高性能网卡探索总览：UART 经验迁移、Embassy 模块数量、ArceOS 借鉴边界、目标架构、风险与 N0-N5 路线 |
+| <!-- R23 --> `.claude/analysis/async-network-project-overview.md` | StarryOS 网络开发总览：新 session 读取顺序、当前调用链、目标数据流、依赖边界、QEMU→VF2 验证阶梯、工作量摘要和专题来源 |
 | <!-- R24 --> `.claude/analysis/embassy-network-module-evaluation.md` | Embassy 网络模块评估：核对 12 个网络相关 crate/模块，归纳 8 类可用能力和 3 类近期采用候选，明确 executor/time 的本地适配边界 |
 | <!-- R25 --> `.claude/analysis/arceos-async-network-driver-analysis.md` | ArceOS 异步网卡分析：NetDriverOps、NetBuf、smoltcp adapter、DWMAC、axdma 与真板证据；识别硬中断全栈 poll、lost wakeup 和全局锁风险 |
 | <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
 | <!-- R41 --> `.claude/analysis/starryos-network-development-strategy.md` | StarryOS 网络开发实施探索：当前 axnet/smoltcp/VirtIO 调用链、本地 smoltcp 0.13.1 兼容缺口、Embassy 采用边界、异步 queue/stack 数据流、QEMU PCI→MMIO→VisionFive2 分阶段 Gate |
+| <!-- R42 --> `.claude/analysis/starryos-network-delivery-estimate.md` | StarryOS 网络交付与工期估算：T01-T13 人周、单人和双人日历周期、估算假设、进度风险与阶段复估点 |
+| <!-- R43 --> `.claude/analysis/starryos-network-knowledge-gaps.md` | NIC 开发待收集信息清单：30 个待决问题按 milestone (T01-T13) 分组，每项含已知事实、待读代码、测试见证、解决判据和结果落点 — 进入 Plan 前逐项调查 |
 
 **已归档**：UART 阶段全部分析文档。完整归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`（48 文件，含 analysis、docs、meta-specs、runbooks、specs）、q17: `openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/`、旧 ARC: `openspec/changes/archive/2026-07-25-arc-202607251326/`。
 

@@ -1,12 +1,178 @@
-# StarryOS 异步高性能网卡探索总览
+# StarryOS 网络开发总览
 
-> 分析日期：2026-07-18  
-> 分析模式：openspec-explorer 宏观模式  
-> StarryOS 基线：`uart-16550-lichee`，`8400e55`  
-> Embassy 基线：`main`，`106dc1952`  
-> ArceOS 基线：`main`，`68bda6d`
+> Project: StarryOS
+> Branch: net-k3
+> Updated: 2026-07-25
+> Product analysis baseline: `d9480f54ca8493e4a00ce265e8ddad843940fcac`
+> Local smoltcp: `f96a26b5968735d142e6999a016060bc5d3ab2b7`
+> Local Embassy: `106dc1952bb681e115037ef97dce1bea31094a93`
+> Local ArceOS: `68bda6dbb7655f383fde01ff60b50b8a02694ce3`
+> See also: [实施探索](starryos-network-development-strategy.md)、[交付估算](starryos-network-delivery-estimate.md)、[任务状态](../docs/tasks.md)
 
-## 1. 探索目标
+本文是网络开发的跨 session 入口。当前状态以 tasks 为准，规范约束以 M/D/K 为准，代码证据和推导保留在专题分析中。
+
+## 新 session 读取顺序
+
+1. 读取仓库根目录的 [`CLAUDE.md`](../../CLAUDE.md)。
+2. 读取 [SNAPSHOT](../docs/SNAPSHOT.md) 和 [tasks](../docs/tasks.md)。
+3. 执行 `openspec list`，检查活跃 change。
+4. 读取本文和当前 milestone 对应的专题分析。
+5. 实施时读取 change、最新 iteration 和 Evidence。
+
+当前没有活跃 change，也没有 NIC Evidence。T01/N0-A 可进入 Plan，T02-T13 等待前置 Gate。
+
+## 当前结论
+
+StarryOS 不需要重写 TCP/IP、socket API 或调度器。现有 `axnet-ng`、smoltcp、VFS、`axpoll` 和 `axtask` 继续作为上层基础。新增工作位于设备与协议栈之间。
+
+推荐顺序：
+
+1. 接入本地 smoltcp 0.13.1，并保持同步 socket 行为。
+2. 用 QEMU VirtIO PCI 建立 IRQ 和 completion 见证。
+3. 建立 queue task、有界 packet slot 和 stack runner。
+4. 完成 socket readiness、reset、MMIO 和 SMP。
+5. 通过 VF2 B0-B7 Gate 接入 DWMAC。
+6. 真板稳定后再评估零拷贝、多队列和 offload。
+
+首版不引入 `embassy-executor`、完整 `embassy-net`、无界 channel 或用户态 RX/TX mmap ring。QEMU 结果不作为 VF2 DMA、cache、PHY 或性能证据。
+
+## 当前调用链和阻塞点
+
+启动和 socket 路径为：
+
+```text
+axruntime
+  -> axdriver::init_drivers()
+  -> VirtIO probe
+  -> axnet_ng::init_network()
+  -> EthernetDevice + Router + Service + SocketSet
+
+syscall/VFS Socket
+  -> axnet-ng TCP/UDP
+  -> poll_interfaces()
+  -> smoltcp Interface::poll()
+```
+
+当前进展依赖 socket 操作主动调用 `poll_interfaces()`。尚无独立 stack runner。初始化发生在 kernel entry 之前，因此只修改 `kernel/` 不能替换设备和协议栈注入点。
+
+四个前置阻塞：
+
+| 阻塞 | 影响 | 对应任务 |
+|---|---|---|
+| `axnet-ng` 依赖 fork 的 `RxToken::preprocess` | 上游 smoltcp 0.13.1 不能替换 | T01 |
+| `NetDriverOps` 缺少 IRQ control 和 `Context` | 仅增加 waker 无法实现可靠 rearm | T03 |
+| VirtIO MMIO probe 传入 `irq_num=None` | MMIO 不能作为首个异步 IRQ 路径 | T08 |
+| VF2 feature、kernel descriptor 和网络初始化未接通 | DWMAC 前要先完成平台 Gate | T10 |
+
+代码入口：
+
+- [`Cargo.toml`](../../Cargo.toml)
+- [`kernel/src/file/net.rs`](../../kernel/src/file/net.rs)
+- [`kernel/src/drivers/os_arceos.rs`](../../kernel/src/drivers/os_arceos.rs)
+- [`kernel/src/platform/mod.rs`](../../kernel/src/platform/mod.rs)
+- [`kernel/src/platform/visionfive2.rs`](../../kernel/src/platform/visionfive2.rs)
+- [`crates/smoltcp/src/iface/interface/mod.rs`](../../crates/smoltcp/src/iface/interface/mod.rs)
+
+## 目标数据流
+
+```text
+hard IRQ
+  -> cause / ack / mask / event generation / wake
+  -> per-queue task
+       -> bounded completion / refill / reclaim
+       -> bounded RX/TX packet slots
+       -> register-recheck / rearm
+  -> stack runner
+       -> bounded smoltcp ingress / egress / maintenance
+       -> device / software / timer wake
+  -> socket event bridge
+  -> axpoll / VFS / syscall
+```
+
+执行约束：
+
+- ISR 不调用 smoltcp，不分配，不阻塞。
+- 每个 queue 由一个 task 推进。
+- stack runner 独占 `Interface` 和 `SocketSet` 修改。
+- 每个等待点执行“检查、注册、复查”。
+- budget 耗尽时重排任务，不运行无界 drain loop。
+- reset 递增 generation，旧 completion 和 token 不进入新 ring。
+- Rust 原子序、DMA barrier、cache 操作和 MMIO 顺序分别建模。
+
+首版使用有界 packet slot，并接受可观测的复制。descriptor-backed token 属于 T13，不作为异步 MVP 前置条件。
+
+## 依赖采用边界
+
+| 组件 | 当前用途 | 处理 |
+|---|---|---|
+| 本地 smoltcp 0.13.1 | TCP/IP 协议栈目标版本 | T01 接入；显式使用 Reno |
+| `axnet-ng` | socket、路由、smoltcp 集成 | 本地化并移除 fork API |
+| `axdriver_net` | 同步驱动兼容面 | 保留，不作为异步硬件 contract |
+| `axdriver_virtio` | VirtIO 网络包装 | 暴露 IRQ control 和 completion |
+| `virtio-drivers 0.7.5` | transport 和 virtqueue | 继续复用 |
+| `axtask` | 唯一任务执行器 | 运行 queue 和 stack future |
+| `axpoll` | 多 socket waiter | 桥接 smoltcp 单槽 waker |
+| `embassy-sync 0.6.2` | `AtomicWaker` | 已批准的 Embassy 依赖 |
+
+以下模块只作为设计输入：
+
+- `embassy-net-driver`：`Context` 感知 readiness 和 token。
+- `embassy-net-driver-channel`：runner/device 和有界 slot。
+- `embassy-net`：device、software、timer wake 合流。
+- ArceOS DWMAC/axdma：寄存器、PHY、DMA 地址和真板取证。
+
+是否直接依赖 `embassy-net-driver` 尚未决定。`embassy-net-driver-channel 0.4.0` 会带入 `embassy-sync 0.8.0`，首版不采用。
+
+## 验证阶梯
+
+| 阶段 | 任务 | 证据 |
+|---|---|---|
+| 兼容基线 | T01 | TCP listen/accept、UDP、nonblocking、poll |
+| PCI 见证 | T02 | bus、device ID、IRQ、feature、queue、pcap |
+| 异步路径 | T03-T06 | lost-wakeup、背压、空闲无轮询、多 waiter |
+| 恢复和平台 parity | T07-T09 | reset、late completion、MMIO、多 hart |
+| VF2 平台 | T10 | B0-B4：启动、寄存器、PHY、重复 IRQ |
+| DWMAC | T11 | B5-B6：descriptor 和协议包一致 |
+| 真板压力 | T12 | B7：drop、stall、p99、generation、soak |
+| 优化 | T13 | 每项独立 A/B；无数据则跳过并记录原因 |
+
+QEMU 可证明软件所有权、IRQ→task→stack 控制流和大部分竞态。它不能证明 VF2 clock/reset/PHY、非一致 cache、DWMAC DMA 或真板吞吐。
+
+## 工作量
+
+T01-T12 预计为 21-37 人周。单名有经验的 Rust 内核工程师完成 VF2 稳定收发，日历周期约 5-9 个月。T13 另需 2-6 人周以上，并由测量结果触发。
+
+该估算包含测试、故障注入和证据整理，不包含硬件采购、长期上游评审或新增板卡。假设和阶段分解见 [交付估算](starryos-network-delivery-estimate.md)。
+
+## 风险和未决项
+
+| 项目 | 当前边界 | 决定时点 |
+|---|---|---|
+| TCP listener 适配 | 保持上游 smoltcp 干净；具体实现未定 | T01 Plan |
+| driver contract | `NetQueueControl` 与 `StackNetDevice` 分层 | T03 Plan |
+| Embassy driver trait | 可对齐语义；是否新增依赖未定 | T03 Plan |
+| stack runner 粒度 | 当前按单接口设计；多接口未定 | T05 Plan |
+| MMIO IRQ 来源 | 当前没有设备 IRQ 号 | T08 |
+| VF2 平台状态 | feature 和 descriptor 尚未接通 | T10 |
+| 真板 cache 语义 | QEMU 无法证明 | T11 |
+| multiqueue/zero-copy | 没有性能数据前不实施 | T13 |
+
+## 专题来源
+
+| 文档 | 保留的信息 |
+|---|---|
+| [R24 Embassy 评估](embassy-network-module-evaluation.md) | 12 个模块、trait、channel 和版本边界 |
+| [R25 ArceOS 网卡分析](arceos-async-network-driver-analysis.md) | driver、DWMAC、DMA 和不可复制项 |
+| [R26 异步路线](starryos-async-network-roadmap.md) | ownership、状态机、backpressure 和 lifecycle |
+| [R41 实施探索](starryos-network-development-strategy.md) | 当前代码调用链、smoltcp 缺口和 T01-T13 输入 |
+| [R14 真板验证](arceos-true-board-validation.md) | VF2 启动、寄存器、中断和 workload 阶梯 |
+| [R42 交付估算](starryos-network-delivery-estimate.md) | 人周、日历周期、人员模型和复估点 |
+
+以下内容是 2026-07-18 的原始探索输入。保留它用于追溯早期范围和判断。
+
+原始基线：StarryOS `uart-16550-lichee@8400e55`、Embassy `106dc1952`、ArceOS `68bda6d`。
+
+**原始探索目标**
 
 异步 UART 已在 QEMU 和 D1 真板形成可复用的工程方法。本轮探索不实现网卡驱动，而是回答四个前置问题：
 
@@ -17,9 +183,9 @@
 
 结论是：应保留 StarryOS 现有 `axnet-ng`、smoltcp、VFS/socket 和 axtask 体系，在设备层引入上下文感知的 readiness、DMA 描述符所有权、最小硬中断、预算化队列任务和协议栈 runner。Embassy 提供接口与队列模型，ArceOS 提供 DWMAC、DMA 和 smoltcp adapter 的本地工程证据，两者都不应整套替换 StarryOS 运行时。
 
-## 2. 当前工程基线
+**原始工程基线**
 
-### 2.1 StarryOS 网络路径
+**StarryOS 网络路径**
 
 当前 StarryOS 通过 `axdriver = 0.3.0-preview.2` 和 `axnet-ng = 0.3.0-preview.2` 接入网络。内核 socket syscall 已有 TCP/UDP、poll/select/epoll 等上层入口，但仓库内没有形成独立的异步 NIC 队列执行层。
 
@@ -39,7 +205,7 @@ axdriver NetDevice
 
 本轮建议只重构最后两层之间的执行和通知模型，不先重写 socket API 或协议栈。
 
-### 2.2 UART 已证明的方法
+**UART 已证明的方法**
 
 `uart_16550` 和 StarryOS 适配层已经证明以下方法有效：
 
@@ -52,7 +218,7 @@ axdriver NetDevice
 
 这些原则可以迁移，但 UART 的字节 SPSC ring 和 copier 不能直接成为 NIC 数据面。NIC 的基本所有权单位是 packet buffer 与 DMA descriptor，不是字节。
 
-## 3. Embassy 模块盘点结论
+**Embassy 模块盘点结论**
 
 本地 Embassy 仓库共核对 12 个网络专用 crate 或硬件模块，即 11 个网络 crate 加 `embassy-stm32::eth`。此外还核对了通用支撑 crate `embassy-sync`、`embassy-futures` 和 `embassy-time`。按对 StarryOS 的能力价值分类：
 
@@ -65,7 +231,7 @@ axdriver NetDevice
 
 12 是网络专用实现的仓库计数，8 是合并后的可借鉴能力类型，两者不是同一维度。其中近期建议真正采用或适配的只有 3 类。详细证据见《Embassy 网络模块评估》。
 
-## 4. ArceOS 借鉴结论
+**ArceOS 借鉴结论**
 
 `work/arceos` 已具备：
 
@@ -85,7 +251,7 @@ axdriver NetDevice
 
 正确用法是复用其硬件和 DMA 证据，并重做中断到队列任务、队列任务到协议栈的异步边界。
 
-## 5. 建议目标架构
+**建议目标架构**
 
 ```mermaid
 flowchart LR
@@ -107,7 +273,7 @@ flowchart LR
 5. smoltcp runner 在任务上下文轮询，不在 ISR 内持全局锁。
 6. DMA cache 同步、设备内存屏障和 Rust 原子内存序分别建模。
 
-### 5.1 执行上下文与所有权
+**执行上下文与所有权**
 
 | 上下文 | 可做工作 | 不可做工作 | 主要 owner |
 |--------|----------|------------|------------|
@@ -118,7 +284,7 @@ flowchart LR
 
 首版选择 hard IRQ 只 wake 是目标架构策略，不表示所有 NIC 在任何条件下都禁止 ISR 固定预算回收。后续若测量证明 wake 延迟过高，可在不分配、不阻塞、预算有上限的前提下评估少量 completion。
 
-### 5.2 三条路径与生命周期
+**三条路径与生命周期**
 
 - Data path：packet、descriptor 和 DMA buffer。
 - Control path：probe、queue 配置、IRQ、link、reset、power。
@@ -126,7 +292,7 @@ flowchart LR
 
 设备状态至少应覆盖 `Discovered -> Probed -> Started -> Quiescing -> Resetting/Suspended -> Removed`。进入 quiesce 后必须阻止新提交；reset/remove 前必须处理 device-owned、completed-unreclaimed 和 stack-token 三类对象，并用 generation 隔离迟到 completion。
 
-## 6. 初步实施路线
+**初步实施路线**
 
 | 阶段 | 目标 | 主要 Gate |
 |------|------|-----------|
@@ -139,7 +305,7 @@ flowchart LR
 
 D1 Lichee RV Dock 适合继续作为 UART 证据板，但不是当前 NIC 性能工作的自然主板。初步建议用 QEMU virtio-net 建立模型，再用已有 ArceOS 证据较多的 VisionFive2 DWMAC 完成真板验证；最终板卡仍需在正式 planning 阶段确认。
 
-## 7. 关键风险
+**早期风险**
 
 | 风险 | 表现 | 初步控制 |
 |------|------|----------|
@@ -155,7 +321,7 @@ D1 Lichee RV Dock 适合继续作为 UART 证据板，但不是当前 NIC 性能
 | 过早零拷贝 | unsafe 范围扩大但收益不明 | 先 token 化所有权，再以指标决定 mmap/zero-copy |
 | executor 冲突 | 两套调度、timer 和 wake 语义 | 保留 axtask，只移植 Embassy driver/channel 思想 |
 
-## 8. 探索结论
+**原始探索结论**
 
 StarryOS 已具备开展异步 NIC 的上层条件，缺口主要在设备与协议栈之间的异步队列执行层，而不是 socket API。下一步最稳妥的方向是：
 
@@ -167,7 +333,7 @@ StarryOS 已具备开展异步 NIC 的上层条件，缺口主要在设备与协
 
 本轮结论是方向性分析，不代表正式选型或实施授权。正式开发前应由 `openspec-plan` 把 N0/N1 转化为可验证 change。
 
-## 9. See also
+**原始关联文档**
 
 - [Embassy 网络模块评估](embassy-network-module-evaluation.md)
 - [ArceOS 异步网卡驱动分析](arceos-async-network-driver-analysis.md)

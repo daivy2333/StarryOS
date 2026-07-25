@@ -6,7 +6,7 @@
 > Baseline: StarryOS `d9480f54ca8493e4a00ce265e8ddad843940fcac`
 > Local smoltcp: `f96a26b5968735d142e6999a016060bc5d3ab2b7`
 > Local Embassy: `106dc1952bb681e115037ef97dce1bea31094a93`
-> See also: [项目总览](async-network-project-overview.md)、[Embassy 评估](embassy-network-module-evaluation.md)、[ArceOS 网卡分析](arceos-async-network-driver-analysis.md)、[初步路线](starryos-async-network-roadmap.md)、[真板验证](arceos-true-board-validation.md)
+> See also: [项目总览](async-network-project-overview.md)、[交付估算](starryos-network-delivery-estimate.md)、[Embassy 评估](embassy-network-module-evaluation.md)、[ArceOS 网卡分析](arceos-async-network-driver-analysis.md)、[初步路线](starryos-async-network-roadmap.md)、[真板验证](arceos-true-board-validation.md)
 
 本文补足现有文档没有落到当前代码版本的部分：依赖兼容、真实调用链、QEMU 设备选择、任务边界、分片顺序和每阶段 Gate。它是实施前探索，不是已批准的 change，也不修改产品代码。
 
