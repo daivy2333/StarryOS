@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 最后更新: 2026-07-22 | 分支: uart-lichee | grep: `<!-- Q{编号} -->`
-> Q31/Q32 CPU-efficiency 采集完成，comparison 报告待用户生成后归档两项 change。Q26 已归档（部分运行时 Gate ENV BLOCK）。Q24 等待多 hart 真板；Q30 证据触发。
+> 最后更新: 2026-07-25 | 分支: uart-lichee | grep: `<!-- Q{编号} -->`
+> Q31/Q32 CPU-efficiency 对照完成，comparison 报告已生成，两项 change 已归档。Q26 已归档（部分运行时 Gate ENV BLOCK）。Q24 等待多 hart 真板；Q30 证据触发。
 
 ---
 
@@ -46,6 +46,8 @@
 | **Q27** | TX backpressure / writable wait MVP | O83：基于 Q27a，阻塞 fd 等待 TX ring 空间，非阻塞保持 partial/WouldBlock | ✅ 已归档 `2026-07-15-q27-tx-backpressure` |
 | **Q28** | AsyncUartWriter writer 契约收敛 | O84：`Clone` 与 `RingBufTx` SPSC 安全边界对齐；MPSC 后置 O85 | ✅ 已归档 `2026-07-15-q28-async-uart-writer-contract` |
 | **Q29** | AsyncUartReader consumer 契约审计 | O87：unsafe unique raw reader + crate-private RX mutation + 单次 copier 启动 | ✅ 已归档 `2026-07-18-q29-async-uart-reader-contract` |
+| **Q31** | Async UART CPU efficiency D1 benchmark | S41/S42/S43 inst/byte、overlap、idle/loaded-walltime 同口径 D1 采集 | ✅ 已归档 `2026-07-22-q31-async-uart-cpu-efficiency-benchmark` |
+| **Q32** | Console CPU efficiency D1 benchmark | S41/S42/S43 Console 同口径对照采集（证据同步自 `console-lichee`） | ✅ 已归档 `2026-07-22-q32-console-cpu-efficiency-benchmark` |
 | **Q30** | TX 多逻辑 producer 工业化语义决策 | O85/O86：单 UART 上 kernel log、TTY echo、共享 fd 的原子性、公平性、跨 write 交错与 MPSC ROI | 🧊 等待真实 workload / Q24 证据 |
 | **Q24** | VisionFive2 / multi-hart revalidation | O63/O64/O65/O66/O71/O38/O39 + Q15 Manual QA 真板复跑 | ⏳ 等待硬件 |
 | **Q25** | DMA / 高波特率决策 | O3/O40/O69 + O41，依赖 Q24 或新硬件数据 | ⏳ 等待数据 |
@@ -147,6 +149,26 @@
 <!-- Q29.2 --> - [x] `AsyncUartReader::new` 改为 unsafe unique constructor，RX `push`/`push_batch`/`pop` 收窄为 crate-private，copier startup 改为 unsafe 单次启动
 <!-- Q29.3 --> - [x] 10 个 compile-fail + RX 空读/partial/wrap-around/字节顺序与 readiness register-recheck witness 通过
 <!-- Q29.4 --> - [x] Gate Q29：62 unit + 8 doctest + 10 compile-fail、Clippy/rustdoc/OpenSpec、QEMU build+boot 与 D1 `/dev/console` benchmark 退出码 0；不声明 multi-hart
+
+### Q31: Async UART CPU efficiency D1 benchmark ✅ 已归档（2026-07-22）
+
+> 来源：`openspec/changes/archive/2026-07-22-q31-async-uart-cpu-efficiency-benchmark/`；目标：同口径采集 D1 Async UART 下 S41（inst/byte）、S42（overlap）、S43（idle/loaded walltime）CPU 效率指标。
+
+<!-- Q31.1 --> - [x] S41 inst/byte: 32818/32792/44716 (64/256/1024B) — Async 每字节 ~33-45K 指令
+<!-- Q31.2 --> - [x] S42 overlap ratio: 0.54 — Async 有 54% CPU/bus 重叠
+<!-- Q31.3 --> - [x] S43 idle walltime: 9.5ms；S43 loaded walltime: 25.8ms
+<!-- Q31.4 --> - [x] 证据冻结：QEMU rootfs SHA-256 `a9ce8a34...`、D1 serial SHA-256 `50a2a876...`
+<!-- Q31.5 --> - [x] Gate Q31：evidence 完整，change 已归档（含 evidence/iterations/specs/tasks）
+
+### Q32: Console CPU efficiency D1 benchmark ✅ 已归档（2026-07-22）
+
+> 来源：`openspec/changes/archive/2026-07-22-q32-console-cpu-efficiency-benchmark/`；目标：同口径采集 polling Console（`console-lichee` 分支）S41/S42/S43 对照指标，与 Q31 Async 形成交叉对比。
+
+<!-- Q32.1 --> - [x] S41 inst/byte: 1194/1105/1106 (64/256/1024B) — Console 每字节 ~1.1K 指令
+<!-- Q32.2 --> - [x] S42 overlap ratio: 0.00 — Console 无 CPU/bus 重叠（轮询）
+<!-- Q32.3 --> - [x] S43 idle walltime: 8.4ms；S43 loaded: not-applicable（Console 无持续 I/O 任务）
+<!-- Q32.4 --> - [x] 证据同步自 `console-lichee` 分支，交叉对比报告 `docs/benchmark-report-async.md` 已生成
+<!-- Q32.5 --> - [x] Gate Q32：evidence 完整，change 已归档（含 evidence/iterations/specs/tasks/README）
 
 ### Q30: TX 多逻辑 producer 工业化语义决策 🧊 证据触发
 
