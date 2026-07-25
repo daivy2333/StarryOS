@@ -1,0 +1,38 @@
+=== POST-REVIEW CORRECTION 2026-07-25 ===
+
+Authorization:
+User requested no new iteration and authorized direct repair plus a change record.
+
+Initial discrepancy:
+green-verification.txt recorded G15 exit=2, PASS=15, FAIL=1, and GATE FAILED.
+The Act Response and README incorrectly reported 16/16 PASS.
+
+Command:
+bash openspec/changes/cleanup-uart-documentation-system/evidence/003-contract-closeout/verify-post-review.sh
+
+Command source:
+verify-post-review.sh records every predicate and checks its exit status.
+
+Key output:
+G1_REFERENCES exit=0
+G2_CARRIER_POINTER count=1 exit=0
+G3_STATE exit=0
+G4_CONTROL_DOCS exit=0
+G5_REFERENCES_CONTENT exit=0
+G6_ANALYSIS_INDEX exit=0
+G7_RUNBOOK exit=0
+G8_ARCHIVE_NOTES exit=0
+G9_MANIFEST actual=48 manifest=48 hash_checked=48 exit=0
+G10_ARCHIVE_DELTA exit=0
+G11_HISTORICAL_EVIDENCE exit=0
+G12_PRODUCT_SCOPE exit=0
+G13_OPENSPEC 8 passed, 0 failed; change Complete; exit=0
+G14_DIFF exit=0
+failures=0
+
+Process exit:
+0
+
+Conclusion:
+The post-review repair passes all content, archive, scope, OpenSpec, and diff checks.
+No product-code path changed. No follow-up iteration is required.

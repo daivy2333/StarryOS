@@ -1,0 +1,17 @@
+=== State Check ===
+SNAPSHOT:
+`net-k3`（从 `uart-lichee` 分出）— 异步 NIC 开发。UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成）。
+FOUND
+tasks:
+UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成）。完整任务见 `uart-lichee` 分支。归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`。
+FOUND
+
+UART complete claims:
+PASS (none found)
+
+I06 Q17-Q25:
+PASS (none found)
+
+Post-review command source: verify-post-review.sh G3
+Key output: canonical state found; completion claims and UART review heading absent
+exit=0

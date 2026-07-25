@@ -1,0 +1,5 @@
+=== Manifest completeness ===
+Manifest entries: 48
+Actual files: 48
+Match: YES
+unmapped=0, skipped=0

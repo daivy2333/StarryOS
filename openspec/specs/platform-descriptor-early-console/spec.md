@@ -4,7 +4,7 @@
 
 Define StarryOS platform descriptor and early console abstraction, decoupling board-specific facts from driver code. The platform descriptor centralizes hardware layout (memory, console UART, interrupt, timer, boot) behind a build-time constant. The early console provides character output independent of async UART runtime (no ring buffer, IRQ, PLIC, or rootfs dependency), enabling board bring-up smoke tests before the full async stack is available.
 
-> Source: Q18 `q18-platform-descriptor-early-console` (archived 2026-06-28)
+> Source: platform-descriptor-early-console (archived 2026-06-28)
 
 ## Requirements
 
@@ -52,15 +52,14 @@ The early console MUST NOT depend on:
 
 #### Scenario: QEMU early console baseline
 
-- **WHEN** Q18 runs on QEMU virt
-- **THEN** `Ns16550U8EarlyConsole` MUST be able to write bytes using the QEMU descriptor's console configuration
-- **AND** newline output MUST be terminal-compatible (`\n` emitted as `\r\n`)
+- **WHEN** early console runs on QEMU virt
+- **THEN** console MUST be able to write bytes using the platform descriptor's console configuration
 
 #### Scenario: True board bring-up remains deferred
 
-- **WHEN** Q18 defines `DwApbUart32EarlyConsole` or D1/VisionFive2 descriptor placeholders
-- **THEN** it MUST NOT claim Lichee RV Dock or VisionFive2 hardware success
-- **AND** hardware smoke tests MUST remain in Q19/Q20
+- **WHEN** platform descriptor defines early console for D1 or VisionFive2
+- **THEN** it MUST NOT claim hardware success without hardware smoke test evidence
+- **AND** hardware smoke tests MUST remain deferred to hardware availability
 
 ### Requirement: Async UART initialization consumes platform descriptor
 
@@ -74,5 +73,5 @@ Async UART initialization MUST consume platform descriptor values rather than ow
 
 #### Scenario: upper TTY stack remains unaffected
 
-- **WHEN** Q18 changes platform descriptor and early console plumbing
+- **WHEN** platform descriptor and early console plumbing changes
 - **THEN** `ntty_async.rs`, line discipline, and `/dev/console` behavior MUST remain unchanged unless a task explicitly updates the change design and receives approval

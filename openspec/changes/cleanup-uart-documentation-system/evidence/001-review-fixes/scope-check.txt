@@ -1,0 +1,62 @@
+=== UART Development Flow Vocabulary Audit ===
+Auditing active Markdown files for UART dev flow terms...
+
+TERM 'Q[0-9]': 10 files with hits
+.claude/docs/tasks.md
+.claude/docs/SNAPSHOT.md
+.claude/runbooks/board-bringup-ladder.md
+.claude/analysis/arceos-true-board-validation.md
+.claude/analysis/README.md
+openspec/specs/references/spec.md
+openspec/specs/improvements/spec.md
+openspec/specs/project-model/spec.md
+openspec/specs/knowledge/spec.md
+openspec/specs/platform-descriptor-early-console/spec.md
+TERM 'D1': 9 files with hits
+.claude/docs/SNAPSHOT.md
+.claude/runbooks/board-bringup-ladder.md
+.claude/analysis/README.md
+.claude/analysis/async-network-project-overview.md
+.claude/analysis/starryos-async-network-roadmap.md
+openspec/specs/decisions/spec.md
+openspec/specs/references/spec.md
+openspec/specs/platform-descriptor-early-console/spec.md
+openspec/specs/quality-gate-baseline/spec.md
+TERM 'lichee': 7 files with hits
+.claude/docs/tasks.md
+.claude/docs/SNAPSHOT.md
+.claude/analysis/arceos-true-board-validation.md
+.claude/analysis/README.md
+.claude/analysis/async-network-project-overview.md
+openspec/specs/references/spec.md
+openspec/specs/improvements/spec.md
+TERM 'async.uart': 5 files with hits
+.claude/analysis/README.md
+.claude/analysis/async-network-project-overview.md
+.claude/analysis/starryos-async-network-roadmap.md
+openspec/specs/references/spec.md
+openspec/specs/quality-gate-baseline/spec.md
+TERM 'uart.*benchmark': 4 files with hits
+.claude/docs/SNAPSHOT.md
+.claude/analysis/README.md
+openspec/specs/references/spec.md
+openspec/specs/improvements/spec.md
+TERM 'uart.*driver': 2 files with hits
+openspec/specs/references/spec.md
+openspec/specs/platform-descriptor-early-console/spec.md
+TERM '16550': 7 files with hits
+.claude/docs/SNAPSHOT.md
+.claude/analysis/arceos-true-board-validation.md
+.claude/analysis/async-network-project-overview.md
+openspec/specs/decisions/spec.md
+openspec/specs/references/spec.md
+openspec/specs/project-model/spec.md
+openspec/specs/quality-gate-baseline/spec.md
+TERM 'TEMT': 1 files with hits
+openspec/specs/references/spec.md
+TERM 'tcdrain': 1 files with hits
+.claude/analysis/arceos-true-board-validation.md
+
+Note: K16 field examples (ier_cache, tx_copier_active) are retained as illustrative of universal SMP ordering patterns, with archive pointers added.
+Note: D1 feature-gate references in quality-gate-baseline reflect current codebase features, not stale UART commands.
+Note: board-bringup-ladder retains D1 as a validated example platform.

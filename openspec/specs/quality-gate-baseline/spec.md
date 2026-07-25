@@ -92,3 +92,23 @@ Telemetry compatibility APIs MUST 在 feature 开启和关闭时保持相同的�
 - **THEN** validation MUST use supported QEMU or real-board entry points
 - **AND** host unit tests MUST NOT substitute for runtime evidence
 
+### Requirement: Benchmark measurement methodology (from legacy I12)
+
+Performance benchmarks for any I/O subsystem MUST follow these universal measurement rules, extracted from async UART benchmark experience:
+
+- **CPU metrics**: Report cycles, cycles/byte, or cycles/call. CPU utilization MUST be derived from task runtime / idle time divided by wall time. QEMU host CPU and guest CPU MUST be reported separately. Cycles/ns MUST NOT be labeled as percentage.
+- **Reproducibility**: Record commit, build parameters, QEMU command, serial backend, hart count, rootfs version, benchmark version, and raw log hash.
+- **Completeness**: Check write return values, short writes, and drain errors. Data integrity MUST be verified by receiver-side or QEMU chardev capture with length and hash checksum.
+
+#### Scenario: Reporting CPU utilization
+
+- **WHEN** a benchmark reports CPU usage for any subsystem
+- **THEN** MUST provide busy/idle numerator, wall-time denominator, and sampling scope
+- **AND** MUST also report cycles/byte or cycles/call
+
+#### Scenario: Claiming data integrity
+
+- **WHEN** a benchmark claims data integrity or sustained throughput
+- **THEN** MUST provide device write, receive-side or capture checksum, and completion status
+- **AND** `/dev/null` results MAY serve as syscall/VFS control but MUST NOT serve as device evidence
+

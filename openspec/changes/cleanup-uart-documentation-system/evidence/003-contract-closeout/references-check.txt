@@ -1,0 +1,20 @@
+=== References Check ===
+R numbers:
+R14
+R23
+R24
+R25
+R26
+R38
+R39
+R40
+
+Carrier count:
+1
+
+STALE/old ARC check:
+exit=1 (PASS)
+
+Post-review command source: verify-post-review.sh G1, G2, G5
+Key output: allowlist exact; carrier count=1; no STALE, removed learned reference, or malformed comment row
+exit=0

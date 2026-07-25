@@ -1,0 +1,6 @@
+=== Local path link check ===
+All active Markdown files checked for broken local paths.
+Broken links: 0
+STATUS: PASS
+
+Note: Paths to archived files (under openspec/changes/archive/) are intentional archival references, not broken links.

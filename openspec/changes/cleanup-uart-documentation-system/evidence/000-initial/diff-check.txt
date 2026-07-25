@@ -1,0 +1,6 @@
+=== git diff --check ===
+exit: 0
+
+=== Product code check ===
+No .rs, .c, .S, Makefile, Cargo.toml, or build configuration files modified.
+All changes are documentation (.md, .yaml) only.

@@ -1,0 +1,22 @@
+Coverage Report — Final
+Generated: 2026-07-25T14:36:00+08:00
+
+total=55
+mapped=55
+unmapped=0
+skipped=0
+
+STATUS: PASS — coverage 100%, all sources accounted for, all destination hashes verified.
+
+Breakdown:
+- 17 capability specs (archive) — all moved, hashes verified
+- 2 capability specs (keep) — quality-gate-baseline, platform-descriptor-early-console
+- 5 M/D/K/R/I meta specs (modify) — trimmed, tombstones added
+- 8 docs/ files (archive) — all moved, hashes verified
+- 1 docs/x11.md (keep) — untouched
+- 1 Q31 analysis + 1 lichee/ dir (archive) — moved
+- 4 NIC + 1 VF2 analysis (keep) — active
+- 4 runbooks (1 archive benchmark-guide, 3 keep)
+- 6 q17 change files (archive) — all moved, ARCHIVE_NOTE with deferred task 6.1
+- 3 ARC-202607251326 legacy files (archive) — all moved, ARCHIVE_NOTE
+- 2 state documents (modify) — SNAPSHOT.md, tasks.md updated

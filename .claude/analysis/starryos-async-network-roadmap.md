@@ -331,5 +331,5 @@ Gate：QEMU 与真板报告分开，真板错误计数为零或有解释。
 - [异步网卡探索总览](async-network-project-overview.md)
 - [Embassy 网络模块评估](embassy-network-module-evaluation.md)
 - [ArceOS 异步网卡驱动分析](arceos-async-network-driver-analysis.md)
-- [UART backpressure 与 MPSC 规划](uart-backpressure-mpsc-plan.md)
-- [异步 UART 与 io_uring 对比](async-uart-vs-io_uring.md)
+- [UART backpressure 与 MPSC 规划](_archive/uart-backpressure-mpsc-plan.md)
+- [异步 UART 与 io_uring 对比](_archive/async-uart-vs-io_uring.md)

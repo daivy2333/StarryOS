@@ -1,0 +1,220 @@
+=== RED BASELINE 2026-07-25T15:52:31+08:00 ===
+(Note: using grep -E; rg not available in this environment)
+
+--- R1: R allowlist in references (expect FAIL - not converged) ---
+Expected: R14 R23 R24 R25 R26 R38 R39 R40
+Actual: R1
+R10
+R11
+R12
+R13
+R14
+R15
+R17
+R18
+R19
+R2
+R21
+R22
+R23
+R24
+R25
+R26
+R27
+R28
+R3
+R33
+R34
+R37
+R38
+R39
+R4
+R40
+R42
+R43
+R44
+R45
+R46
+R5
+R6
+R7
+R8
+R9
+--- /dev/fd/63	2026-07-25 15:52:31.248444482 +0800
++++ /dev/fd/62	2026-07-25 15:52:31.248641487 +0800
+@@ -1,8 +1,37 @@
++R1
++R10
++R11
++R12
++R13
+ R14
++R15
++R17
++R18
++R19
++R2
++R21
++R22
+ R23
+ R24
+ R25
+ R26
++R27
++R28
++R3
++R33
++R34
++R37
+ R38
+ R39
++R4
+ R40
++R42
++R43
++R44
++R45
++R46
++R5
++R6
++R7
++R8
++R9
+exit=1
+
+--- R2: Carrier path count in references (expect FAIL) ---
+count=6
+exit=1
+
+--- R3: No STALE / old ARC path in references (expect FAIL) ---
+124:| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ⚠️ STALE [2026-07-15] — 摘要仍写 Q20，实际继续作为 Q24 输入；ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层 |
+165:<!-- arc: ARC-202607251326 --> 11 R 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+exit=0
+
+--- R4: Canonical deferred phrase in SNAPSHOT (expect FAIL) ---
+exit=1
+
+--- R5: Canonical deferred phrase in tasks (expect FAIL) ---
+exit=1
+
+--- R6: No UART complete claims in SNAPSHOT/tasks (expect FAIL) ---
+.claude/docs/SNAPSHOT.md:17:`net-k3`（从 `uart-lichee` 分出）— 异步 NIC 开发。UART 阶段 (Q0-Q32) 已全部完成并归档到 `openspec/changes/archive/`。UART 专属 spec 条目 (M/D/K/R/I) 已归档到 `ARC-202607251326`。
+.claude/docs/tasks.md:33:<!-- arc: cleanup-uart-documentation-system --> UART 阶段全部完成并归档 (2026-07-25)。完整任务见 `uart-lichee` 分支与 `openspec/changes/archive/`。旧 ARC 载体已收编至 `openspec/changes/archive/2026-07-25-arc-202607251326/`。
+exit=0
+
+--- R7: No Q17-Q25 in I06 (expect FAIL) ---
+12:<!-- arc: cleanup-uart-documentation-system --> I05 (O63 multi-hart stress) archived 2026-07-25, deferred with q17-smp-memory-ordering. Cross-hart risk remains open until Q24/VF2.
+23:| **O65** | PLIC primary/percpu 防御性分离验证 | 🟡 P1 | Q24 平台切换时 |
+25:| **O69** | DMA 一致性内存抽象（借鉴 axdma + DwmacHal） | ⏳ Q25 决策 | Q24 或新硬件数据 |
+26:| **O71** | PAC 类型安全寄存器访问 | 🟡 P1 | Q24 真板驱动开发 |
+exit=0
+
+--- R8: No old ARC paths or Q stages in all specs + state docs (expect FAIL) ---
+openspec/specs/project-model/spec.md:68:<!-- arc: cleanup-uart-documentation-system --> M35 (Q28 TX/RX concurrency flow) archived 2026-07-25.
+openspec/specs/project-model/spec.md:92:- **THEN** PLIC 和 Clock setup MUST 遵循 trust-u-boot 策略，除非 Q18 诊断证明保留状态无效
+openspec/specs/project-model/spec.md:119:<!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+openspec/specs/decisions/spec.md:75:<!-- arc: ARC-202607251326 --> 16 D 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+openspec/specs/knowledge/spec.md:9:<!-- arc: ARC-202607251326 --> 18 K 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+openspec/specs/knowledge/spec.md:16:**Legacy**: L12, L107, L128 | **状态**: ✅ 已验证（Q0~Q29 全阶段）
+openspec/specs/knowledge/spec.md:131:- **IRQ 验证拆层**: claim -> handler -> device status -> EOI。Q24 UART 记录 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake。
+openspec/specs/knowledge/spec.md:140:<!-- arc: cleanup-uart-documentation-system --> K24 (Q28 concurrency matrix, UART-specific) archived 2026-07-25. SPSC boundary retained in K25.
+openspec/specs/knowledge/spec.md:146:**Legacy**: L300 | **状态**: ✅ 已验证（Q29）
+openspec/specs/knowledge/spec.md:177:### Requirement: K27 - Q26 ProcessMode::Manual 删除教训
+openspec/specs/knowledge/spec.md:183:- **背景**: ProcessMode::Manual 自 Q7 引入后从未被构造，其内部 match 分支成为死代码，在后续 API 迁移中累积维护成本。
+openspec/specs/knowledge/spec.md:184:- **修复**: Q26 删除 Manual 变体与关联分支，TTY/PTY 行为无退化。
+openspec/specs/references/spec.md:113:| <!-- R2 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/optimization-milestone-replan.md` | Q15 后优化项 milestone 重规划：将 Q6 过载项拆分为 Q16 文档收敛、Q17 SMP 内存序、Q18 真板观测、Q19 VisionFive2 验证、Q20 DMA/高波特率决策、Q21 维护性清理、Q22 远期预研池 |
+openspec/specs/references/spec.md:119:<!-- tombstone: R8/R9 --> Archived 2026-07-02 in ARC-202607021648 — Q19B plan/blockers 已完成，当前入口为 `lichee-d1-benchmark` spec、Q19B archived change 与 R10 Q19C。
+openspec/specs/references/spec.md:120:| <!-- R10 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-lichee-full-starryos-benchmark.md` | Q19C benchmark：manifest cleanup、RX witness、D1 memory-root path；最终收敛为 D1 async UART 性能验证，shell/SDMMC/rootfs 不作为 gate |
+openspec/specs/references/spec.md:121:| <!-- R11 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md` | Q19C.8e TX/P99：slow-poll + yield 已验证 forward progress；P99 未改善，作为 O77/L275 known limitation，Q20 复验 |
+openspec/specs/references/spec.md:122:| <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1：memory-root `/bin/benchmark` 通过 `resolve/read` + eager ELF mapping；lazy COW SIGILL 另列 O80/L277 |
+openspec/specs/references/spec.md:123:| <!-- R13 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3：M2 equivalent command-entry 通过；M3/rootfs-probe、SDMMC/rootfs 取消当前规划 |
+openspec/specs/references/spec.md:124:| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ⚠️ STALE [2026-07-15] — 摘要仍写 Q20，实际继续作为 Q24 输入；ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层 |
+openspec/specs/references/spec.md:125:| <!-- R15 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；Q20 已完成、Q21/Q22 取消、Q23 决策完成，重排已全部执行 |
+openspec/specs/references/spec.md:126:| <!-- R17 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/clippy-test-baseline-cleanup.md` | Clippy 与测试基线清理：feature-scoped import、内嵌 uart manifest 漂移、workspace lint 泄漏、kernel host-test 边界、复现矩阵与分阶段 Gate；Q26 维护性清理已完成并归档 |
+openspec/specs/references/spec.md:127:| <!-- R18 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/async-uart-vs-io_uring.md` | StarryOS 异步串口与 Linux io_uring 的设计异同：任务模型/批处理/ISR 极简等同构点；mmap/syscall/SQE-CQE 等差异来自当前 UART/VFS 架构取舍；backpressure/MPSC/writer 契约已通过 Q27a/Q27/Q28/Q29 实现 |
+openspec/specs/references/spec.md:128:| <!-- R19 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/uart-backpressure-mpsc-plan.md` | UART backpressure 与 writer 并发边界分析：阻塞 fd writable wait、非阻塞 partial/WouldBlock、Tty poll/register 改造、`AsyncUartWriter::Clone` 与 SPSC 安全契约收敛；全部 Q27a/Q27/Q28/Q29 已完成并归档 |
+openspec/specs/references/spec.md:133:| <!-- R27 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/console-lichee-baseline-branch.md` | Console 性能基线分支分析：从冻结的当前异步提交选择性适配 polling Console，界定 TTY、生命周期、TEMT drain、benchmark 语义和 QEMU/D1 对照 Gate；Q31/Q32 CPU-efficiency 对照实验已完成并归档 |
+openspec/specs/references/spec.md:151:<!-- arc: cleanup-uart-documentation-system --> R1 (uart_16550 subproject), R42 (Q31 async benchmark), R43 (Q32 console benchmark), R45 (Q31→Q32 port analysis) archived 2026-07-25. -->
+openspec/specs/references/spec.md:152:<!-- arc: cleanup-uart-documentation-system --> R44, R46 (console-benchmark runbook, Q32 doc sync) archived 2026-07-25. -->
+openspec/specs/references/spec.md:153:<!-- arc: cleanup-uart-documentation-system --> Q31/Q32 specs archived 2026-07-25 → openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/. -->
+openspec/specs/references/spec.md:162:<!-- arc: cleanup-uart-documentation-system --> R42 (Q31), R43 (Q32), R44, R45, R46 archived 2026-07-25. Q31/Q32 specs → openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/. |
+openspec/specs/references/spec.md:165:<!-- arc: ARC-202607251326 --> 11 R 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+openspec/specs/references/spec.md:166:<!-- arc: cleanup-uart-documentation-system --> NS16550A, VirtIO, Linux serial, uart_16550 dep, R42-R46, Q31/Q32 specs archived 2026-07-25 -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/
+openspec/specs/improvements/spec.md:9:<!-- arc: ARC-202607251326 --> 4 条目已归档 (I01-I04, 2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+openspec/specs/improvements/spec.md:12:<!-- arc: cleanup-uart-documentation-system --> I05 (O63 multi-hart stress) archived 2026-07-25, deferred with q17-smp-memory-ordering. Cross-hart risk remains open until Q24/VF2.
+openspec/specs/improvements/spec.md:23:| **O65** | PLIC primary/percpu 防御性分离验证 | 🟡 P1 | Q24 平台切换时 |
+openspec/specs/improvements/spec.md:25:| **O69** | DMA 一致性内存抽象（借鉴 axdma + DwmacHal） | ⏳ Q25 决策 | Q24 或新硬件数据 |
+openspec/specs/improvements/spec.md:26:| **O71** | PAC 类型安全寄存器访问 | 🟡 P1 | Q24 真板驱动开发 |
+openspec/specs/improvements/spec.md:33:<!-- arc: ARC-202607251326 --> 4 条目已归档 (I07-I10, 2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+openspec/specs/platform-descriptor-early-console/spec.md:7:> Source: Q18 `q18-platform-descriptor-early-console` (archived 2026-06-28)
+openspec/specs/platform-descriptor-early-console/spec.md:62:- **AND** hardware smoke tests MUST remain in Q19/Q20
+openspec/specs/platform-descriptor-early-console/spec.md:76:- **WHEN** Q18 changes platform descriptor and early console plumbing
+.claude/docs/SNAPSHOT.md:17:`net-k3`（从 `uart-lichee` 分出）— 异步 NIC 开发。UART 阶段 (Q0-Q32) 已全部完成并归档到 `openspec/changes/archive/`。UART 专属 spec 条目 (M/D/K/R/I) 已归档到 `ARC-202607251326`。
+.claude/docs/SNAPSHOT.md:44:Q0-Q32 已归档（2026-07-25）。关键成果：D1 真板 async UART 96.6%-99.1% 线速、完整 backpressure/writer/reader 契约收敛、SMP 内存序修复（QEMU single-hart 完成，multi-hart 待 Q24/VF2）。跨模块 async 经验已提取为 M/D/K 保留条目。详细历史见 `uart-lichee` 分支和 `openspec/changes/archive/`。
+.claude/docs/SNAPSHOT.md:66:2026-07-25：`cleanup-uart-documentation-system` — UART 文档体系全面清理：17 capability spec、8 docs、Q31 analysis、lichee、benchmark Runbook、q17、旧 ARC 全部归档。活跃文档只保留 OS/NIC/VF2 和通用方法。
+.claude/docs/SNAPSHOT.md:67:2026-07-25：`net-k3` 分支从 `uart-lichee` 分出。UART 专属条目归档到 `openspec/changes/ARC-202607251326/`（已由本次清理收编至 `archive/2026-07-25-arc-202607251326/`）。
+.claude/docs/tasks.md:31:## UART 阶段 (Q0-Q32) — 已归档
+.claude/analysis/README.md:7:> 2026-07-22 archive: 5 UART-completed analysis + 1 Console runbook → `_archive/`（Q27-Q32 全部完成，对应输入分析归档）。
+.claude/analysis/README.md:8:> 2026-07-22 update: Q31/Q32 CPU-efficiency evidence and comparison synced from `console-lichee`.
+.claude/analysis/README.md:10:> 2026-07-11 update: Q19C/D1 async UART closeout analysis moved to `_archive/2026-07-11-q19c-d1-async-uart-closeout/`.
+.claude/analysis/README.md:24:- `_archive/uart-async-qemu-d1-first-replan.md` — Q20-Q24 roadmap 重排（已全部执行：Q20 完成、Q21/Q22 取消、Q23 决策完成）。
+.claude/analysis/README.md:25:- `_archive/uart-backpressure-mpsc-plan.md` — TX backpressure + writer 并发边界分析（Q27a/Q27/Q28/Q29 全部完成并归档）。
+.claude/analysis/README.md:27:- `_archive/console-lichee-baseline-branch.md` — Console 基线分支设计（Q31/Q32 实验完成并归档）。
+.claude/analysis/README.md:28:- `_archive/clippy-test-baseline-cleanup.md` — Clippy/测试基线清理（Q26 维护性清理完成）。
+.claude/analysis/README.md:33:- `_archive/2026-07-04-q19-lichee-analysis/` — Q18/Q19/Q19B historical plans, Lichee platform capture logs, Q19B board evidence, and the official boot partition backup (8 files + `lichee/` subdir).
+.claude/analysis/README.md:34:- `_archive/2026-07-11-q19c-d1-async-uart-closeout/` — Q19C planning, TX optimization, M1/M2/M3 analysis, and D1 board evidence logs after D1 async UART testing ended.
+.claude/analysis/README.md:35:- `_archive/2026-06-24-q0-q15-analysis/` — older Q0~Q15 architecture, UART extraction, M4/Q15, and performance analysis material (14 files).
+exit=0
+
+--- R9: No D1/Q/UART benchmark/93% in board bringup runbook (expect FAIL) ---
+6:- D1 Lichee RV Dock 已验证此阶梯有效（历史记录见 archive carrier）
+29:- 编写或复用打包工具（平台相关：如 `tools/android_boot_image.py` 用于 D1）
+77:**目标**：运行串口 benchmark 并采集数据。
+96:- **不要在 L0 阶段无限采集**：D1 已验证——现有事实覆盖 bring-up 所需后，放弃从官方 Linux 做无目标数据采集。
+97:- **UART 访问宽度不能套 QEMU**：每块板的 UART stride 和 MMIO 宽度不同，必须按 datasheet/DTS 设置。
+exit=0
+
+--- R10: Analysis index Active = 5 exact files (expect PASS) ---
+Actual: arceos-async-network-driver-analysis.md
+arceos-true-board-validation.md
+async-network-project-overview.md
+embassy-network-module-evaluation.md
+starryos-async-network-roadmap.md
+exit=0
+
+--- R11: Archive notes task counts ---
+5:- **Status at archive**: 18/19 tasks complete
+6:- **Deferred task**: Task 6.1 (multi-hart / real-board SMP stress) — NOT executed
+q17_note exit=0
+6:- **Status at archive**: 16/18 tasks complete, 2 tasks incomplete
+arc_note exit=0
+
+--- R12: No 'phase complete' in archive notes ---
+openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/ARCHIVE_NOTE.md:10:- **Why archived**: UART phase complete; task 6.1 (multi-hart SMP stress) remains deferred. I05 was archived alongside this change as a tombstone. Cross-hart correctness claim requires VisionFive2 or equivalent multi-hart environment.
+openspec/changes/archive/2026-07-25-arc-202607251326/ARCHIVE_NOTE.md:9:- **Why archived**: UART development phase completed; NIC phase beginning on `net-k3` branch
+exit=0
+
+--- R13: Carrier file count ---
+Carrier files: 48
+
+--- R14: OpenSpec validate ---
+- Validating...
+✓ change/cleanup-uart-documentation-system
+✓ spec/decisions
+✓ spec/improvements
+✓ spec/knowledge
+✓ spec/platform-descriptor-early-console
+✓ spec/project-model
+✓ spec/quality-gate-baseline
+✓ spec/references
+Totals: 8 passed, 0 failed (8 items)
+exit=0
+
+--- R15: Product code unchanged ---
+Product code paths in diff:
+(none)
+exit=0
+
+=== RED BASELINE COMPLETE ===
+FAILURES (expect all non-zero except R10,R13,R14,R15):
+R1=1 R2=1 R3=0 R4=1 R5=1 R6=0 R7=0 R8=0 R9=0 R10=0 R11a=0 R11b=0 R12=0 R14=0

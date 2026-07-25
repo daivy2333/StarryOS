@@ -1,0 +1,61 @@
+=== git diff --check ===
+exit: 0
+
+=== Scope check: product code unchanged ===
+Changed files:
+.claude/analysis/README.md
+.claude/analysis/arceos-true-board-validation.md
+.claude/analysis/async-network-project-overview.md
+.claude/analysis/embassy-network-module-evaluation.md
+.claude/analysis/lichee/boot-official-backup.img.tombstone.md
+.claude/analysis/q31-console-cpu-efficiency-port.md
+.claude/analysis/starryos-async-network-roadmap.md
+.claude/docs/SNAPSHOT.md
+.claude/docs/tasks.md
+.claude/runbooks/benchmark-guide.md
+.claude/runbooks/board-bringup-ladder.md
+.claude/runbooks/incremental-merge.md
+.claude/runbooks/regression-gate.md
+docs/async-uart-architecture.md
+docs/benchmark-report-async.md
+docs/d1_console.md
+docs/d1_out.md
+docs/manual-qa-report.md
+docs/qemu_console.md
+docs/qemu_out.md
+docs/uart-async-learning-map.md
+openspec/changes/ARC-202607251326/.openspec.yaml
+openspec/changes/ARC-202607251326/proposal.md
+openspec/changes/ARC-202607251326/tasks.md
+openspec/changes/q17-smp-memory-ordering/.openspec.yaml
+openspec/changes/q17-smp-memory-ordering/design.md
+openspec/changes/q17-smp-memory-ordering/proposal.md
+openspec/changes/q17-smp-memory-ordering/specs/smp-memory-ordering/spec.md
+openspec/changes/q17-smp-memory-ordering/tasks.md
+openspec/specs/arceos-adapter/spec.md
+openspec/specs/async-uart-core/spec.md
+openspec/specs/async-uart-traits/spec.md
+openspec/specs/benchmark-gap-closure/spec.md
+openspec/specs/console-cpu-efficiency-benchmark/spec.md
+openspec/specs/decisions/spec.md
+openspec/specs/ier-isr-refactor/spec.md
+openspec/specs/ier-port-ownership/spec.md
+openspec/specs/improvements/spec.md
+openspec/specs/inline-batch-optimize/spec.md
+openspec/specs/knowledge/spec.md
+openspec/specs/lichee-d1-benchmark/spec.md
+openspec/specs/lichee-d1-early-smoke/spec.md
+openspec/specs/lichee-d1-fullbench/spec.md
+openspec/specs/maintenance-cleanup/spec.md
+openspec/specs/platform-descriptor-early-console/spec.md
+openspec/specs/project-model/spec.md
+openspec/specs/quality-gate-baseline/spec.md
+openspec/specs/references/spec.md
+openspec/specs/tty-tx-backpressure/spec.md
+openspec/specs/tx-bounded-fast-retry/spec.md
+openspec/specs/tx-completion-tracking/spec.md
+openspec/specs/uart-cpu-efficiency-benchmark/spec.md
+openspec/specs/uart-temt-query/spec.md
+
+Product code files changed: 0
+STATUS: PASS

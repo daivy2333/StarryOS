@@ -1,7 +1,7 @@
 # SNAPSHOT.md — 项目快照
 
 > Last updated: 2026-07-25
-> Branch: net-k3 — 异步 NIC 开发主线；UART 阶段 (Q0-Q32) 全部完成并归档 (ARC-202607251326)
+> Branch: net-k3 — 异步 NIC 开发主线；UART 文档已归档 (cleanup-uart-documentation-system, 2026-07-25)；q17 multi-hart SMP 验证 deferred
 
 ## 项目概览
 
@@ -14,7 +14,7 @@
 
 ## 当前分支
 
-`net-k3`（从 `uart-lichee` 分出）— 异步 NIC 开发。UART 阶段 (Q0-Q32) 已全部完成并归档到 `openspec/changes/archive/`。UART 专属 spec 条目 (M/D/K/R/I) 已归档到 `ARC-202607251326`。
+`net-k3`（从 `uart-lichee` 分出）— 异步 NIC 开发。UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成）。
 
 ## 当前待推进
 
@@ -39,35 +39,26 @@
 | OS 接口 (M14) | 2-trait 最小接口 (`OsRuntime` + `OsWakerSet`)，只保留实际调用代码 |
 | SPSC 边界 (K25) | unsafe unique constructor + crate-private mutation + exactly-once startup |
 
-## UART 阶段回顾
-
-Q0-Q32 已全部完成并归档。关键成果：
-- D1 真板 async UART 96.6%-99.1% 线速
-- 完整 backpressure/writer/reader 契约收敛
-- SMP 内存序修复 (Q17, QEMU 完成，multi-hart 待 Q24/VF2)
-- 跨模块 async 经验提取为 M/D/K 保留条目
-
-详细历史见 `uart-lichee` 分支和 `openspec/changes/archive/`。
-
 ## OpenSpec 体系
 
 | 域 | 条目数 | 备注 |
 |----|--------|------|
-| `openspec/specs/project-model/` | 12 (M01-M39) | 跨模块约束；UART 专属已归档 |
-| `openspec/specs/decisions/` | 5 (D01-D21) | 决策记录；UART 专属已归档 |
-| `openspec/specs/knowledge/` | 12 (K01-K27) | 已归档 18 条 UART 专属知识 |
-| `openspec/specs/references/` | 活跃 ~10 | 已归档 11 条 UART 专属参考 |
-| `openspec/specs/improvements/` | 3 (I05,I06,I12) | 活跃改进；UART 专属已归档 |
-| `openspec/changes/` | 活跃: q17-smp-memory-ordering | 归档: Q0-Q32, ARC-202607251326 |
-| `.claude/analysis/` | 6 | NIC 分析 4 篇 + 真板验证 + 移植分析 |
-| `.claude/runbooks/` | 4 | benchmark-guide, board-bringup-ladder, incremental-merge, regression-gate |
+| `openspec/specs/project-model/` | 9 (M01-M39) | M03/M33/M35 已归档 |
+| `openspec/specs/decisions/` | 4 (D01-D21) | D03 已归档 |
+| `openspec/specs/knowledge/` | 10 (K01-K27) | K09 收紧；K23/K24 已归档 |
+| `openspec/specs/references/` | 活跃 8 | R14、R23-R26、R38-R40 |
+| `openspec/specs/improvements/` | 1 (I06) | I05/I12 已归档；I12 通用规则迁入 quality-gate-baseline |
+| `openspec/changes/` | 活跃: cleanup-uart-documentation-system | q17-smp-memory-ordering, ARC-202607251326 已归档 |
+| `.claude/analysis/` | 5 | q31/lichee 已归档；4 NIC + 1 VF2 活跃 |
+| `.claude/runbooks/` | 3 | benchmark-guide 已归档
 
 ## 证据文件
 
-- `docs/benchmark-report-async.md` — async UART 与 polling Console 交叉对比报告（UART 阶段参考）
 - NIC 证据待 N1+ 建立
+- UART 阶段证据已全部归档至 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`
 
 ## 迁移记录
 
-2026-07-25：`net-k3` 分支从 `uart-lichee` 分出。UART 专属条目归档到 `openspec/changes/ARC-202607251326/`。
+2026-07-25：`cleanup-uart-documentation-system` — UART 文档体系清理：主载体位于 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`；q17 与旧 ARC 分别保存在各自归档目录。活跃文档只保留 OS/NIC/VF2 和通用方法。
+2026-07-25：`net-k3` 分支从 `uart-lichee` 分出。UART 专属条目标记为归档，载体收编至 `openspec/changes/archive/2026-07-25-arc-202607251326/`。
 2026-07-20：旧体系 spec 迁移至 M/D/K/R/I。Migration carrier: `openspec/changes/archive/mig-20260720-legacy-specs/`。

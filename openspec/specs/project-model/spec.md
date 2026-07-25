@@ -17,16 +17,7 @@
 - **WHEN** 开发者实现新的 `Future` 或 `Pollable` 用于 UART I/O
 - **THEN** 必须基于 `axtask::future::poll_fn` + `embassy_sync::AtomicWaker` 模式编写，禁止引入 `embassy-executor`
 
-### Requirement: M03 — 缓冲与并发策略
-
-每个方向（RX / TX）MUST 使用各自独立的 ring buffer，硬件 FIFO 与内核 ring buffer 之间的搬运 MUST 由单一后台 copier 任务完成。当前实现使用 `atomic_ring_buffer`，TX ring 保持 SPSC，RX ring 保持 SPSC 且 unsafe 唯一 consumer。
-
-**Legacy**: ADR-004 (A004), ADR-061 (A061), ADR-062 (A062) | **状态**: ✅ 已落地，TX/RX 契约由 Q28/Q29 收敛
-
-#### Scenario: 设计新的数据通路
-
-- **WHEN** 开发者实现 UART 与用户空间之间新的数据搬运路径
-- **THEN** 必须确保硬件 FIFO 的读取/写入由单一 copier 任务完成，禁止在 ISR 中直接操作 ring buffer，禁止多个任务并发 drain 同一 FIFO
+<!-- arc: cleanup-uart-documentation-system --> M03 (UART ring buffer strategy) archived 2026-07-25. Universal SPSC principle retained in K25.
 
 ### Requirement: M07 — 内核日志同步阻塞约束
 
@@ -72,29 +63,9 @@ OS abstraction layer MUST 只保留驱动代码实际调用的 trait。当前为
 - **WHEN** 后续 change 清理 StarryOS 或 `uart_16550` 的 warning、clippy 和 tests
 - **THEN** MUST 为可复用 crate、kernel target build 和系统 runtime 定义分离的 gate
 
-### Requirement: M33 — io_uring 同构点映射
+<!-- arc: cleanup-uart-documentation-system --> M33 (io_uring UART mapping) archived 2026-07-25.
 
-后续 io_uring-inspired UART proposal MUST 先回答"借鉴哪个 io_uring 思想"以及"为什么当前实现不足"。高价值借鉴方向：backpressure、writer/SPSC 隐患、`TxCompletion` 全局 drain。user ring/CQ/zero-copy 当前不实施。
-
-**Legacy**: ADR-060 (A060), 2026-07-14 | **状态**: 候选
-
-#### Scenario: 为 async UART 复用 io_uring 思想
-
-- **WHEN** 未来 async UART proposal 以 io_uring 为动机
-- **THEN** MUST 声明复用哪个 io_uring 思想以及为什么当前 UART 路径不足
-- **AND** MUST NOT 在未满足 ADR-058 和 O82 证据 gate 的情况下重新引入 user ring、CQE 或 zero-copy
-
-### Requirement: M35 — TX/RX 并发契约分流
-
-Q28 后 UART 并发工作 MUST 将 multi-hart correctness（Q24）、TX scheduling semantics、queue producer model（Q30）和 RX consumer safety（Q29）分开评估，禁止合并为单一 MPSC 方案。
-
-**Legacy**: ADR-062 (A062), 2026-07-18 | **状态**: Q29 ✅ / Q24 ⏳ / Q30 🧊
-
-#### Scenario: 规划 Q28 后并发工作
-
-- **WHEN** 后续工作涉及跨 hart UART、TX 多 writer 语义或 RX 多 consumer 风险
-- **THEN** MUST 先归类为 Q24、Q29 或 Q30
-- **AND** MUST 保持当前 accepted-prefix 和 SPSC 边界直到对应 evidence Gate 通过
+<!-- arc: cleanup-uart-documentation-system --> M35 (UART TX/RX concurrency flow) archived 2026-07-25.
 
 ### Requirement: M36 — 异步 NIC 分层架构
 
@@ -118,7 +89,7 @@ VisionFive2 bring-up MUST 保留 U-Boot 配置的 PLIC 和 Clock 状态，除非
 #### Scenario: VisionFive2 bring-up 保留 bootloader 状态
 
 - **WHEN** StarryOS 通过 U-Boot 在 VisionFive2 上启动
-- **THEN** PLIC 和 Clock setup MUST 遵循 trust-u-boot 策略，除非 Q18 诊断证明保留状态无效
+- **THEN** PLIC 和 Clock setup MUST 遵循 trust-u-boot 策略，除非真板诊断证明保留状态无效
 - **AND** UART 寄存器初始化 MAY 仍可为 async driver 重配 FCR、IER 和 baud rate
 
 ### Requirement: M38 — PLIC 防御性设计
@@ -139,11 +110,12 @@ PLIC 初始化 MUST 保持 `init_primary()`（全局一次性初始化）与 `in
 
 **Legacy**: ADR-042 (A042), 2026-06-27 | **状态**: ✅ QEMU 完成 / ⚠️ multi-hart 待验证
 
-#### Scenario: Q17 atomic ordering review
+#### Scenario: atomic ordering review
 
-- **WHEN** Q17 修改 async UART 原子字段
+- **WHEN** 修改跨 hart 共享的原子字段
 - **THEN** 所选内存序 MUST 根据字段角色说明理由
 - **AND** MUST NOT 引入按架构分叉的内存序分支
 
-<!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+<!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
+<!-- arc: cleanup-uart-documentation-system --> M03, M33, M35 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/
 <!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98), 1053 lines, ADR-001~063. Current valid constraints extracted as M01-M40. Decisions rationale preserved in decisions/spec.md. Tombstoned ADRs (A014-A017, A020-A021, A032, A063-A064) noted here — details in archive carriers ARC-202607081429 and arc-202607152005. Also see ARC-202607251326 for M02-M40 partial archival.

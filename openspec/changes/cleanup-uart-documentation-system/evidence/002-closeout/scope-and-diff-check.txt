@@ -1,0 +1,65 @@
+=== git diff --check ===
+exit: 0
+
+=== Product code check ===
+Product code files changed: 0
+
+=== Git status ===
+ M .claude/analysis/README.md
+ M .claude/analysis/arceos-true-board-validation.md
+ M .claude/analysis/async-network-project-overview.md
+ M .claude/analysis/embassy-network-module-evaluation.md
+ D .claude/analysis/lichee/boot-official-backup.img.tombstone.md
+ D .claude/analysis/q31-console-cpu-efficiency-port.md
+ M .claude/analysis/starryos-async-network-roadmap.md
+ M .claude/docs/SNAPSHOT.md
+ M .claude/docs/tasks.md
+ D .claude/runbooks/benchmark-guide.md
+ M .claude/runbooks/board-bringup-ladder.md
+ M .claude/runbooks/incremental-merge.md
+ M .claude/runbooks/regression-gate.md
+ D docs/async-uart-architecture.md
+ D docs/benchmark-report-async.md
+ D docs/d1_console.md
+ D docs/d1_out.md
+ D docs/manual-qa-report.md
+ D docs/qemu_console.md
+ D docs/qemu_out.md
+ D docs/uart-async-learning-map.md
+ D openspec/changes/ARC-202607251326/.openspec.yaml
+ D openspec/changes/ARC-202607251326/proposal.md
+ D openspec/changes/ARC-202607251326/tasks.md
+ D openspec/changes/q17-smp-memory-ordering/.openspec.yaml
+ D openspec/changes/q17-smp-memory-ordering/design.md
+ D openspec/changes/q17-smp-memory-ordering/proposal.md
+ D openspec/changes/q17-smp-memory-ordering/specs/smp-memory-ordering/spec.md
+ D openspec/changes/q17-smp-memory-ordering/tasks.md
+ D openspec/specs/arceos-adapter/spec.md
+ D openspec/specs/async-uart-core/spec.md
+ D openspec/specs/async-uart-traits/spec.md
+ D openspec/specs/benchmark-gap-closure/spec.md
+ D openspec/specs/console-cpu-efficiency-benchmark/spec.md
+ M openspec/specs/decisions/spec.md
+ D openspec/specs/ier-isr-refactor/spec.md
+ D openspec/specs/ier-port-ownership/spec.md
+ M openspec/specs/improvements/spec.md
+ D openspec/specs/inline-batch-optimize/spec.md
+ M openspec/specs/knowledge/spec.md
+ D openspec/specs/lichee-d1-benchmark/spec.md
+ D openspec/specs/lichee-d1-early-smoke/spec.md
+ D openspec/specs/lichee-d1-fullbench/spec.md
+ D openspec/specs/maintenance-cleanup/spec.md
+ M openspec/specs/platform-descriptor-early-console/spec.md
+ M openspec/specs/project-model/spec.md
+ M openspec/specs/quality-gate-baseline/spec.md
+ M openspec/specs/references/spec.md
+ D openspec/specs/tty-tx-backpressure/spec.md
+ D openspec/specs/tx-bounded-fast-retry/spec.md
+ D openspec/specs/tx-completion-tracking/spec.md
+ D openspec/specs/uart-cpu-efficiency-benchmark/spec.md
+ D openspec/specs/uart-temt-query/spec.md
+?? openspec/changes/archive/2026-07-25-arc-202607251326/
+?? openspec/changes/archive/2026-07-25-cleanup-uart-docs/
+?? openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/
+?? openspec/changes/cleanup-uart-documentation-system/
+STATUS: PASS

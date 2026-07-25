@@ -1,0 +1,19 @@
+=== openspec list ===
+Changes:
+  cleanup-uart-documentation-system     0/18 tasks    just now
+exit: 0
+
+=== openspec list --specs ===
+Specs:
+  decisions                             requirements 4
+  improvements                          requirements 1
+  knowledge                             requirements 10
+  platform-descriptor-early-console     requirements 3
+  project-model                         requirements 9
+  quality-gate-baseline                 requirements 6
+  references                            requirements 6
+exit: 0
+
+=== openspec validate cleanup-uart-documentation-system ===
+Change 'cleanup-uart-documentation-system' is valid
+exit: 0

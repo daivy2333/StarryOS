@@ -1,0 +1,3 @@
+=== 1. Broken links check ===
+Broken links: 0
+STATUS: PASS

@@ -6,13 +6,14 @@
 
 ## Requirements
 
-<!-- arc: ARC-202607251326 --> 18 K 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+<!-- arc: ARC-202607251326 --> 18 K 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
+<!-- arc: cleanup-uart-documentation-system --> K09 tightened, K23/K24 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/
 
 ### Requirement: K01 - ISR 极简原则
 
 ISR MUST 最小化：读 ISR -> 禁用中断 -> AtomicWaker::wake() -> 返回。数据搬运推迟到任务上下文（后台 copier 协程）。
 
-**Legacy**: L12, L107, L128 | **状态**: ✅ 已验证（Q0~Q29 全阶段）
+**Legacy**: L12, L107, L128 | **状态**: ✅ 已验证（ISR 最小化原则在全部 UART 驱动验证阶段通过）
 
 - **模式**: ISR 中读 ISR 寄存器判断 InterruptType，禁用 RX/TX 中断防止重入，分别唤醒 rx_waker/tx_waker。
 - **安全约束**: ISR 中无阻塞、无锁、MMIO read/write 安全。
@@ -72,25 +73,21 @@ WAKER.wake();
 - **WHEN** 开发者需要 ISR 安全唤醒任务
 - **THEN** MUST 使用静态 AtomicWaker 变量，禁止在 ISR 中使用锁或动态分配
 
-### Requirement: K09 - Embassy 选型边界
+### Requirement: K09 — Embassy 选型边界
 
-embassy-sync 子集使用 MUST 严格限定在 `AtomicWaker`（ISR 安全唤醒）。任何 embassy 其它原语替换现有实现的提案 MUST 视为反模式。
+embassy-sync 子集使用 MUST 严格限定在 `AtomicWaker`（ISR 安全唤醒）。第二套 executor 或调度器 MUST NOT 与 `axtask` 共存。其他 embassy 原语评估 MUST 先证明当前实现有可测问题且不与 axtask 架构冲突 — 不得将全部 embassy 网络原语预设为反模式。
 
-**Legacy**: L10, L81-L84 | **状态**: ✅ 已验证
+**Legacy**: L10, L81-L84 | **状态**: ✅ 已验证（2026-07-25 收紧为 executor 边界）
 
-- **已排除的反优化**:
-  - Channel 替换 HeapRb：失去 lock-free SPSC，MPMC 多余间接
-  - Mutex 替换 SpinNoPreempt：异步 Mutex 强制走 embassy executor，与 axtask 冲突
-  - Watch 替换 AtomicBool：单 bool 用 Watch 杀鸡用牛刀
-  - Semaphore 计数 NAPI：Semaphore 是资源计数，不是事件计数器
-  - select! 替换手动 poll：不与 axtask::future 兼容
-
-- **判定原则**: 评估前先回答三问：(1) 当前实现有可测问题吗？(2) embassy 方案更快/更简洁吗？(3) 不与 axtask 架构冲突吗？
+- **核心约束**: 不引入第二套 executor。`embassy-sync::AtomicWaker` 是唯一已批准的 embassy 依赖。
+- **已排除**: `Mutex` 替换 `SpinNoPreempt`（异步 Mutex 强制走 embassy executor，与 axtask 冲突）。
+- **判定原则**: 评估前先回答三问：(1) 当前实现有可测问题吗？(2) 替换方案更快/更简洁吗？(3) 不与 axtask 架构冲突吗？
 
 #### Scenario: 评估 embassy 同步原语替换
 
 - **WHEN** 开发者提议用 embassy 同步原语替换现有实现
 - **THEN** MUST 先证明三个条件全部满足，否则保持原状
+- **AND** MUST NOT 引入第二套 executor 或调度器
 
 ### Requirement: K15 - OpenSpec 变更 tasks.md 漂移
 
@@ -112,6 +109,7 @@ embassy-sync 子集使用 MUST 严格限定在 `AtomicWaker`（ISR 安全唤醒�
 跨 hart 共享的 async UART 状态 MUST 按同步角色使用 Rust 原子内存序，不按架构分叉。
 
 **Legacy**: L212, L318-L320 | **状态**: ✅ QEMU 验证 / ⚠️ multi-hart 待验证
+<!-- arc: cleanup-uart-documentation-system --> Field-level examples (ier_cache, tx_copier_active, tx_staged_bytes) from async UART context. See archived q17-smp-memory-ordering for details.
 
 - **ier_cache RMW 竞争**: load-modify-store 在锁外执行时，两个 hart 同时 load -> modify -> store 导致后写者覆盖。修复：RMW 与 MMIO IER 写入放同一锁/临界区。
 - **tx_copier_active / tx_staged_bytes**: store 用 Release，load 用 Acquire；fetch_add/sub 用 AcqRel。
@@ -130,7 +128,7 @@ embassy-sync 子集使用 MUST 严格限定在 `AtomicWaker`（ISR 安全唤醒�
 **Legacy**: L281-L285 | **状态**: ✅ 已验证
 
 - **分层**: boot -> 寄存器（IER/IIR/LSR/FCR/MCR 原值+写后读回）-> PLIC -> waker -> drain -> stress -> userbench。
-- **IRQ 验证拆层**: claim -> handler -> device status -> EOI。Q24 UART 记录 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake。
+- **IRQ 验证拆层**: claim -> handler -> device status -> EOI。真板 UART 阶段记录了 claim IRQ、ISR entry、IIR/LSR/IER、RX/TX/DRAIN wake 的完整验证流程。
 - **VF2 hart 拓扑**: Boot HART ID=1、HART Count=5；CPU0 是 S7 小核。
 
 #### Scenario: 新增真板平台适配
@@ -138,51 +136,14 @@ embassy-sync 子集使用 MUST 严格限定在 `AtomicWaker`（ISR 安全唤醒�
 - **WHEN** 开发者为 StarryOS 新增真板平台
 - **THEN** MUST 先完成 polling early console smoke test，再接 async UART、PLIC、timer、rootfs
 
-### Requirement: K23 - io_uring 设计映射
-
-io_uring 设计映射 MUST 明确：StarryOS 在任务模型 + 批处理 + ISR 极简层面和 io_uring 高度同构；缺少部分（mmap / syscall / 多 op）是架构取舍。
-
-**Legacy**: L291-L295 | **状态**: ✅ 已验证
-
-| io_uring 概念 | StarryOS 等价物 | 文件位置 |
-|---|---|---|
-| SQ（提交队列）| RingBufTx / RingBufRx（SPSC）| `crates/uart_16550/src/async_/ring_buffer.rs:30` / `:134` |
-| completion 观测 | TxCompletion（全局 drain snapshot）| `crates/uart_16550/src/async_/driver.rs:104` |
-| io_uring_submit | tx.push(buf) | `crates/uart_16550/src/async_/device_ops.rs:107` |
-| io_uring_wait_cqe | poll_fn + register_waker + DRAIN_WAKER | `crates/uart_16550/src/async_/device_ops.rs:131` |
-| SQPOLL（内核轮询）| TX copier 任务 loop 轮询 ring，靠 ISR 唤醒 | `crates/uart_16550/src/async_/driver.rs:456` |
-| ISR 极简（4 步）| uart_isr_handler | `crates/uart_16550/src/async_/isr.rs:83` |
-
-**TxCompletion 是全局 drain snapshot，不是 per-request CQE**。块设备、网络的 drain/flush 可复用四阶段模式。
-
-#### Scenario: 使用 io_uring 映射表
-
-- **WHEN** async UART 设计工作引用 io_uring
-- **THEN** MUST 使用此表作为映射辅助，不作为 StarryOS 有 io_uring 兼容 SQ/CQ 语义的证明
-
-### Requirement: K24 - Q28 后并发边界矩阵
-
-Q28 后并发边界 MUST 按矩阵分流：TX raw producer capability（Q28 ✅）、跨 hart correctness（Q24 ⏳）、syscall 原子性（Q30 🧊）、SPSC vs MPSC（O85）、RX multi-consumer（Q29 ✅）。
-
-**Legacy**: L299 | **状态**: ✅ 已验证（Q28/Q29）
-
-| 问题 | 当前保证 | 证据入口 |
-|---|---|---|
-| 跨 hart write/flush/tcdrain | QEMU/D1 单 hart 回归通过；无 multi-hart 证明 | Q24 / O63 |
-| syscall 原子性/公平性/交错 | 仅每次 raw submission accepted prefix 连续 | Q30 / O86 |
-| SPSC vs MPSC | TX ring 仍 SPSC，OS adapter 用 producer lock 串行化 | O85 / Q30 |
-| RX multi-consumer | raw reader unsafe unique, shared fd 只消费 ldisc ring | Q29 ✅ |
-
-#### Scenario: 解释 Q28 并发证据
-
-- **WHEN** 报告或 proposal 以 Q28 作为并发证据
-- **THEN** MUST 将声明限定在 unique raw TX producer capability 和 accepted-prefix integrity
+<!-- arc: cleanup-uart-documentation-system --> K23 (io_uring mapping, UART-specific) archived 2026-07-25.
+<!-- arc: cleanup-uart-documentation-system --> K24 (UART concurrency matrix) archived 2026-07-25. SPSC boundary retained in K25.
 
 ### Requirement: K25 - SPSC capability 完整边界
 
 完整 SPSC 边界 MUST 包含三要素：unsafe unique constructor + crate-private mutation + exactly-once copier startup。仅标不可 Clone 不足以封闭。
 
-**Legacy**: L300 | **状态**: ✅ 已验证（Q29）
+**Legacy**: L300 | **状态**: ✅ 已验证
 
 - **三要素**: (1) unsafe unique raw reader/writer - 阻止 safe constructor 重复取得 consumer；(2) crate-private RX/TX mutation - 阻止绕过角色边界；(3) unsafe exactly-once copier startup - 阻止重复启动创建第二 producer/consumer。
 - **StarryOS 额外约束**: direct-ring benchmark 必须在 copier 启动前完成；共享 fd 只消费 ldisc ring。
@@ -213,14 +174,14 @@ UART 已验证经验 MUST 可迁移到 NIC：最小 ISR、register-recheck、显
 - **THEN** MUST 声明复用哪个 wake、backpressure、completion、ownership 或 validation rule
 - **AND** MUST 以 packet buffer 和 DMA descriptor 为模型，不复制字节 ring 布局
 
-### Requirement: K27 - Q26 ProcessMode::Manual 删除教训
+### Requirement: K27 - ProcessMode::Manual 删除教训
 
 引入模式枚举时，若某变体无构造路径且超过两个 milestone 未使用 MUST 直接删除，不得保留"预留"。
 
 **Legacy**: L310 | **状态**: ✅ 已验证
 
-- **背景**: ProcessMode::Manual 自 Q7 引入后从未被构造，其内部 match 分支成为死代码，在后续 API 迁移中累积维护成本。
-- **修复**: Q26 删除 Manual 变体与关联分支，TTY/PTY 行为无退化。
+- **背景**: ProcessMode::Manual 自引入后从未被构造，其内部 match 分支成为死代码，在后续 API 迁移中累积维护成本。
+- **修复**: 删除 Manual 变体与关联分支，TTY/PTY 行为无退化。
 
 #### Scenario: 清理遗留枚举
 

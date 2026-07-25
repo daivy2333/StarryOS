@@ -1,0 +1,27 @@
+=== OpenSpec Validation ===
+- Validating...
+✓ change/cleanup-uart-documentation-system
+✓ spec/decisions
+✓ spec/improvements
+✓ spec/knowledge
+✓ spec/platform-descriptor-early-console
+✓ spec/project-model
+✓ spec/quality-gate-baseline
+✓ spec/references
+Totals: 8 passed, 0 failed (8 items)
+
+Changes:
+  cleanup-uart-documentation-system     20/35 tasks   just now
+
+Specs:
+  decisions                             requirements 4
+  improvements                          requirements 1
+  knowledge                             requirements 10
+  platform-descriptor-early-console     requirements 3
+  project-model                         requirements 9
+  quality-gate-baseline                 requirements 6
+  references                            requirements 6
+
+Post-review command source: verify-post-review.sh G13
+Key output: 8 passed, 0 failed; cleanup-uart-documentation-system Complete
+exit=0

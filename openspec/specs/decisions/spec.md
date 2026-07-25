@@ -22,20 +22,7 @@
 - **WHEN** 开发者提议替换当前异步运行时
 - **THEN** 必须证明新方案不与 axtask 调度器冲突，且 ISR 唤醒延迟不超过当前 AtomicWaker
 
-### Requirement: D03 - 缓冲策略选型
-
-缓冲策略 MUST 从 `ringbuf::HeapRb<u8>` + `axpoll::PollSet`（早期 ADR-004）演进为 `atomic_ring_buffer` + 专用 readiness/waker（ADR-061/062）。
-
-**Legacy**: ADR-004 (A004), ADR-061 (A061), ADR-062 (A062) | **状态**: ✅ accepted -> evolved
-**关联模型**: M03
-
-- **原因**: HeapRb 在 Pipe 中已验证、SPSC lock-free、零额外依赖；后期因中断安全与 SMP 需求演进为 atomic_ring_buffer。
-- **影响**: 每端口 128 KiB 内存；硬件 FIFO 搬运由单一 copier 完成，禁止 ISR 直接操作 ring buffer。
-
-#### Scenario: 评估缓冲方案替换
-
-- **WHEN** 开发者提议替换 ring buffer 实现
-- **THEN** 必须证明新方案支持 SPSC 无锁、中断安全、且不引入 MPMC 在没有 workload 证据的情况下
+<!-- arc: cleanup-uart-documentation-system --> D03 (UART buffer strategy evolution) archived 2026-07-25.
 
 ### Requirement: D11 - LTO 延期
 
@@ -85,4 +72,5 @@ VisionFive2 bring-up MUST 保留 U-Boot 配置的 PLIC 和 Clock 状态（范围
 - **THEN** MUST 先证明重复初始化会破坏已建立状态，NS16550 寄存器写入通常无害
 
 <!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98). Decision rationale extracted as D01-D21. Tombstoned ADRs: A014-A017, A020-A021, A032, A035, A056, A063-A064 -> archive carriers ARC-202607081429, ARC-202607021648, arc-202607152005.
-<!-- arc: ARC-202607251326 --> 16 D 条目已归档 (2026-07-25) -> openspec/changes/ARC-202607251326/proposal.md
+<!-- arc: ARC-202607251326 --> 16 D 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
+<!-- arc: cleanup-uart-documentation-system --> D03 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/

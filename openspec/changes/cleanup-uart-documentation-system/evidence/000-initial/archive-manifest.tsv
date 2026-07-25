@@ -1,0 +1,69 @@
+# Frozen Manifest — cleanup-uart-documentation-system
+# Generated: 2026-07-25T14:27:17+08:00
+# Format: SHA-256 | source_path | category | disposition | target_path
+
+093f763ab9acaf0b3f0bdbeb9fd3ac16a654d7e4e29700a4ea49436cf358e5da | openspec/specs/arceos-adapter/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/arceos-adapter/spec.md
+8c86df7c1f627c804ef5c248e98b97db8451f3933588784815c19ac7223675f7 | openspec/specs/async-uart-core/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/async-uart-core/spec.md
+ce87d6d81707cd017851d59bc7bf5bdfabcaa651a14bc5793985078b493c248c | openspec/specs/async-uart-traits/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/async-uart-traits/spec.md
+b637e3c768139bce4fbd3d20ca9ce4752b6385b69fb445b6d47efca74003c080 | openspec/specs/ier-isr-refactor/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/ier-isr-refactor/spec.md
+d24468f199eb162044c4edea52da74b0f96a75b4e8cfa3413c3a93d321c24ede | openspec/specs/ier-port-ownership/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/ier-port-ownership/spec.md
+cec22f8fbf6da36cf36597e09391bf1adea3d27fa482fadf516fa780cc9371b3 | openspec/specs/uart-temt-query/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/uart-temt-query/spec.md
+3813390e5f3af40f6c1b8a846a721a74acc00ef69ab51b84675fac61c2faf405 | openspec/specs/tx-bounded-fast-retry/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/tx-bounded-fast-retry/spec.md
+2707307c3a5f23d2b07a0008c64b6d4142f7f3d64d28a3f3e05779991fd97c90 | openspec/specs/tx-completion-tracking/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/tx-completion-tracking/spec.md
+ff33a5cf0f78bbd1fc94f494445ad4651b714db5c9107f948bf07ed91507ef38 | openspec/specs/tty-tx-backpressure/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/tty-tx-backpressure/spec.md
+fc491a1dae38c290df8165694795f493d585ea0241f53f6dee773e42988ae4a5 | openspec/specs/inline-batch-optimize/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/inline-batch-optimize/spec.md
+16b32f399d45de94f6e43cccd1572e6f54c82e89ac0ea9ce998c01c25cd3dd63 | openspec/specs/maintenance-cleanup/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/maintenance-cleanup/spec.md
+d1fbe895ff51a0ceed4856381e1666de01017d352d2cd9148b71119f29c5932c | openspec/specs/benchmark-gap-closure/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/benchmark-gap-closure/spec.md
+18db76a934af3d46cfd402f9ff503ac7f8c6e951b07655727cf479411c2463ad | openspec/specs/lichee-d1-early-smoke/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/lichee-d1-early-smoke/spec.md
+b1179382148b684c8c6ebf4c58adf00ecc15fcee5e1c30fe8520063d78632c40 | openspec/specs/lichee-d1-benchmark/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/lichee-d1-benchmark/spec.md
+b700d8abc5008f28726d5f4e1c39f7b43a7d4930be590bb3534e4cc334ca76cb | openspec/specs/lichee-d1-fullbench/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/lichee-d1-fullbench/spec.md
+918b64960bf20e84a0bb879ad47eac8de5994f4c3e0397bf097348d1da6f0201 | openspec/specs/uart-cpu-efficiency-benchmark/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/uart-cpu-efficiency-benchmark/spec.md
+edea03936e640be6af09bac6e53dbdfcdbbc9e5b3f6a3b1d5eb6337c44e412a3 | openspec/specs/console-cpu-efficiency-benchmark/spec.md | spec | archive-spec | openspec/changes/archive/2026-07-25-cleanup-uart-docs/specs/console-cpu-efficiency-benchmark/spec.md
+d2194bd99e8398f8a937b8779bf205e18fcfca7c856b3f4dda9b70bdb3136a68 | openspec/specs/quality-gate-baseline/spec.md | spec | keep | openspec/specs/quality-gate-baseline/spec.md (unchanged)
+fa6d0fff1b2a65b2bfb183ee485708d4b566f75ba7579a8202cb92170e112ebc | openspec/specs/platform-descriptor-early-console/spec.md | spec | keep | openspec/specs/platform-descriptor-early-console/spec.md (unchanged)
+8739b4d47773d7561ad9e7b6fb6e668c46e8b377a0b041b3578f2f92cc11c0fa | openspec/specs/project-model/spec.md | spec-meta | modify | openspec/specs/project-model/spec.md (in-place edit)
+431c68388d586a8699ca6ab601e8e9f728a6fbdb8a378b6b9f6cf6e7ca640fdc | openspec/specs/decisions/spec.md | spec-meta | modify | openspec/specs/decisions/spec.md (in-place edit)
+a4cc512693b58cfe56589c4ae0bb16470ac1fca3e0720820af0ec02099a1ce8f | openspec/specs/knowledge/spec.md | spec-meta | modify | openspec/specs/knowledge/spec.md (in-place edit)
+51a8855f32e078a35a48626ee188ffc1082f8f57f30f7757a19d0e20380e1ef1 | openspec/specs/references/spec.md | spec-meta | modify | openspec/specs/references/spec.md (in-place edit)
+0812c7e7a543736b28eb8ef7d0f32e2cc554238b7995cdaa617a1d0588dbb2b6 | openspec/specs/improvements/spec.md | spec-meta | modify | openspec/specs/improvements/spec.md (in-place edit)
+
+# --- Documents (docs/) ---
+cf4dc813788468a33aecacbd259e80bb5d2d81fe7e916fef2e41f3a558dee1c3 | docs/async-uart-architecture.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/async-uart-architecture.md
+79d33dde42a8594105f96be23ef03e1c088e0f1eda6b577c13d9a4d345b3b86e | docs/benchmark-report-async.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/benchmark-report-async.md
+2d037174cc7fb76ea40faf9756c98b6424735013c595db79bb030f28ab2b5828 | docs/manual-qa-report.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/manual-qa-report.md
+91f05df4b35d7084d65c4b1c5dbc0ce3346eae15e697dcc5417253cfb8cb60fd | docs/uart-async-learning-map.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/uart-async-learning-map.md
+b3f11fce62696e92077cd3f9693520708df739f42ed755f1eab8ffb513555aaf | docs/d1_console.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/d1_console.md
+50a2a87666045c1379391bec46e3453026967e028fa586abbcae8155576f0789 | docs/d1_out.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/d1_out.md
+67b7bb0260b717ad91adee3112c65bbc308f44a2d2a681dcc05ffad0094e227c | docs/qemu_console.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/qemu_console.md
+a9ce8a34431ff6b9a609ffde83da2096228f17c37c3f900ec35f3c10939ce8ef | docs/qemu_out.md | doc | archive-doc | openspec/changes/archive/2026-07-25-cleanup-uart-docs/docs/qemu_out.md
+665bd7e3dcea282c3d3851f54f1448972ad477532026e14c380169a8fc6e76ba | docs/x11.md | doc | keep | docs/x11.md (unchanged)
+
+# --- Analysis files ---
+4689c66c61e413af0e69d9d695e0b71b9d6c98008f02b757517621caf8f6dd6d | .claude/analysis/q31-console-cpu-efficiency-port.md | analysis | archive-analysis | openspec/changes/archive/2026-07-25-cleanup-uart-docs/analysis/q31-console-cpu-efficiency-port.md
+DIR | .claude/analysis/lichee/ | analysis | archive-analysis | openspec/changes/archive/2026-07-25-cleanup-uart-docs/analysis/lichee/
+86a7a37ecefa4cec3ba2159c9196b6acdbf71e3c8099a6baedf409226fb302b7 | .claude/analysis/async-network-project-overview.md | analysis | modify-or-keep | .claude/analysis/async-network-project-overview.md
+08d912d4fb48313de06b0fb9737d789b7303aaf81aa1b2f1a424d62a28c45a81 | .claude/analysis/embassy-network-module-evaluation.md | analysis | modify-or-keep | .claude/analysis/embassy-network-module-evaluation.md
+c977dd5108e2731221274c6298603f4aab74fb997e453252287e007ca88aa523 | .claude/analysis/arceos-async-network-driver-analysis.md | analysis | modify-or-keep | .claude/analysis/arceos-async-network-driver-analysis.md
+41bf39192c97ee5673887188d12f1657f52af4ef0b5ef459e92516b16897fa84 | .claude/analysis/starryos-async-network-roadmap.md | analysis | modify-or-keep | .claude/analysis/starryos-async-network-roadmap.md
+10869478d97ca38be9609d6ac4762f17786c12a05993f4ddec89cef749ccd035 | .claude/analysis/arceos-true-board-validation.md | analysis | modify-or-keep | .claude/analysis/arceos-true-board-validation.md
+abd1db2263d449ec0e0965079cda65da35bdd58f139319ba9501cd27f065b0d4 | .claude/analysis/README.md | analysis | modify-or-keep | .claude/analysis/README.md
+
+# --- Runbooks ---
+34288dbd014a5a386fd74ada9f6c86da2cc22e6bd29145c5de5e6908f3450b42 | .claude/runbooks/benchmark-guide.md | runbook | archive-runbook | openspec/changes/archive/2026-07-25-cleanup-uart-docs/runbooks/benchmark-guide.md
+b8a34f03db338f6bc41d4c77f2f867fb9c22f4150e9d1f490f748ee82e2ac502 | .claude/runbooks/incremental-merge.md | runbook | normalize | .claude/runbooks/incremental-merge.md (in-place edit)
+88e26ace3afd157a4dd0cda497f1326c9ff7578f011e5857dc66d557b25613e8 | .claude/runbooks/regression-gate.md | runbook | normalize | .claude/runbooks/regression-gate.md (in-place edit)
+f0186dc5c5988c1ba506be96b536716f9c1c438329d771b0243be3eb5886d98b | .claude/runbooks/board-bringup-ladder.md | runbook | normalize | .claude/runbooks/board-bringup-ladder.md (in-place edit)
+
+# --- Active changes to archive ---
+dcc76119ab4f1fec8f0de42e2a8fc0170610a6009c2f222109a73d838c8db883 | openspec/changes/q17-smp-memory-ordering/.openspec.yaml | change | archive-change | openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/.openspec.yaml
+5438ce10993492aca37936e8af5b1b0f0c907847039d09a2ec5a54348c17e2d5 | openspec/changes/q17-smp-memory-ordering/proposal.md | change | archive-change | openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/proposal.md
+0b2f230bc8ae7b3c8a765bb19bf315370ca9389ce3e05f7175bea86f5c0c5814 | openspec/changes/q17-smp-memory-ordering/design.md | change | archive-change | openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/design.md
+354d5495aea5c4c332aec6a729737b672b07899051fbe5529f6c551012d12954 | openspec/changes/q17-smp-memory-ordering/tasks.md | change | archive-change | openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/tasks.md
+ebe0014933c02ca3e7320cd28c875f914cbf4379b0966b121e593b814bc679ab | openspec/changes/q17-smp-memory-ordering/specs/smp-memory-ordering/spec.md | change-spec | archive-change | openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/specs/smp-memory-ordering/spec.md
+72c0d2ca6d1c8687b80c8f0c6819b002ac6a67b1e84acdeda4c38c473bdf983c | openspec/changes/ARC-202607251326/.openspec.yaml | change-legacy | archive-change | openspec/changes/archive/2026-07-25-arc-202607251326/.openspec.yaml
+63c5d0a8393d45ba3d5e2c737430b6a7c4748ee6e4d9366251f05d8e340b8616 | openspec/changes/ARC-202607251326/proposal.md | change-legacy | archive-change | openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
+123a853ebde200f7cc8ecba4837f79fabf218c9e4e4f4e7780eb3447d0fea7f3 | openspec/changes/ARC-202607251326/tasks.md | change-legacy | archive-change | openspec/changes/archive/2026-07-25-arc-202607251326/tasks.md
+
+# --- State documents to update ---
+878430047ec39890e2c50d98c7995746f304e8e5a6007b9ebaef3a7f4fd981a2 | .claude/docs/SNAPSHOT.md | state | modify | .claude/docs/SNAPSHOT.md (in-place edit)
+82f128083b9112be4eb7f13ddd32ce99c504c0d4d47b5c8f86328533fa02c693 | .claude/docs/tasks.md | state | modify | .claude/docs/tasks.md (in-place edit)

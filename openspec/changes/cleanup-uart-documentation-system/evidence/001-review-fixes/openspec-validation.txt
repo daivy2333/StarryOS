@@ -1,0 +1,25 @@
+=== openspec validate --all ===
+✓ change/cleanup-uart-documentation-system
+✓ spec/decisions
+✓ spec/improvements
+✓ spec/knowledge
+✓ spec/platform-descriptor-early-console
+✓ spec/project-model
+✓ spec/quality-gate-baseline
+✓ spec/references
+Totals: 8 passed, 0 failed (8 items)
+exit: 0
+
+=== openspec list ===
+Changes:
+  cleanup-uart-documentation-system     18/24 tasks   just now
+
+=== openspec list --specs ===
+Specs:
+  decisions                             requirements 4
+  improvements                          requirements 1
+  knowledge                             requirements 10
+  platform-descriptor-early-console     requirements 3
+  project-model                         requirements 9
+  quality-gate-baseline                 requirements 6
+  references                            requirements 6

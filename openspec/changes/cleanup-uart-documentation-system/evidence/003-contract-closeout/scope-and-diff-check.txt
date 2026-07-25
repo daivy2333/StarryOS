@@ -1,0 +1,12 @@
+=== Scope and Diff Check ===
+git diff --check:
+
+Product code paths:
+(none)
+
+Evidence 000-002:
+(none)
+
+Post-review command source: verify-post-review.sh G11, G12, G14
+Key output: no historical Evidence newer than RED; no tracked or untracked product path; diff check clean
+exit=0

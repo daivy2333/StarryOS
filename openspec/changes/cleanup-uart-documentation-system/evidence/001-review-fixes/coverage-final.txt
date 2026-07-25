@@ -1,0 +1,8 @@
+Coverage Report — Final (iteration 001)
+Generated: 2026-07-25
+
+total=55 (iteration 000) + 3 (new runbook copies) = 58 source carriers preserved
+all archive destinations verified by SHA-256
+unmapped=0, skipped=0
+
+STATUS: PASS — 100% coverage, all content recoverable from archive.

@@ -1,0 +1,14 @@
+=== Active Path Check ===
+Q/old ARC in specs+state:
+PASS (none found)
+
+Analysis Active files:
+arceos-async-network-driver-analysis.md
+arceos-true-board-validation.md
+async-network-project-overview.md
+embassy-network-module-evaluation.md
+starryos-async-network-roadmap.md
+
+Post-review command source: verify-post-review.sh G4, G6
+Key output: no old control-flow path; Active set exact; one standalone Archived heading
+exit=0
