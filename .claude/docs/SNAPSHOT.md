@@ -48,9 +48,9 @@
 | `openspec/specs/knowledge/` | 10 (K01-K27) | K09 收紧；K23/K24 已归档 |
 | `openspec/specs/references/` | 活跃 8 | R14、R23-R26、R38-R40 |
 | `openspec/specs/improvements/` | 1 (I06) | I05/I12 已归档；I12 通用规则迁入 quality-gate-baseline |
-| `openspec/changes/` | 活跃: cleanup-uart-documentation-system | q17-smp-memory-ordering, ARC-202607251326 已归档 |
+| `openspec/changes/` | 无活跃 change | 2026-07-25 归档: cleanup-uart-documentation-system(+carrier cleanup-uart-docs)、q17-smp-memory-ordering(deferred)、ARC-202607251326 |
 | `.claude/analysis/` | 5 | q31/lichee 已归档；4 NIC + 1 VF2 活跃 |
-| `.claude/runbooks/` | 3 | benchmark-guide 已归档
+| `.claude/runbooks/` | 3 | benchmark/build 类已归档 (4 项 in `_archive/`) |
 
 ## 证据文件
 

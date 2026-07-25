@@ -34,4 +34,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ### 活跃 Change
 
-- `cleanup-uart-documentation-system`: 文档体系清理执行中。q17-smp-memory-ordering 已以 deferred 状态归档（task 6.1 保留未完成）。
+无活跃 change。2026-07-25 已归档：`cleanup-uart-documentation-system`（含 carrier `cleanup-uart-docs`）、`q17-smp-memory-ordering`（deferred, task 6.1 未完成）、`ARC-202607251326`。NIC N0 启动时创建新 change。
