@@ -48,6 +48,9 @@ tests/benchmark: tests/benchmark.c
 		-DBENCH_ROOT_PROVIDER='"qemu-virtio-ext4-rootfs"' \
 		-o $@ $<
 
+tests/ms02_guest_service: tests/ms02_guest_service.c
+	$(BENCH_CC) -static -O2 -o $@ $<
+
 kernel/resources/benchmark.elf: benchmark-userbench-elf
 
 benchmark-userbench-elf: tests/benchmark.c

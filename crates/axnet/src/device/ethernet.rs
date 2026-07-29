@@ -333,6 +333,10 @@ impl Device for EthernetDevice {
         false
     }
 
+    fn requires_polling(&self) -> bool {
+        self.inner.irq_num().is_none()
+    }
+
     fn register_waker(&self, waker: &Waker) {
         if let Some(irq) = self.inner.irq_num() {
             register_irq_waker(irq, waker);

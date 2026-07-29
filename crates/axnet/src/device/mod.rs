@@ -23,5 +23,10 @@ pub trait Device: Send + Sync {
     /// up packet processing.
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool;
 
+    /// Returns whether this device needs periodic polling to make progress.
+    fn requires_polling(&self) -> bool {
+        false
+    }
+
     fn register_waker(&self, waker: &Waker);
 }
