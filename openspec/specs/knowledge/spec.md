@@ -256,3 +256,20 @@ POSIX bind/getsockname/local_addr 状态 MUST 由 kernel 侧 `HashMap<SocketHand
 
 - **WHEN** bind 同一端口两次，第二次未被拒绝或错误拒绝
 - **THEN** MUST 检查 `tcp_bound` HashMap 的冲突比较是否正确处理 `addr: None`（wildcard）
+
+### Requirement: K35 — Device mask × capability 单元测试模式
+
+device selection / routing 逻辑 MUST 提取为纯策略 helper，输入 `mask: u32` 与按设备顺序排列的 capability 迭代器，输出组合结果。单元测试可在不构造真实 `Box<dyn Device>` 的前提下覆盖 mask × capability 全组合。
+
+**证据**: `ms02-virtio-mmio-polling-baseline` iter 003；`any_masked_device_requires_polling` 位于 `crates/axnet/src/service.rs:37-45`，4 个 mask×polling eligibility 单元测试 + 4 个 deadline min 选择测试 = 8/8 PASS
+**状态**: ✅ 已验证
+
+- **签名模式**: `fn helper(mask: u32, capabilities: impl IntoIterator<Item = bool>) -> bool`。`IntoIterator` 接受 `[bool]`、`Vec<bool>`、`map(...).iter()` 等多种形态，便于测试与运行调用。
+- **位序约定**: bit `i` in `mask` selects device `i`。helper 内部 `mask & (1 << i) != 0` 命中判断必须与 router 的 `device_mask_for` 使用同一惯例。
+- **覆盖矩阵**: 至少四组合 — mask 外 polling、mask 内非 polling、mask 内 polling、mixed devices。mixed 测试同时验证 true 和 false 两种结果以确认决策边界。
+- **重构不变性**: helper 提取前后，`register_waker` 等调用点的运行行为 MUST 保持等价。原有 deadline 4/4 测试作为 refactor witness 不得退化。
+
+#### Scenario: 新增 device selection 逻辑
+
+- **WHEN** 引入新的 device 选择或 routing 决策（如未来 IRQn / 多队列 affinity）
+- **THEN** MUST 先提取为 `fn(mask, impl IntoIterator<Item=Capability>)` 纯 helper；运行调用通过 `devices.iter().map(|d| d.capability())` 注入；单元测试覆盖 mask × capability 全组合

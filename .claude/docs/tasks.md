@@ -86,7 +86,7 @@ VF2:  MS01 -> MS09 -> MS10 -> MS11
 
 ### MS02：VirtIO-MMIO 轮询网络基线
 
-- Status: planned
+- Status: completed
 - Outcome: 在串口、网络和 hostfwd 分证据的 QEMU 环境中建立同步轮询收发基线。
 - Rationale: T02 的环境见证只为 T03 的可复现轮询结果服务，二者共享验证和诊断边界。
 - Dependencies: MS01
@@ -97,7 +97,7 @@ VF2:  MS01 -> MS09 -> MS10 -> MS11
 - Verification boundary: 串口成功不计网络成功，各网络协议与 hostfwd 路径独立取证。
 - Diagnostic boundary: 失败限制在 QEMU 环境、MMIO probe、guest 服务或同步数据面。
 - Split signals: 自动化环境需要提升 I14 或 I15，形成独立且已承诺的基础设施成果。
-- Related changes: None
+- Related changes: `ms02-virtio-mmio-polling-baseline`（已归档于 `openspec/changes/archive/2026-07-29-ms02-virtio-mmio-polling-baseline/`；4 iterations，8/8 unit + 14/14 MS01 runtime + QEMU no-hostfwd + user-net TCP/UDP + TAP ARP/ICMP + 30 秒空闲 CPU）。Runbook `ms02-virtio-mmio-evidence.md` (R45) 已发布。
 
 ### MS03：VirtIO-MMIO 可诊断中断基线
 
@@ -310,4 +310,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`t01-smoltcp-axnet-baseline` 已完成并归档于 `openspec/changes/archive/2026-07-29-t01-smoltcp-axnet-baseline/`；MS01 完成。下一步 T02 需通过 OpenSpec Plan 建立 BDD、RTM 和获批 change。
+无活跃 change。`t01-smoltcp-axnet-baseline` 已归档（MS01）；`ms02-virtio-mmio-polling-baseline` 已归档（MS02）。下一步 MS03 需通过 OpenSpec Plan 建立 BDD、RTM 和获批 change。MS02 evidence 采集流程参考 `.claude/runbooks/ms02-virtio-mmio-evidence.md` (R45)。
