@@ -1,0 +1,139 @@
+Captured: 2026-07-29T19:22:01+08:00
+Revision: efcf08124294d523ccab4d3569ea97fe31ed96c1 (worktree modified, uncommitted)
+Environment: WSL2 x86_64; Rust nightly-2026-02-25; offline Cargo; QEMU not executed by agent
+
+================================================================
+COMMAND: cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check
+================================================================
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+axnet crate (the only product crate modified by this change) is fmt
+clean after two fixes: register_waker protocol_deadline collapsed to
+one line, and test mod use statements reordered to smoltcp before super.
+
+NOTE: `cargo fmt --all -- --check` reports 341 pre-existing diffs in
+`crates/smoltcp/` (benches, examples, src). `git diff HEAD -- crates/smoltcp/`
+is empty, proving those diffs are baseline state, not introduced by this
+change. Surgical Changes principle forbids reformatting unrelated files.
+
+================================================================
+COMMAND: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib service::tests -- --nocapture
+================================================================
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.76s
+     Running unittests src/lib.rs (crates/axnet/target/debug/deps/axnet_ng-74092eeee410723b)
+
+running 4 tests
+test service::tests::chooses_earlier_protocol_or_polling_deadline ... ok
+test service::tests::no_deadline_without_protocol_timer_or_polling_fallback ... ok
+test service::tests::uses_polling_fallback_without_protocol_deadline ... ok
+test service::tests::preserves_protocol_deadline_without_polling_fallback ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finish in 0.00s
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+T1 deadline policy tests are GREEN. All four scenarios from the plan
+(no-deadline, protocol-only, polling-only, both-with-earlier) pass
+deterministically. smoltcp's 11 pre-existing warnings are unrelated.
+
+================================================================
+COMMAND: cargo tree --offline -e features -p starryos --features qemu -i smoltcp
+================================================================
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+smoltcp v0.13.1 (/home/daivy/projects/serial/work/StarryOS/crates/smoltcp)
+├── smoltcp feature "alloc"
+│   └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+│       ├── axnet-ng feature "default"
+... (truncated, full graph verified) ...
+├── smoltcp feature "auto-icmp-echo-reply"
+│   ├── smoltcp feature "socket-icmp"
+├── smoltcp feature "socket-icmp" (*)
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+T3 feature witness is GREEN. `auto-icmp-echo-reply` is enabled and
+correctly depends on `socket-icmp`. No raw ICMP socket syscall was added.
+
+================================================================
+COMMAND: make LOG=info build
+================================================================
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+... (build output) ...
+warning: `smoltcp` (lib) generated 11 warnings (run `cargo fix --lib -p smoltcp` to apply 7 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.10s
+./dwarf.sh /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf rust-objcopy --binary-architecture=riscv64
+rust-objcopy --binary-architecture=riscv64 /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf --strip-all -O binary /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.bin
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+Target kernel build succeeds. StarryOS_riscv64-qemu-virt.bin is produced.
+11 smoltcp warnings are pre-existing dead_code/unused warnings, unrelated
+to this change (auto-icmp-echo-reply does not introduce them).
+
+================================================================
+COMMAND: python3 scripts/ms01-qemu-test.py --self-test
+================================================================
+PASS: harness-self-test
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+MS01 harness self-test passes. The MS01 regression harness is intact
+and ready for user-side runtime regression.
+
+================================================================
+COMMAND: openspec validate ms02-virtio-mmio-polling-baseline
+================================================================
+Change 'ms02-virtio-mmio-polling-baseline' is valid
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+Change structure, specs, tasks, and iterations are valid.
+
+================================================================
+WORKTREE ARTIFACTS (informational, not agent-claimed)
+================================================================
+tests/ms02_guest_service.c
+  SHA256: aa0a4dc06c8284d58b58f93b5df7f097e1bae561247b1b6ce16a5728de123ee1
+tests/ms02_guest_service
+  SHA256: c2a252f9fc47353953f71d14a4ffc415f555ac648035e0c45fed1dd98dd877b3
+  Type: ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI,
+        static-pie linked, with debug_info, not stripped
+ms02-usernet.pcap
+  Present in worktree root (user-produced, awaiting formal submission)
+
+These artifacts exist in the worktree but have not been formally submitted
+by the user as Evidence. They are listed here for traceability only.
+Their presence does not constitute agent-side verification of QEMU runtime
+behavior.
+
+================================================================
+BASELINE CHECKS
+================================================================
+git rev-parse HEAD: efcf08124294d523ccab4d3569ea97fe31ed96c1
+git diff HEAD -- crates/smoltcp/: (empty)
+git diff HEAD --stat:
+ Makefile                            |  3 ++
+ crates/axnet/Cargo.toml             |  1 +
+ crates/axnet/src/device/ethernet.rs |  4 +++
+ crates/axnet/src/device/mod.rs      |  5 +++
+ crates/axnet/src/service.rs         | 69 +++++++++++++++++++++++++++++++++++--
+ 5 files changed, 80 insertions(+), 2 deletions(-)
+
+PRODUCT FILES MODIFIED BY THIS CHANGE:
+- Makefile
+- crates/axnet/Cargo.toml
+- crates/axnet/src/device/ethernet.rs
+- crates/axnet/src/device/mod.rs
+- crates/axnet/src/service.rs
+- tests/ms02_guest_service.c (new)
+- tests/ms02_guest_service (user-compiled binary, untracked)

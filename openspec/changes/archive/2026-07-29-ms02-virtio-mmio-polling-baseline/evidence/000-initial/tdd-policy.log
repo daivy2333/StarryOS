@@ -1,0 +1,47 @@
+Captured: 2026-07-29T17:55:19+08:00
+Revision: efcf08124294d523ccab4d3569ea97fe31ed96c1
+
+COMMAND:
+cargo test --manifest-path crates/axnet/Cargo.toml --lib service::tests -- --nocapture
+
+KEY OUTPUT:
+Downloading crates ...
+warning: spurious network error (3 tries remaining): [6] Could not resolve hostname (Could not resolve host: static.crates.io)
+warning: spurious network error (2 tries remaining): [6] Could not resolve hostname (Could not resolve host: static.crates.io)
+warning: spurious network error (1 try remaining): [6] Could not resolve hostname (Could not resolve host: static.crates.io)
+error: failed to download from `https://static.crates.io/crates/libc/0.2.182/download`
+
+Caused by:
+  [6] Could not resolve hostname (Could not resolve host: static.crates.io)
+
+EXIT CODE: 101
+RESULT: BLOCKED
+CONCLUSION:
+The axnet host test did not enter service::tests. The iteration Task T1 stop
+condition therefore applies before adding RED tests or modifying product code.
+
+COMMAND:
+cargo tree --offline -e features -p starryos --features qemu -i smoltcp
+
+KEY OUTPUT:
+smoltcp v0.13.1 (/home/daivy/projects/serial/work/StarryOS/crates/smoltcp)
+The feature list includes socket-icmp but does not include
+auto-icmp-echo-reply.
+
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+The planned T3 feature RED baseline is present, but T3 was not started because
+T1 Gate 3 blocked first.
+
+COMMAND:
+command -v riscv64-linux-musl-gcc
+
+KEY OUTPUT:
+/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc
+
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+The guest payload compiler is available. Payload work was not started because
+the earlier Gate 3 stop condition terminates the iteration.

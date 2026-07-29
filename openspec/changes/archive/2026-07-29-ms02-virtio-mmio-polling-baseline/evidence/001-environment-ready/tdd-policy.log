@@ -1,0 +1,36 @@
+Captured: 2026-07-29T18:08:33+08:00
+Revision: efcf08124294d523ccab4d3569ea97fe31ed96c1
+
+RED COMMAND:
+cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib service::tests -- --nocapture
+
+RED KEY OUTPUT:
+error[E0432]: unresolved import `super::select_wake_deadline`
+  --> src/service.rs:114:9
+114 |     use super::select_wake_deadline;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `select_wake_deadline` in `service`
+error: could not compile `axnet-ng` (lib test) due to 1 previous error
+
+RED EXIT CODE: 101
+RED RESULT: PASS
+RED CONCLUSION:
+The test binary reached the new service test module and failed solely because
+the planned polling deadline policy did not exist.
+
+GREEN COMMAND:
+cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib service::tests -- --nocapture
+
+GREEN KEY OUTPUT:
+running 4 tests
+test service::tests::chooses_earlier_protocol_or_polling_deadline ... ok
+test service::tests::uses_polling_fallback_without_protocol_deadline ... ok
+test service::tests::preserves_protocol_deadline_without_polling_fallback ... ok
+test service::tests::no_deadline_without_protocol_timer_or_polling_fallback ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured
+
+GREEN EXIT CODE: 0
+GREEN RESULT: PASS
+GREEN CONCLUSION:
+The policy covers no deadline, protocol-only, polling-only, and earliest-of-two
+selection. The existing eleven smoltcp warnings remain unchanged from the
+documented baseline.

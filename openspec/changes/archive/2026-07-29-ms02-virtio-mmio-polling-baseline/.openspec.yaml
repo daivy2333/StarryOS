@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-29
+goal: Establish independent QEMU serial, VirtIO-MMIO probe, ARP/ICMP/UDP/TCP
+  hostfwd, and idle CPU baseline witnesses without introducing IRQ or async
+  networking.

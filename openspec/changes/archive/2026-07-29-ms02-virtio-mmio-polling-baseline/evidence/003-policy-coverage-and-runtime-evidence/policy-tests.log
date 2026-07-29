@@ -1,0 +1,46 @@
+# policy-tests.log - iteration 003
+# Captured: 2026-07-29T19:49:39+08:00
+# Revision: efcf08124294d523ccab4d3569ea97fe31ed96c1 (worktree modified)
+
+## Gate 3 baseline (pre-refactor, 4/4 PASS)
+Command: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib service::tests -- --nocapture
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+running 8 tests
+test service::tests::masked_polling_device_triggers_fallback ... ok
+test service::tests::chooses_earlier_protocol_or_polling_deadline ... ok
+test service::tests::mixed_devices_only_masked_polling_decides ... ok
+test service::tests::no_deadline_without_protocol_timer_or_polling_fallback ... ok
+test service::tests::preserves_protocol_deadline_without_polling_fallback ... ok
+test service::tests::unmasked_polling_device_does_not_trigger_fallback ... ok
+test service::tests::masked_non_polling_device_does_not_trigger_fallback ... ok
+test service::tests::uses_polling_fallback_without_protocol_deadline ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+## Post-refactor (8/8 PASS)
+Command: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib service::tests -- --nocapture
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+running 8 tests
+test service::tests::chooses_earlier_protocol_or_polling_deadline ... ok
+test service::tests::masked_non_polling_device_does_not_trigger_fallback ... ok
+test service::tests::mixed_devices_only_masked_polling_decides ... ok
+test service::tests::masked_polling_device_triggers_fallback ... ok
+test service::tests::no_deadline_without_protocol_timer_or_polling_fallback ... ok
+test service::tests::unmasked_polling_device_does_not_trigger_fallback ... ok
+test service::tests::preserves_protocol_deadline_without_polling_fallback ... ok
+test service::tests::uses_polling_fallback_without_protocol_deadline ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+## Test inventory
+Original 4 (deadline min selection):
+  - no_deadline_without_protocol_timer_or_polling_fallback
+  - preserves_protocol_deadline_without_polling_fallback
+  - uses_polling_fallback_without_protocol_deadline
+  - chooses_earlier_protocol_or_polling_deadline
+
+New 4 (mask x polling eligibility):
+  - masked_non_polling_device_does_not_trigger_fallback
+  - unmasked_polling_device_does_not_trigger_fallback
+  - masked_polling_device_triggers_fallback
+  - mixed_devices_only_masked_polling_decides

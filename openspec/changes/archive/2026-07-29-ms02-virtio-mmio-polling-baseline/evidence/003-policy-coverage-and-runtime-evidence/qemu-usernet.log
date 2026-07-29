@@ -1,0 +1,69 @@
+# qemu-usernet.log - iteration 003
+
+Captured: 2026-07-29
+User: manual QEMU run with hostfwd + filter-dump
+
+## Command
+
+```bash
+qemu-system-riscv64 \
+  -machine virt -bios default \
+  -kernel StarryOS_riscv64-qemu-virt.bin \
+  -m 1G -smp 1 \
+  -device virtio-blk-device,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=make/disk.img \
+  -device virtio-net-device,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
+  -object filter-dump,id=ms02user,netdev=net0,file=ms02-usernet.pcap \
+  -nographic
+```
+
+## Guest session
+
+### Payload download
+
+Guest successfully downloaded payload via wget from 10.0.2.2:18765:
+- TCP connection from 10.0.2.15:49153 to 10.0.2.2:18765
+- HTTP server returned 200 OK
+- chmod +x succeeded (exit code 0)
+
+### Service startup and TCP/UDP test
+
+```
+starry:~# /tmp/ms02_service
+MS02_READY tcp=5555 udp=5555
+MS02_TCP_ACCEPTED connection=1
+MS02_TCP_PASS connection=1
+MS02_UDP_PASS datagrams=1
+```
+
+### Host-side TCP test (successful run)
+
+```
+$ timeout 5 nc 127.0.0.1 5555
+MS02_TCP_REQUEST
+MS02_TCP_RESPONSE
+```
+
+### Host-side UDP test (successful run)
+
+```
+$ timeout 5 nc -u 127.0.0.1 5555
+MS02_UDP_REQUEST
+MS02_UDP_RESPONSE
+```
+
+## pcap analysis (ms02-usernet.pcap)
+
+- ARP: Request who-has 10.0.2.2 tell 10.0.2.15, Reply 10.0.2.2 is-at 52:55:0a:00:02:02
+- TCP 5555: Successful SYN/SYN-ACK/ACK handshake, data exchange, and FIN/FIN-ACK close
+- TCP 18765: Payload download (multiple segments)
+- UDP 5555: Not captured in pcap (hostfwd UDP may not generate filter-dump entries;
+  however host-side `nc -u` received `MS02_UDP_RESPONSE` confirming UDP path works)
+
+## Verification
+
+- TCP hostfwd 5555: PASS (handshake + data + close in pcap)
+- UDP hostfwd 5555: PASS (host received MS02_UDP_RESPONSE)
+- ARP: PASS (request/reply captured)
+- Guest service markers: PASS (MS02_READY, MS02_TCP_PASS, MS02_UDP_PASS observed)

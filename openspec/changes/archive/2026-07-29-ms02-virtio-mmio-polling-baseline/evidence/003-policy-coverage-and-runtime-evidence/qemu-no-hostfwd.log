@@ -1,0 +1,63 @@
+# qemu-no-hostfwd.log - iteration 003
+
+Captured: 2026-07-29
+User: manual QEMU run, no hostfwd
+
+## Command
+
+```bash
+qemu-system-riscv64 \
+  -machine virt -bios default \
+  -kernel StarryOS_riscv64-qemu-virt.bin \
+  -m 1G -smp 1 \
+  -device virtio-blk-device,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=make/disk.img \
+  -device virtio-net-device,netdev=net0 \
+  -netdev user,id=net0 \
+  -nographic
+```
+
+## Output
+
+Boot at 2026-07-29 11:55:54.002781300 UTC
+
+- Primary CPU 0 started, arg = 0xbf000000
+- Physical memory regions detected
+- Slab allocator initialized
+- Kernel address space: [VA:0xffffffc000000000, VA:0xfffffffffffff000)
+
+### MMIO device probe
+
+- virtio-net negotiated features: Features(MAC | STATUS | RING_INDIRECT_DESC | RING_EVENT_IDX)
+- registered a new Net device at [PA:0x10007000, PA:0x10008000): "virtio-net"
+- found a block device of size 1048576KB
+- registered a new Block device at [PA:0x10008000, PA:0x10009000): "virtio-blk"
+
+### Filesystem
+
+- use block device 0: "virtio-blk"
+- filesystem type: "ext4"
+
+### Network stack
+
+- use NIC 0: "virtio-net"
+- eth0:
+  - mac: 52-54-00-12-34-56
+  - ip: 10.0.2.15/24
+- Device: lo
+- Device: eth0
+
+### Shell
+
+- User space entered, busybox init completed
+- `starry:~#` prompt reached
+- Guest attempted outbound TCP to 10.0.2.2:18765 (wget), received HTTP 404
+  (HTTP server not running on host at that time - expected for no-hostfwd test)
+
+## Verification
+
+- Serial: PASS - shell prompt reached
+- MMIO net probe: PASS - "virtio-net" at PA:0x10007000
+- MMIO block probe: PASS - "virtio-blk" at PA:0x10008000
+- eth0: PASS - created with MAC 52-54-00-12-34-56, IP 10.0.2.15/24
+- No hostfwd configured: PASS - proves serial+probe don't depend on hostfwd

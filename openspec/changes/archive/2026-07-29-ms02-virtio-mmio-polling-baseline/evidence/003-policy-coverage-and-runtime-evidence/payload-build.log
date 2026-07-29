@@ -1,0 +1,28 @@
+# payload-build.log - iteration 003
+
+Captured: 2026-07-29
+User: manual compilation on host
+
+## Command
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+riscv64-linux-musl-gcc -static -O2 \
+  -o tests/ms02_guest_service tests/ms02_guest_service.c
+sha256sum tests/ms02_guest_service
+```
+
+## Output
+
+```
+c2a252f9fc47353953f71d14a4ffc415f555ac648035e0c45fed1dd98dd877b3  tests/ms02_guest_service
+```
+
+## Exit code: 0
+
+## Verification
+
+- SHA-256: c2a252f9fc47353953f71d14a4ffc415f555ac648035e0c45fed1dd98dd877b3
+- File: tests/ms02_guest_service (RISC-V static binary)
+- Compiler: riscv64-linux-musl-gcc
+- Flags: -static -O2

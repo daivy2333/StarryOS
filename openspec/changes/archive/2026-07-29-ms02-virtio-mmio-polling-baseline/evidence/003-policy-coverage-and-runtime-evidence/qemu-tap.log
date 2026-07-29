@@ -1,0 +1,130 @@
+# qemu-tap.log - iteration 003
+
+Captured: 2026-07-29
+User: manual TAP-mode QEMU run
+
+## Commands
+
+### TAP device setup
+
+```bash
+ip route get 10.0.2.2
+sudo ip tuntap add dev tap-ms02 mode tap user "$(id -un)"
+sudo ip addr add 10.0.2.2/24 dev tap-ms02
+sudo ip link set tap-ms02 up
+sudo tcpdump -i tap-ms02 -nn -e -w ms02-tap.pcap
+```
+
+### TAP QEMU
+
+```bash
+qemu-system-riscv64 \
+  -machine virt -bios default \
+  -kernel StarryOS_riscv64-qemu-virt.bin \
+  -m 1G -smp 1 \
+  -device virtio-blk-device,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=make/disk.img \
+  -device virtio-net-device,netdev=net0 \
+  -netdev tap,id=net0,ifname=tap-ms02,script=no,downscript=no \
+  -nographic
+```
+
+### Guest (trigger ARP + bind UDP 5555)
+
+```sh
+nc -u -l -p 5555 >/tmp/ms02-icmp-wait.log 2>&1 &
+echo MS02_ICMP_WAITER_READY
+```
+
+Guest output:
+```
+starry:~# nc -u -l -p 5555 >/tmp/ms02-icmp-wait.log 2>&1 &
+starry:~# echo MS02_ICMP_WAITER_READY
+[UDP socket bound on *:5555]
+MS02_ICMP_WAITER_READY
+```
+
+### Host ping (2 rounds)
+
+```bash
+ping -c 3 -W 2 10.0.2.15
+```
+
+Round 1:
+```
+PING 10.0.2.15 (10.0.2.15) 56(84) bytes of data.
+64 bytes from 10.0.2.15: icmp_seq=1 ttl=64 time=3.06 ms
+64 bytes from 10.0.2.15: icmp_seq=2 ttl=64 time=9.66 ms
+64 bytes from 10.0.2.15: icmp_seq=3 ttl=64 time=9.31 ms
+
+--- 10.0.2.15 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2184ms
+rtt min/avg/max/mdev = 3.061/7.341/9.655/3.029 ms
+```
+
+Round 2:
+```
+PING 10.0.2.15 (10.0.2.15) 56(84) bytes of data.
+64 bytes from 10.0.2.15: icmp_seq=1 ttl=64 time=19.3 ms
+64 bytes from 10.0.2.15: icmp_seq=2 ttl=64 time=10.3 ms
+64 bytes from 10.0.2.15: icmp_seq=3 ttl=64 time=11.2 ms
+
+--- 10.0.2.15 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2181ms
+rtt min/avg/max/mdev = 10.280/13.597/19.277/4.035 ms
+```
+
+### TAP cleanup
+
+```bash
+sudo ip link delete tap-ms02
+```
+
+## pcap analysis (qemu-tap.pcap)
+
+### ARP (R5 requirement)
+
+```
+20:25:06.333752 ARP, Request who-has 10.0.2.15 tell 10.0.2.2, length 28
+20:25:06.335099 ARP, Reply 10.0.2.15 is-at 52:54:00:12:34:56, length 28
+```
+
+ARP request and reply captured. Guest resolved host's query with its MAC
+52:54:00:12:34:56 (matching eth0 MAC from boot log).
+
+### ICMP (R5 requirement)
+
+Round 1 (id 45733):
+```
+20:25:06.335104 IP 10.0.2.2 > 10.0.2.15: ICMP echo request, id 45733, seq 1, length 64
+20:25:06.336729 IP 10.0.2.15 > 10.0.2.2: ICMP echo reply, id 45733, seq 1, length 64
+20:25:07.334538 IP 10.0.2.2 > 10.0.2.15: ICMP echo request, id 45733, seq 2, length 64
+20:25:07.344178 IP 10.0.2.15 > 10.0.2.2: ICMP echo reply, id 45733, seq 2, length 64
+20:25:08.335243 IP 10.0.2.2 > 10.0.2.15: ICMP echo request, id 45733, seq 3, length 64
+20:25:08.344523 IP 10.0.2.15 > 10.0.2.2: ICMP echo reply, id 45733, seq 3, length 64
+```
+
+Round 2 (id 45734):
+```
+20:25:24.432444 IP 10.0.2.2 > 10.0.2.15: ICMP echo request, id 45734, seq 1, length 64
+20:25:24.451708 IP 10.0.2.15 > 10.0.2.2: ICMP echo reply, id 45734, seq 1, length 64
+20:25:25.431524 IP 10.0.2.2 > 10.0.2.15: ICMP echo request, id 45734, seq 2, length 64
+20:25:25.441789 IP 10.0.2.15 > 10.0.2.2: ICMP echo reply, id 45734, seq 2, length 64
+20:25:26.431369 IP 10.0.2.2 > 10.0.2.15: ICMP echo request, id 45734, seq 3, length 64
+20:25:26.442582 IP 10.0.2.15 > 10.0.2.2: ICMP echo reply, id 45734, seq 3, length 64
+```
+
+All 6 ICMP echo requests have matching replies with correct id and seq.
+
+### Other traffic
+
+Pcap also contains IPv6 neighbor solicitation, multicast listener reports,
+and mDNS (5353) traffic from the host. These are host-side background traffic
+and do not affect the ARP/ICMP verification.
+
+## Verification
+
+- ARP: PASS (request + reply captured, MAC matches eth0)
+- ICMP echo reply: PASS (6/6 matching request/reply pairs)
+- No raw ICMP socket syscall: PASS (handled by smoltcp auto-icmp-echo-reply feature)
+- Transport: TAP (layer-2, no hostfwd needed for ARP/ICMP)

@@ -1,0 +1,703 @@
+Boot at 2026-07-29 12:37:12.002748500 UTC
+
+[  0.019810 0 axruntime:161] Logging is enabled.
+[  0.020405 0 axruntime:162] Primary CPU 0 started, arg = 0xbf000000.
+[  0.021198 0 axruntime:164] Found physcial memory regions:
+[  0.021781 0 axruntime:166]   [PA:0x101000, PA:0x102000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.022027 0 axruntime:166]   [PA:0xc000000, PA:0xc210000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.022427 0 axruntime:166]   [PA:0x10000000, PA:0x10001000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.023067 0 axruntime:166]   [PA:0x10001000, PA:0x10009000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.023898 0 axruntime:166]   [PA:0x30000000, PA:0x40000000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.024118 0 axruntime:166]   [PA:0x40000000, PA:0x80000000) mmio (READ | WRITE | DEVICE | RESERVED)
+[  0.024998 0 axruntime:166]   [PA:0x80200000, PA:0x803ee000) .text (READ | EXECUTE | RESERVED)
+[  0.025697 0 axruntime:166]   [PA:0x803ee000, PA:0x827dc000) .rodata (READ | RESERVED)
+[  0.026107 0 axruntime:166]   [PA:0x827dc000, PA:0x827e1000) .data .tdata .tbss .percpu (READ | WRITE | RESERVED)
+[  0.026638 0 axruntime:166]   [PA:0x827e1000, PA:0x82821000) boot stack (READ | WRITE | RESERVED)
+[  0.027257 0 axruntime:166]   [PA:0x82821000, PA:0x82867000) .bss (READ | WRITE | RESERVED)
+[  0.027804 0 axruntime:166]   [PA:0x82867000, PA:0xc0000000) free memory (READ | WRITE | FREE)
+[  0.028817 0 axruntime:290] Initialize global memory allocator...
+[  0.029449 0 axruntime:291]   use slab allocator.
+[  0.324714 0 axbacktrace::dwarf:74] Initialized addr2line context successfully.
+[  0.325226 0 axruntime:201] kernel aspace: [VA:0xffffffc000000000, VA:0xfffffffffffff000)
+[  0.325951 0 axmm:91] Initialize virtual memory management...
+[  0.425045 0 axruntime:213] Initialize platform devices...
+[  0.425694 0 axtask::api:83] Initialize scheduling...
+[  0.426506 0 axtask::api:88]   use Round-robin scheduler.
+[  0.426744 0 axdriver:173] Initialize device drivers...
+[  0.427528 0 axdriver:174]   device model: static
+[  0.429452 0 virtio_drivers::device::net::dev_raw:30] negotiated_features Features(MAC | STATUS | RING_INDIRECT_DESC | RING_EVENT_IDX)
+[  0.432311 0 axdriver::bus::mmio:11] registered a new Net device at [PA:0x10007000, PA:0x10008000): "virtio-net"
+[  0.433448 0 virtio_drivers::device::blk:59] config: 0xffffffc010008100
+[  0.433978 0 virtio_drivers::device::blk:64] found a block device of size 1048576KB
+[  0.434679 0 axdriver::bus::mmio:11] registered a new Block device at [PA:0x10008000, PA:0x10009000): "virtio-blk"
+[  0.435917 0 axfs_ng:25] Initialize filesystem subsystem...
+[  0.436368 0 axfs_ng:28]   use block device 0: "virtio-blk"
+[  0.438255 0 axfs_ng:31]   filesystem type: "ext4"
+[  0.438992 0 axnet_ng:72] Initialize network subsystem...
+[  0.440114 0 axnet_ng:86]   use NIC 0: "virtio-net"
+[  0.441208 0 axnet_ng:104] eth0:
+[  0.441399 0 axnet_ng:105]   mac:  52-54-00-12-34-56
+[  0.442194 0 axnet_ng:106]   ip:   10.0.2.15/24
+[  0.442883 0 axnet_ng:115] Device: lo
+[  0.443309 0 axnet_ng:115] Device: eth0
+[  0.444033 0 axnet_ng:132] Initialize vsock subsystem...
+[  0.444727 0 axnet_ng:139]   No vsock device found!
+[  0.445247 0 axdisplay:20] Initialize display subsystem...
+[  0.445911 0 axdisplay:26]   No display device found!
+[  0.446275 0 axinput:20] Initialize input subsystem...
+[  0.446816 0 axruntime:256] Initialize interrupt handlers...
+[  0.447789 0 axruntime:268] Primary CPU 0 init OK.
+[UART INIT] ✅ iomap OK: UART MMIO at VA:0xffffffc010000000
+[UART INIT] Trying raw read at base+5 (stride 1, LSR)...
+[UART INIT] ✅ Raw LSR read: 0x60
+[UART INIT] Trying uart_16550 crate access...
+[  0.449931 0:2 starry_kernel::drivers::uart_init:408] [UART INIT] IER=01 ISR=c1 LSR=60
+[  0.450515 0:2 starry_kernel::drivers::uart_init:419] [UART INIT] ⚠️ TX interrupt NOT enabled!
+[  0.451458 0:2 starry_kernel::drivers::uart_init:425] [UART INIT] ✅ FIFO enabled (16 bytes)
+[  0.451813 0:2 starry_kernel::drivers::uart_init:431] [UART INIT] ✅ TX transmitter empty (ready to send)
+[UART INIT] FCR: FIFO enabled=true, trigger level via ISR bits 7-6
+[UART INIT] async UART hardware initialized (copiers not started yet)
+[kernel] Async UART driver initialized
+[BENCH] Running startup benchmark...
+[BENCH] Ring buffer write: 277536.86 KB/s (65536 bytes in 0.23 ms)
+[BENCH] Hardware line rate: 11.52 KB/s (115200 bps)
+[BENCH] FIFO depth: 16 bytes
+[BENCH] Ring buffer: 64 KB × 2 = 128 KB total
+[BENCH] Driver struct: 168 bytes
+[BENCH] Total memory: 128 KB
+[BENCH] NAPI threshold: 16 consecutive reads
+[BENCH] NAPI batch size: 64 bytes
+[BENCH] Copier buffer size: 1024 bytes
+[BENCH] IRQ count: 0
+[BENCH] Running RX ring buffer throughput test...
+[BENCH] RX ring buffer read: 868385.35 KB/s (65536 bytes in 0.07 ms)
+[BENCH] Running RX ring buffer latency test...
+[BENCH] RX latency (n=100): min=100ns avg=256ns P50=100ns P95=200ns P99=12400ns
+[BENCH] Startup benchmark complete
+[BENCH] Note: actual throughput limited by UART line rate (11.52 KB/s)
+[UART INIT] async UART copiers started
+[  0.460272 0:2 starry_kernel::pseudofs:86] Initialize pseudofs...
+[  0.467924 0:2 starry_kernel::pseudofs:80] Mounted devfs at /dev
+[  0.469545 0:2 starry_kernel::pseudofs:80] Mounted tmpfs at /dev/shm
+[  0.469981 0:2 starry_kernel::pseudofs:80] Mounted tmpfs at /tmp
+[  0.471507 0:2 starry_kernel::pseudofs:80] Mounted proc at /proc
+[  0.472358 0:2 starry_kernel::pseudofs:80] Mounted tmpfs at /sys
+[  0.476887 0:2 starry_kernel::task::timer:271] Initialize alarm...
+[  0.540976 0:9 starry_kernel::task::user:22] Enter user space: ip=0x4056900, sp=0x3fffffe60
+[  0.638577 0:10 starry_kernel::task::user:22] Enter user space: ip=0x403d880, sp=0x3fffff580
+[  0.657224 0:10 starry_kernel::task::ops:200] Task(10, "busybox") exit with code: 0
+[  0.659759 0:9 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(0x0)
+[  0.708350 0:10 starry_kernel::task::signal:96] Send signal SIGCHLD to process 9
+[  0.759528 0:9 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(0x0)
+[  0.760424 0:9 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WNOHANG)
+[  0.764775 0:9 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(0x0)
+[  0.817890 0:11 starry_kernel::task::user:22] Enter user space: ip=0x403d880, sp=0x3fffff580
+Welcome to Starry OS!
+SHLVL=1
+HOME=/root
+PWD=/
+
+Use apk to install packages.
+
+starry:~# wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline[  9.574257 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WUNTRACED)
+
+[  9.574904 0:12 starry_kernel::task::user:22] Enter user space: ip=0x403d880, sp=0x3fffff6a0
+[  9.638527 0:12 axnet_ng::tcp:282] TCP connection from 10.0.2.15:49152 to 10.0.2.2:18765
+[  9.674845 0:12 starry_kernel::task::ops:200] Task(12, "busybox") exit with code: 0
+[  9.675363 0:12 starry_kernel::task::signal:96] Send signal SIGCHLD to process 11
+[  9.675740 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WUNTRACED)
+[  9.676391 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WNOHANG | WUNTRACED)
+starry:~# chmod +x /tmp/ms01_test[ 28.311422 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WUNTRACED)
+
+[ 28.312019 0:13 starry_kernel::task::user:22] Enter user space: ip=0x403d880, sp=0x3fffff6a0
+[ 28.324940 0:13 starry_kernel::task::ops:200] Task(13, "busybox") exit with code: 0
+[ 28.325482 0:13 starry_kernel::task::signal:96] Send signal SIGCHLD to process 11
+[ 28.325727 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WUNTRACED)
+[ 28.327083 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WNOHANG | WUNTRACED)
+starry:~# /tmp/ms01_test[ 34.490885 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WUNTRACED)
+
+[ 34.491808 0:14 starry_kernel::task::user:22] Enter user space: ip=0x403d880, sp=0x3fffff6a0
+MS01_SOCKET_BASELINE_START
+[ 34.498970 0:15 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 35.508103 0:15 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49153 to 127.0.0.1:18002
+[ 35.509823 0:15 starry_kernel::task::ops:200] Task(15, "ms01_test") exit with code: 0
+[ 35.510326 0:15 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 35.512281 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 15, options: WaitOptions(0x0)
+PASS: tcp-accept
+[ 35.515261 0:16 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 35.515994 0:17 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 36.518487 0:16 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49154 to 127.0.0.1:18003
+[ 36.520089 0:17 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49155 to 127.0.0.1:18003
+[ 36.522594 0:16 starry_kernel::task::ops:200] Task(16, "ms01_test") exit with code: 0
+[ 36.523556 0:16 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 36.524478 0:17 starry_kernel::task::ops:200] Task(17, "ms01_test") exit with code: 0
+[ 36.525256 0:17 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 36.526260 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 16, options: WaitOptions(0x0)
+[ 36.526769 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 17, options: WaitOptions(0x0)
+[ 36.527312 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49156 to 127.0.0.1:18004
+PASS: tcp-adjacent
+[ 36.528984 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49157 to 127.0.0.1:18004
+[ 36.529629 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49158 to 127.0.0.1:18004
+[ 36.530497 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49159 to 127.0.0.1:18004
+[ 36.531559 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49160 to 127.0.0.1:18004
+[ 36.532678 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49161 to 127.0.0.1:18004
+[ 36.533520 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49162 to 127.0.0.1:18004
+[ 36.534417 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49163 to 127.0.0.1:18004
+[ 36.535068 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49164 to 127.0.0.1:18004
+[ 36.535674 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49165 to 127.0.0.1:18004
+[ 36.536556 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49166 to 127.0.0.1:18004
+[ 36.537601 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49167 to 127.0.0.1:18004
+[ 36.538718 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49168 to 127.0.0.1:18004
+[ 36.539512 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49169 to 127.0.0.1:18004
+[ 36.540423 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49170 to 127.0.0.1:18004
+[ 36.541497 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49171 to 127.0.0.1:18004
+[ 36.542410 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49172 to 127.0.0.1:18004
+[ 36.543223 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49173 to 127.0.0.1:18004
+[ 36.544032 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49174 to 127.0.0.1:18004
+[ 36.544841 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49175 to 127.0.0.1:18004
+[ 36.545299 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49176 to 127.0.0.1:18004
+[ 36.547759 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49177 to 127.0.0.1:18004
+[ 36.548442 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49178 to 127.0.0.1:18004
+[ 36.549476 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49179 to 127.0.0.1:18004
+[ 36.550204 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49180 to 127.0.0.1:18004
+[ 36.551225 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49181 to 127.0.0.1:18004
+[ 36.552126 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49182 to 127.0.0.1:18004
+[ 36.552880 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49183 to 127.0.0.1:18004
+[ 36.553426 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49184 to 127.0.0.1:18004
+[ 36.554042 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49185 to 127.0.0.1:18004
+[ 36.555353 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49186 to 127.0.0.1:18004
+[ 36.555987 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49187 to 127.0.0.1:18004
+[ 36.557134 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49188 to 127.0.0.1:18004
+[ 36.558360 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49189 to 127.0.0.1:18004
+[ 36.559096 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49190 to 127.0.0.1:18004
+[ 36.559616 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49191 to 127.0.0.1:18004
+[ 36.560541 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49192 to 127.0.0.1:18004
+[ 36.561721 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49193 to 127.0.0.1:18004
+[ 36.562753 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49194 to 127.0.0.1:18004
+[ 36.563597 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49195 to 127.0.0.1:18004
+[ 36.564433 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49196 to 127.0.0.1:18004
+[ 36.565290 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49197 to 127.0.0.1:18004
+[ 36.566314 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49198 to 127.0.0.1:18004
+[ 36.567183 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49199 to 127.0.0.1:18004
+[ 36.568663 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49200 to 127.0.0.1:18004
+[ 36.569314 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49201 to 127.0.0.1:18004
+[ 36.570550 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49202 to 127.0.0.1:18004
+[ 36.571469 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49203 to 127.0.0.1:18004
+[ 36.572673 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49204 to 127.0.0.1:18004
+[ 36.573691 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49205 to 127.0.0.1:18004
+[ 36.574316 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49206 to 127.0.0.1:18004
+[ 36.575108 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49207 to 127.0.0.1:18004
+[ 36.576116 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49208 to 127.0.0.1:18004
+[ 36.578823 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49209 to 127.0.0.1:18004
+[ 36.580140 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49210 to 127.0.0.1:18004
+[ 36.581401 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49211 to 127.0.0.1:18004
+[ 36.582706 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49212 to 127.0.0.1:18004
+[ 36.584176 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49213 to 127.0.0.1:18004
+[ 36.585211 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49214 to 127.0.0.1:18004
+[ 36.586395 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49215 to 127.0.0.1:18004
+[ 36.587120 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49216 to 127.0.0.1:18004
+[ 36.588506 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49217 to 127.0.0.1:18004
+[ 36.589809 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49218 to 127.0.0.1:18004
+[ 36.590935 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49219 to 127.0.0.1:18004
+[ 36.591788 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49220 to 127.0.0.1:18004
+[ 36.593115 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49221 to 127.0.0.1:18004
+[ 36.594323 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49222 to 127.0.0.1:18004
+[ 36.595193 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49223 to 127.0.0.1:18004
+[ 36.596909 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49224 to 127.0.0.1:18004
+[ 36.597689 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49225 to 127.0.0.1:18004
+[ 36.598940 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49226 to 127.0.0.1:18004
+[ 36.600248 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49227 to 127.0.0.1:18004
+[ 36.601329 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49228 to 127.0.0.1:18004
+[ 36.602724 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49229 to 127.0.0.1:18004
+[ 36.603686 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49230 to 127.0.0.1:18004
+[ 36.605158 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49231 to 127.0.0.1:18004
+[ 36.606461 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49232 to 127.0.0.1:18004
+[ 36.608043 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49233 to 127.0.0.1:18004
+[ 36.609558 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49234 to 127.0.0.1:18004
+[ 36.611237 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49235 to 127.0.0.1:18004
+[ 36.612855 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49236 to 127.0.0.1:18004
+[ 36.614568 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49237 to 127.0.0.1:18004
+[ 36.616552 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49238 to 127.0.0.1:18004
+[ 36.618030 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49239 to 127.0.0.1:18004
+[ 36.620608 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49240 to 127.0.0.1:18004
+[ 36.622142 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49241 to 127.0.0.1:18004
+[ 36.623336 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49242 to 127.0.0.1:18004
+[ 36.624654 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49243 to 127.0.0.1:18004
+[ 36.626612 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49244 to 127.0.0.1:18004
+[ 36.627895 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49245 to 127.0.0.1:18004
+[ 36.629198 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49246 to 127.0.0.1:18004
+[ 36.631159 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49247 to 127.0.0.1:18004
+[ 36.633549 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49248 to 127.0.0.1:18004
+[ 36.638167 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49249 to 127.0.0.1:18004
+[ 36.639719 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49250 to 127.0.0.1:18004
+[ 36.641464 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49251 to 127.0.0.1:18004
+[ 36.643150 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49252 to 127.0.0.1:18004
+[ 36.644845 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49253 to 127.0.0.1:18004
+[ 36.646155 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49254 to 127.0.0.1:18004
+[ 36.647862 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49255 to 127.0.0.1:18004
+[ 36.650059 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49256 to 127.0.0.1:18004
+[ 36.651763 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49257 to 127.0.0.1:18004
+[ 36.653451 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49258 to 127.0.0.1:18004
+[ 36.655197 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49259 to 127.0.0.1:18004
+[ 36.657131 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49260 to 127.0.0.1:18004
+[ 36.659156 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49261 to 127.0.0.1:18004
+[ 36.660630 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49262 to 127.0.0.1:18004
+[ 36.662075 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49263 to 127.0.0.1:18004
+[ 36.663323 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49264 to 127.0.0.1:18004
+[ 36.664969 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49265 to 127.0.0.1:18004
+[ 36.666211 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49266 to 127.0.0.1:18004
+[ 36.667928 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49267 to 127.0.0.1:18004
+[ 36.669361 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49268 to 127.0.0.1:18004
+[ 36.671111 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49269 to 127.0.0.1:18004
+[ 36.672823 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49270 to 127.0.0.1:18004
+[ 36.674250 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49271 to 127.0.0.1:18004
+[ 36.678161 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49272 to 127.0.0.1:18004
+[ 36.679594 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49273 to 127.0.0.1:18004
+[ 36.680715 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49274 to 127.0.0.1:18004
+[ 36.682314 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49275 to 127.0.0.1:18004
+[ 36.683441 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49276 to 127.0.0.1:18004
+[ 36.685014 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49277 to 127.0.0.1:18004
+[ 36.686442 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49278 to 127.0.0.1:18004
+[ 36.687532 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49279 to 127.0.0.1:18004
+[ 36.689279 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49280 to 127.0.0.1:18004
+[ 36.690815 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49281 to 127.0.0.1:18004
+[ 36.692045 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49282 to 127.0.0.1:18004
+[ 36.693338 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49283 to 127.0.0.1:18004
+[ 36.694901 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49284 to 127.0.0.1:18004
+[ 36.696243 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49285 to 127.0.0.1:18004
+[ 36.697595 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49286 to 127.0.0.1:18004
+[ 36.699990 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49287 to 127.0.0.1:18004
+[ 36.701466 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49288 to 127.0.0.1:18004
+[ 36.702379 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49289 to 127.0.0.1:18004
+[ 36.703801 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49290 to 127.0.0.1:18004
+[ 36.705403 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49291 to 127.0.0.1:18004
+[ 36.706802 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49292 to 127.0.0.1:18004
+[ 36.708720 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49293 to 127.0.0.1:18004
+[ 36.709722 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49294 to 127.0.0.1:18004
+[ 36.710735 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49295 to 127.0.0.1:18004
+[ 36.711880 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49296 to 127.0.0.1:18004
+[ 36.713349 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49297 to 127.0.0.1:18004
+[ 36.714985 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49298 to 127.0.0.1:18004
+[ 36.716106 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49299 to 127.0.0.1:18004
+[ 36.717469 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49300 to 127.0.0.1:18004
+[ 36.719180 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49301 to 127.0.0.1:18004
+[ 36.720821 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49302 to 127.0.0.1:18004
+[ 36.723328 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49303 to 127.0.0.1:18004
+[ 36.725057 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49304 to 127.0.0.1:18004
+[ 36.726914 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49305 to 127.0.0.1:18004
+[ 36.728006 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49306 to 127.0.0.1:18004
+[ 36.729176 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49307 to 127.0.0.1:18004
+[ 36.731064 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49308 to 127.0.0.1:18004
+[ 36.732104 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49309 to 127.0.0.1:18004
+[ 36.733763 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49310 to 127.0.0.1:18004
+[ 36.735528 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49311 to 127.0.0.1:18004
+[ 36.736949 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49312 to 127.0.0.1:18004
+[ 36.738694 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49313 to 127.0.0.1:18004
+[ 36.740327 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49314 to 127.0.0.1:18004
+[ 36.741855 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49315 to 127.0.0.1:18004
+[ 36.743650 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49316 to 127.0.0.1:18004
+[ 36.745231 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49317 to 127.0.0.1:18004
+[ 36.747009 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49318 to 127.0.0.1:18004
+[ 36.749757 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49319 to 127.0.0.1:18004
+[ 36.751293 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49320 to 127.0.0.1:18004
+[ 36.752467 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49321 to 127.0.0.1:18004
+[ 36.754270 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49322 to 127.0.0.1:18004
+[ 36.755787 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49323 to 127.0.0.1:18004
+[ 36.757890 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49324 to 127.0.0.1:18004
+[ 36.759903 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49325 to 127.0.0.1:18004
+[ 36.762041 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49326 to 127.0.0.1:18004
+[ 36.763813 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49327 to 127.0.0.1:18004
+[ 36.765604 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49328 to 127.0.0.1:18004
+[ 36.767586 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49329 to 127.0.0.1:18004
+[ 36.769494 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49330 to 127.0.0.1:18004
+[ 36.771444 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49331 to 127.0.0.1:18004
+[ 36.773752 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49332 to 127.0.0.1:18004
+[ 36.775708 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49333 to 127.0.0.1:18004
+[ 36.777897 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49334 to 127.0.0.1:18004
+[ 36.781739 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49335 to 127.0.0.1:18004
+[ 36.783942 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49336 to 127.0.0.1:18004
+[ 36.785886 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49337 to 127.0.0.1:18004
+[ 36.787630 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49338 to 127.0.0.1:18004
+[ 36.789854 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49339 to 127.0.0.1:18004
+[ 36.791779 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49340 to 127.0.0.1:18004
+[ 36.794061 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49341 to 127.0.0.1:18004
+[ 36.796269 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49342 to 127.0.0.1:18004
+[ 36.798350 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49343 to 127.0.0.1:18004
+[ 36.800216 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49344 to 127.0.0.1:18004
+[ 36.802138 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49345 to 127.0.0.1:18004
+[ 36.804270 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49346 to 127.0.0.1:18004
+[ 36.806332 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49347 to 127.0.0.1:18004
+[ 36.808308 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49348 to 127.0.0.1:18004
+[ 36.810138 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49349 to 127.0.0.1:18004
+[ 36.812187 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49350 to 127.0.0.1:18004
+[ 36.814722 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49351 to 127.0.0.1:18004
+[ 36.816671 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49352 to 127.0.0.1:18004
+[ 36.818471 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49353 to 127.0.0.1:18004
+[ 36.820261 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49354 to 127.0.0.1:18004
+[ 36.822056 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49355 to 127.0.0.1:18004
+[ 36.823609 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49356 to 127.0.0.1:18004
+[ 36.825514 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49357 to 127.0.0.1:18004
+[ 36.827320 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49358 to 127.0.0.1:18004
+[ 36.829298 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49359 to 127.0.0.1:18004
+[ 36.830842 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49360 to 127.0.0.1:18004
+[ 36.832678 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49361 to 127.0.0.1:18004
+[ 36.834049 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49362 to 127.0.0.1:18004
+[ 36.835697 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49363 to 127.0.0.1:18004
+[ 36.837748 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49364 to 127.0.0.1:18004
+[ 36.839650 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49365 to 127.0.0.1:18004
+[ 36.841306 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49366 to 127.0.0.1:18004
+[ 36.844337 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49367 to 127.0.0.1:18004
+[ 36.846094 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49368 to 127.0.0.1:18004
+[ 36.847824 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49369 to 127.0.0.1:18004
+[ 36.849195 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49370 to 127.0.0.1:18004
+[ 36.851271 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49371 to 127.0.0.1:18004
+[ 36.852880 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49372 to 127.0.0.1:18004
+[ 36.854713 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49373 to 127.0.0.1:18004
+[ 36.856625 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49374 to 127.0.0.1:18004
+[ 36.858555 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49375 to 127.0.0.1:18004
+[ 36.859892 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49376 to 127.0.0.1:18004
+[ 36.861810 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49377 to 127.0.0.1:18004
+[ 36.863736 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49378 to 127.0.0.1:18004
+[ 36.865425 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49379 to 127.0.0.1:18004
+[ 36.867558 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49380 to 127.0.0.1:18004
+[ 36.870043 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49381 to 127.0.0.1:18004
+[ 36.872764 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49382 to 127.0.0.1:18004
+[ 36.874863 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49383 to 127.0.0.1:18004
+[ 36.876886 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49384 to 127.0.0.1:18004
+[ 36.878740 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49385 to 127.0.0.1:18004
+[ 36.880846 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49386 to 127.0.0.1:18004
+[ 36.882612 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49387 to 127.0.0.1:18004
+[ 36.884913 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49388 to 127.0.0.1:18004
+[ 36.887064 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49389 to 127.0.0.1:18004
+[ 36.889573 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49390 to 127.0.0.1:18004
+[ 36.891381 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49391 to 127.0.0.1:18004
+[ 36.893370 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49392 to 127.0.0.1:18004
+[ 36.895201 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49393 to 127.0.0.1:18004
+[ 36.897310 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49394 to 127.0.0.1:18004
+[ 36.899917 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49395 to 127.0.0.1:18004
+[ 36.901869 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49396 to 127.0.0.1:18004
+[ 36.904186 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49397 to 127.0.0.1:18004
+[ 36.912840 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49398 to 127.0.0.1:18004
+[ 36.914742 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49399 to 127.0.0.1:18004
+[ 36.916573 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49400 to 127.0.0.1:18004
+[ 36.918510 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49401 to 127.0.0.1:18004
+[ 36.919966 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49402 to 127.0.0.1:18004
+[ 36.921991 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49403 to 127.0.0.1:18004
+[ 36.923782 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49404 to 127.0.0.1:18004
+[ 36.925819 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49405 to 127.0.0.1:18004
+[ 36.928030 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49406 to 127.0.0.1:18004
+[ 36.929994 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49407 to 127.0.0.1:18004
+[ 36.932322 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49408 to 127.0.0.1:18004
+[ 36.934579 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49409 to 127.0.0.1:18004
+[ 36.936641 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49410 to 127.0.0.1:18004
+[ 36.939168 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49411 to 127.0.0.1:18004
+[ 36.941630 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49412 to 127.0.0.1:18004
+[ 36.943654 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49413 to 127.0.0.1:18004
+[ 36.945878 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49414 to 127.0.0.1:18004
+[ 36.948120 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49415 to 127.0.0.1:18004
+[ 36.950371 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49416 to 127.0.0.1:18004
+[ 36.952463 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49417 to 127.0.0.1:18004
+[ 36.954566 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49418 to 127.0.0.1:18004
+[ 36.956751 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49419 to 127.0.0.1:18004
+[ 36.959181 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49420 to 127.0.0.1:18004
+[ 36.962077 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49421 to 127.0.0.1:18004
+[ 36.964742 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49422 to 127.0.0.1:18004
+[ 36.967397 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49423 to 127.0.0.1:18004
+[ 36.969681 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49424 to 127.0.0.1:18004
+[ 36.972106 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49425 to 127.0.0.1:18004
+[ 36.974521 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49426 to 127.0.0.1:18004
+[ 36.977187 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49427 to 127.0.0.1:18004
+[ 36.981145 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49428 to 127.0.0.1:18004
+[ 36.983262 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49429 to 127.0.0.1:18004
+[ 36.985610 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49430 to 127.0.0.1:18004
+[ 36.987790 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49431 to 127.0.0.1:18004
+[ 36.989914 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49432 to 127.0.0.1:18004
+[ 36.992154 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49433 to 127.0.0.1:18004
+[ 36.994604 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49434 to 127.0.0.1:18004
+[ 36.996683 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49435 to 127.0.0.1:18004
+[ 36.999265 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49436 to 127.0.0.1:18004
+[ 37.001432 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49437 to 127.0.0.1:18004
+[ 37.004122 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49438 to 127.0.0.1:18004
+[ 37.006667 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49439 to 127.0.0.1:18004
+[ 37.009054 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49440 to 127.0.0.1:18004
+[ 37.011599 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49441 to 127.0.0.1:18004
+[ 37.013600 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49442 to 127.0.0.1:18004
+[ 37.015950 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49443 to 127.0.0.1:18004
+[ 37.018878 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49444 to 127.0.0.1:18004
+[ 37.021457 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49445 to 127.0.0.1:18004
+[ 37.023332 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49446 to 127.0.0.1:18004
+[ 37.025547 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49447 to 127.0.0.1:18004
+[ 37.027876 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49448 to 127.0.0.1:18004
+[ 37.030326 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49449 to 127.0.0.1:18004
+[ 37.032769 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49450 to 127.0.0.1:18004
+[ 37.034722 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49451 to 127.0.0.1:18004
+[ 37.036735 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49452 to 127.0.0.1:18004
+[ 37.039142 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49453 to 127.0.0.1:18004
+[ 37.040871 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49454 to 127.0.0.1:18004
+[ 37.043515 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49455 to 127.0.0.1:18004
+[ 37.046137 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49456 to 127.0.0.1:18004
+[ 37.048811 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49457 to 127.0.0.1:18004
+[ 37.050926 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49458 to 127.0.0.1:18004
+[ 37.052821 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49459 to 127.0.0.1:18004
+[ 37.056538 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49460 to 127.0.0.1:18004
+[ 37.059110 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49461 to 127.0.0.1:18004
+[ 37.061802 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49462 to 127.0.0.1:18004
+[ 37.063995 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49463 to 127.0.0.1:18004
+[ 37.066062 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49464 to 127.0.0.1:18004
+[ 37.068916 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49465 to 127.0.0.1:18004
+[ 37.071682 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49466 to 127.0.0.1:18004
+[ 37.074121 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49467 to 127.0.0.1:18004
+[ 37.076678 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49468 to 127.0.0.1:18004
+[ 37.080076 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49469 to 127.0.0.1:18004
+[ 37.082606 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49470 to 127.0.0.1:18004
+[ 37.085392 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49471 to 127.0.0.1:18004
+[ 37.088087 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49472 to 127.0.0.1:18004
+[ 37.090328 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49473 to 127.0.0.1:18004
+[ 37.092650 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49474 to 127.0.0.1:18004
+[ 37.094988 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49475 to 127.0.0.1:18004
+[ 37.098280 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49476 to 127.0.0.1:18004
+[ 37.100875 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49477 to 127.0.0.1:18004
+[ 37.103875 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49478 to 127.0.0.1:18004
+[ 37.106461 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49479 to 127.0.0.1:18004
+[ 37.109227 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49480 to 127.0.0.1:18004
+[ 37.111643 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49481 to 127.0.0.1:18004
+[ 37.113702 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49482 to 127.0.0.1:18004
+[ 37.116371 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49483 to 127.0.0.1:18004
+[ 37.119099 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49484 to 127.0.0.1:18004
+[ 37.121871 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49485 to 127.0.0.1:18004
+[ 37.124503 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49486 to 127.0.0.1:18004
+[ 37.126860 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49487 to 127.0.0.1:18004
+[ 37.129534 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49488 to 127.0.0.1:18004
+[ 37.131906 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49489 to 127.0.0.1:18004
+[ 37.133985 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49490 to 127.0.0.1:18004
+[ 37.136661 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49491 to 127.0.0.1:18004
+[ 37.140966 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49492 to 127.0.0.1:18004
+[ 37.143083 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49493 to 127.0.0.1:18004
+[ 37.145996 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49494 to 127.0.0.1:18004
+[ 37.148890 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49495 to 127.0.0.1:18004
+[ 37.151567 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49496 to 127.0.0.1:18004
+[ 37.154237 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49497 to 127.0.0.1:18004
+[ 37.156980 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49498 to 127.0.0.1:18004
+[ 37.160172 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49499 to 127.0.0.1:18004
+[ 37.163114 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49500 to 127.0.0.1:18004
+[ 37.165542 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49501 to 127.0.0.1:18004
+[ 37.167960 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49502 to 127.0.0.1:18004
+[ 37.170347 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49503 to 127.0.0.1:18004
+[ 37.173017 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49504 to 127.0.0.1:18004
+[ 37.175481 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49505 to 127.0.0.1:18004
+[ 37.177790 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49506 to 127.0.0.1:18004
+[ 37.180575 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49507 to 127.0.0.1:18004
+[ 37.183781 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49508 to 127.0.0.1:18004
+[ 37.186355 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49509 to 127.0.0.1:18004
+[ 37.188620 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49510 to 127.0.0.1:18004
+[ 37.191141 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49511 to 127.0.0.1:18004
+[ 37.193727 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49512 to 127.0.0.1:18004
+[ 37.195940 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49513 to 127.0.0.1:18004
+[ 37.198491 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49514 to 127.0.0.1:18004
+[ 37.200722 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49515 to 127.0.0.1:18004
+[ 37.203167 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49516 to 127.0.0.1:18004
+[ 37.205398 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49517 to 127.0.0.1:18004
+[ 37.208115 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49518 to 127.0.0.1:18004
+[ 37.210118 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49519 to 127.0.0.1:18004
+[ 37.212317 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49520 to 127.0.0.1:18004
+[ 37.214803 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49521 to 127.0.0.1:18004
+[ 37.216988 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49522 to 127.0.0.1:18004
+[ 37.219255 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49523 to 127.0.0.1:18004
+[ 37.223674 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49524 to 127.0.0.1:18004
+[ 37.226285 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49525 to 127.0.0.1:18004
+[ 37.228581 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49526 to 127.0.0.1:18004
+[ 37.231232 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49527 to 127.0.0.1:18004
+[ 37.233859 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49528 to 127.0.0.1:18004
+[ 37.236691 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49529 to 127.0.0.1:18004
+[ 37.240957 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49530 to 127.0.0.1:18004
+[ 37.244529 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49531 to 127.0.0.1:18004
+[ 37.248113 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49532 to 127.0.0.1:18004
+[ 37.251469 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49533 to 127.0.0.1:18004
+[ 37.254310 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49534 to 127.0.0.1:18004
+[ 37.257092 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49535 to 127.0.0.1:18004
+[ 37.260618 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49536 to 127.0.0.1:18004
+[ 37.263682 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49537 to 127.0.0.1:18004
+[ 37.266689 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49538 to 127.0.0.1:18004
+[ 37.269635 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49539 to 127.0.0.1:18004
+[ 37.272831 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49540 to 127.0.0.1:18004
+[ 37.275293 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49541 to 127.0.0.1:18004
+[ 37.278032 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49542 to 127.0.0.1:18004
+[ 37.280613 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49543 to 127.0.0.1:18004
+[ 37.283494 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49544 to 127.0.0.1:18004
+[ 37.286447 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49545 to 127.0.0.1:18004
+[ 37.289613 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49546 to 127.0.0.1:18004
+[ 37.292363 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49547 to 127.0.0.1:18004
+[ 37.295594 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49548 to 127.0.0.1:18004
+[ 37.298689 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49549 to 127.0.0.1:18004
+[ 37.301393 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49550 to 127.0.0.1:18004
+[ 37.304687 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49551 to 127.0.0.1:18004
+[ 37.308232 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49552 to 127.0.0.1:18004
+[ 37.310968 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49553 to 127.0.0.1:18004
+[ 37.314167 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49554 to 127.0.0.1:18004
+[ 37.317050 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49555 to 127.0.0.1:18004
+[ 37.321722 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49556 to 127.0.0.1:18004
+[ 37.325052 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49557 to 127.0.0.1:18004
+[ 37.328476 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49558 to 127.0.0.1:18004
+[ 37.331733 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49559 to 127.0.0.1:18004
+[ 37.334912 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49560 to 127.0.0.1:18004
+[ 37.338111 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49561 to 127.0.0.1:18004
+[ 37.341042 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49562 to 127.0.0.1:18004
+[ 37.343497 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49563 to 127.0.0.1:18004
+[ 37.346246 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49564 to 127.0.0.1:18004
+[ 37.349031 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49565 to 127.0.0.1:18004
+[ 37.351941 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49566 to 127.0.0.1:18004
+[ 37.354853 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49567 to 127.0.0.1:18004
+[ 37.357857 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49568 to 127.0.0.1:18004
+[ 37.360734 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49569 to 127.0.0.1:18004
+[ 37.363466 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49570 to 127.0.0.1:18004
+[ 37.366311 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49571 to 127.0.0.1:18004
+[ 37.369635 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49572 to 127.0.0.1:18004
+[ 37.372549 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49573 to 127.0.0.1:18004
+[ 37.375665 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49574 to 127.0.0.1:18004
+[ 37.378210 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49575 to 127.0.0.1:18004
+[ 37.380675 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49576 to 127.0.0.1:18004
+[ 37.383393 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49577 to 127.0.0.1:18004
+[ 37.386243 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49578 to 127.0.0.1:18004
+[ 37.389192 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49579 to 127.0.0.1:18004
+[ 37.391948 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49580 to 127.0.0.1:18004
+[ 37.394673 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49581 to 127.0.0.1:18004
+[ 37.398749 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49582 to 127.0.0.1:18004
+[ 37.402590 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49583 to 127.0.0.1:18004
+[ 37.405892 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49584 to 127.0.0.1:18004
+[ 37.409642 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49585 to 127.0.0.1:18004
+[ 37.413322 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49586 to 127.0.0.1:18004
+[ 37.416534 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49587 to 127.0.0.1:18004
+[ 37.422005 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49588 to 127.0.0.1:18004
+[ 37.424879 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49589 to 127.0.0.1:18004
+[ 37.427656 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49590 to 127.0.0.1:18004
+[ 37.431251 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49591 to 127.0.0.1:18004
+[ 37.434451 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49592 to 127.0.0.1:18004
+[ 37.437334 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49593 to 127.0.0.1:18004
+[ 37.440643 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49594 to 127.0.0.1:18004
+[ 37.443173 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49595 to 127.0.0.1:18004
+[ 37.445768 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49596 to 127.0.0.1:18004
+[ 37.448429 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49597 to 127.0.0.1:18004
+[ 37.451376 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49598 to 127.0.0.1:18004
+[ 37.454450 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49599 to 127.0.0.1:18004
+[ 37.457481 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49600 to 127.0.0.1:18004
+[ 37.460531 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49601 to 127.0.0.1:18004
+[ 37.463352 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49602 to 127.0.0.1:18004
+[ 37.467139 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49603 to 127.0.0.1:18004
+[ 37.470934 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49604 to 127.0.0.1:18004
+[ 37.473495 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49605 to 127.0.0.1:18004
+[ 37.476303 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49606 to 127.0.0.1:18004
+[ 37.479038 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49607 to 127.0.0.1:18004
+[ 37.482330 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49608 to 127.0.0.1:18004
+[ 37.485064 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49609 to 127.0.0.1:18004
+[ 37.488116 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49610 to 127.0.0.1:18004
+[ 37.491264 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49611 to 127.0.0.1:18004
+[ 37.494377 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49612 to 127.0.0.1:18004
+[ 37.497125 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49613 to 127.0.0.1:18004
+[ 37.500388 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49614 to 127.0.0.1:18004
+[ 37.503348 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49615 to 127.0.0.1:18004
+[ 37.505832 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49616 to 127.0.0.1:18004
+[ 37.508620 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49617 to 127.0.0.1:18004
+[ 37.511384 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49618 to 127.0.0.1:18004
+[ 37.515245 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49619 to 127.0.0.1:18004
+[ 37.518582 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49620 to 127.0.0.1:18004
+[ 37.521003 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49621 to 127.0.0.1:18004
+[ 37.524164 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49622 to 127.0.0.1:18004
+[ 37.529792 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49623 to 127.0.0.1:18004
+[ 37.533984 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49624 to 127.0.0.1:18004
+[ 37.538313 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49625 to 127.0.0.1:18004
+[ 37.542254 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49626 to 127.0.0.1:18004
+[ 37.546418 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49627 to 127.0.0.1:18004
+[ 37.550371 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49628 to 127.0.0.1:18004
+[ 37.553618 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49629 to 127.0.0.1:18004
+[ 37.556979 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49630 to 127.0.0.1:18004
+[ 37.560781 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49631 to 127.0.0.1:18004
+[ 37.564498 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49632 to 127.0.0.1:18004
+[ 37.568580 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49633 to 127.0.0.1:18004
+[ 37.572303 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49634 to 127.0.0.1:18004
+[ 37.576680 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49635 to 127.0.0.1:18004
+[ 37.580231 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49636 to 127.0.0.1:18004
+[ 37.583215 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49637 to 127.0.0.1:18004
+[ 37.586250 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49638 to 127.0.0.1:18004
+[ 37.589264 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49639 to 127.0.0.1:18004
+[ 37.592765 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49640 to 127.0.0.1:18004
+[ 37.596374 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49641 to 127.0.0.1:18004
+[ 37.599499 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49642 to 127.0.0.1:18004
+[ 37.602742 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49643 to 127.0.0.1:18004
+[ 37.606655 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49644 to 127.0.0.1:18004
+[ 37.609897 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49645 to 127.0.0.1:18004
+[ 37.613262 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49646 to 127.0.0.1:18004
+[ 37.616823 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49647 to 127.0.0.1:18004
+[ 37.620539 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49648 to 127.0.0.1:18004
+[ 37.624244 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49649 to 127.0.0.1:18004
+[ 37.627447 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49650 to 127.0.0.1:18004
+[ 37.633820 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49651 to 127.0.0.1:18004
+[ 37.637480 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49652 to 127.0.0.1:18004
+[ 37.641191 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49653 to 127.0.0.1:18004
+[ 37.643883 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49654 to 127.0.0.1:18004
+[ 37.646538 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49655 to 127.0.0.1:18004
+[ 37.650102 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49656 to 127.0.0.1:18004
+[ 37.653957 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49657 to 127.0.0.1:18004
+[ 37.657372 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49658 to 127.0.0.1:18004
+[ 37.660565 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49659 to 127.0.0.1:18004
+[ 37.663357 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49660 to 127.0.0.1:18004
+[ 37.666453 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49661 to 127.0.0.1:18004
+[ 37.669928 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49662 to 127.0.0.1:18004
+[ 37.672899 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49663 to 127.0.0.1:18004
+[ 37.676191 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49664 to 127.0.0.1:18004
+[ 37.679660 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49665 to 127.0.0.1:18004
+[ 37.683072 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49666 to 127.0.0.1:18004
+[ 37.689206 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49667 to 127.0.0.1:18004
+[ 37.692966 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49668 to 127.0.0.1:18004
+[ 37.695296 0:14 axnet_ng::tcp:321] [AxErrorKind::ConnectionRefused] connection refused
+[ 37.701428 0:14 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49669 to 127.0.0.1:18004
+PASS: tcp-512cap: accepted 512 of 512 initial connections
+PASS: tcp-512-recovery
+[ 38.935433 0:18 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 39.938407 0:18 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49670 to 127.0.0.1:18005
+[ 39.941664 0:18 starry_kernel::task::ops:200] Task(18, "ms01_test") exit with code: 0
+[ 39.942474 0:18 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 39.943509 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 18, options: WaitOptions(0x0)
+[ 39.945039 0:19 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 40.948101 0:19 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49671 to 127.0.0.1:18005
+[ 40.950076 0:19 starry_kernel::task::ops:200] Task(19, "ms01_test") exit with code: 0
+[ 40.950490 0:19 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 40.951775 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 19, options: WaitOptions(0x0)
+PASS: tcp-relisten
+[ 40.953774 0:20 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffa90
+[ 41.960296 0:20 axnet_ng::udp:148] UDP socket #0: bound on *:18006
+[ 42.959300 0:14 axnet_ng::udp:148] UDP socket #1: bound on *:49152
+[ 42.963442 0:20 starry_kernel::task::ops:200] Task(20, "ms01_test") exit with code: 0
+[ 42.963773 0:20 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 42.964342 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 20, options: WaitOptions(0x0)
+[ 42.965188 0:14 axnet_ng::udp:148] UDP socket #0: bound on *:18008
+PASS: udp-bidi
+PASS: tcp-nonblock-accept
+PASS: udp-nonblock
+[ 43.471005 0:21 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 44.478713 0:21 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49672 to 127.0.0.1:18009
+[ 44.481688 0:21 starry_kernel::task::ops:200] Task(21, "ms01_test") exit with code: 0
+[ 44.482625 0:21 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 44.484010 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 21, options: WaitOptions(0x0)
+[ 44.484682 0:14 axnet_ng::udp:148] UDP socket #1: bound on *:18010
+PASS: poll-readiness
+[ 44.486230 0:22 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 45.489036 0:22 axnet_ng::udp:148] UDP socket #0: bound on *:49153
+[ 45.491263 0:22 starry_kernel::task::ops:200] Task(22, "ms01_test") exit with code: 0
+[ 45.491769 0:22 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 45.493360 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 22, options: WaitOptions(0x0)
+PASS: udp-source: 127.0.0.1:49153
+PASS: bind-getsockname: port 18012
+[ 45.495153 0:23 starry_kernel::task::user:22] Enter user space: ip=0x6598, sp=0x3fffffbb0
+[ 45.495690 0:23 axnet_ng::tcp:282] TCP connection from 127.0.0.1:49673 to 127.0.0.1:18013
+[ 45.496474 0:23 starry_kernel::task::ops:200] Task(23, "ms01_test") exit with code: 0
+[ 45.496899 0:23 starry_kernel::task::signal:96] Send signal SIGCHLD to process 14
+[ 45.497391 0:14 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: 23, options: WaitOptions(0x0)
+[ 45.498829 0:14 starry_kernel::task::ops:200] Task(14, "ms01_test") exit with code: 0
+PASS: bind-ephemeral: port 49673
+PASS: bind-conflict: EADDRINUSE
+PASS: bind-close-cleanup
+MS01_SOCKET_BASELINE_END
+[ 45.499996 0:14 starry_kernel::task::signal:96] Send signal SIGCHLD to process 11
+[ 45.500597 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WUNTRACED)
+[ 45.501087 0:11 starry_kernel::syscall::task::wait:65] sys_waitpid <= pid: -1, options: WaitOptions(WNOHANG | WUNTRACED)
+starry:~# 

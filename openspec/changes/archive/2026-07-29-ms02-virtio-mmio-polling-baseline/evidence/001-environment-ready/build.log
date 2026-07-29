@@ -1,0 +1,39 @@
+Captured: 2026-07-29T18:08:33+08:00
+Revision: efcf08124294d523ccab4d3569ea97fe31ed96c1
+
+COMMAND:
+make tests/ms02_guest_service
+
+KEY OUTPUT:
+riscv64-linux-musl-gcc -static -O2 -o tests/ms02_guest_service tests/ms02_guest_service.c
+make: *** [Makefile:52: tests/ms02_guest_service] Bad system call (core dumped)
+
+EXIT CODE: 2
+RESULT: BLOCKED
+CONCLUSION:
+The target compiler process was terminated by the execution environment. No
+guest payload binary was produced, so T1 and downstream agent Gate verification
+cannot complete.
+
+TOOL INSPECTION:
+/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc:
+ELF 32-bit LSB executable, Intel 80386, statically linked, stripped
+
+COMMAND:
+cargo tree --offline -e features -p starryos --features qemu -i smoltcp
+  | rg 'smoltcp v|auto-icmp-echo-reply'
+
+KEY OUTPUT:
+smoltcp v0.13.1 (/home/daivy/projects/serial/work/StarryOS/crates/smoltcp)
+├── smoltcp feature "auto-icmp-echo-reply"
+
+EXIT CODE: 0
+RESULT: PASS
+CONCLUSION:
+The planned smoltcp ICMP echo feature is enabled. T3 remains partial because
+its target-build witness was not reached.
+
+SOURCE ARTIFACT:
+tests/ms02_guest_service.c
+SHA256:
+aa0a4dc06c8284d58b58f93b5df7f097e1bae561247b1b6ce16a5728de123ee1

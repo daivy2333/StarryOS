@@ -1,0 +1,41 @@
+# build.log - iteration 003
+# Captured: 2026-07-29T19:49:54+08:00
+# Revision: efcf08124294d523ccab4d3569ea97fe31ed96c1 (worktree modified)
+
+## 1. cargo fmt --check (axnet)
+Command: cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+EXIT=0
+
+## 2. feature tree (auto-icmp-echo-reply)
+Command: cargo tree --offline -e features -p starryos --features qemu -i smoltcp | grep auto-icmp-echo-reply
+├── smoltcp feature "auto-icmp-echo-reply"
+EXIT=0
+
+## 3. target build
+Command: make LOG=info build
+   Compiling axruntime v0.3.0-preview.2
+   Compiling axfeat v0.3.0-preview.2
+   Compiling starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+   Compiling starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS)
+    Finished `release` profile [optimized] target(s) in 8.47s
+[37m./dwarf.sh[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf rust-objcopy --binary-architecture=riscv64[0m
+[37mrust-objcopy --binary-architecture=riscv64[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf --strip-all -O binary /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.bin[0m
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'
+EXIT=0
+
+## 4. MS01 self-test
+Command: python3 scripts/ms01-qemu-test.py --self-test
+PASS: harness-self-test
+EXIT=0
+
+## 5. openspec validate --strict
+Command: openspec validate ms02-virtio-mmio-polling-baseline --strict
+Change 'ms02-virtio-mmio-polling-baseline' is valid
+EXIT=0
+
+## 6. git diff --check
+Command: git diff --check
+EXIT=0
