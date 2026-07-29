@@ -1,0 +1,27 @@
+Execution:
+  User ran .claude/runbooks/qemu-network-testing.md against the new image.
+
+starry:~# wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline
+starry:~# chmod +x /tmp/ms01_test
+starry:~# /tmp/ms01_test
+MS01_SOCKET_BASELINE_START
+PASS: tcp-accept
+PASS: tcp-adjacent
+[ 18.292106 0:15 axnet_ng::tcp:323] [AxErrorKind::ConnectionRefused] connection refused
+PASS: tcp-512cap: accepted 512 of 512 initial connections
+PASS: tcp-512-recovery
+PASS: tcp-relisten
+PASS: udp-bidi
+PASS: tcp-nonblock-accept
+PASS: udp-nonblock
+PASS: poll-readiness
+PASS: udp-source: 127.0.0.1:49153
+MS01_SOCKET_BASELINE_END
+starry:~# echo "PAYLOAD_EXIT=$?"
+PAYLOAD_EXIT=0
+
+The ConnectionRefused diagnostic belongs to the intentional overflow probe.
+All required markers appeared once. No FAIL marker appeared.
+
+Acceptance: A3-A7
+

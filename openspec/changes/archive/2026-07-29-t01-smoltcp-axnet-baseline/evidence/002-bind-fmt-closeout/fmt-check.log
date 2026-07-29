@@ -1,0 +1,5 @@
+$ cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+EXIT:0
+
+All files in crates/axnet pass rustfmt formatting check. No diff.

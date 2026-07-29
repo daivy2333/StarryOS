@@ -71,7 +71,7 @@ OS abstraction layer MUST 只保留驱动代码实际调用的 trait。当前为
 
 异步高性能网卡 MUST 将硬中断、硬件队列服务、协议栈轮询和 socket readiness 作为分离的执行层。硬中断只处理 cause/ack/mask/wake；descriptor reap/refill 由有 budget 的 queue task 完成；smoltcp poll 由 task 上下文中的 stack runner 完成。不引入 Embassy executor。
 
-**Legacy**: ADR-063 (A063), 2026-07-18 | **状态**: 候选
+**Legacy**: ADR-063 (A063), 2026-07-18 | **状态**: ✅ accepted，2026-07-27
 
 #### Scenario: 规划首个异步 NIC change
 
@@ -115,6 +115,20 @@ PLIC 初始化 MUST 保持 `init_primary()`（全局一次性初始化）与 `in
 - **WHEN** 修改跨 hart 共享的原子字段
 - **THEN** 所选内存序 MUST 根据字段角色说明理由
 - **AND** MUST NOT 引入按架构分叉的内存序分支
+
+### Requirement: M41 — NIC transport 与证据边界
+
+异步 NIC 的队列所有权、背压和完成语义 MUST 与总线解耦。平台层负责把设备、IRQ 和 DMA 事实映射到队列接口。QEMU 串口、QEMU 网络、SMP 和真板证据 MUST 分开记录，禁止互相替代。
+
+**来源**: 2026-07-27 QEMU MMIO/PCI 对照验证 | **状态**: ✅ accepted
+**关联决策**: D22 | **关联知识**: K31, K32
+
+#### Scenario: 更换 NIC transport
+
+- **WHEN** NIC 从 VirtIO-MMIO 迁移到 PCI 或真板 DWMAC
+- **THEN** transport 适配 MUST 留在 probe、IRQ 和 DMA 边界
+- **AND** queue task、stack runner 和 socket readiness 契约 MUST 保持不变
+- **AND** 新平台 MUST 重新取得本平台运行证据
 
 <!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 <!-- arc: cleanup-uart-documentation-system --> M03, M33, M35 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/

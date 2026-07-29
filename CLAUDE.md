@@ -6,7 +6,8 @@
 |---|---|---|
 | 公共规则 | `CLAUDE.md` | 人工或 `openspec-init` |
 | 当前状态 | `.claude/docs/SNAPSHOT.md` | `openspec-docs-maintainer` |
-| 全局任务 | `.claude/docs/tasks.md` | `openspec-docs-maintainer` |
+| Milestone roadmap | `.claude/docs/tasks.md` | `openspec-milestone-planner` |
+| 全局任务和状态 | `.claude/docs/tasks.md` | `openspec-docs-maintainer` |
 | 迭代模板 | `.claude/docs/templates/change-iteration.md` | `openspec-init` |
 | 项目模型 | `openspec/specs/project-model/spec.md` | `openspec-docs-maintainer` |
 | 决策 | `openspec/specs/decisions/spec.md` | `openspec-docs-maintainer` |
@@ -14,27 +15,31 @@
 | 参考 | `openspec/specs/references/spec.md` | `openspec-docs-maintainer` |
 | 改进 | `openspec/specs/improvements/spec.md` | `openspec-docs-maintainer` |
 | 活跃变更 | `openspec/changes/` | OpenSpec、plan、act |
+| Change Evidence | `openspec/changes/<change>/evidence/` | `openspec-act` |
 | 分析文档 | `.claude/analysis/` | `openspec-explorer` |
-| Runbook | `.claude/runbooks/` | `openspec-docs-maintainer` |
-| Incident | `.claude/incidents/` | `openspec-docs-maintainer` |
+| Runbook | `.claude/runbooks/` | `openspec-experience-recorder` |
+| Incident | `.claude/incidents/` | `openspec-experience-recorder` |
 
 ## 读取顺序
 
-- 新会话：CLAUDE → SNAPSHOT → tasks → active changes。
-- 新功能或 Bug：相关 project-model → decisions → knowledge → plan。
-- 实施：change 基线 → 最新 iteration → act。
-- 实现 Review：当前 iteration → 实际代码和证据 → plan。
+- 新会话：CLAUDE -> SNAPSHOT -> tasks -> active changes。
+- 新功能或 Bug：相关 project-model -> decisions -> knowledge -> plan。
+- 实施：change 基线 -> 最新 iteration -> 按需 Evidence -> act。
+- 实现 Review：当前 iteration -> 实际代码、Act Response 和要求的 Evidence -> plan。
 - 操作任务：相关 Runbook。
-- 故障复盘：Incident → knowledge → decisions/model → improvements/change。
+- 故障复盘：Incident -> knowledge -> decisions/model -> improvements/change。
 - 查询：assistant。
+- 路线规划：milestone-planner。
 - 日常文档写入：docs-maintainer。
 
 ## Skill 职责
 
 - `openspec-assistant`：只读。
-- `openspec-plan`：需求、BDD、计划、iteration 和实施 Review。
-- `openspec-act`：TDD、实施、验证和 Act Response。
-- `openspec-docs-maintainer`：显式维护状态、M/D/K/R/I、Runbook、Incident 和指定 change 收尾。
+- `openspec-milestone-planner`：规划 `MSxx` 路线，平衡工作量、验证边界和诊断边界；不创建 change。
+- `openspec-plan`：需求、BDD、实现调查、可执行计划、Evidence 要求、iteration 和实施 Review。
+- `openspec-act`：TDD、实施、任务自检、全量 diff Review、验证、按需 Evidence、经验候选和 Act Response。
+- `openspec-experience-recorder`：根据已发生且有证据的过程创建、更新或恢复 Runbook、Incident。
+- `openspec-docs-maintainer`：显式维护状态、M/D/K/R/I 和指定 change 收尾，并处理限定 R 登记。
 - `openspec-explorer`：宏观或微观探索；输出即时回答或 `.claude/analysis/`。
 - `openspec-compressor`：原地压缩，不改变状态。
 - `openspec-archivist`：生命周期清理和 carrier 归档。
@@ -42,13 +47,16 @@
 ## 阶段边界
 
 - Skill 完成不构成下一阶段授权。
+- Milestone Planner 写入 roadmap 后终止，不调用 Explorer、Plan、Act 或 Maintainer。
 - Plan 完成后终止，等待用户审计和 Act 指令。
-- Act 写入反馈后终止，不归档、不维护全局状态。
+- Act 写入反馈和 Experience Candidates 后终止，不创建经验产物、不归档、不维护全局状态。
 - Plan Review 后终止，不自动调用 Act 或 Maintainer。
 - Explorer 即时回答后终止，不调用 Maintainer。
 - Explorer 生成分析文档后，可自动调用 Maintainer 登记对应 R 引用。
-- 此自动授权只覆盖 R 登记，不覆盖 M/D/K/I、tasks、SNAPSHOT 或 change。
-- 除 Explorer 的 R 登记外，Maintainer 只执行用户点名的维护动作。
+- Recorder 生成、更新或恢复 Runbook、Incident 后，可自动调用 Maintainer 创建或更新对应 R。
+- 上述自动授权只覆盖对应 R，不覆盖 M/D/K/I、tasks、SNAPSHOT 或 change。
+- 除 Explorer 和 Recorder 的限定 R 登记外，Maintainer 只执行用户点名的维护动作。
+- Act 完成不构成 Recorder 授权；只有用户单独请求或预先明确授权串联时才执行 Recorder。
 - 除上述例外，用户明确授权串联时才可继续下一阶段。
 
 ## 通用能力
@@ -70,15 +78,17 @@
 ## 信息路由
 
 - 当前短期事实写 SNAPSHOT。
+- 项目路线、稳定基线和阶段边界写 tasks，编号 `MSxx`。
 - 已承诺工作写 tasks 或 OpenSpec change。
 - 当前跨模块约束写 project-model，编号 `Mxx`。
 - 有替代方案的长期选择写 decisions，编号 `Dxx`。
 - 已验证、非显然且可复用的结论写 knowledge，编号 `Kxx`。
 - 指针和检索元数据写 references，编号 `Rxx`。
 - 有证据但未承诺实施的问题写 improvements，编号 `Ixx`。
-- 可重复或高风险操作写 Runbook，并登记 R。
-- 重要故障事件写 Incident，并登记 R。
+- 已验证且可重复或高风险的操作由 Recorder 写入 Runbook，并登记 R。
+- 已发生的重要故障由 Recorder 写入 Incident，并登记 R。
 - 详细调查、实验和评估写 analysis，并登记 R。
+- iteration 的持久化日志和数据写 change 内 Evidence，不登记 R。
 
 一项信息只有一个权威位置。其他文档使用编号或路径引用，不复制正文。
 
@@ -99,9 +109,12 @@
 - Knowledge 不保存单纯路径、API 签名、链接或未验证猜测。
 - Reference 不复制目标正文。
 - Improvement 只保存未承诺工作；批准后创建 change 并标记 `promoted`。
+- Milestone Planner 创建和调整 `planned`、`ready` 的 `MSxx`；Maintainer 只同步运行状态和 change 引用。
 - Tasks 不保存未批准想法。
 - 普通测试失败不创建 Incident。
 - 一次性命令不创建 Runbook。
+- Runbook 和 Incident 不由 Compressor 改写。
+- 普通验证结果写 Act Response；没有持久化要求时不创建 Evidence 占位目录。
 
 ## 行为约束
 
@@ -151,6 +164,17 @@
 
 输出场景草图：前置状态、动作、结果和失败边界。用户显式接受的缺口写入 proposal。
 
+## Plan 调查
+
+Plan 在制定任务前读取实际代码并记录：
+
+- 入口、目标符号、调用者和被调用者。
+- 数据流、状态变化、错误和并发边界。
+- 现有测试、验证命令和基线结果。
+- 当前行为、目标行为和影响范围。
+
+Plan 负责确定接口语义、状态所有权、测试策略和停止条件。影响实现的未知项阻塞 Gate 2，不留给 Act 决定。
+
 ## TDD
 
 铁律：`NO CHANGE WITHOUT TEST WITNESS`。
@@ -170,31 +194,56 @@
 
 ## Gate
 
-- Gate 1：需求、BDD、场景和 change 获批。
-- Gate 2：RTM 无 Missing，所有 Simplified 获批。
-- Gate 3：每个任务有测试见证。
-- Gate 4：先 spec review，后 code review。
+- Gate 1：需求、BDD、场景、范围和 change 获批。
+- Gate 2：调查、设计、任务、追踪和验证均达到执行就绪。
+- Gate 3：计划基线有效且每个任务有测试见证。
+- Gate 4：每个任务先 spec review，后 code review。
 - Gate 5：完成声明有新鲜证据。
 - Gate 6：阻塞即停；三次失败后反思。
 
 Gate BLOCK 必须记录原因。用户显式豁免必须保留原话和风险。
 
-## 任务追踪
+## 任务批次与续跑边界
 
 - 每个 Phase 和可验证 Step 有状态。
+- 任务列表只保存当前已授权且可执行的工作；完整状态以 OpenSpec 产物为准。
 - 非迁移步骤的跳过项标记 `SKIPPED: <reason>`；旧体系信息单元不得跳过。
 - 只有验证通过后才能标记完成。
 - 最终报告前检查全部任务状态。
+
+按当前 skill 识别三类边界：
+
+- 授权边界：下一步需要用户批准、选择或接受风险。
+- 能力边界：下一步由用户或外部环境执行，或 agent 无法安全执行。
+- 停止边界：当前 skill 要求停止、交接、阻塞或终止。
+
+每批任务只覆盖当前位置到最近边界之前的工作。边界和等待事项不作为可执行任务。等待原因、证据要求和恢复条件写入权威产物；没有持久化产物时保留在当前对话。
+
+没有后续任务不表示 change、iteration 或当前阶段已经完成。恢复执行时重新检查最近边界。用户或外部环境提交结果后，只有审核结果为 `PASS`，才能生成下一批任务。
+
+agent 可执行的测试和 Review 不形成边界。验证失败时保留当前任务，不执行下游任务；重试和阻塞遵守当前 skill 的规则。
 
 ## 迭代线程
 
 - 每个 change 使用 `iterations/000-initial.md` 开始。
 - 后续轮次使用递增的零填充编号。
 - Plan 只写 `Plan Context` 和 `Plan Review`。
+- Plan Context 包含 Current-State Evidence、行为变化、变更面、任务契约和停止条件。
+- Plan 把 Persisted Evidence 明确设为 `none` 或 `required`；`required` 项映射到 Gate 和通过条件。
 - Act 只写 `Act Response`。
+- Act 每个任务完成后执行 Gate 4，并在 Response 前重新审查完整 diff。
+- Act 修复计划范围内的问题；新设计或范围问题返回 Plan。
+- Act Response 记录 Self-Review、已修复发现和遗留 Minor 问题。
+- Act Response 记录有证据的 Runbook、Incident 候选；没有则写 `None`。
+- Act Response 状态只允许 `pending -> reported` 或 `pending -> blocked`。
+- 计划偏差时，Act 写 Blocker Handoff，并按需保存 `act-added / BLOCKED` Evidence。
+- `blocked` iteration 不恢复执行；Plan Review 后创建新 iteration。
+- Act 只在 `required` 或实际需要保留长日志、特殊格式和难复现输出时创建 `evidence/<NNN-title>/`。
+- Evidence 目录名与 iteration 文件名一致，随 change 归档，不登记 R。
 - 交接后的 Plan Context 不得改写。
 - Act 不得创建下一轮 iteration。
-- Plan Review 必须检查代码和证据，不只读取 Act Response。
+- Plan Review 必须检查代码和证据，不以 Act Self-Review 代替独立检查。
+- Plan Review 把偏差分类为 Plan 遗漏、Plan 错误、Act 偏离、基线变化或新证据。
 - 有后续任务时创建新 iteration，不覆盖旧记录。
 
 ## 验证
@@ -206,7 +255,9 @@ Gate BLOCK 必须记录原因。用户显式豁免必须保留原话和风险。
 - 退出码或明确结果。
 - 证据支持的结论。
 
-禁止使用"应该、大概、基本完成"替代证据。
+Gate 必须有可验证依据，但持久化 Evidence 是按需产物。`none` 时由 Act Response 保存验证摘要；`required` 时对应文件缺失会阻塞 Gate。
+
+禁止使用“应该、大概、基本完成”替代证据。
 
 ## 三次失败
 

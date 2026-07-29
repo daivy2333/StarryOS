@@ -1,0 +1,27 @@
+starry:~# wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline && chmod +x /tmp/ms01_test && /tmp/ms01_test
+MS01_SOCKET_BASELINE_START
+PASS: tcp-accept
+PASS: tcp-adjacent
+[ 12.348190 0:14 axnet_ng::tcp:321] [AxErrorKind::ConnectionRefused] connection refused
+PASS: tcp-512cap: accepted 512 of 512 initial connections
+PASS: tcp-512-recovery
+PASS: tcp-relisten
+PASS: udp-bidi
+PASS: tcp-nonblock-accept
+PASS: udp-nonblock
+PASS: poll-readiness
+PASS: udp-source: 127.0.0.1:49153
+PASS: bind-getsockname: port 18012
+PASS: bind-ephemeral: port 49673
+PASS: bind-conflict: EADDRINUSE
+PASS: bind-close-cleanup
+MS01_SOCKET_BASELINE_END
+starry:~#
+
+Result: 14/14 PASS (10 original + 4 new bind witness markers).
+Payload exit code: 0 (inferred from MS01_SOCKET_BASELINE_END printed without FAIL markers).
+
+One kernel log line observed between markers: "axnet_ng::tcp:321 ConnectionRefused"
+This is from the 513th connection attempt in test_tcp_512_capacity — a nonblocking
+connect overflow test. The kernel correctly refuses this overflow connection;
+the log is informational and does not affect test pass/fail.

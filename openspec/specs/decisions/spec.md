@@ -43,7 +43,7 @@
 
 异步 NIC MUST 采用队列任务与协议栈 runner 分层，不引入 Embassy executor。首阶段 MUST 保留 axnet-ng、smoltcp、axpoll 和 axtask。
 
-**Legacy**: ADR-063 (A063), 2026-07-18 | **状态**: 候选
+**Legacy**: ADR-063 (A063), 2026-07-18 | **状态**: ✅ accepted，2026-07-27
 **关联模型**: M36
 
 - **分层**: 硬中断（cause/ack/mask/wake）-> queue task（descriptor reap/refill，有 budget）-> stack runner（smoltcp poll，task 上下文）-> socket readiness。
@@ -70,6 +70,24 @@ VisionFive2 bring-up MUST 保留 U-Boot 配置的 PLIC 和 Clock 状态（范围
 
 - **WHEN** 开发者提议将 trust-u-boot 扩展到 UART 或其他外设
 - **THEN** MUST 先证明重复初始化会破坏已建立状态，NS16550 寄存器写入通常无害
+
+### Requirement: D22 - QEMU 首条异步 NIC 路径使用 VirtIO-MMIO
+
+QEMU 首条异步 NIC 路径 MUST 使用 VirtIO-MMIO。PCI 仅在 I13 的构建和运行 Gate 通过后进入兼容性评估。真板 transport MUST 根据板级事实选择，不继承 QEMU 的总线选择。
+
+**来源**: 2026-07-27 QEMU MMIO/PCI 对照验证 | **状态**: ✅ accepted
+**关联模型**: M41 | **关联知识**: K31, K32
+
+- **原因**: 当前 MMIO 网卡和块设备可启动到 shell。PCI 设备模型可创建，但 StarryOS 实际仍编译 MMIO probe。
+- **替代方案**: PCI-first 会同时引入 feature、ECAM、BAR 和 IRQ 变量，暂不采用。
+- **影响**: 先完成 MMIO IRQ、RX 和 TX。PCI 不阻塞 QEMU 主线。
+
+#### Scenario: 规划 QEMU NIC milestone
+
+- **WHEN** change 涉及首条 QEMU 异步收发路径
+- **THEN** MUST 使用 VirtIO-MMIO 基线
+- **AND** MUST 先单独验证 MMIO IRQ，再引入异步队列
+- **AND** MUST NOT 把 QEMU 结果声明为真板证据
 
 <!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98). Decision rationale extracted as D01-D21. Tombstoned ADRs: A014-A017, A020-A021, A032, A035, A056, A063-A064 -> archive carriers ARC-202607081429, ARC-202607021648, arc-202607152005.
 <!-- arc: ARC-202607251326 --> 16 D 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md

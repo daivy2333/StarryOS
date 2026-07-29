@@ -1,0 +1,29 @@
+Command:
+  python3 scripts/ms01-qemu-test.py --self-test
+Result:
+  PASS: harness-self-test
+  exit=0
+
+Covered failure paths:
+  missing marker
+  duplicate marker
+  nonzero payload exit
+  timeout
+  early QEMU exit
+
+Command:
+  python3 scripts/ms01-qemu-test.py
+Result:
+  FAIL: harness: [Errno 1] Operation not permitted
+  exit=1
+
+Classification:
+  ENV BLOCK. The sandbox rejected QEMU process launch. The user authorized
+  runbook-based manual execution and supplied the strict output.
+
+Cleanup:
+  The failed launcher process exited. Its daemon HTTP thread ended with the
+  process. No QEMU child was started.
+
+Acceptance: A9 with authorized execution deviation
+

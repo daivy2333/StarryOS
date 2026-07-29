@@ -24,9 +24,10 @@ qemu = [
     "dep:axdriver",
     "dep:axfs",
     "dep:axnet",
+    "axdriver/virtio-net",
     "axfeat/fs-ng-ext4",
-    "axfeat/net-ng",
     "axfeat/task-ext",
+    "axruntime/net-ng",
 ]
 smp = ["axfeat/smp"]
 vsock = ["axfeat/vsock"]

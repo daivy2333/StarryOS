@@ -1,0 +1,30 @@
+Cargo.lock:
+  14 insertions, 39 deletions
+  removed registry axnet
+  removed starry-smoltcp
+  changed axnet-ng to local source
+  added local smoltcp 0.13.1
+  unrelated registry version/checksum changes: 0
+
+Private hook audit:
+  rg -n 'preprocess|snoop_tcp_packet|incoming_tcp_packet' crates/axnet/src
+  no matches
+
+Scope audit:
+  no IRQ runner
+  no async socket bridge
+  no transport change
+  no syscall backlog change
+  no smoltcp private bind state
+
+Static validation:
+  git diff --check: exit=0
+  openspec validate t01-smoltcp-axnet-baseline --strict: exit=0
+  openspec validate --changes: exit=0
+  openspec validate --specs: exit=1
+
+The global spec failure is the authorized K33 format issue. Product and change
+validation are unaffected.
+
+Acceptance: A1, A2, A8, A10
+

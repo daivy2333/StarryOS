@@ -162,13 +162,13 @@ CYW43、ESP-hosted、NRF91、PPP、WIZnet 等实现共同证明了“一个硬�
 
 ## 9. 证据入口
 
-- `../../embassy/embassy-net-driver/src/lib.rs`
-- `../../embassy/embassy-net-driver-channel/src/lib.rs`
-- `../../embassy/embassy-sync/src/zerocopy_channel.rs`
-- `../../embassy/embassy-net/src/driver_util.rs`
-- `../../embassy/embassy-net/src/lib.rs`
-- `../../embassy/embassy-stm32/src/eth/`
-- `../../embassy/embassy-net-tuntap/`
+- `../embassy/embassy-net-driver/src/lib.rs`
+- `../embassy/embassy-net-driver-channel/src/lib.rs`
+- `../embassy/embassy-sync/src/zerocopy_channel.rs`
+- `../embassy/embassy-net/src/driver_util.rs`
+- `../embassy/embassy-net/src/lib.rs`
+- `../embassy/embassy-stm32/src/eth/`
+- `../embassy/embassy-net-tuntap/`
 
 路径以 StarryOS 仓库根目录为参照。
 

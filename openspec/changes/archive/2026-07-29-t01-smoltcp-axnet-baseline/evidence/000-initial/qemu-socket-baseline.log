@@ -1,0 +1,11 @@
+MS01_SOCKET_BASELINE_START
+PASS: tcp-accept
+PASS: tcp-adjacent
+PASS: tcp-512cap: accepted 512 of 512 connected
+PASS: tcp-relisten
+PASS: udp-bidi
+PASS: tcp-nonblock-accept
+PASS: udp-nonblock: ENOTCONN (fork smoltcp behavior)
+PASS: poll-readiness
+PASS: udp-source: 127.0.0.1:49153
+MS01_SOCKET_BASELINE_END

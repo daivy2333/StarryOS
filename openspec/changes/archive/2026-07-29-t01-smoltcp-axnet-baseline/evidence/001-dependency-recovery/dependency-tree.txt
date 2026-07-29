@@ -1,0 +1,31 @@
+Command:
+  cargo metadata --offline --format-version 1 --features qemu
+
+Parsed result:
+  axnet: count=0
+  axnet-ng: count=1
+    source=None
+    manifest=/home/daivy/projects/serial/work/StarryOS/crates/axnet/Cargo.toml
+  starry-smoltcp: count=0
+  smoltcp: count=1
+    source=None
+    manifest=/home/daivy/projects/serial/work/StarryOS/crates/smoltcp/Cargo.toml
+  PASS: dependency-source-assertions
+  exit=0
+
+Command:
+  cargo tree --offline --features qemu -p starry-kernel
+
+Relevant tree:
+  axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+    smoltcp v0.13.1 (/home/daivy/projects/serial/work/StarryOS/crates/smoltcp)
+
+Inverse queries:
+  cargo tree --offline --features qemu -i axnet
+  package ID specification `axnet` did not match any packages
+
+  cargo tree --offline --features qemu -i starry-smoltcp
+  package ID specification `starry-smoltcp` did not match any packages
+
+Acceptance: A1, A2
+

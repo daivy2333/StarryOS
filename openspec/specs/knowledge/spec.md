@@ -187,3 +187,72 @@ UART 已验证经验 MUST 可迁移到 NIC：最小 ISR、register-recheck、显
 
 - **WHEN** 开发者发现 ProcessMode 类有未构造变体的枚举
 - **THEN** MUST 先确认变体在所有 cfg 组合下均无构造路径，再删除
+
+### Requirement: K31 - QEMU 终端与网络端口是独立通道
+
+QEMU 终端与 hostfwd MUST 视为独立通道。`make run` 的终端 I/O 走 NS16550 MMIO UART。`-nographic` 将虚拟串口接到宿主标准输入输出。`hostfwd` 只转发网络端口。
+
+**证据**: `make/qemu.mk:31-55,75-80`；`src/init.sh:12-15`；2026-07-27 无 hostfwd QEMU 启动到 shell
+**状态**: ✅ 已验证
+
+- **输出链**: `ax_println!` -> platform console -> UART MMIO -> QEMU serial -> 宿主终端。
+- **输入链**: 宿主键盘 -> QEMU serial RX -> UART -> StarryOS TTY。
+- **端口边界**: 5555 仅在 guest 程序监听 5555 时可用。`init.sh` 不启动该服务。
+
+#### Scenario: QEMU 有日志但网络端口不可用
+
+- **WHEN** 终端已出现 StarryOS shell，但宿主无法连接 5555
+- **THEN** MUST 检查 guest 服务、网卡和 hostfwd
+- **AND** MUST NOT 把串口成功当作网络成功
+
+### Requirement: K32 - 当前 QEMU 构建实际选择 VirtIO-MMIO
+
+在纯 PCI 见证通过前，当前 QEMU 构建 MUST 解释为 MMIO。根 `qemu` feature 启用 `bus-pci`，本地 `axfs-ng` 同时启用 `bus-mmio`。`axdriver/build.rs` 在两者并存时优先 MMIO。
+
+**证据**: `Cargo.toml:53-55`；`crates/axfs-ng/Cargo.toml:18`；`axdriver/build.rs:27-32`
+**状态**: ✅ 已验证，2026-07-27
+
+- **构建**: `cargo build --offline --release --target riscv64gc-unknown-none-elf --features qemu` 退出码 0。
+- **PCI 对照**: 同一镜像挂 PCI net/block 时未发现设备。
+- **MMIO 对照**: 改挂 MMIO net/block 后注册两类设备，初始化 `eth0` 并进入 shell。
+- **边界**: 该结果证明当前配置选择 MMIO，不证明 QEMU PCI 或上游 PCI 实现不可用。
+
+#### Scenario: 声明 PCI 已可运行
+
+- **WHEN** 开发者准备将 PCI 用作 NIC 基线
+- **THEN** MUST 先消除 bus feature 冲突
+- **AND** MUST 取得 PCI probe、IRQ、RX 和 TX 的独立运行见证
+
+### Requirement: K33 — fork 版 smoltcp 已知行为偏差
+
+fork 版 smoltcp（`starry-smoltcp 0.12.1`）在 MS01 基线采集中暴露两类与标准行为偏差：(1) UDP 非阻塞 `recvfrom` 无数据时返回 `ENOTCONN(107)` 而非 `EAGAIN(11)`；(2) 关闭 TCP listener 后端口不立即释放，需 `sleep(2)` 才能 rebind。
+
+**证据**: `openspec/changes/t01-smoltcp-axnet-baseline/evidence/000-initial/qemu-socket-baseline.log`；2026-07-28 QEMU 运行见证
+**状态**: ✅ 已验证并消除（MS01 完成，2026-07-29，14/14 QEMU PASS on smoltcp 0.13.1 + 本地 axnet）
+
+- **ENOTCONN 偏差**: `recvfrom` on bound-but-not-connected UDP socket 在标准 Linux 返回 EAGAIN，fork 版返回 ENOTCONN。非阻塞语义成立（不返回数据），仅 errno 不同。
+- **端口释放延迟**: `close(listen_fd)` 后立即 `bind` 同端口返回 `Address in use`。`listen_table` 未同步清理。
+- **迁移预期**: 切换至标准 smoltcp 0.13.1 + 本地 axnet 后两项偏差均应消失。
+
+#### Scenario: MS01 迁移后回归
+
+- **WHEN** 标准 smoltcp + 本地 axnet 替换完成后重跑 `ms01_socket_baseline`
+- **THEN** `udp-nonblock` MUST 返回 `EAGAIN(11)` 而非 `ENOTCONN`
+- **AND** `tcp-relisten` MUST 无需 `sleep(2)` 也能通过
+- **AND** 上述两项已于 2026-07-29 MS01 完成时验证通过（evidence/001 + 002）
+
+### Requirement: K34 — TCP bind 状态属于 kernel sidecar 而非 smoltcp
+
+POSIX bind/getsockname/local_addr 状态 MUST 由 kernel 侧 `HashMap<SocketHandle, IpListenEndpoint>` 维护，smoltcp socket 保持上游干净。外部 socket handle 拥有 bind 记录；accepted handle 从 smoltcp connection tuple 取 local endpoint；`SocketSetWrapper::remove` 统一清理。
+
+**证据**: `t01-smoltcp-axnet-baseline` iter 000-002；bind sidecar 位于 `crates/axnet/src/wrapper.rs:73-78`，14/14 QEMU PASS 含 4 个 bind 专项见证
+**状态**: ✅ 已验证
+
+- **存储格式**: INADDR_ANY 存为 `addr: None`。冲突检测 MUST 使用端口级匹配（`endpoint.port == port`），不得用 `endpoint.addr == Some(addr)` 比较——`None` 代表通配，与任何 `Some(...)` 不相等，导致 wildcard bind 后重复 bind 检测失效。
+- **生命周期**: bind → listen/connect → close/remove。每次 remove 同时清理 `tcp_bound` HashMap 和 `SocketSet`。
+- **冲突检测**: `bind_check` 遍历 `tcp_bound` 做端口匹配；UDP 额外检查 SocketSet 中的 endpoint。
+
+#### Scenario: TCP bind 冲突误报或漏报
+
+- **WHEN** bind 同一端口两次，第二次未被拒绝或错误拒绝
+- **THEN** MUST 检查 `tcp_bound` HashMap 的冲突比较是否正确处理 `addr: None`（wildcard）

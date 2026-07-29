@@ -1,0 +1,41 @@
+Command:
+  CARGO_HOME=/tmp/ms01-cargo-home.UL2SqH cargo check \
+    -Z unstable-options --lockfile-path Cargo.lock --offline \
+    --manifest-path crates/axnet/Cargo.toml
+Result:
+  Finished `dev` profile
+  exit=0
+
+Command:
+  cargo test -Z unstable-options \
+    --lockfile-path /tmp/ms01-smoltcp-lock/Cargo.lock --offline \
+    --manifest-path crates/smoltcp/Cargo.toml --no-default-features \
+    --features "alloc log async medium-ethernet medium-ip proto-ipv4 \
+      proto-ipv6 socket-raw socket-icmp socket-udp socket-tcp socket-dns" \
+    --lib
+Result:
+  error: no matching package named `insta` found
+  location searched: crates.io index
+  exit=101
+Classification:
+  ENV BLOCK. The offline cache lacks a smoltcp dev dependency.
+
+Command:
+  rustfmt --edition 2024 crates/axnet/src/udp.rs crates/axnet/src/service.rs
+  git diff --check -- crates/axnet/src/udp.rs \
+    crates/axnet/src/service.rs tests/ms01_socket_baseline.c \
+    scripts/ms01-qemu-test.py
+Result:
+  exit=0
+
+Command:
+  python3 scripts/ms01-qemu-test.py --self-test
+  python3 -m py_compile scripts/ms01-qemu-test.py
+  riscv64-linux-gnu-gcc -static -O2 -Wall -Wextra \
+    -o /tmp/ms01_socket_baseline tests/ms01_socket_baseline.c
+Result:
+  PASS: harness-self-test
+  exit=0
+
+Acceptance: A2, A8
+

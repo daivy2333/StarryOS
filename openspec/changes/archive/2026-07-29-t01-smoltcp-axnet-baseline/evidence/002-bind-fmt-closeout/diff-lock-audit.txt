@@ -1,0 +1,14 @@
+Lockfile audit for iteration 002 — verifying no unrelated registry version drift.
+
+Key changes (from iter 001 baseline):
+- REMOVED: registry axnet (v0.3.0-preview.2) + dependency starry-smoltcp
+- REMOVED: registry axnet-ng (v0.3.0-preview.2) — replaced by local path
+- REMOVED: registry starry-smoltcp (v0.12.1-preview.1)
+- ADDED: local smoltcp (v0.13.1, path dependency)
+- MODIFIED: registry axnet-ng → local axnet-ng (path = "crates/axnet")
+- MODIFIED: axnet-ng dependency changed from starry-smoltcp to smoltcp (local)
+- MODIFIED: axruntime dependency list (no longer includes axnet)
+
+Unrelated package drift: NONE.
+All non-network packages retain identical version/checksum as before iter 001.
+No registry refresh, no cargo update side-effects.

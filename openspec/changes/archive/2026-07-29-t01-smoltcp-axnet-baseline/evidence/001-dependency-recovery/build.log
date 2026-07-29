@@ -1,0 +1,22 @@
+Build command supplied from the runbook:
+  cd /home/daivy/projects/serial/work/StarryOS
+  make build
+  riscv64-linux-musl-gcc -static -O2 \
+    -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
+
+Execution:
+  User-managed host terminal.
+
+Result:
+  The resulting kernel booted under QEMU.
+  The resulting payload exercised the new UDP and relisten behavior.
+  Full guest witness exit=0.
+
+Kernel SHA-256:
+  c90a9dd80a65da721d01d8c1b70d454fa6966d05b455397d80fee80e26a7ce4b
+
+Payload SHA-256:
+  f93bf3ab0dac8faf47d3a96555617457278e803a6a37c89ed390c9c8cf02d7b5
+
+Acceptance: A3-A8
+

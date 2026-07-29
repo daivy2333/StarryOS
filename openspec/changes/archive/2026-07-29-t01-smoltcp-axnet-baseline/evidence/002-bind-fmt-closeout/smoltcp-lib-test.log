@@ -1,0 +1,10 @@
+$ cargo test --offline --manifest-path crates/smoltcp/Cargo.toml \
+  --no-default-features \
+  --features "alloc log async medium-ethernet medium-ip proto-ipv4 proto-ipv6 socket-raw socket-icmp socket-udp socket-tcp socket-dns" \
+  --lib
+error: no matching package named `insta` found
+
+Result: ENV BLOCK — dev dependency `insta` not in offline cache.
+EXEMPTED by user directive (2026-07-29): "不是大问题就给豁免吧".
+Rationale: smoltcp is unmodified upstream crate 0.13.1; lib test coverage
+is not within MS01 change surface.
