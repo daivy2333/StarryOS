@@ -116,6 +116,7 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R41 --> `.claude/analysis/starryos-network-development-strategy.md` | StarryOS 网络开发实施探索：当前 axnet/smoltcp/VirtIO 调用链、本地 smoltcp 0.13.1 兼容缺口、Embassy 采用边界、异步 queue/stack 数据流、QEMU PCI→MMIO→VisionFive2 分阶段 Gate |
 | <!-- R42 --> `.claude/analysis/starryos-network-delivery-estimate.md` | StarryOS 网络交付与工期估算：T01-T13 人周、单人和双人日历周期、估算假设、进度风险与阶段复估点 |
 | <!-- R43 --> `.claude/analysis/starryos-network-knowledge-gaps.md` | NIC 开发待收集信息清单：30 个待决问题按 milestone (T01-T13) 分组，每项含已知事实、待读代码、测试见证、解决判据和结果落点 — 进入 Plan 前逐项调查 |
+| <!-- R46 --> `.claude/analysis/starryos-device-specific-irq-waker-architecture.md` | StarryOS 设备专属 IRQ 与任务唤醒分析：UART 全局 hook 冲突、PLIC 设备 handler、设备私有 waker、MS03/MS04 分批边界和 Gate 2 未确认项 |
 
 **已归档**：UART 阶段全部分析文档。完整归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`（48 文件，含 analysis、docs、meta-specs、runbooks、specs）、q17: `openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/`、旧 ARC: `openspec/changes/archive/2026-07-25-arc-202607251326/`。
 

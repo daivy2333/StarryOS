@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-07-29
+goal: 在保留 MS02 轮询数据面的前提下，证明 QEMU VirtIO-MMIO 网卡 IRQ 可重复投递并可定位失败层

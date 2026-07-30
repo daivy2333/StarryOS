@@ -53,12 +53,12 @@
 |----|--------|------|
 | `openspec/specs/project-model/` | 10 (M01-M41) | 新增 M41；M03/M33/M35/M40 已归档 |
 | `openspec/specs/decisions/` | 5 (D01-D22) | 新增 D22；D03 已归档 |
-| `openspec/specs/knowledge/` | 14 (K01-K35) | 新增 K35（device mask×capability 单元测试模式）；K31/K32/K33 已验证 |
-| `openspec/specs/references/` | 活跃 12 | R14、R23-R26、R38-R43、R44、R45 |
+| `openspec/specs/knowledge/` | 15 (K01-K35) | 新增 K35（device mask×capability 单元测试模式）；K31/K32/K33 已验证 |
+| `openspec/specs/references/` | 活跃 13 | R14、R23-R26、R38-R43、R44、R45 |
 | `openspec/specs/improvements/` | 4 (I06,I13-I15) | PCI、QEMU 观测和覆盖层未承诺 |
 | `openspec/changes/` | 0 个活跃 | MS01 + MS02 已归档 |
 | `.claude/analysis/` | 8 | 网络总览、交付估算、知识缺口、4 NIC 专题和 1 VF2 专题 |
-| `.claude/runbooks/` | 4 | qemu-network-testing (R44)、incremental-merge (R38)、regression-gate (R39)、board-bringup-ladder (R40)；新增 ms02-virtio-mmio-evidence (R45)；benchmark/build 类已归档 (4 项 in `_archive/`) |
+| `.claude/runbooks/` | 5 | qemu-network-testing (R44)、incremental-merge (R38)、regression-gate (R39)、board-bringup-ladder (R40)；新增 ms02-virtio-mmio-evidence (R45)；benchmark/build 类已归档 (4 项 in `_archive/`) |
 
 ## 证据文件
 

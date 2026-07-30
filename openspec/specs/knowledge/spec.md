@@ -225,7 +225,7 @@ QEMU 终端与 hostfwd MUST 视为独立通道。`make run` 的终端 I/O 走 NS
 
 ### Requirement: K33 — fork 版 smoltcp 已知行为偏差
 
-fork 版 smoltcp（`starry-smoltcp 0.12.1`）在 MS01 基线采集中暴露两类与标准行为偏差：(1) UDP 非阻塞 `recvfrom` 无数据时返回 `ENOTCONN(107)` 而非 `EAGAIN(11)`；(2) 关闭 TCP listener 后端口不立即释放，需 `sleep(2)` 才能 rebind。
+fork 版 smoltcp（`starry-smoltcp 0.12.1`）在 MS01 基线采集中曾暴露两类偏差。UDP 非阻塞 `recvfrom` 无数据时返回 `ENOTCONN(107)`，而非 `EAGAIN(11)`。关闭 TCP listener 后端口不立即释放，需 `sleep(2)` 才能 rebind。当前 smoltcp 0.13.1 + 本地 axnet 基线 MUST 保持这两类偏差已消除。
 
 **证据**: `openspec/changes/t01-smoltcp-axnet-baseline/evidence/000-initial/qemu-socket-baseline.log`；2026-07-28 QEMU 运行见证
 **状态**: ✅ 已验证并消除（MS01 完成，2026-07-29，14/14 QEMU PASS on smoltcp 0.13.1 + 本地 axnet）
