@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录已验证的行为、根因、适用范围和失效边界。条目使用 `Kxx` 编号。不记录单纯文件位置、可从签名读取的 API、未验证猜测或一次性实现细节。对应 Legacy: `openspec/specs/learned/spec.md` (hash: `f09d4cae`)。
+记录已验证的行为、根因、适用范围和失效边界。条目使用 `Kxx` 编号。不记录单纯文件位置、可从签名读取的 API、未验证猜测或一次性实现细节。Legacy learned 原文保存在 `openspec/changes/archive/mig-20260720-legacy-specs/learned-original.md`（hash: `f09d4cae`）。
 
 ## Requirements
 
@@ -191,7 +191,7 @@ Async 与 Console 的 write() 语义不同 MUST 在性能对比中明确标注�
 - **数据量**: 必须统一数据量对比，Console 3,835 cycles/byte vs Async 268 cycles/byte（效率高 14.3 倍）。
 
 **性能基准框架**:
-- 内核态: `kernel/src/drivers/benchmark.rs`（CPU cycle 计数、NAPI 效果、Ring Buffer 写入）
+- 内核态: `kernel/src/drivers/bench.rs`（CPU cycle 计数、NAPI 效果、Ring Buffer 写入）
 - 用户态: `tests/benchmark.c`（TX 吞吐 64/256/1024/4096B、write() 延迟 P50/P95/P99）
 - 自动化: `scripts/benchmark.sh`
 - 测试分支: `feat/uart-async-bench`（Async）、`feat/uart-bench`（Console）

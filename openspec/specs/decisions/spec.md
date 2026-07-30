@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录有替代方案且影响长期维护的重要选择、原因、替代方案、影响和状态。条目使用 `Dxx` 编号，被替代后保留历史并标记 `superseded`。对应 Legacy: `openspec/specs/architecture/spec.md` (hash: `5b054d98`) 中的 ADR 决策详情。
+记录有替代方案且影响长期维护的重要选择、原因、替代方案、影响和状态。条目使用 `Dxx` 编号，被替代后保留历史并标记 `superseded`。Legacy ADR 原文保存在 `openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md`（hash: `5b054d98`）。
 
 ## Requirements
 
@@ -340,4 +340,4 @@ VisionFive2 bring-up MUST 保留 U-Boot 配置的 PLIC 和 Clock 状态（范围
 - **WHEN** 开发者提议将 trust-u-boot 扩展到 UART 或其他外设
 - **THEN** MUST 先证明重复初始化会破坏已建立状态，NS16550 寄存器写入通常无害
 
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98). Decision rationale extracted as D01-D21. Tombstoned ADRs: A014-A017, A020-A021, A032, A035, A056, A063-A064 → archive carriers ARC-202607081429, ARC-202607021648, arc-202607152005.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy ADR source: `openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md` (hash: 5b054d98). Decision rationale extracted as D01-D21. Tombstoned ADRs: A014-A017, A020-A021, A032, A035, A056, A063-A064 → archive carriers ARC-202607081429, ARC-202607021648, arc-202607152005.

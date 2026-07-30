@@ -1,10 +1,10 @@
 # StarryOS 异步串口学习地图
 
-> 范围:Q0~Q28(Q27/Q27a/Q28 2026-07-15 归档)+ Q19C-M2 + Q20 benchmark gap closure + Q21/Q22/Q23 决策;Q29/Q30 后续。
-> 日期:2026-07-16。
-> 关联:`docs/async-uart-architecture.md`、`benchmark-report-async.md`、`licheerv-dock-bringup.md`、Q19cM1.md、`docs/manual-qa-report.md`、`.claude/analysis/q19c-d1-tx-optimization.md`、`.claude/analysis/q19c-m1-memory-root-path-loader.md`、`.claude/analysis/q20-evidence/`、`openspec/specs/{architecture,learned,optimization}/spec.md`。
+> 范围:Q0~Q32 已完成/归档路径，以及 Q24/Q25/Q30 的证据触发边界。
+> 日期:2026-07-30。
+> 关联:`docs/async-uart-architecture.md`、`benchmark-report-async.md`、`licheerv-dock-bringup.md`、`docs/manual-qa-report.md`、`.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md`、`.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md`、`openspec/changes/archive/2026-07-13-q20-benchmark-gap-closure/evidence/`、`openspec/specs/{project-model,decisions,knowledge,references,improvements}/spec.md`。
 >
-> 当前分支 `uart-16550-lichee`(已同步 origin,Q28 已归档);D1 真板异步 UART 测试(Q19/Q19B/Q19C)已正式结束,Q24 SMP 复验仍等待硬件。
+> 当前分支 `uart-lichee`；D1 真板异步 UART 测试与 Q31/Q32 对照已结束，Q24/MS02 SMP 复验仍等待硬件。
 
 ## 概览
 
@@ -226,6 +226,6 @@ QEMU benchmark 仍用于相对优化和回归测试(Q17/Q27/Q28 都以 QEMU 作�
 
 ### 真板文档
 
-`docs/lichee-adaptation-prework.md` → `lichee-smoke-problems.md` → `lichee-smoke-solutions.md` → `lichee-q19b-benchmark-problems-solutions.md`。
+`.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md` → `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/q19b-current-blockers.md` → `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/q19b-lichee-benchmark-plan.md` → `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-lichee-full-starryos-benchmark.md`。
 
-硬件事实 → boot 事实 → smoke 最小闭环 → async UART 真板闭环 → 性能解释。不要从性能数据反推全部实现。
+硬件事实 → boot 事实 → smoke 最小验证 → async UART 真板验证 → 性能解释。不要从性能数据反推全部实现。

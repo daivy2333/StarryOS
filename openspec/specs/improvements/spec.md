@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录尚未承诺实施的改进机会。条目使用 `Ixx` 编号。已完成的条目保留 tombstones。对应 Legacy: `openspec/specs/optimization/spec.md` (hash: `2ffa3af2`)。
+记录尚未承诺实施的改进机会。条目使用 `Ixx` 编号。已完成的条目保留 tombstones。Legacy optimization 原文保存在 `openspec/changes/archive/mig-20260720-legacy-specs/optimization-original.md`（hash: `2ffa3af2`）。
 
 ## Requirements
 
@@ -197,4 +197,4 @@ UART benchmark MUST 区分提交、THR 接受和 TEMT 完成。QEMU 数据只用
 - **THEN** MUST 提供 `/dev/console` 写入、接收或 capture 校验和完成状态
 - **AND** `/dev/null` 结果 MAY 作为 syscall/VFS 对照，但 MUST NOT 作为 UART 证据
 
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/optimization/spec.md (hash: 2ffa3af2), 439 lines. Active improvements extracted as I01-I10; I11 removed (console-specific, archived to `console-lichee` branch); I12 added from async UART benchmark measurement evidence. Completed/archived entries preserved as tombstones. Archive carriers: ARC-202607021535, ARC-202607021648, ARC-202607031929, ARC-202607111510.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy optimization original: `openspec/changes/archive/mig-20260720-legacy-specs/optimization-original.md` (hash: 2ffa3af2), 439 lines. Active improvements extracted as I01-I10; I11 removed (console-specific, archived to `console-lichee` branch); I12 added from async UART benchmark measurement evidence. Completed/archived entries preserved as tombstones. Archive carriers: ARC-202607021535, ARC-202607021648, ARC-202607031929, ARC-202607111510.

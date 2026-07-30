@@ -35,7 +35,7 @@
 #### Scenario: 构建失败提示 musl 编译器找不到
 
 - **WHEN** `make build` 报 `riscv64-linux-musl-cc: command not found`
-- **THEN** MUST 按 `learned` spec 中的"构建与部署环境踩坑"操作，禁止修改项目代码绕过
+- **THEN** MUST 按 K28 与 R29 的构建环境记录处理，禁止修改项目代码绕过
 
 ### Requirement: 硬件与平台规范
 
@@ -50,7 +50,7 @@ UART / 中断控制器 / 虚拟化控制器的官方规范 MUST 在本规范登�
 #### Scenario: 调试 UART 寄存器行为
 
 - **WHEN** 开发者发现 UART 状态异常（如 THR_EMPTY 含义不明、LSR 位差异）
-- **THEN** MUST 优先查 NS16550A 规范 PDF，**禁止**只依赖 crate 注释（`learned` L80 教训：crate 注释曾有错误）
+- **THEN** MUST 优先查 NS16550A 规范 PDF，**禁止**只依赖 crate 注释（K06，Legacy L80：crate 注释曾有错误）
 
 ### Requirement: Embassy 生态参考
 
@@ -68,7 +68,7 @@ UART / 中断控制器 / 虚拟化控制器的官方规范 MUST 在本规范登�
 #### Scenario: 评估引入 embassy-executor
 
 - **WHEN** 开发者想引入 embassy-executor 替换 axtask
-- **THEN** MUST 拒绝（`learned` L10：embassy-executor 与 axtask 调度器冲突）；改用 `axtask::future + AtomicWaker` 模式
+- **THEN** MUST 拒绝（K09，Legacy L10：embassy-executor 与 axtask 调度器冲突）；改用 `axtask::future + AtomicWaker` 模式
 
 ### Requirement: Rust 异步与系统编程参考
 
@@ -116,22 +116,22 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 
 ### Requirement: 项目内部分析与设计文档索引
 
-`.claude/analysis/` 的分析文档 MUST 在此登记。**2026-06-11 迁移**：`docs/analysis/` 9 份迁入并融合为 6 份，删除已覆盖的 `uart-16550-crate-reuse.md`。
+`.claude/analysis/` 的分析文档 MUST 在此登记。**2026-06-11 迁移**：旧 docs/analysis 的 9 份文档迁入并融合为 6 份，已覆盖的 `uart-16550-crate-reuse.md` 退出活动路径。
 
 | 文档 | 主题 |
 |------|------|
 | <!-- R21 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/architecture-overview.md` | 架构概览摘要：仓库结构、构建系统、启动链、任务/进程模型、中断框架；文件内含完整旧版恢复指针 |
-| <!-- R22 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA、HAL trait、真板 bring-up、PLIC 与异步 UART 对照；配套 optimization/spec.md O64~O73 借鉴清单 |
+| <!-- R22 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/arceos-borrowable-experience.md` | ArceOS 借鉴经验分析：DMA、HAL trait、真板 bring-up、PLIC 与异步 UART 对照；当前改进入口为 I06（Legacy O64~O73） |
 | <!-- R2 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/optimization-milestone-replan.md` | Q15 后优化项 milestone 重规划：将 Q6 过载项拆分为 Q16 文档收敛、Q17 SMP 内存序、Q18 真板观测、Q19 VisionFive2 验证、Q20 DMA/高波特率决策、Q21 维护性清理、Q22 远期预研池 |
-| <!-- R3 --> `.claude/analysis/q17-smp-memory-ordering.md` | Q17 / O63 SMP 内存序实施前分析：`ier_cache` RMW 竞争、TX completion Release/Acquire 语义、无需按架构分叉的 Rust 原子模型依据、验证 Gate；2026-07-03 复核补充 D1 `UartPort` 边界与当前源码行号漂移 |
+| <!-- R3 --> `.claude/analysis/q17-smp-memory-ordering.md` | Q17 / I05（Legacy O63）SMP 内存序实施前分析：`ier_cache` RMW 竞争、TX completion Release/Acquire 语义、无需按架构分叉的 Rust 原子模型依据、验证 Gate；2026-07-03 复核补充 D1 `UartPort` 边界与当前源码行号漂移 |
 | <!-- R4 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee/public-platform-notes.md` | Lichee RV Dock 公开资料与真板采集对照：D1 UART/PLIC/timer/boot image/RAM/启动链事实基线 |
 | <!-- R5 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/lichee-rv-dock-adaptation-plan.md` | Lichee RV Dock 适配方案：方向、技术路线、milestone、风险与下一步工程清单 |
 | <!-- R6 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/platform-parameter-decoupling.md` | 平台参数解耦分析：QEMU 常量耦合点、axconfig/axplat 复用边界、platform descriptor 与 early console 分层方案 |
 | <!-- R7 --> `[ARCHIVED 2026-07-04]` `.claude/analysis/_archive/2026-07-04-q19-lichee-analysis/d1-axplat-bringup-plan.md` | D1 正路径 axplat bring-up 方案：解释 U-Boot 已跳转但无 Starry 输出的根因，规划本地 `axplat-riscv64-lichee-d1`、链接/启动/MMIO console/build gate |
 <!-- tombstone: R8/R9 --> Archived 2026-07-02 in ARC-202607021648 — Q19B plan/blockers 已完成，当前入口为 `lichee-d1-benchmark` spec、Q19B archived change 与 R10 Q19C。
 | <!-- R10 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-lichee-full-starryos-benchmark.md` | Q19C benchmark：manifest cleanup、RX witness、D1 memory-root path；最终收敛为 D1 async UART 性能验证，shell/SDMMC/rootfs 不作为 gate |
-| <!-- R11 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md` | Q19C.8e TX/P99：slow-poll + yield 已验证 forward progress；P99 未改善，作为 O77/L275 known limitation，Q20 复验 |
-| <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1：memory-root `/bin/benchmark` 通过 `resolve/read` + eager ELF mapping；lazy COW SIGILL 另列 O80/L277 |
+| <!-- R11 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-d1-tx-optimization.md` | Q19C.8e TX/P99：slow-poll + yield 已验证 forward progress；P99 未改善，当前入口为 I01/K20（Legacy O77/L275） |
+| <!-- R12 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m1-memory-root-path-loader.md` | Q19C-M1：memory-root `/bin/benchmark` 通过 `resolve/read` + eager ELF mapping；lazy COW SIGILL 当前入口为 K22（Legacy O80/L277） |
 | <!-- R13 --> `[ARCHIVED 2026-07-11]` `.claude/analysis/_archive/2026-07-11-q19c-d1-async-uart-closeout/q19c-m2-m3-shell-sdmmc-probe.md` | Q19C-M2/M3：M2 equivalent command-entry 通过；M3/rootfs-probe、SDMMC/rootfs 取消当前规划 |
 | <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ⚠️ STALE [2026-07-15] — 摘要仍写 Q20，实际继续作为 Q24 输入；ArceOS / 明扬 VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层 |
 | <!-- R15 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/uart-async-qemu-d1-first-replan.md` | UART async milestone 重排分析：将 QEMU/D1 可完成的 latency+jitter+CPU/RX 补测、用户态 completion queue、mmap ring/zero-copy 与性能决策前移；Q20 已完成、Q21/Q22 取消、Q23 决策完成，重排已全部执行 |
@@ -145,10 +145,10 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R25 --> `.claude/analysis/arceos-async-network-driver-analysis.md` | ArceOS 异步网卡分析：NetDriverOps、NetBuf、smoltcp adapter、DWMAC、axdma 与真板证据；识别硬中断全栈 poll、lost wakeup 和全局锁风险 |
 | <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
 | <!-- R27 --> `[ARCHIVED 2026-07-22]` `.claude/analysis/_archive/console-lichee-baseline-branch.md` | Console 性能基线分支分析：从冻结的当前异步提交选择性适配 polling Console，界定 TTY、生命周期、TEMT drain、benchmark 语义和 QEMU/D1 对照 Gate；Q31/Q32 CPU-efficiency 对照实验已完成并归档 |
-| <!-- R42 --> `.claude/analysis/_archive/2026-07-21-console-performance-measurement-design.md` | [ARCHIVED 2026-07-21] I11/I12 Console 性能与测量设计（console 分支专属，`uart-lichee` 不适用） |
-| <!-- R43 --> `.claude/analysis/async-uart-cpu-efficiency-metrics.md` | 异步 UART CPU 效率指标与测试落地：盘点现有 S00-S40 覆盖，定义 submit fraction、通信—计算重叠、instret/byte、分段 counter delta 与证据边界 |
+| <!-- R48 --> `.claude/analysis/_archive/2026-07-21-console-performance-measurement-design.md` | [ARCHIVED 2026-07-21] I11/I12 Console 性能与测量设计（console 分支专属，`uart-lichee` 不适用） |
+| <!-- R49 --> `.claude/analysis/async-uart-cpu-efficiency-metrics.md` | 异步 UART CPU 效率指标与测试落地：盘点现有 S00-S40 覆盖，定义 submit fraction、通信—计算重叠、instret/byte、分段 counter delta 与证据边界 |
 
-**已归档**（`.claude/analysis/_archive/`）：13 份一次性分析文档已于 2026-06-23 归档。核心经验已提取至 learned/architecture/optimization spec 中。
+**已归档**（`.claude/analysis/_archive/`）：一次性分析文档按对应 carrier 归档；稳定结论已提取至 project-model / decisions / knowledge / improvements，定位信息登记在本 references spec。
 
 #### Scenario: 新生成 openspec-explorer 分析文档
 
@@ -162,15 +162,15 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 <!-- 由 openspec-liaison 写入，由 openspec-assistant 日常维护，由 openspec-archivist 周期清理。 -->
 <!-- 添加时格式: <!-- R{编号} --> | 子项目 | 路径 | 文档体系 | 摘要 | 最近更新 | -->
 
-<!-- R1 --> | `uart_16550` | `../uart_16550` | OpenSpec✓ config✓ specs✓ changes✗ cg✓ | v0.6.0 path 依赖；4-domain OpenSpec 已建，changes 仅 archive，CodeGraph 729KB；旧 `.claude/docs/` 保留 SNAPSHOT/tasks 和 4 份 `.bak`。 | 2026-06-03 |
+<!-- R1 --> | `[MISSING 2026-07-30]` historical `uart_16550` sibling | 原路径 `../uart_16550`；当前实现为 `crates/uart_16550/` | 旧跨项目目录当前不存在；本地 crate 是有效入口，历史事实由 R47 carrier 恢复 | 2026-07-30 |
 
-<!-- R28 --> | async UART API 路径速查 | `uart_16550/src/os/mod.rs`（OsRuntime + OsWakerSet 2-trait）、`uart_16550/src/async_/`（isr / ring_buffer / driver / device_ops）、`kernel/src/drivers/os_arceos.rs`（ArceOS adapter）、`kernel/src/drivers/d1_uart.rs`（D1 ArceOsD1UartPort） | 异步栈核心 API 定位 |
+<!-- R28 --> | async UART API 路径速查 | `crates/uart_16550/src/os/mod.rs`、`crates/uart_16550/src/async_/`、`kernel/src/drivers/os_arceos.rs`、`kernel/src/drivers/d1_uart.rs` | OsRuntime/OsWakerSet、async core、ArceOS adapter 与 D1 port 定位 |
 | <!-- R29 --> | 构建与部署环境 | musl 工具链 `/opt/musl/riscv64-linux-musl-cross/bin`；rootfs `rootfs-riscv64.img.xz`（GitHub releases）；disk.img 位置项目根 + `make/disk.img` | 构建前环境验证 |
-| <!-- R30 --> | D1 平台关键事实与编译烧录流程 | **编译**: `make lichee-userbench`（userbench 模式）、`make lichee-kbench`（内核 benchmark）、`make lichee-fullbench-command`（fullbench command-entry）。产物: `starry-lichee-*-boot.img`。**构建 Gate**: `DWARF=n`（否则 image 超 10M 分区限制）、`BUS=mmio`（D1 无 PCI）、通过 `MYPLAT`/`PLAT_CONFIG` 选择本地 `axplat-riscv64-lichee-d1`。**烧录**: ① 将 .img 拷到 TF 卡 exUDISK 分区；② D1 官方 Linux 中 `dd if=/dev/by-name/boot of=/mnt/exUDISK/boot-official-backup.img bs=1M`（**先备份**）；③ `dd if=/mnt/exUDISK/starry-lichee-*.img of=/dev/by-name/boot bs=1M conv=fsync`（烧录）；④ `sync && reboot -f`。**恢复**: `dd if=/mnt/exUDISK/boot-official-backup.img of=/dev/by-name/boot bs=1M conv=fsync && reboot -f`。注意 `/dev/mmcblk0p4` 不可直接用于 dd，by-name 路径才是稳定接口。**平台事实**: D1/C906 单核 Sv39、RAM `0x40000000+512MiB`、UART0 `0x02500000` IRQ 18、Android boot image `kernel_addr=0x40200000` magic `ANDROID!` name `d1-nezha` page_size `2048`、OpenSBI v0.6 + U-Boot 2018.05。 | Lichee RV Dock bring-up 完整基线 |
-| <!-- R31 --> | D1 构建与 feature gate | **三模式并行验证**: `cargo check --features lichee-d1 --target riscv64gc-unknown-none-elf`（smoke）、`cargo check --features lichee-d1-kbench --target riscv64gc-unknown-none-elf`（kbench）、`cargo check --features qemu --target riscv64gc-unknown-none-elf`（QEMU）。三模式全部通过 `cargo check` + `cargo clippy` 后才能声明 Phase 完成。**构建参数**: `MYPLAT`/`PLAT_CONFIG` 选择本地 `axplat-riscv64-lichee-d1`、`DWARF=n`、linker base `0xffffffc040200000`、`BUS=mmio` 必需（D1 无 PCI）、硬件能力 feature 与运行模式 feature 分离、axfs-ng 本地 patch（`default-features=false, features=["block","bus-mmio"]`） | D1 构建验证 |
-| <!-- R32 --> | D1 async UART 行为数据 | D1 THRE/no-pending（IIR 常 0xc1）、tcdrain 注册 DRAIN_WAKER、Q19B 基线（256B 11.25KB/s）、Q19C 纠正（64B 93-97% 线速）、slow-poll forward progress 未丢 | D1 async UART 性能基准 |
+| <!-- R30 --> | D1 平台事实与烧录入口 | K19；`.claude/runbooks/d1-build-and-flash.md`（R36）；`.claude/runbooks/benchmark-qemu-d1.md`（R41） | 平台事实、构建、备份、烧录和恢复的权威入口 |
+| <!-- R31 --> | D1 build/feature Gate | `.claude/runbooks/d1-build-and-flash.md`；`Makefile` | QEMU、D1 smoke、D1 kbench 的验证矩阵与构建参数入口 |
+| <!-- R32 --> | D1 async UART 行为数据 | K20；R11；`docs/d1_out.md` | THRE/no-pending、drain、slow-poll 和 Q19B/Q19C benchmark 证据入口 |
 | <!-- R33 --> | io_uring 映射与 NIC 迁移 | `[ARCHIVED]` R18 `.claude/analysis/_archive/async-uart-vs-io_uring.md`、R23-R26 异步网卡分析、Embassy driver-channel packet slot 模式、ArceOS DWMAC/axdma 硬件参考 | 架构借鉴与 NIC 路线 |
-| <!-- R34 --> | Q26 维护性清理记录 | memtrack 三态 session + `axalloc::tracking` API、ProcessMode::Manual 删除教训、`docs/d1_out.md` D1 command-entry benchmark evidence | 维护性清理参考 |
+| <!-- R34 --> | Q26 维护性清理记录 | `openspec/changes/archive/2026-07-20-q26-maintenance-cleanup/`；K28；`docs/d1_out.md` | 维护性清理结论与运行证据入口 |
 | <!-- R35 --> | QEMU 构建与运行 Runbook | `.claude/runbooks/qemu-build.md` | QEMU riscv64-virt 编译、运行、benchmark 与失败处理 |
 | <!-- R36 --> | D1 真板构建与烧录 Runbook | `.claude/runbooks/d1-build-and-flash.md` | Lichee RV Dock/D1 编译、Android boot image 打包、烧录、恢复与失败处理 |
 | <!-- R37 --> | 基准测试 Runbook | `.claude/runbooks/benchmark-guide.md` | S 系列测试运行方式、结果判读、QEMU/D1 可信度边界与通过条件 |
@@ -182,6 +182,7 @@ Linux 8250 / serial_core.c MUST 作为异步串口行为正确性的对照参考
 | <!-- R43 --> | Q32 Console CPU-Efficiency Benchmark Spec | `openspec/specs/console-cpu-efficiency-benchmark/spec.md`（10 reqs）。Evidence: `openspec/changes/archive/2026-07-22-q32-console-cpu-efficiency-benchmark/evidence/`。Frozen logs: QEMU `67b7bb02...`, D1 `b3f11fce...`。Archived: `openspec/changes/archive/2026-07-22-q32-console-cpu-efficiency-benchmark/` | Console CPU-efficiency measurement contract |
 | <!-- R44 --> | `[ARCHIVED 2026-07-22]` Console Benchmark QEMU/D1 Runbook | `.claude/runbooks/_archive/console-benchmark-qemu-d1.md` | Console 分支 benchmark 构建、QEMU rootfs 注入、D1 烧录和验证；Q31/Q32 实验完成，async 版 `.claude/runbooks/benchmark-qemu-d1.md` 为权威部署流程 |
 | <!-- R45 --> | Q31→Q32 Console Port Analysis | `.claude/analysis/q31-console-cpu-efficiency-port.md` | 移植范围、D1 time 修复、S43 hang 根因（IRQ stub）、Console/Async 差异 |
-| <!-- R46 --> | Q32 Doc Sync Checklist | `docs/q32-console-cpu-efficiency-doc-sync.md` | cross-branch 同步清单、comparison 边界、归档前验证 |
-| <!-- arc: MIG-20260720-legacy-specs --> Learned reference entries merged: Legacy `openspec/specs/learned/spec.md` (hash: f09d4cae) → new R28-R34. |
+| <!-- R46 --> | `[MISSING 2026-07-30]` Q32 Doc Sync Checklist | 原路径 `docs/q32-console-cpu-efficiency-doc-sync.md`；可恢复来源 `openspec/changes/archive/2026-07-22-q32-console-cpu-efficiency-benchmark/` | 原文件当前不存在；Q32 change 保留 cross-branch 同步、comparison 边界与归档验证证据 |
+| <!-- R47 --> | `[ARCHIVED 2026-07-30]` 旧文档体系迁移审计 | `openspec/changes/archive/2026-07-30-mig-202607301654/` | 旧 project、旧 tasks、上一轮 MIG 与六个历史 ARC 的 2,743 个逐单元 hash、目标映射、正反向核对和恢复入口 |
+| <!-- arc: MIG-20260720-legacy-specs --> Learned reference entries merged: `openspec/changes/archive/mig-20260720-legacy-specs/learned-original.md` (hash: f09d4cae) → new R28-R34. |
 <!-- arc: ARC-202607021648 --> 1 组 references 条目已归档/压缩 (2026-07-02) → ../changes/archive/2026-07-02-ARC-202607021648/proposal.md

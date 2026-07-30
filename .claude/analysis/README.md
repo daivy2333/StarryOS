@@ -2,8 +2,8 @@
 
 > Last updated: 2026-07-25
 > 2026-07-25 relocate: `q20-evidence/`、`q31-cpu-efficiency-evidence/`、`q32-console-cpu-efficiency-evidence/` → 各自归档 change 的 `evidence/` 目录（符合 OpenSpec 规范：Change Evidence 属于 change，不驻留 `.claude/analysis/`）。
-> 2026-07-22 archive: 5 UART-completed analysis + 1 Console runbook → `_archive/`（Q27-Q32 全部完成，对应输入分析归档）。
-> 2026-07-22 update: Q31/Q32 CPU-efficiency evidence and comparison synced from `console-lichee`.
+> 2026-07-22: Q31/Q32 evidence 与 comparison 从 `console-lichee` 同步。
+> 2026-07-22: Q27-Q32 完成后，5 份 UART analysis 和 1 份 Console runbook 移入 `_archive/`。
 > 2026-07-21 update: `console-performance-measurement-design.md` → `_archive/2026-07-21-console-performance-measurement-design.md`（console 分支专属分析）。
 > 2026-07-11 update: Q19C/D1 async UART closeout analysis moved to `_archive/2026-07-11-q19c-d1-async-uart-closeout/`.
 > 2026-07-04 update: 16 active-path tombstones (8 top-level + 8 in `lichee/`) were consolidated into `_archive/README.md`.
@@ -43,8 +43,5 @@
 
 ## Restore Rule
 
-1. Find the old path in `_archive/README.md` "Active-path Tombstones" section (or grep `tombstone:` for older records).
-2. Copy the archived file back to the requested path.
-3. Restore only on explicit user request.
-
-The R-index entries in `openspec/specs/references/spec.md` and the archive annotations in `learned/` / `architecture/` / `optimization` specs carry the archive paths, so cross-document navigation is preserved.
+- 在 `_archive/README.md` 的 “Active-path Tombstones” 查旧路径；更早记录用 `grep tombstone:`。
+- 仅在用户明确要求时恢复；R 索引见 `openspec/specs/references/spec.md`。

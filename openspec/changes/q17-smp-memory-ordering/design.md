@@ -6,7 +6,7 @@
 - `critical_section` 仅 `disable_irqs()`（本地中断），不提供 SMP 同步
 - `embassy_sync::AtomicWaker` 和 `embassy_hal_internal::atomic_ring_buffer` 已正确使用 `AcqRel`——本次仅需修复我们自己的字段
 
-参考文档：`.claude/analysis/q17-smp-memory-ordering.md`、`openspec/specs/optimization/spec.md` O63
+参考文档：`.claude/analysis/q17-smp-memory-ordering.md`、`openspec/specs/improvements/spec.md` I05（Legacy O63）
 
 ## Goals / Non-Goals
 

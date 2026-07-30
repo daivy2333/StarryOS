@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录当前有效的跨模块模型、边界和约束。条目使用 `Mxx` 编号，不记录历史选择过程。对应 Legacy: `openspec/specs/architecture/spec.md` (hash: `5b054d98`) 中的当前有效约束。
+记录当前有效的跨模块模型、边界和约束。条目使用 `Mxx` 编号，不记录历史选择过程。Legacy architecture 原文保存在 `openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md`（hash: `5b054d98`）。
 
 ## Requirements
 
@@ -474,4 +474,4 @@ Lichee RV Dock bring-up MUST 先沿用官方 `BOOT0 -> OpenSBI -> U-Boot -> Andr
 - **THEN** 首个可运行目标 MUST 为 Android boot image + D1 UART0 polling early console
 - **AND** async TTY、UART IRQ、rootfs、USB、SD/MMC、shell、benchmark MUST 在 polling 串口输出确认前保持禁用
 
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98), 1053 lines, ADR-001~063. Current valid constraints extracted as M01-M40. Decisions rationale preserved in decisions/spec.md. Tombstoned ADRs (A014-A017, A020-A021, A032, A063-A064) noted here — details in archive carriers ARC-202607081429 and arc-202607152005.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy architecture original: `openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md` (hash: 5b054d98), 1053 lines, ADR-001~063. Current valid constraints extracted as M01-M40. Decisions rationale preserved in decisions/spec.md. Tombstoned ADRs (A014-A017, A020-A021, A032, A063-A064) noted here — details in archive carriers ARC-202607081429 and arc-202607152005.
