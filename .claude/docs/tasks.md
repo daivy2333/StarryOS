@@ -62,7 +62,7 @@ milestone 可以由一个或多个 change 完成，不预先绑定数量。
 依赖分为两条可并行路线：
 
 ```text
-QEMU: MS01 -> MS02 -> MS03 -> MS04 -> MS05 -> MS06 -> MS07 -> MS08
+QEMU: MS01 -> MS02 -> MS03 -> MS16 -> MS04 -> MS05 -> MS06 -> MS07 -> MS08
 VF2:  MS01 -> MS09 -> MS10 -> MS11
                          MS06 + MS11 -> MS12
                          MS07 + MS12 -> MS13
@@ -114,12 +114,27 @@ VF2:  MS01 -> MS09 -> MS10 -> MS11
 - Split signals: 发现多个独立 IRQ transport，且各自需要不同的平台 Gate。
 - Related changes: None
 
+### MS16：QEMU 轮询网卡性能基线
+
+- Status: planned
+- Outcome: 在 MS02 轮询数据面和 MS03 可诊断 IRQ 基线上建立可重复的 QEMU 网卡性能基线，为 MS04 及后续异步网卡提供严格的 A/B 对照。
+- Rationale: 异步 RX 引入前必须冻结当前轮询网卡的吞吐、延迟、抖动、CPU、丢包和背压数据，否则无法归因后续收益或退化；该成果不扩大 MS03 的 IRQ 故障域，也不混入 MS04 的异步实现。
+- Dependencies: MS03
+- Scope: R47 的基准 manifest、时序校准和 loopback 对照；TCP/UDP 发送、接收、双向与多流；接收端确认的 goodput/PPS、RTT p50/p95/p99/max；UDP 丢包、重复、乱序与损坏；非阻塞背压及恢复；空闲/负载 QEMU CPU、单 hart `/proc/instret`、MS03 IRQ 效率和定时器干扰。TAP 是性能主拓扑，user-net 仅作兼容 smoke。
+- Non-goals: 异步 waker、queue task、协议栈 readiness、删除 10ms 轮询兜底、改变队列/socket 容量或网络行为、自动化 QEMU runner、仅为基准定位注册表具体驱动、netem 故障注入、长时间 soak、VF2/真实硬件性能和性能优化；user-net 不作为绝对性能结论。
+- Workload: 固定 guest/host 基准 payload、环境 manifest 和校准协议；依照 R44 手工 QEMU/TAP 流程执行；采集 host/guest/IRQ 数据；先通过正确性 Gate，再运行重复轮次并保存原始证据和统计摘要。
+- Stable baseline: B0 数据集绑定源码与基准程序版本、QEMU、host、网络后端、MTU、SMP 等环境事实，包含接收端确认指标、原始日志、抓包和 IRQ 快照；MS04 能原样重跑同一基准形成 A/B。
+- Verification boundary: 静态/构建、no-hostfwd 启动、user-net 功能 smoke、TAP ARP/ICMP、MS01 14/14 和 MS02 回归均通过后才计性能证据；核心 TCP/UDP 矩阵在重复轮次中无无法解释的损坏、丢包或超时，并记录基线波动；B0 前不承诺绝对阈值。
+- Diagnostic boundary: 将失败限制在基准协议/校验、QEMU 拓扑与 Runbook、host peer/采样、socket/axnet、轮询数据面或 MS03 IRQ 快照；不混淆 TAP/user-net/loopback，也不混淆 host 与 guest CPU。
+- Split signals: 观测要求定位注册表具体驱动或改变网络行为、QEMU 自动化政策需要调整、netem/长稳测试形成独立交付，或必测矩阵的运行与证据规模可独立验收；优先拆为 MS16 内多个 change，只有形成独立稳定结果时再新增 milestone。
+- Related changes: None
+
 ### MS04：QEMU 异步 RX 队列基线
 
 - Status: planned
 - Outcome: MMIO RX 由最小 ISR 唤醒唯一 queue task，以有界 budget 推进。
 - Rationale: T05 的唤醒原语与 T06 的 RX 服务共同证明第一条可用的异步队列路径。
-- Dependencies: MS03
+- Dependencies: MS16
 - Scope: T05-T06；NetQueueControl、AtomicWaker、register-recheck、RX reap/refill 和 budget。
 - Non-goals: 异步 TX、最终 packet slot、stack runner 和 socket readiness。
 - Workload: 唤醒协议、队列所有权、RX completion 和竞态测试。
