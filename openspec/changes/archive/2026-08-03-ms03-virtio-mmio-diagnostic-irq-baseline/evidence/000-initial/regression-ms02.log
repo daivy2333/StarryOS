@@ -1,0 +1,20 @@
+MS02 regression for MS03 iteration 000.
+
+## TCP 5555
+
+Command: nc 127.0.0.1 5555
+Input:  MS02_TCP_REQUEST
+Output: MS02_TCP_RESPONSE
+Result: PASS
+
+## UDP 5555
+
+Command: echo "MS02_UDP_REQUEST" | nc -u -w1 127.0.0.1 5555
+Output: MS02_UDP_RESPONSE
+Result: PASS
+
+## Note
+
+Early attempts used `timeout 5 nc ...` which killed the nc process before
+payload input, causing `MS02_FAIL stage=tcp-close-before-payload errno=104`.
+Bare `nc` without timeout resolves this.

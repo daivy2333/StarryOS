@@ -44,4 +44,5 @@ pub const LICHEE_D1: PlatformDescriptor = PlatformDescriptor {
     boot: BootImageConfig {
         kind: BootKind::AndroidImage,
     },
+    virtio_net: None,
 };

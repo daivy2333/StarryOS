@@ -1,7 +1,7 @@
 # MS02 VirtIO-MMIO 证据采集
 
 - Status: active
-- Last validated: 2026-07-29
+- Last validated: 2026-08-03
 - Environment: WSL2 x86_64; Rust nightly-2026-02-25; offline Cargo; QEMU manual
 - Source: `openspec/changes/ms02-virtio-mmio-polling-baseline/iterations/003-policy-coverage-and-runtime-evidence.md` (Act Response: reported)
 
@@ -137,11 +137,15 @@ chmod +x /tmp/ms02_service
 Terminal C（host nc 测试，**必须看到 `MS02_READY` 之后再执行**）：
 
 ```bash
-# TCP 测试两次（每次输入 MS02_TCP_REQUEST 后回车）
-timeout 5 nc 127.0.0.1 5555
+# TCP —— 注意不要用 timeout，否则 nc 连接被提前 kill 导致 MS02_FAIL
+nc 127.0.0.1 5555
+# 输入: MS02_TCP_REQUEST
+# 预期收到: MS02_TCP_RESPONSE
+# 然后 Ctrl+C 退出
 
-# UDP 测试一次
-timeout 5 nc -u 127.0.0.1 5555
+# UDP
+echo "MS02_UDP_REQUEST" | nc -u -w1 127.0.0.1 5555
+# 预期收到: MS02_UDP_RESPONSE
 ```
 
 成功判据：
@@ -295,7 +299,7 @@ chmod +x /tmp/ms01_test
 | `wget: Connection refused` | HTTP server bind `127.0.0.1`，guest 通过 10.0.2.2 连不上 | 改 `--bind 0.0.0.0` |
 | `HTTP/1.0 404 File not found` | HTTP server 启动目录错误 | 必须在 `tests/` 目录启动 |
 | 串口截断命令（`/tmp/ms` 而非 `/tmp/ms02_service`） | kernel 日志插入打断串口输入 | 一条一条输入，每条等 `starry:~#` 再输下一条 |
-| `MS02_FAIL stage=tcp-close-before-payload` | `nc` 连接后未在 5 秒内输入数据 | 重启服务，看到 `MS02_READY` 后立即输入 `MS02_TCP_REQUEST` |
+| `MS02_FAIL stage=tcp-close-before-payload` | `nc` 连接后未输入数据就被关闭，常见于 `timeout 5 nc ...` 先于用户输入到期 | **不要用 `timeout`**，用裸 `nc 127.0.0.1 5555`，手动输入后 Ctrl+C |
 | `chmod: ... No such file or directory` | 上一步命令未完成或文件名截断 | 重做 wget，检查文件存在性 |
 | TAP 路由冲突 | `10.0.2.2/24` 已被占用 | 检查 `ip route get 10.0.2.2`，必要时删除冲突路由 |
 | TAP 设备残留 | 上次未清理 | `sudo ip link delete tap-ms02` |

@@ -1,0 +1,20 @@
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `emit_header` is never used
+   --> crates/smoltcp/src/wire/udp.rs:275:19
+    |
+232 | impl Repr {
+    | --------- method in this implementation
+...
+275 |     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
+    |                   ^^^^^^^^^^^
+
+warning: `smoltcp` (lib) generated 11 warnings (run `cargo fix --lib -p smoltcp` to apply 7 suggestions)
+   Compiling axruntime v0.3.0-preview.2
+   Compiling axfeat v0.3.0-preview.2
+   Compiling starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+   Compiling starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS)
+    Finished `release` profile [optimized] target(s) in 6.23s
+[37m./dwarf.sh[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf rust-objcopy --binary-architecture=riscv64[0m
+[37mrust-objcopy --binary-architecture=riscv64[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf --strip-all -O binary /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.bin[0m
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'

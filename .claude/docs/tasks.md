@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 最后更新: 2026-07-29 | 分支: net-k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、M41、D22、K31-K32；NIC 开发已展开为 25 个单变量 milestones。
+> 最后更新: 2026-08-03 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、M41、D22、K31-K32；NIC 开发已展开为 25 个单变量 milestones。MS01+MS02+MS03 已完成并归档。
 
 ---
 
@@ -16,8 +16,8 @@
 | <!-- T01 --> T01 | smoltcp/axnet 同步基线 | 纳入本地 smoltcp 0.13.1；本地化 axnet；移除 `RxToken::preprocess` 私有依赖 | TCP listen/accept、UDP、nonblocking 和 poll 与当前同步行为一致 | 无 | ✅ 完成 |
 | <!-- T02 --> T02 | QEMU I/O 边界见证 | 固化串口、网络和 hostfwd 的独立路径；固定 VirtIO-MMIO 启动签名 | 无 hostfwd 仍可进 shell；MMIO net/block 可探测；串口成功不计网络成功 | T01 | ✅ 完成 |
 | <!-- T03 --> T03 | MMIO 轮询网络基线 | 保持轮询驱动；建立明确 guest 服务和宿主端到端用例 | ARP/ICMP、UDP、TCP 5555 各有独立见证；空闲 CPU 只作基线记录 | T02 | ✅ 完成 |
-| <!-- T04 --> T04 | MMIO IRQ 事实 | 解析设备地址、PLIC IRQ、claim/ack/rearm；只增加计数器 | 注入 RX/TX 事件时 IRQ 可重复增长；错误 IRQ 不触碰异步队列 | T03 | ⏳ 待 OpenSpec Plan |
-| <!-- T05 --> T05 | IRQ 唤醒原语 | 建立 `NetQueueControl`、AtomicWaker 和 register-recheck；ISR 不搬包 | event-before-register、register-during-event、spurious IRQ 无 lost wakeup | T04 | ⏳ 等待 T04 |
+| <!-- T04 --> T04 | MMIO IRQ 事实 | 解析设备地址、PLIC IRQ、claim/ack/rearm；只增加计数器 | 注入 RX/TX 事件时 IRQ 可重复增长；错误 IRQ 不触碰异步队列 | T03 | ✅ 完成 |
+| <!-- T05 --> T05 | IRQ 唤醒原语 | 建立 `NetQueueControl`、AtomicWaker 和 register-recheck；ISR 不搬包 | event-before-register、register-during-event、spurious IRQ 无 lost wakeup | T04 | ⏳ 等待 MS04 Plan |
 | <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ⏳ 等待 T05 |
 | <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ⏳ 等待 T06 |
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ⏳ 等待 T07 |
@@ -101,18 +101,12 @@ VF2:  MS01 -> MS09 -> MS10 -> MS11
 
 ### MS03：VirtIO-MMIO 可诊断中断基线
 
-- Status: planned
-- Outcome: MMIO 网卡中断可以重复投递、确认来源并正确 ack/rearm。
-- Rationale: 首次证明设备中断可重复投递是后续异步路径的独立高风险故障边界。
+- Status: completed
+- Outcome: MMIO 网卡中断可以重复投递、确认来源并正确 ack/rearm。12/12 QEMU gates PASS，UART IRQ 10 设备 handler + net IRQ 7 诊断 handler，guest C probe 5 modes 全部通过，MS01/MS02 回归零退化。
 - Dependencies: MS02
-- Scope: T04；设备地址、PLIC IRQ、claim、cause、ack、EOI、rearm 和计数器。
+- Scope: T04
 - Non-goals: waker、queue task、descriptor 搬运和协议栈推进。
-- Workload: 平台 IRQ 事实、设备 handler、事件注入和重复投递证据。
-- Stable baseline: RX/TX 事件使正确 IRQ 和 cause 计数重复增长。
-- Verification boundary: 错误 IRQ 不触碰网卡异步状态，正确 IRQ 不形成中断风暴。
-- Diagnostic boundary: 失败限制在设备 IRQ 映射、PLIC 路由或设备 ack/rearm。
-- Split signals: 发现多个独立 IRQ transport，且各自需要不同的平台 Gate。
-- Related changes: None
+- Related changes: `ms03-virtio-mmio-diagnostic-irq-baseline`（归档于 `openspec/changes/archive/2026-08-03-ms03-virtio-mmio-diagnostic-irq-baseline/`；1 iteration，Plan Review: no-follow-up，12/12 QEMU gates PASS）。Runbook `ms03-virtio-mmio-irq-evidence.md` (R48) 已发布。
 
 ### MS16：QEMU 轮询网卡性能基线
 
@@ -325,4 +319,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`t01-smoltcp-axnet-baseline` 已归档（MS01）；`ms02-virtio-mmio-polling-baseline` 已归档（MS02）。下一步 MS03 需通过 OpenSpec Plan 建立 BDD、RTM 和获批 change。MS02 evidence 采集流程参考 `.claude/runbooks/ms02-virtio-mmio-evidence.md` (R45)。
+MS01+MS02+MS03 已归档。下一步 MS04 需通过 OpenSpec Plan 建立 BDD、RTM 和获批 change。

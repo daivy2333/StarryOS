@@ -262,6 +262,13 @@ fn uart_isr_wrapper(_irq: usize) {
     );
 }
 
+/// Zero-argument QEMU UART device handler for `axhal::irq::register`.
+#[cfg(not(feature = "lichee-d1-async-uart"))]
+fn qemu_uart_irq_handler() {
+    let desc = platform::descriptor();
+    uart_isr_wrapper(desc.console.irq.unwrap_or(10));
+}
+
 // ── D1: ISR 包装器 ───────────────────────────────────────────────────
 
 #[cfg(feature = "lichee-d1-async-uart")]
@@ -362,7 +369,20 @@ pub fn init_uart_hardware() {
 
     // Step 5: Register ISR
     #[cfg(not(feature = "lichee-d1-async-uart"))]
-    axhal::irq::register_irq_hook(uart_isr_wrapper);
+    {
+        let irq = desc.console.irq.expect("QEMU console IRQ must be known");
+        if !axhal::irq::register(irq, qemu_uart_irq_handler) {
+            panic!(
+                "[UART INIT] Failed to register UART IRQ {} handler",
+                irq
+            );
+        }
+        ax_println!(
+            "[UART INIT] QEMU UART IRQ {} registered as device handler, buffers={}KBx2",
+            irq,
+            BUF_SIZE / 1024
+        );
+    }
     #[cfg(feature = "lichee-d1-async-uart")]
     {
         let registered = axhal::irq::register(axconfig::devices::UART_IRQ, d1_uart_irq_handler);

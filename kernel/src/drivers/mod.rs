@@ -18,6 +18,10 @@ pub mod os_arceos;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod serialized_writer;
 pub mod uart_init;
+#[cfg(not(feature = "lichee-d1"))]
+pub mod virtio_net_irq;
+#[cfg(not(feature = "lichee-d1"))]
+pub(crate) mod virtio_net_irq_logic;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub use ntty_async::ASYNC_TTY;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]

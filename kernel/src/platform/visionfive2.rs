@@ -45,4 +45,5 @@ pub const VISIONFIVE2: PlatformDescriptor = PlatformDescriptor {
     boot: BootImageConfig {
         kind: BootKind::UBootImage,
     },
+    virtio_net: None,
 };

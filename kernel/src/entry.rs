@@ -90,6 +90,11 @@ pub fn init(args: &[String], envs: &[String]) {
         uart_init::init_uart_hardware();
         ax_println!("[kernel] Async UART driver initialized");
 
+        // Initialize VirtIO-net IRQ diagnostic control plane (MS03).
+        // Validates the net device, registers IRQ 7 handler, keeps
+        // MS02 polling fallback active.
+        crate::drivers::virtio_net_irq::init_virtio_net_irq_diag();
+
         // Run kernel-side benchmark (ring buffer throughput/latency, memory, NAPI, IRQ)
         crate::drivers::bench::run_startup_benchmark();
 

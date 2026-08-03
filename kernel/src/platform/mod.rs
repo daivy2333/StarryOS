@@ -11,7 +11,7 @@ pub mod early_console;
 pub use console::{ConsoleConfig, ConsoleKind, MmioAccessWidth};
 pub use descriptor::{
     BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
-    PlatformDescriptor, TimerConfig,
+    PlatformDescriptor, TimerConfig, VirtioMmioNetConfig,
 };
 pub use early_console::{DwApbUart32EarlyConsole, EarlyConsole, Ns16550U8EarlyConsole};
 

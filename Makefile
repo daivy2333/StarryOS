@@ -84,6 +84,13 @@ host-test:
 	/tmp/early-console-test
 	rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
 	/tmp/memtrack-session-test
+	rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test
+	/tmp/ms03-irq-host-test
+	cc -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c
+
+# MS03 IRQ probe (RISC-V static — user boundary, requires musl cross toolchain)
+tests/ms03_irq_probe: tests/ms03_irq_probe.c
+	$(BENCH_CC) -static -Os -o $@ $<
 
 # Aliases
 rv:

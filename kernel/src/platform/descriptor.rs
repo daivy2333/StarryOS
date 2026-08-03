@@ -6,6 +6,23 @@
 
 use super::console::ConsoleConfig;
 
+/// Optional VirtIO-MMIO network device fact.
+///
+/// When `Some`, the platform descriptor asserts a known VirtIO-MMIO
+/// network device at the given address and interrupt line.  This is a
+/// platform-level hardware fact, *not* a driver constant — the driver
+/// still validates magic, version and device-id at runtime.
+pub struct VirtioMmioNetConfig {
+    /// MMIO base physical address.
+    pub base_paddr: usize,
+    /// MMIO region size in bytes.
+    pub size: usize,
+    /// Device ID reported by VirtIO header (1 for network card).
+    pub device_id: u32,
+    /// PLIC interrupt number.
+    pub irq: usize,
+}
+
 /// Build-time platform descriptor chosen per target board.
 pub struct PlatformDescriptor {
     /// Human-readable platform name (e.g. "qemu-virt", "lichee-rv-dock").
@@ -22,6 +39,9 @@ pub struct PlatformDescriptor {
     pub timer: TimerConfig,
     /// How the kernel image is loaded (direct QEMU, Android boot image, U-Boot, etc.).
     pub boot: BootImageConfig,
+    /// Optional VirtIO-MMIO network device fact.
+    /// `None` means no known MMIO net device on this platform.
+    pub virtio_net: Option<VirtioMmioNetConfig>,
 }
 
 /// Physical memory layout.

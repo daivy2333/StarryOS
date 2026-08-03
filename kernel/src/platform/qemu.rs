@@ -8,7 +8,7 @@ use super::{
     console::{ConsoleConfig, ConsoleKind, MmioAccessWidth},
     descriptor::{
         BootImageConfig, BootKind, InterruptConfig, KernelImageLayout, MemoryLayout,
-        PlatformDescriptor, TimerConfig,
+        PlatformDescriptor, TimerConfig, VirtioMmioNetConfig,
     },
 };
 
@@ -38,4 +38,10 @@ pub const QEMU_VIRT: PlatformDescriptor = PlatformDescriptor {
     boot: BootImageConfig {
         kind: BootKind::DirectQemu,
     },
+    virtio_net: Some(VirtioMmioNetConfig {
+        base_paddr: 0x10007000,
+        size: 0x1000,
+        device_id: 1,
+        irq: 7,
+    }),
 };

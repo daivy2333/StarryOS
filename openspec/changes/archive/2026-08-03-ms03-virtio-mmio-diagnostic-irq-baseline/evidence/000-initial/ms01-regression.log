@@ -1,0 +1,18 @@
+MS01_SOCKET_BASELINE_START
+PASS: tcp-accept
+PASS: tcp-adjacent
+PASS: tcp-512cap: accepted 512 of 512 initial connections
+PASS: tcp-512-recovery
+PASS: tcp-relisten
+PASS: udp-bidi
+PASS: tcp-nonblock-accept
+PASS: udp-nonblock
+PASS: poll-readiness
+PASS: udp-source: 127.0.0.1:49153
+PASS: bind-getsockname: port 18012
+PASS: bind-ephemeral: port 49673
+PASS: bind-conflict: EADDRINUSE
+PASS: bind-close-cleanup
+MS01_SOCKET_BASELINE_END
+
+Result: 14/14 PASS, 0 FAIL

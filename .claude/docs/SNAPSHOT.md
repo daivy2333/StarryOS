@@ -1,7 +1,7 @@
 # SNAPSHOT.md — 项目快照
 
-> Last updated: 2026-07-29
-> Branch: net-k3 — 异步 NIC 开发主线；QEMU 首条路径改为 VirtIO-MMIO；PCI 转为未承诺改进
+> Last updated: 2026-08-03
+> Branch: net-k3 — 异步 NIC 开发主线；MS03（可诊断 IRQ 基线）已完成并归档，12/12 QEMU gates PASS
 
 ## 项目概览
 
@@ -20,7 +20,8 @@
 
 - **MS01**: ✅ 完成 — smoltcp/axnet 同步基线（归档于 `2026-07-29-t01-smoltcp-axnet-baseline`）
 - **MS02**: ✅ 完成 — VirtIO-MMIO 轮询网络基线（归档于 `2026-07-29-ms02-virtio-mmio-polling-baseline`）
-- **T04-T12**: MMIO IRQ 事实、唤醒原语、异步 RX/TX、packet slot、stack、socket、恢复和多 hart
+- **MS03**: ✅ 完成 — VirtIO-MMIO 可诊断中断基线（归档于 `openspec/changes/archive/2026-08-03-ms03-virtio-mmio-diagnostic-irq-baseline/`；iteration 000 reported + reviewed，12/12 QEMU gates PASS）
+- **T05-T12**: IRQ 唤醒原语、异步 RX/TX、packet slot、stack、socket、恢复和多 hart
 - **T13-T17**: VF2 板级事实、启动、PHY、PLIC 和 DMA/cache
 - **T18-T21**: DWMAC 轮询与异步收发
 - **T22-T24**: 真板恢复、多 hart 和长稳压力
@@ -46,6 +47,8 @@
 | SPSC 边界 (K25) | unsafe unique constructor + crate-private mutation + exactly-once startup |
 | Device mask 测试模式 (K35) | device selection 用 `fn(mask, impl IntoIterator<Item=bool>)` 纯策略 helper，无需真实设备即可单元测试 mask×eligibility 组合 |
 | MS02 空闲 CPU (K35) | 10ms polling fallback：QEMU 单核 100-111% CPU 占用（30 秒采样）；轮询 fallback 是预期行为，不是 busy loop |
+| MS03 IRQ (K36) | VirtIO MMIO `InterruptStatus`/`InterruptACK` 是 32-bit 寄存器（非 u8）；未对齐读写导致计数器全零；device_id=1 是网卡（非 2）；`axhal::irq::register` 接受 `fn()` handler |
+| MS03 QEMU 端到端 | 12/12 gates PASS（启动签名、idle、uart、rx2、tx2、both、repeat rx2、MS02 TCP/UDP、MS01 14/14）；IRQ 7 独立于 UART IRQ 10；无 spurious net events、无 IRQ storm |
 
 ## OpenSpec 体系
 
@@ -56,7 +59,7 @@
 | `openspec/specs/knowledge/` | 15 (K01-K35) | 新增 K35（device mask×capability 单元测试模式）；K31/K32/K33 已验证 |
 | `openspec/specs/references/` | 活跃 13 | R14、R23-R26、R38-R43、R44、R45 |
 | `openspec/specs/improvements/` | 4 (I06,I13-I15) | PCI、QEMU 观测和覆盖层未承诺 |
-| `openspec/changes/` | 0 个活跃 | MS01 + MS02 已归档 |
+| `openspec/changes/` | 0 个活跃 | MS01+MS02+MS03 已归档 |
 | `.claude/analysis/` | 8 | 网络总览、交付估算、知识缺口、4 NIC 专题和 1 VF2 专题 |
 | `.claude/runbooks/` | 5 | qemu-network-testing (R44)、incremental-merge (R38)、regression-gate (R39)、board-bringup-ladder (R40)；新增 ms02-virtio-mmio-evidence (R45)；benchmark/build 类已归档 (4 项 in `_archive/`) |
 
@@ -65,10 +68,12 @@
 - K31/K32 已记录 2026-07-27 QEMU 对照结果
 - MS01 完成证据：三轮 evidence（000/001/002），14/14 QEMU PASS — 归档于 `openspec/changes/archive/2026-07-29-t01-smoltcp-axnet-baseline/evidence/`
 - MS02 完成证据：四轮 evidence（000/001/002/003），8/8 unit + 14/14 MS01 runtime + QEMU no-hostfwd + user-net TCP/UDP + TAP ARP/ICMP — 归档于 `openspec/changes/archive/2026-07-29-ms02-virtio-mmio-polling-baseline/evidence/`
+- MS03 完成证据：一轮 evidence（000-initial），12/12 QEMU gates PASS — 归档于 `openspec/changes/archive/2026-08-03-ms03-virtio-mmio-diagnostic-irq-baseline/evidence/000-initial/`
 - UART 阶段证据已全部归档至 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`
 
 ## 迁移记录
 
+2026-08-03：MS03 VirtIO-MMIO 可诊断中断基线完成并归档 — QEMU UART 从 global hook 迁到 IRQ 10 设备 handler；VirtIO-net IRQ 7 诊断 handler 注册；pure-logic status decoder（`classify_mmio_status`）+ telemetry（`IrqTelemetry`）+ host harness 20/20 PASS；guest C probe（5 modes）；ioctl `0x4e494431` snapshot。12/12 QEMU gates PASS。3 个 runtime 期 bug 修复。Plan Review: no-follow-up。Change 归档于 `openspec/changes/archive/2026-08-03-ms03-virtio-mmio-diagnostic-irq-baseline/`。
 2026-07-29：MS02 VirtIO-MMIO 轮询网络基线完成 — `register_waker` 引入 10ms polling fallback + `requires_polling` capability + 提取 `any_masked_device_requires_polling` 纯策略 helper + 8/8 unit PASS；smoltcp 启用 `auto-icmp-echo-reply`；QEMU 端到端验证 14/14 MS01 PASS + 无 hostfwd 启动 + user-net TCP/UDP 5555 + TAP ARP/ICMP + 30 秒空闲 CPU 基线。Change 归档于 `openspec/changes/archive/2026-07-29-ms02-virtio-mmio-polling-baseline/`（4 iterations，4 轮 evidence）。新增 Runbook `ms02-virtio-mmio-evidence.md` (R45)。
 2026-07-29：MS01 smoltcp/axnet 同步基线完成 — 本地 smoltcp 0.13.1 + 本地 axnet，移除 `RxToken::preprocess` 私有依赖，TCP bind sidecar + listener 512 容量 + egress-until-none + 14/14 QEMU 手测 PASS。Change 归档于 `openspec/changes/archive/2026-07-29-t01-smoltcp-axnet-baseline/`（3 iterations，3 轮 evidence）。
 2026-07-27：根据 QEMU 对照验证改用 VirtIO-MMIO 主线。任务由 T01-T13 拆分为 T01-T25；PCI 转为 I13。

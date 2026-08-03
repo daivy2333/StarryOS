@@ -137,5 +137,6 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R40 --> | `.claude/runbooks/board-bringup-ladder.md` | 真板 bring-up 阶梯 Runbook — 新板 L0-L7 逐层适配、每层单变量约束与 Gate |
 | <!-- R44 --> | `.claude/runbooks/qemu-network-testing.md` | QEMU 网络测试 Runbook — 硬性政策：全部 QEMU 测试手动执行（三重证据：OS shell 阻塞 + sandbox EPERM + 串口分帧不可靠）；HTTP 下载法流程与排障 |
 | <!-- R45 --> | `.claude/runbooks/ms02-virtio-mmio-evidence.md` | MS02 VirtIO-MMIO 证据采集 Runbook — axnet 策略测试 + agent 静态验证 + QEMU 手工验证（无 hostfwd / user-net TCP+UDP / TAP ARP+ICMP / 空闲 CPU / MS01 runtime）完整流程与失败处理 |
+| <!-- R48 --> | `.claude/runbooks/ms03-virtio-mmio-irq-evidence.md` | MS03 VirtIO-MMIO 可诊断中断基线证据采集 Runbook — 启动签名、guest C probe（5 modes）、MS02/MS01 回归、中断诊断排障（32-bit MMIO 寄存器、device_id 校验、port conflict）
 
 <!-- arc: cleanup-uart-documentation-system --> 全部历史 R 条目已归档至 archive carrier（见上方已归档条目）。
