@@ -88,6 +88,67 @@ host-test:
 	/tmp/ms03-irq-host-test
 	cc -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c
 
+# MS16 network benchmark foundation tests (host, no QEMU needed)
+network-benchmark-test:
+	cc -std=c11 -Wall -Wextra -Werror \
+		tests/network_benchmark_protocol_test.c \
+		tests/network_benchmark_protocol.c \
+		-o /tmp/network-benchmark-protocol-test
+	/tmp/network-benchmark-protocol-test
+	cc -std=c11 -Wall -Wextra -Werror \
+		tests/network_benchmark_platform_test.c \
+		tests/network_benchmark_platform.c \
+		-o /tmp/network-benchmark-platform-test
+	/tmp/network-benchmark-platform-test
+	python3 -m unittest tests.test_network_benchmark_tools -v
+	python3 -m unittest tests.test_network_benchmark_integration -v
+	python3 scripts/network_benchmark_collect.py --self-test
+	python3 scripts/network_benchmark_report.py --self-test
+	python3 scripts/network_benchmark_evidence.py --self-test
+
+# MS16 portable network benchmark — host binary
+tests/network_benchmark-host: tests/network_benchmark.c \
+		tests/network_benchmark_protocol.c tests/network_benchmark_protocol.h \
+		tests/network_benchmark_platform.c tests/network_benchmark_platform.h
+	cc -std=c11 -Wall -Wextra -Werror -O2 \
+		-D_BSD_SOURCE -D_DEFAULT_SOURCE -DNB_HOST_BUILD \
+		tests/network_benchmark.c \
+		tests/network_benchmark_protocol.c \
+		tests/network_benchmark_platform.c \
+		-o $@
+
+# MS16 portable network benchmark — RISC-V static guest binary
+tests/network_benchmark: tests/network_benchmark.c \
+		tests/network_benchmark_protocol.c tests/network_benchmark_protocol.h \
+		tests/network_benchmark_platform.c tests/network_benchmark_platform.h
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror \
+		-static -Os \
+		tests/network_benchmark.c \
+		tests/network_benchmark_protocol.c \
+		tests/network_benchmark_platform.c \
+		-o $@
+
+# MS16 local integration quick smoke
+network-benchmark-local-test: tests/network_benchmark-host
+	python3 -m unittest tests.test_network_benchmark_integration.WorkloadIntegration.test_loopback_matrix_has_two_closed_ledgers -v
+
+# MS16 workload integration tests (C host tests for benchmark logic)
+network-benchmark-workload-test: tests/network_benchmark-host
+	./tests/network_benchmark-host --self-test
+	python3 -m unittest tests.test_network_benchmark_integration -v
+
+# MS16 ASan/UBSan host build
+tests/network_benchmark-host-asan: tests/network_benchmark.c \
+		tests/network_benchmark_protocol.c tests/network_benchmark_protocol.h \
+		tests/network_benchmark_platform.c tests/network_benchmark_platform.h
+	cc -std=c11 -Wall -Wextra -Werror -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-D_BSD_SOURCE -D_DEFAULT_SOURCE -DNB_HOST_BUILD \
+		tests/network_benchmark.c \
+		tests/network_benchmark_protocol.c \
+		tests/network_benchmark_platform.c \
+		-o $@
+
 # MS03 IRQ probe (RISC-V static — user boundary, requires musl cross toolchain)
 tests/ms03_irq_probe: tests/ms03_irq_probe.c
 	$(BENCH_CC) -static -Os -o $@ $<
@@ -142,4 +203,16 @@ lichee-fullbench-command: benchmark-fullbench-elf
 		--output starry-lichee-fullbench-command-boot.img
 	@python3 tools/android_boot_image.py inspect starry-lichee-fullbench-command-boot.img
 
-.PHONY: build run justrun debug disasm clean host-test lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf
+# MS16 calibration preflight (no QEMU automation)
+network-benchmark-calibration-preflight: tests/network_benchmark-host tests/network_benchmark \
+		.claude/runbooks/network-benchmark-platform-qualification.md
+	@echo "=== MS16 Calibration Preflight ==="
+	@file tests/network_benchmark-host tests/network_benchmark StarryOS_riscv64-qemu-virt.bin make/disk.img
+	@sha256sum tests/network_benchmark-host tests/network_benchmark \
+		StarryOS_riscv64-qemu-virt.bin make/disk.img
+	@qemu-system-riscv64 --version | head -n 1
+	@echo "machine=virt smp=1 memory_mb=1024 icount=n bus=mmio"
+	@cat .claude/runbooks/network-benchmark-platform-qualification.md
+	@echo "=== Preflight complete ==="
+
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf

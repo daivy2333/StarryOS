@@ -1,0 +1,16 @@
+Command:
+BENCH_CC=/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc make -B tests/network_benchmark
+
+Output:
+/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -Os tests/network_benchmark.c tests/network_benchmark_protocol.c tests/network_benchmark_platform.c -o tests/network_benchmark
+make: *** [Makefile:124: tests/network_benchmark] Bad system call (core dumped)
+
+Exit: nonzero
+Classification: ENV BLOCK / SIGSYS from sandboxed cross-toolchain execution
+
+Freshness check:
+- `tests/network_benchmark.c`: 2026-08-05 16:27:36 +0800
+- `tests/network_benchmark`: 2026-08-05 15:52:29 +0800
+- existing guest SHA-256: `01fa5ff37ebd7e619790bb0220923fce3e65159e3ff80a054aac890c5bf8335c`
+
+The guest binary is older than the source. It is not accepted as a fresh artifact.

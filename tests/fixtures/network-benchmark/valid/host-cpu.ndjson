@@ -1,0 +1,3 @@
+{"type":"round","run_id":"N10-test-20260804","round_id":1,"side":"host","timestamp_utc":"2026-08-04T00:00:00Z","pid":12345,"utime_ticks":1000,"stime_ticks":200,"rss_kb":256000}
+{"type":"round","run_id":"N10-test-20260804","round_id":2,"side":"host","timestamp_utc":"2026-08-04T00:00:12Z","pid":12345,"utime_ticks":1150,"stime_ticks":230,"rss_kb":256000}
+{"type":"round","run_id":"N10-test-20260804","round_id":3,"side":"host","timestamp_utc":"2026-08-04T00:00:24Z","pid":12345,"utime_ticks":1300,"stime_ticks":260,"rss_kb":256000}

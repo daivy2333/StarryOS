@@ -117,7 +117,7 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R42 --> `.claude/analysis/starryos-network-delivery-estimate.md` | StarryOS 网络交付与工期估算：T01-T13 人周、单人和双人日历周期、估算假设、进度风险与阶段复估点 |
 | <!-- R43 --> `.claude/analysis/starryos-network-knowledge-gaps.md` | NIC 开发待收集信息清单：30 个待决问题按 milestone (T01-T13) 分组，每项含已知事实、待读代码、测试见证、解决判据和结果落点 — 进入 Plan 前逐项调查 |
 | <!-- R46 --> `.claude/analysis/starryos-device-specific-irq-waker-architecture.md` | StarryOS 设备专属 IRQ 与任务唤醒分析：UART 全局 hook 冲突、PLIC 设备 handler、设备私有 waker、MS03/MS04 分批边界和 Gate 2 未确认项 |
-| <!-- R47 --> `.claude/analysis/starryos-virtio-mmio-network-benchmark-baseline.md` | StarryOS VirtIO-MMIO 轮询网卡基线测试分析：R44 手工边界、R45 验证阶梯、TAP workload、性能口径、CPU/IRQ、Evidence 和 MS04 A/B 协议 |
+| <!-- R47 --> `.claude/analysis/starryos-virtio-mmio-network-benchmark-baseline.md` | MS16 统一网卡基线设计：QEMU/TAP 轮询 B0、跨轮询/异步/真板 workload、C1-C6 完成语义、吞吐/延迟/指令/CPU/复制/IRQ 指标、Evidence Schema、BDD/Gate 和 MS04 A/B 比较资格 |
 
 **已归档**：UART 阶段全部分析文档。完整归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`（48 文件，含 analysis、docs、meta-specs、runbooks、specs）、q17: `openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/`、旧 ARC: `openspec/changes/archive/2026-07-25-arc-202607251326/`。
 
@@ -138,5 +138,6 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R44 --> | `.claude/runbooks/qemu-network-testing.md` | QEMU 网络测试 Runbook — 硬性政策：全部 QEMU 测试手动执行（三重证据：OS shell 阻塞 + sandbox EPERM + 串口分帧不可靠）；HTTP 下载法流程与排障 |
 | <!-- R45 --> | `.claude/runbooks/ms02-virtio-mmio-evidence.md` | MS02 VirtIO-MMIO 证据采集 Runbook — axnet 策略测试 + agent 静态验证 + QEMU 手工验证（无 hostfwd / user-net TCP+UDP / TAP ARP+ICMP / 空闲 CPU / MS01 runtime）完整流程与失败处理 |
 | <!-- R48 --> | `.claude/runbooks/ms03-virtio-mmio-irq-evidence.md` | MS03 VirtIO-MMIO 可诊断中断基线证据采集 Runbook — 启动签名、guest C probe（5 modes）、MS02/MS01 回归、中断诊断排障（32-bit MMIO 寄存器、device_id 校验、port conflict）
+| <!-- R49 --> | `.claude/runbooks/network-benchmark-platform-qualification.md` | 网卡基准资格扫描 Runbook — 环境/treatment/test 分轴、C1/C6 口径、user-net 已验证路径、TAP 手工命令、多流/payload/profile/pacing 矩阵、可观测性、Evidence 和基础设施缺口分类 |
 
 <!-- arc: cleanup-uart-documentation-system --> 全部历史 R 条目已归档至 archive carrier（见上方已归档条目）。

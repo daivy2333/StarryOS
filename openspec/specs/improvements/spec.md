@@ -76,6 +76,25 @@ I15 提升时 MUST 保证原始 rootfs 不变。当前 QEMU 挂载 `make/disk.im
 - **WHEN** Gate 会写入 guest 文件系统
 - **THEN** SHOULD 使用一次性覆盖层隔离运行
 
+### Requirement: I16 — 网卡性能矩阵基础设施补全
+
+声明完整 N00-N46 基线前 MUST 补全当前 portable workload 和采集器不能表达的测试能力。该工作尚未承诺，不阻止复用 R47 的矩阵设计和 R49 的现有 qualification procedure。
+
+**证据**: R47、R49；`tests/network_benchmark.c` CLI 与 Schema v1 输出审计
+**状态**: 待评估，未承诺
+
+- **负载**: TCP/UDP RTT、UDP 间隔误差、exact burst、负载下延迟、动态 overload/recovery、connect churn。
+- **边界**: 4096-65536 B TCP records、packet count、socket buffer、ARP、UDP metadata 和 fill-to-EAGAIN 控制。
+- **指标**: 单流公平性、EAGAIN 等待与恢复、round instret delta、benchmark IRQ snapshot、timer wake overshoot、copy/allocation/wake/descriptor telemetry。
+- **速率语义**: `--offered-load` 需要从固定 1 Gbit/s 名义值改为同环境 zero-loss pilot 的比例。
+- **不包含**: TAP 六方向、多流、当前 payload 上限内阶梯、quick/standard、host CPU/RSS 和 pcap。这些已有入口，只是 MS16 未运行。
+
+#### Scenario: 准备完整 polling B0 或 async A/B
+
+- **WHEN** 项目需要声明 R47 N00-N46 必测项完整或生成对应性能比较
+- **THEN** SHOULD 将 I16 中所需能力提升为独立 change
+- **AND** MUST 先区分新增测试设施和修复被测网卡
+
 <!-- arc: ARC-202607251326 --> 4 条目已归档 (I07-I10, 2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 
 <!-- arc: cleanup-uart-documentation-system --> I12 (UART benchmark measurement) archived 2026-07-25. Universal measurement rules migrated to quality-gate-baseline/spec.md:Benchmark measurement methodology.

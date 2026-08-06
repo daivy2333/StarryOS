@@ -1,0 +1,21 @@
+Command: focused RED witnesses
+Result: 5 expected failures
+Witnesses: internal fault marker; unavailable instret null; manual 005 package; report unavailable telemetry; drifted summary rejection
+
+Command: make network-benchmark-test
+Result: PASS
+Counts: protocol 26; platform 20; tools 21; integration 9
+
+Command: make network-benchmark-workload-test
+Result: PASS
+Marker: SELF-TEST PASS partial-record state codec deadline-policy faults=config-mismatch,peer-eof,timeout,cancel,udp-anomalies
+
+Command: make network-benchmark-local-test
+Result: PASS
+Matrix: TCP/UDP x TX/RX/bidi x 1/2/4/8 flows; exact nonzero dual-endpoint ledgers
+
+Command: make -B tests/network_benchmark-host-asan
+Command: ASAN_OPTIONS=detect_leaks=0 ./tests/network_benchmark-host-asan --self-test
+Result: PASS; exit 0
+
+Limit: no AF_INET, QEMU, TAP or guest console runtime is claimed by this log.

@@ -1,0 +1,28 @@
+Command: make network-benchmark-test
+Result: PASS
+Protocol: 26 test functions passed
+Platform: 20 test functions passed
+Python tools: 19 tests passed
+Python integration: 6 tests passed
+Collector/report/evidence self-tests: PASS
+
+Command: make network-benchmark-workload-test
+Result: PASS
+Internal partial-record state test: PASS
+Python integration: 6 tests passed
+
+Command: make network-benchmark-local-test
+Result: PASS
+TCP/UDP x TX/RX/bidi x 2-flow dual-endpoint ledger matrix: PASS
+
+Command: make tests/network_benchmark-host-asan
+Result: PASS
+
+Command: ASAN_OPTIONS=detect_leaks=0 ./tests/network_benchmark-host-asan --self-test
+Result: PASS
+
+Command: openspec validate ms16-qemu-polling-network-performance-baseline --strict
+Result: Change is valid
+
+Command: git diff --check
+Result: PASS, no output

@@ -1,0 +1,1 @@
+{"schema_version":1,"side":"host","platform":"qemu-virt-riscv64","driver_mode":"polling","comparison_key":"polling-b0-v1","protocol":"TCP","payload_size":1400,"flow_count":1,"duration_s":10,"seed":12345,"mtu":1500,"smp":1,"qemu_version":"7.0.0","netdev":"tap","treatment":"async"}

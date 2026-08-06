@@ -273,3 +273,22 @@ device selection / routing 逻辑 MUST 提取为纯策略 helper，输入 `mask:
 
 - **WHEN** 引入新的 device 选择或 routing 决策（如未来 IRQn / 多队列 affinity）
 - **THEN** MUST 先提取为 `fn(mask, impl IntoIterator<Item=Capability>)` 纯 helper；运行调用通过 `devices.iter().map(|d| d.capability())` 注入；单元测试覆盖 mask × capability 全组合
+
+### Requirement: K37 — 网卡基准分轴与资格层级
+
+网卡基准 MUST 分开记录 environment、driver treatment 和 test。QEMU、真板是 environment；polling、async 是 treatment；协议、方向、payload、flow、profile 和 N00-N54 是 test。
+
+**证据**: R47、R49；MS16 EV-005-07 user-net 六方向运行记录
+**状态**: ✅ 已验证，2026-08-06
+
+- **执行资格**: 双端启动，并产生 manifest 和 reason-coded round。invalid 可以通过执行资格。
+- **正确性资格**: fingerprint 一致，C6 账本闭合，异常分类满足测试要求。
+- **性能资格**: round valid，采样覆盖流量，所需 capability 可用。
+- **缺口分类**: 命令可表达但未取得 Evidence 记 `not-run`。CLI、采集器或 telemetry 无法表达测试口径记 `infrastructure-unavailable`。两者均不得记为网卡失败。
+- **比较边界**: 同一 environment 内只改变 treatment 才能生成 A/B。QEMU 与真板分别建基线。
+
+#### Scenario: 基准项目没有结果
+
+- **WHEN** 某个 Nxx 项目没有可用结果
+- **THEN** MUST 先按 R49 判断它是 `not-run`、`infrastructure-unavailable`、execution failure、correctness invalid 或 performance invalid
+- **AND** MUST NOT 把测试设施缺失归因于被测网卡

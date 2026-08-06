@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"round","run_id":"invalid-round","round_id":1,"side":"guest","status":"invalid","invalid_reason":"peer-eof","protocol":"TCP","completion_point":6,"tx_bytes":5000000,"tx_packets":3571,"duration_s":3.5}

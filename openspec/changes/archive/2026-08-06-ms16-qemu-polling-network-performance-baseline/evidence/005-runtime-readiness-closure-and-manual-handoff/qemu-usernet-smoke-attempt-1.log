@@ -1,0 +1,201 @@
+starry:~# wget -q -O /tmp/network_benchmark http://10.0.2.2:18765/network_benchm
+ark
+starry:~# chmod +x /tmp/network_benchmark
+starry:~# sha256sum /tmp/network_benchmark
+b863b060500c3a0977102e840d2d7160d75d7ea899567ab38cc72891ad5f1eb3  /tmp/network_benchmark
+starry:~# /tmp/network_benchmark --self-test
+SELF-TEST PASS partial-record state codec deadline-policy faults=config-mismatch,peer-eof,timeout,cancel,udp-anomalies
+starry:~# /tmp/network_benchmark server --side guest --protocol tcp --direction 
+rx --port 5555 --profile smoke --duration 1 --run-id 4001 --test-id 201 --round-
+id 1
+{"schema_version":1,"type":"manifest","side":"guest","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"TCP","direction":"RX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":201,"round_id":1,"config_fingerprint":"e74d72d56a70770a"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":201,"round_id":1,"side":"guest","status":"invalid","invalid_reason":4,"protocol":"TCP","direction":"RX","completion_point":6,"config_fingerprint":"e74d72d56a70770a","duration_s":1,"tx_bytes":0,"tx_packets":0,"rx_bytes":10903200,"rx_packets":7788,"wire_tx_bytes":0,"wire_rx_bytes":11183568,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+starry:~# GUEST_EXIT=$?
+starry:~#   printf 'tcp_rx_guest_exit=%s\n' "$GUEST_EXIT"
+tcp_rx_guest_exit=1
+starry:~# /tmp/network_benchmark server --side guest --protocol udp --direction 
+rx --port 5555 --profile smoke --duration 1 --run-id 4001 --test-id 202 --round-
+id 1
+[856.496276 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.496930 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.497100 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.497236 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.497508 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.497661 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.497911 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.498156 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.498388 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.498646 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.499014 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.499141 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.499318 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.499751 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+[856.499976 0:17 axnet_ng::device::ethernet:325] Pending packets buffer is full, dropping packet
+{"schema_version":1,"type":"manifest","side":"guest","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"UDP","direction":"RX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":202,"round_id":1,"config_fingerprint":"d7f0bda86d3f03ee"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":202,"round_id":1,"side":"guest","status":"invalid","invalid_reason":4,"protocol":"UDP","direction":"RX","completion_point":6,"config_fingerprint":"d7f0bda86d3f03ee","duration_s":1,"tx_bytes":0,"tx_packets":0,"rx_bytes":0,"rx_packets":0,"wire_tx_bytes":0,"wire_rx_bytes":0,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":27,"flow_count":1,"instret_status":"unavailable"}
+starry:~# GUEST_EXIT=$?
+starry:~# printf 'udp_rx_guest_exit=%s\n' "$GUEST_EXIT"
+udp_rx_guest_exit=1
+starry:~# /tmp/network_benchmark client --side guest --protocol tcp --direction 
+tx --addr 10.0.2.2:15555 --profile smoke --duration 1 --run-id 4001 --test-id 20
+3 --round-id 1
+{"schema_version":1,"type":"manifest","side":"guest","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"TCP","direction":"TX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":203,"round_id":1,"config_fingerprint":"a65a6c393eceea71"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":203,"round_id":1,"side":"guest","status":"valid","invalid_reason":0,"protocol":"TCP","direction":"TX","completion_point":6,"config_fingerprint":"a65a6c393eceea71","duration_s":1,"tx_bytes":6582800,"tx_packets":4702,"rx_bytes":0,"rx_packets":0,"wire_tx_bytes":6752072,"wire_rx_bytes":0,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+starry:~# GUEST_EXIT=$?
+starry:~# printf 'tcp_tx_guest_exit=%s\n' "$GUEST_EXIT"
+tcp_tx_guest_exit=0
+starry:~# /tmp/network_benchmark client --side guest --protocol udp --direction 
+tx --addr 10.0.2.2:15555 --profile smoke --duration 1 --run-id 4001 --test-id 20
+4 --round-id 1
+{"schema_version":1,"type":"manifest","side":"guest","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"UDP","direction":"TX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":204,"round_id":1,"config_fingerprint":"4cbb07deba3cca2d"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":204,"round_id":1,"side":"guest","status":"invalid","invalid_reason":4,"protocol":"UDP","direction":"TX","completion_point":6,"config_fingerprint":"4cbb07deba3cca2d","duration_s":1,"tx_bytes":6746600,"tx_packets":4819,"rx_bytes":0,"rx_packets":0,"wire_tx_bytes":6920084,"wire_rx_bytes":0,"udp_offered":4819,"udp_accepted":4819,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+starry:~# GUEST_EXIT=$?
+starry:~# printf 'udp_tx_guest_exit=%s\n' "$GUEST_EXIT"
+udp_tx_guest_exit=1
+starry:~# /tmp/network_benchmark client --side guest --protocol tcp --direction 
+bidi --addr 10.0.2.2:15555 --profile smoke --duration 1 --run-id 4001 --test-id 
+205 --round-id 1
+{"schema_version":1,"type":"manifest","side":"guest","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"TCP","direction":"BIDI","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":205,"round_id":1,"config_fingerprint":"84c272d0beab7d85"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":205,"round_id":1,"side":"guest","status":"invalid","invalid_reason":4,"protocol":"TCP","direction":"BIDI","completion_point":6,"config_fingerprint":"84c272d0beab7d85","duration_s":1,"tx_bytes":1869000,"tx_packets":1335,"rx_bytes":8759800,"rx_packets":6257,"wire_tx_bytes":1917060,"wire_rx_bytes":8985052,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+starry:~# GUEST_EXIT=$?
+starry:~# 
+starry:~#   printf 'tcp_bidi_guest_exit=%s\n' "$GUEST_EXIT"
+tcp_bidi_guest_exit=1
+starry:~# /tmp/network_benchmark client --side guest --protocol udp --direction 
+bidi --addr 10.0.2.2:15555 --profile smoke --duration 1 --run-id 4001 --test-id 
+206 --round-id 1
+{"schema_version":1,"type":"manifest","side":"guest","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"UDP","direction":"BIDI","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":206,"round_id":1,"config_fingerprint":"c27fa889f72d0dd9"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":206,"round_id":1,"side":"guest","status":"invalid","invalid_reason":4,"protocol":"UDP","direction":"BIDI","completion_point":6,"config_fingerprint":"c27fa889f72d0dd9","duration_s":1,"tx_bytes":23800,"tx_packets":17,"rx_bytes":23800,"rx_packets":17,"wire_tx_bytes":24412,"wire_rx_bytes":24412,"udp_offered":17,"udp_accepted":17,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":26,"flow_count":1,"instret_status":"unavailable"}
+starry:~# GUEST_EXIT=$?
+starry:~# 
+starry:~#   printf 'udp_bidi_guest_exit=%s\n' "$GUEST_EXIT"
+udp_bidi_guest_exit=1
+starry:~# test -x /root/ms03_irq_probe
+starry:~# 
+starry:~#   printf 'irq_probe_present=%s\n' "$?"
+irq_probe_present=0
+starry:~# /root/ms03_irq_probe idle
+READY
+PRE total=15450 used_ring=15450 config_change=0 combined=0 unknown=0 spurious=0 ack_count=15450 uart_irq=73
+POST total=15450 used_ring=15450 config_change=0 combined=0 unknown=0 spurious=0 ack_count=15450 uart_irq=73
+DELTA total=0 used_ring=0 config_change=0 combined=0 unknown=0 spurious=0 ack_count=0 uart_irq=0
+PASS idle (total delta=0 in 2000ms)
+starry:~# 
+
+
+daivy@daivy:~/projects/serial/work/StarryOS$ export BENCH_CC=/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc
+  make -B tests/network_benchmark
+  sha256sum tests/network_benchmark
+  stat -c '%y %s %n' tests/network_benchmark.c tests/network_benchmark
+/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror \
+        -static -Os \
+        tests/network_benchmark.c \
+        tests/network_benchmark_protocol.c \
+        tests/network_benchmark_platform.c \
+        -o tests/network_benchmark
+b863b060500c3a0977102e840d2d7160d75d7ea899567ab38cc72891ad5f1eb3  tests/network_benchmark
+2026-08-05 17:34:21.928337665 +0800 47792 tests/network_benchmark.c
+2026-08-05 17:40:09.111487974 +0800 160112 tests/network_benchmark
+daivy@daivy:~/projects/serial/work/StarryOS$ ./tests/network_benchmark-host client --side host --protocol tcp --direction rx --addr 127.0.0.1:5555 --profile smoke --duration 1 --run-id 4001 --test-id 201 --round-id 1 | tee /tmp/usernet-tcp-rx-host.ndjson
+  HOST_EXIT=${PIPESTATUS[0]}
+{"schema_version":1,"type":"manifest","side":"host","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"TCP","direction":"RX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":201,"round_id":1,"config_fingerprint":"e74d72d56a70770a"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":201,"round_id":1,"side":"host","status":"invalid","invalid_reason":4,"protocol":"TCP","direction":"RX","completion_point":6,"config_fingerprint":"e74d72d56a70770a","duration_s":1,"tx_bytes":13949600,"tx_packets":9964,"rx_bytes":0,"rx_packets":0,"wire_tx_bytes":14308304,"wire_rx_bytes":0,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+daivy@daivy:~/projects/serial/work/StarryOS$ printf 'tcp_rx_host_exit=%s\n' "$HOST_EXIT"
+tcp_rx_host_exit=1
+daivy@daivy:~/projects/serial/work/StarryOS$ ./tests/network_benchmark-host client --side host --protocol udp --direction rx --addr 127.0.0.1:5555 --profile smoke --duration 1 --run-id 4001 --test-id 202 --round-id 1 | tee /tmp/usernet-udp-rx-host.ndjson
+  HOST_EXIT=${PIPESTATUS[0]}
+{"schema_version":1,"type":"manifest","side":"host","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"UDP","direction":"RX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":202,"round_id":1,"config_fingerprint":"d7f0bda86d3f03ee"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":202,"round_id":1,"side":"host","status":"invalid","invalid_reason":4,"protocol":"UDP","direction":"RX","completion_point":6,"config_fingerprint":"d7f0bda86d3f03ee","duration_s":1,"tx_bytes":85150800,"tx_packets":60822,"rx_bytes":0,"rx_packets":0,"wire_tx_bytes":87340392,"wire_rx_bytes":0,"udp_offered":60822,"udp_accepted":60822,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+daivy@daivy:~/projects/serial/work/StarryOS$ printf 'udp_rx_host_exit=%s\n' "$HOST_EXIT"
+udp_rx_host_exit=1
+daivy@daivy:~/projects/serial/work/StarryOS$ ./tests/network_benchmark-host server --side host --protocol tcp --direction tx --port 15555 --profile smoke --duration 1 --run-id 4001 --test-id 203 --round-id 1 | tee /tmp/usernet-tcp-tx-host.ndjson
+  HOST_EXIT=${PIPESTATUS[0]}
+{"schema_version":1,"type":"manifest","side":"host","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"TCP","direction":"TX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":203,"round_id":1,"config_fingerprint":"a65a6c393eceea71"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":203,"round_id":1,"side":"host","status":"valid","invalid_reason":0,"protocol":"TCP","direction":"TX","completion_point":6,"config_fingerprint":"a65a6c393eceea71","duration_s":1,"tx_bytes":0,"tx_packets":0,"rx_bytes":6582800,"rx_packets":4702,"wire_tx_bytes":0,"wire_rx_bytes":6752072,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+daivy@daivy:~/projects/serial/work/StarryOS$ printf 'tcp_tx_host_exit=%s\n' "$HOST_EXIT"
+tcp_tx_host_exit=0
+daivy@daivy:~/projects/serial/work/StarryOS$ ./tests/network_benchmark-host server --side host --protocol udp --direction tx --port 15555 --profile smoke --duration 1 --run-id 4001 --test-id 204 --round-id 1 | tee /tmp/usernet-udp-tx-host.ndjson
+  HOST_EXIT=${PIPESTATUS[0]}
+{"schema_version":1,"type":"manifest","side":"host","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"UDP","direction":"TX","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":204,"round_id":1,"config_fingerprint":"4cbb07deba3cca2d"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":204,"round_id":1,"side":"host","status":"invalid","invalid_reason":4,"protocol":"UDP","direction":"TX","completion_point":6,"config_fingerprint":"4cbb07deba3cca2d","duration_s":1,"tx_bytes":0,"tx_packets":0,"rx_bytes":6736800,"rx_packets":4812,"wire_tx_bytes":0,"wire_rx_bytes":6910032,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":7,"flow_count":1,"instret_status":"unavailable"}
+daivy@daivy:~/projects/serial/work/StarryOS$ printf 'udp_tx_host_exit=%s\n' "$HOST_EXIT"
+udp_tx_host_exit=1
+daivy@daivy:~/projects/serial/work/StarryOS$ ./tests/network_benchmark-host server --side host --protocol tcp --direction bidi --port 15555 --profile smoke --duration 1 --run-id 4001 --test-id 205 --round-id 1 | tee /tmp/usernet-tcp-bidi-host.ndjson
+  HOST_EXIT=${PIPESTATUS[0]}
+{"schema_version":1,"type":"manifest","side":"host","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"TCP","direction":"BIDI","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":205,"round_id":1,"config_fingerprint":"84c272d0beab7d85"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":205,"round_id":1,"side":"host","status":"invalid","invalid_reason":4,"protocol":"TCP","direction":"BIDI","completion_point":6,"config_fingerprint":"84c272d0beab7d85","duration_s":1,"tx_bytes":11660600,"tx_packets":8329,"rx_bytes":1869000,"rx_packets":1335,"wire_tx_bytes":11960444,"wire_rx_bytes":1917060,"udp_offered":0,"udp_accepted":0,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":0,"flow_count":1,"instret_status":"unavailable"}
+daivy@daivy:~/projects/serial/work/StarryOS$ printf 'tcp_bidi_host_exit=%s\n' "$HOST_EXIT"
+tcp_bidi_host_exit=1
+daivy@daivy:~/projects/serial/work/StarryOS$ ./tests/network_benchmark-host server --side host --protocol udp --direction bidi --port 15555 --profile smoke --duration 1 --run-id 4001 --test-id 206 --round-id 1 | tee /tmp/usernet-udp-bidi-host.ndjson
+  HOST_EXIT=${PIPESTATUS[0]}
+{"schema_version":1,"type":"manifest","side":"host","platform":"qemu","driver_mode":"polling","profile":"smoke","protocol":"UDP","direction":"BIDI","flow_count":1,"payload_size":1400,"duration_s":1,"warmup_s":0,"seed":12345,"offered_load_pct":0,"run_id":4001,"test_id":206,"round_id":1,"config_fingerprint":"c27fa889f72d0dd9"}
+{"schema_version":1,"type":"round","run_id":4001,"test_id":206,"round_id":1,"side":"host","status":"invalid","invalid_reason":4,"protocol":"UDP","direction":"BIDI","completion_point":6,"config_fingerprint":"c27fa889f72d0dd9","duration_s":1,"tx_bytes":94092600,"tx_packets":67209,"rx_bytes":16800,"rx_packets":12,"wire_tx_bytes":96512124,"wire_rx_bytes":17232,"udp_offered":67209,"udp_accepted":67209,"udp_loss":0,"udp_duplicate":0,"udp_reorder":0,"udp_corrupt":0,"udp_late":5,"flow_count":1,"instret_status":"unavailable"}
+daivy@daivy:~/projects/serial/work/StarryOS$ printf 'udp_bidi_host_exit=%s\n' "$HOST_EXIT"
+udp_bidi_host_exit=1
+daivy@daivy:~/projects/serial/work/StarryOS$ 
+
+daivy@daivy:~/projects/serial/work/StarryOS$ cd /home/daivy/projects/serial/work/StarryOS
+  QEMU_PID="$(pgrep -n -f qemu-system-riscv64)"
+  PEER_PID="$(pgrep -n -f '/tests/network_benchmark-host')"
+  COLLECTOR_PID="$$"
+  printf 'qemu_pid=%s peer_pid=%s collector_pid=%s\n' "$QEMU_PID" "$PEER_PID" "$COLLECTOR_PID"
+  test -n "$QEMU_PID"
+  test -n "$PEER_PID"
+  kill -0 "$QEMU_PID"
+  kill -0 "$PEER_PID"
+  python3 scripts/network_benchmark_collect.py \
+    --pid "$QEMU_PID" "$PEER_PID" "$COLLECTOR_PID" \
+    --scope qemu peer collector \
+    --interval 0.1 \
+    --duration 1.5 \
+    | tee /tmp/ms16-host-cpu.ndjson
+  COLLECT_EXIT=${PIPESTATUS[0]}
+  printf 'collector_exit=%s\n' "$COLLECT_EXIT"
+qemu_pid=136317 peer_pid=153256 collector_pid=152794
+{"type": "cpu_sample", "sample_seq": 1, "elapsed_s": 0.0, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2568, "stime_ticks": 1016, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239371859040, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 1, "elapsed_s": 0.0, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239371964299, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 1, "elapsed_s": 0.0, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239371987263, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 2, "elapsed_s": 0.101, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2568, "stime_ticks": 1016, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239472380289, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 2, "elapsed_s": 0.101, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239472530866, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 2, "elapsed_s": 0.101, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239472578192, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 3, "elapsed_s": 0.2, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2568, "stime_ticks": 1016, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239572115372, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 3, "elapsed_s": 0.2, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239572207095, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 3, "elapsed_s": 0.2, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239572242312, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 4, "elapsed_s": 0.3, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2568, "stime_ticks": 1016, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239672172894, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 4, "elapsed_s": 0.3, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239672256466, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 4, "elapsed_s": 0.3, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239672298080, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 5, "elapsed_s": 0.4, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2568, "stime_ticks": 1016, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239772156441, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 5, "elapsed_s": 0.4, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239772244909, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 5, "elapsed_s": 0.4, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239772272112, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 6, "elapsed_s": 0.5, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2568, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239872134220, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 6, "elapsed_s": 0.5, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239872214247, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 6, "elapsed_s": 0.5, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239872242578, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 7, "elapsed_s": 0.6, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17239972113033, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 7, "elapsed_s": 0.6, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17239972211171, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 7, "elapsed_s": 0.6, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17239972241922, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 8, "elapsed_s": 0.7, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240072198509, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 8, "elapsed_s": 0.7, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240072284530, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 8, "elapsed_s": 0.7, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240072313046, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 9, "elapsed_s": 0.8, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240172139660, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 9, "elapsed_s": 0.8, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240172242718, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 9, "elapsed_s": 0.8, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240172277332, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 10, "elapsed_s": 0.9, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240272078110, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 10, "elapsed_s": 0.9, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240272151530, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 10, "elapsed_s": 0.9, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240272176841, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 11, "elapsed_s": 1.0, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240372074809, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 11, "elapsed_s": 1.0, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240372144964, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 11, "elapsed_s": 1.0, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240372166725, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 12, "elapsed_s": 1.1, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240472149198, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 12, "elapsed_s": 1.1, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240472246869, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 12, "elapsed_s": 1.1, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240472285230, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 13, "elapsed_s": 1.2, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240572160135, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 13, "elapsed_s": 1.2, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240572236550, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 13, "elapsed_s": 1.2, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240572261057, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 14, "elapsed_s": 1.3, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240672116475, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 14, "elapsed_s": 1.3, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240672209625, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 14, "elapsed_s": 1.3, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240672248114, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 15, "elapsed_s": 1.4, "pid": 136317, "pid_starttime": 1553209, "scope": "qemu", "clk_tck": 100, "state": "S", "utime_ticks": 2569, "stime_ticks": 1017, "rss_kb": 206524, "threads": 3, "timestamp_ns": 17240772250797, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 15, "elapsed_s": 1.401, "pid": 153256, "pid_starttime": 1723692, "scope": "peer", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 1440, "threads": 1, "timestamp_ns": 17240772361916, "numeric_status": "ok"}
+{"type": "cpu_sample", "sample_seq": 15, "elapsed_s": 1.401, "pid": 152794, "pid_starttime": 1717851, "scope": "collector", "clk_tck": 100, "state": "S", "utime_ticks": 0, "stime_ticks": 0, "rss_kb": 5240, "threads": 1, "timestamp_ns": 17240772399414, "numeric_status": "ok"}
+collector_exit=0
+daivy@daivy:~/projects/serial/work/StarryOS$ 

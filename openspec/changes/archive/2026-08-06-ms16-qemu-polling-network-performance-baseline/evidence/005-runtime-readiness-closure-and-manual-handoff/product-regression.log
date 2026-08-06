@@ -1,0 +1,19 @@
+Command: make host-test
+Result: PASS; 6 early-console + 8 memtrack + 20 MS03 IRQ host tests; C probe syntax PASS
+
+Command: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib service::tests -- --nocapture
+Result: PASS; 8 passed, 0 failed
+Warning: pre-existing smoltcp unused-code/import warnings
+
+Command: python3 scripts/ms01-qemu-test.py --self-test
+Result: PASS: harness-self-test
+
+Command: make LOG=info build
+Result: PASS; exit 0; RISC-V release ELF and binary produced
+Warning: cargo-binutils install probe cannot write /home/daivy/.cargo and cannot reach crates.io; existing tools completed the build.
+
+Command: openspec validate ms16-qemu-polling-network-performance-baseline --strict
+Result: Change is valid; exit 0
+
+Command: git diff --check
+Result: PASS; no output; exit 0
