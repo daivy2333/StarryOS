@@ -4,7 +4,7 @@
 > Branch: net-k3
 > Commit: 05dfcfc3ff29401290e666beffcfbe9aeca3267b
 > Date: 2026-07-29
-> See also: [网络实施探索](starryos-network-development-strategy.md) · [网络知识缺口](starryos-network-knowledge-gaps.md) · [网络项目总览](async-network-project-overview.md)
+> See also: [网络实施探索](starryos-network-development-strategy.md) · [网络项目总览](async-network-project-overview.md)
 
 ## 目标与范围
 
@@ -367,4 +367,3 @@ Plan 仍需决定：
 | [axtask/src/future/poll.rs](https://github.com/arceos-org/arceos/blob/6c6765c05df0550e31edb0ca82d468199f108b3f/modules/axtask/src/future/poll.rs#L41-L65) | PollSet 与全局 hook |
 | [QEMU axplat irq.rs](https://github.com/arceos-org/axplat_crates/blob/811837d8c699941f43665510b6e30700faa0e633/platforms/axplat-riscv64-qemu-virt/src/irq.rs#L113-L217) | handler 表、PLIC claim 和 EOI |
 | [kernel/src/platform/qemu.rs](https://github.com/daivy2333/StarryOS/blob/05dfcfc3ff29401290e666beffcfbe9aeca3267b/kernel/src/platform/qemu.rs#L15-L40) | QEMU UART 与 PLIC 平台事实 |
-

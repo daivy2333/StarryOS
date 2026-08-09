@@ -2,12 +2,12 @@
 
 > Project: StarryOS
 > Branch: net-k3
-> Updated: 2026-07-25
-> Product analysis baseline: `d9480f54ca8493e4a00ce265e8ddad843940fcac`
+> Updated: 2026-08-09
+> Product analysis baseline: `2ccb836a6541bfcf13fd134b5b321fb31c9be52d`
 > Local smoltcp: `f96a26b5968735d142e6999a016060bc5d3ab2b7`
 > Local Embassy: `106dc1952bb681e115037ef97dce1bea31094a93`
 > Local ArceOS: `68bda6dbb7655f383fde01ff60b50b8a02694ce3`
-> See also: [实施探索](starryos-network-development-strategy.md)、[交付估算](starryos-network-delivery-estimate.md)、[任务状态](../docs/tasks.md)
+> See also: [实施探索](starryos-network-development-strategy.md)、[任务状态](../docs/tasks.md)
 
 本文是网络开发的跨 session 入口。当前状态以 tasks 为准，规范约束以 M/D/K 为准，代码证据和推导保留在专题分析中。
 
@@ -19,7 +19,7 @@
 4. 读取本文和当前 milestone 对应的专题分析。
 5. 实施时读取 change、最新 iteration 和 Evidence。
 
-当前没有活跃 change，也没有 NIC Evidence。T01/N0-A 可进入 Plan，T02-T13 等待前置 Gate。
+当前没有活跃 change。MS01、MS02、MS03 和 MS16 已完成并归档；下一步是为 MS04 建立 Plan。当前状态和 Evidence 入口以 [tasks](../docs/tasks.md) 为准。
 
 ## 当前结论
 
@@ -27,14 +27,14 @@ StarryOS 不需要重写 TCP/IP、socket API 或调度器。现有 `axnet-ng`、
 
 推荐顺序：
 
-1. 接入本地 smoltcp 0.13.1，并保持同步 socket 行为。
-2. 用 QEMU VirtIO PCI 建立 IRQ 和 completion 见证。
-3. 建立 queue task、有界 packet slot 和 stack runner。
-4. 完成 socket readiness、reset、MMIO 和 SMP。
-5. 通过 VF2 B0-B7 Gate 接入 DWMAC。
-6. 真板稳定后再评估零拷贝、多队列和 offload。
+1. 保持已经完成的本地 smoltcp 0.13.1、axnet、VirtIO-MMIO 轮询与诊断 IRQ 基线。
+2. 在 QEMU VirtIO-MMIO 上建立 queue task、有界 packet slot 和 stack runner。
+3. 完成 socket readiness、reset 和 QEMU 多 hart 正确性。
+4. 确认目标板后建立板级事实 Gate，再选择对应 MAC 控制器后端。
+5. 先在真板建立轮询收发和可诊断 IRQ/DMA 基线，再接入 QEMU 已验证的异步公共层。
+6. 真板稳定后再按数据评估零拷贝、多队列、offload 和中断合并。
 
-首版不引入 `embassy-executor`、完整 `embassy-net`、无界 channel 或用户态 RX/TX mmap ring。QEMU 结果不作为 VF2 DMA、cache、PHY 或性能证据。
+首版不引入 `embassy-executor`、完整 `embassy-net`、无界 channel 或用户态 RX/TX mmap ring。QEMU 结果不作为任何真板的 DMA、cache、PHY、IRQ、SMP 或性能证据。
 
 ## 当前调用链和阻塞点
 
@@ -55,14 +55,14 @@ syscall/VFS Socket
 
 当前进展依赖 socket 操作主动调用 `poll_interfaces()`。尚无独立 stack runner。初始化发生在 kernel entry 之前，因此只修改 `kernel/` 不能替换设备和协议栈注入点。
 
-四个前置阻塞：
+当前边界：
 
 | 阻塞 | 影响 | 对应任务 |
 |---|---|---|
-| `axnet-ng` 依赖 fork 的 `RxToken::preprocess` | 上游 smoltcp 0.13.1 不能替换 | T01 |
-| `NetDriverOps` 缺少 IRQ control 和 `Context` | 仅增加 waker 无法实现可靠 rearm | T03 |
-| VirtIO MMIO probe 传入 `irq_num=None` | MMIO 不能作为首个异步 IRQ 路径 | T08 |
-| VF2 feature、kernel descriptor 和网络初始化未接通 | DWMAC 前要先完成平台 Gate | T10 |
+| smoltcp/axnet 同步兼容 | 已由 MS01 固化，不在异步阶段重写 | MS01 |
+| VirtIO-MMIO 轮询和诊断 IRQ | 已由 MS02/MS03 固化；当前 handler 不搬 descriptor、不唤醒 queue task | MS02-MS03 |
+| `NetDriverOps` 缺少 queue control 和完整异步 completion 语义 | 仅增加 socket waker 无法实现可靠 rearm 和所有权转移 | MS04-MS05 |
+| 目标板、MAC 控制器和平台事实尚未确定 | 不预选 DWMAC，也不提前复制 VF2 配置 | 目标板事实 Gate |
 
 代码入口：
 
@@ -70,7 +70,7 @@ syscall/VFS Socket
 - [`kernel/src/file/net.rs`](../../kernel/src/file/net.rs)
 - [`kernel/src/drivers/os_arceos.rs`](../../kernel/src/drivers/os_arceos.rs)
 - [`kernel/src/platform/mod.rs`](../../kernel/src/platform/mod.rs)
-- [`kernel/src/platform/visionfive2.rs`](../../kernel/src/platform/visionfive2.rs)
+- [`kernel/src/drivers/virtio_net_irq.rs`](../../kernel/src/drivers/virtio_net_irq.rs)
 - [`crates/smoltcp/src/iface/interface/mod.rs`](../../crates/smoltcp/src/iface/interface/mod.rs)
 
 ## 目标数据流
@@ -99,13 +99,13 @@ hard IRQ
 - reset 递增 generation，旧 completion 和 token 不进入新 ring。
 - Rust 原子序、DMA barrier、cache 操作和 MMIO 顺序分别建模。
 
-首版使用有界 packet slot，并接受可观测的复制。descriptor-backed token 属于 T13，不作为异步 MVP 前置条件。
+首版使用有界 packet slot，并接受可观测的复制。descriptor-backed token 只在 MS14 基线产生优化依据后进入 MS15 候选，不作为异步 MVP 前置条件。
 
 ## 依赖采用边界
 
 | 组件 | 当前用途 | 处理 |
 |---|---|---|
-| 本地 smoltcp 0.13.1 | TCP/IP 协议栈目标版本 | T01 接入；显式使用 Reno |
+| 本地 smoltcp 0.13.1 | TCP/IP 协议栈当前版本 | MS01 已接入；显式使用 Reno |
 | `axnet-ng` | socket、路由、smoltcp 集成 | 本地化并移除 fork API |
 | `axdriver_net` | 同步驱动兼容面 | 保留，不作为异步硬件 contract |
 | `axdriver_virtio` | VirtIO 网络包装 | 暴露 IRQ control 和 completion |
@@ -119,7 +119,7 @@ hard IRQ
 - `embassy-net-driver`：`Context` 感知 readiness 和 token。
 - `embassy-net-driver-channel`：runner/device 和有界 slot。
 - `embassy-net`：device、software、timer wake 合流。
-- ArceOS DWMAC/axdma：寄存器、PHY、DMA 地址和真板取证。
+- ArceOS DWMAC/axdma：QEMU 阶段用于审查 transport-neutral contract；真板阶段按控制器类型选择代码或经验。
 
 是否直接依赖 `embassy-net-driver` 尚未决定。`embassy-net-driver-channel 0.4.0` 会带入 `embassy-sync 0.8.0`，首版不采用。
 
@@ -127,46 +127,40 @@ hard IRQ
 
 | 阶段 | 任务 | 证据 |
 |---|---|---|
-| 兼容基线 | T01 | TCP listen/accept、UDP、nonblocking、poll |
-| PCI 见证 | T02 | bus、device ID、IRQ、feature、queue、pcap |
-| 异步路径 | T03-T06 | lost-wakeup、背压、空闲无轮询、多 waiter |
-| 恢复和平台 parity | T07-T09 | reset、late completion、MMIO、多 hart |
-| VF2 平台 | T10 | B0-B4：启动、寄存器、PHY、重复 IRQ |
-| DWMAC | T11 | B5-B6：descriptor 和协议包一致 |
-| 真板压力 | T12 | B7：drop、stall、p99、generation、soak |
-| 优化 | T13 | 每项独立 A/B；无数据则跳过并记录原因 |
+| 同步兼容与 MMIO 基线 | MS01-MS03、MS16 | socket 回归、轮询收发、诊断 IRQ 和统一 benchmark 协议 |
+| QEMU 异步数据面 | MS04-MS06 | lost wakeup、budget、背压、空闲无轮询和多 waiter |
+| QEMU 恢复与 SMP | MS07-MS08 | reset、late completion、取消和多 hart ordering |
+| 目标板事实与可观测性 | MS09-MS10 | 启动、控制器、MMIO、PHY、IRQ、clock/reset 和 DMA/cache 事实 |
+| 真板轮询与异步接入 | MS11-MS13 | 轮询收发、transport adapter、reset 和 completion 语义 |
+| 真板稳定性与优化 | MS14-MS15 | SMP、soak、性能基线和单项 A/B |
 
-QEMU 可证明软件所有权、IRQ→task→stack 控制流和大部分竞态。它不能证明 VF2 clock/reset/PHY、非一致 cache、DWMAC DMA 或真板吞吐。
+QEMU 可证明软件所有权、IRQ→task→stack 控制流和大部分竞态。它不能证明目标板的 clock/reset/PHY、非一致 cache、DMA、IRQ 时序或吞吐。
 
 ## 工作量
 
-T01-T12 预计为 21-37 人周。单名有经验的 Rust 内核工程师完成 VF2 稳定收发，日历周期约 5-9 个月。T13 另需 2-6 人周以上，并由测量结果触发。
-
-该估算包含测试、故障注入和证据整理，不包含硬件采购、长期上游评审或新增板卡。假设和阶段分解见 [交付估算](starryos-network-delivery-estimate.md)。
+原 R42 的 21-37 人周和 VF2 日历估算基于已经失效的 PCI-first、VF2/DWMAC 固定路线，不再作为当前交付承诺。QEMU MS04-MS08 的范围没有因目标板变化而扩大；目标板确定并完成事实 Gate 后，重新估算 MS09-MS15。历史假设保留在[已归档交付估算](_archive/starryos-network-delivery-estimate.md)供追溯。
 
 ## 风险和未决项
 
 | 项目 | 当前边界 | 决定时点 |
 |---|---|---|
-| TCP listener 适配 | 保持上游 smoltcp 干净；具体实现未定 | T01 Plan |
-| driver contract | `NetQueueControl` 与 `StackNetDevice` 分层 | T03 Plan |
-| Embassy driver trait | 可对齐语义；是否新增依赖未定 | T03 Plan |
-| stack runner 粒度 | 当前按单接口设计；多接口未定 | T05 Plan |
-| MMIO IRQ 来源 | 当前没有设备 IRQ 号 | T08 |
-| VF2 平台状态 | feature 和 descriptor 尚未接通 | T10 |
-| 真板 cache 语义 | QEMU 无法证明 | T11 |
-| multiqueue/zero-copy | 没有性能数据前不实施 | T13 |
+| driver contract | `NetQueueControl` 与 `StackNetDevice` 分层；DWMAC 只作第二设备模型审查 | MS04 Plan |
+| stack runner 粒度 | 当前按单接口设计；多接口未定 | MS06 Plan |
+| reset 与 SMP | QEMU 必须先形成独立软件证据 | MS07-MS08 |
+| 目标板事实 | 控制器、DMA/cache、PHY、IRQ、clock/reset 和 bootloader handoff 未知 | MS09 |
+| ArceOS 代码适用性 | 目标控制器兼容 DWMAC 时才评估代码移植 | MS09-MS11 |
+| multiqueue/zero-copy | 没有真板性能数据前不实施 | MS15 |
 
 ## 专题来源
 
 | 文档 | 保留的信息 |
 |---|---|
 | [R24 Embassy 评估](embassy-network-module-evaluation.md) | 12 个模块、trait、channel 和版本边界 |
-| [R25 ArceOS 网卡分析](arceos-async-network-driver-analysis.md) | driver、DWMAC、DMA 和不可复制项 |
+| [R25 ArceOS 网卡分析](arceos-async-network-driver-analysis.md) | 对 QEMU、异步公共层和目标真板的分级价值；DWMAC 条件化复用边界 |
 | [R26 异步路线](starryos-async-network-roadmap.md) | ownership、状态机、backpressure 和 lifecycle |
-| [R41 实施探索](starryos-network-development-strategy.md) | 当前代码调用链、smoltcp 缺口和 T01-T13 输入 |
-| [R14 真板验证](arceos-true-board-validation.md) | VF2 启动、寄存器、中断和 workload 阶梯 |
-| [R42 交付估算](starryos-network-delivery-estimate.md) | 人周、日历周期、人员模型和复估点 |
+| [R41 实施探索](starryos-network-development-strategy.md) | 当前代码调用链、VirtIO-MMIO 异步边界和目标板条件化 Gate |
+| [R14 真板验证](arceos-true-board-validation.md) | VF2 案例形成的启动、寄存器、中断和 workload 方法，不代表目标板选择 |
+| [R42 已归档交付估算](_archive/starryos-network-delivery-estimate.md) | 旧 PCI-first、VF2/DWMAC 固定路线的历史估算；目标板路线需重估 |
 
 以下内容是 2026-07-18 的原始探索输入。保留它用于追溯早期范围和判断。
 

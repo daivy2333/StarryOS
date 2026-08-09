@@ -108,14 +108,14 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 
 | 文档 | 主题 |
 |------|------|
-| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / VisionFive2 真板验证方法：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、U-Boot 状态 dump/preserve、中断 claim/handler/status/EOI 分层 — 当前作为 N4 VisionFive2 DWMAC 真板参考 |
-| <!-- R23 --> `.claude/analysis/async-network-project-overview.md` | StarryOS 网络开发总览：新 session 读取顺序、当前调用链、目标数据流、依赖边界、QEMU→VF2 验证阶梯、工作量摘要和专题来源 |
+| <!-- R14 --> `.claude/analysis/arceos-true-board-validation.md` | ArceOS / VisionFive2 真板验证案例：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、bootloader 状态 dump/preserve、中断 claim/handler/status/EOI 分层；不代表当前目标板选择 |
+| <!-- R23 --> `.claude/analysis/async-network-project-overview.md` | StarryOS 网络开发总览：当前 VirtIO-MMIO 基线、目标数据流、依赖边界、QEMU→目标板验证阶梯、ArceOS 分级价值和专题来源 |
 | <!-- R24 --> `.claude/analysis/embassy-network-module-evaluation.md` | Embassy 网络模块评估：核对 12 个网络相关 crate/模块，归纳 8 类可用能力和 3 类近期采用候选，明确 executor/time 的本地适配边界 |
-| <!-- R25 --> `.claude/analysis/arceos-async-network-driver-analysis.md` | ArceOS 异步网卡分析：NetDriverOps、NetBuf、smoltcp adapter、DWMAC、axdma 与真板证据；识别硬中断全栈 poll、lost wakeup 和全局锁风险 |
-| <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步高性能网卡初步路线：分层架构、RX/TX descriptor 状态机、IRQ budget、背压、completion、可观测性和分阶段 Gate |
-| <!-- R41 --> `.claude/analysis/starryos-network-development-strategy.md` | StarryOS 网络开发实施探索：当前 axnet/smoltcp/VirtIO 调用链、本地 smoltcp 0.13.1 兼容缺口、Embassy 采用边界、异步 queue/stack 数据流、QEMU PCI→MMIO→VisionFive2 分阶段 Gate |
-| <!-- R42 --> `.claude/analysis/starryos-network-delivery-estimate.md` | StarryOS 网络交付与工期估算：T01-T13 人周、单人和双人日历周期、估算假设、进度风险与阶段复估点 |
-| <!-- R43 --> `.claude/analysis/starryos-network-knowledge-gaps.md` | NIC 开发待收集信息清单：30 个待决问题按 milestone (T01-T13) 分组，每项含已知事实、待读代码、测试见证、解决判据和结果落点 — 进入 Plan 前逐项调查 |
+| <!-- R25 --> `.claude/analysis/arceos-async-network-driver-analysis.md` | ArceOS 网卡工作可复用性：区分 QEMU 直接代码、transport-neutral 抽象审查和目标真板经验；DWMAC 仅在兼容控制器上进入移植候选 |
+| <!-- R26 --> `.claude/analysis/starryos-async-network-roadmap.md` | StarryOS 异步网卡架构路线：RX/TX ownership、IRQ budget、背压、completion、可观测性，以及 QEMU 基线后按目标板事实选择后端 |
+| <!-- R41 --> `.claude/analysis/starryos-network-development-strategy.md` | StarryOS 网络开发实施探索：当前 axnet/smoltcp/VirtIO-MMIO 调用链、异步 queue/stack 数据流、MS04 边界和目标板 B0-B7 条件化 Gate |
+| <!-- R42 --> `.claude/analysis/_archive/starryos-network-delivery-estimate.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 固定路线的人周假设；目标板路线不得沿用其数字 |
+| <!-- R43 --> `.claude/analysis/_archive/starryos-network-knowledge-gaps.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 分组；当前 Plan 读取 tasks、R23、R25 和 R41 |
 | <!-- R46 --> `.claude/analysis/starryos-device-specific-irq-waker-architecture.md` | StarryOS 设备专属 IRQ 与任务唤醒分析：UART 全局 hook 冲突、PLIC 设备 handler、设备私有 waker、MS03/MS04 分批边界和 Gate 2 未确认项 |
 | <!-- R47 --> `.claude/analysis/starryos-virtio-mmio-network-benchmark-baseline.md` | MS16 统一网卡基线设计：QEMU/TAP 轮询 B0、跨轮询/异步/真板 workload、C1-C6 完成语义、吞吐/延迟/指令/CPU/复制/IRQ 指标、Evidence Schema、BDD/Gate 和 MS04 A/B 比较资格 |
 

@@ -80,7 +80,7 @@ QEMU 首条异步 NIC 路径 MUST 使用 VirtIO-MMIO。PCI 仅在 I13 的构建�
 
 - **原因**: 当前 MMIO 网卡和块设备可启动到 shell。PCI 设备模型可创建，但 StarryOS 实际仍编译 MMIO probe。
 - **替代方案**: PCI-first 会同时引入 feature、ECAM、BAR 和 IRQ 变量，暂不采用。
-- **影响**: 先完成 MMIO IRQ、RX 和 TX。PCI 不阻塞 QEMU 主线。
+- **影响**: 先完成 MMIO IRQ、RX 和 TX。PCI 不阻塞 QEMU 主线；真板在 QEMU 异步基线完成后先通过板级事实 Gate，再选择控制器后端。
 
 #### Scenario: 规划 QEMU NIC milestone
 

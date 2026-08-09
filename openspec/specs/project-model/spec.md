@@ -125,9 +125,10 @@ PLIC 初始化 MUST 保持 `init_primary()`（全局一次性初始化）与 `in
 
 #### Scenario: 更换 NIC transport
 
-- **WHEN** NIC 从 VirtIO-MMIO 迁移到 PCI 或真板 DWMAC
+- **WHEN** NIC 从 VirtIO-MMIO 迁移到 PCI 或目标板的任意 MAC 控制器
 - **THEN** transport 适配 MUST 留在 probe、IRQ 和 DMA 边界
 - **AND** queue task、stack runner 和 socket readiness 契约 MUST 保持不变
+- **AND** DWMAC 代码 MUST 仅在目标控制器兼容时进入移植候选
 - **AND** 新平台 MUST 重新取得本平台运行证据
 
 <!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md

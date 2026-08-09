@@ -1,11 +1,13 @@
 # Analysis Archive Index
 
-> Last updated: 2026-07-11
+> Last updated: 2026-08-09
 
 This directory stores archived analysis documents by batch. Active-path tombstones have been consolidated into this index so the active `.claude/analysis/` tree stays minimal.
 
 ## Batches
 
+- `starryos-network-delivery-estimate.md` — [ARCHIVED 2026-08-09] 旧 PCI-first、VF2/DWMAC 固定路线的历史工期估算；当前目标板路线不得沿用其数字。
+- `starryos-network-knowledge-gaps.md` — [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first、VF2/DWMAC 分组的历史知识缺口；当前 Plan 使用 tasks、R23、R25 和 R41。
 - `2026-06-24-q0-q15-analysis/` — early async UART, module extraction, Q15/M4, performance, and architecture analysis (14 files).
 - `2026-07-04-q19-lichee-analysis/` — Q18/Q19/Q19B Lichee plans, board captures, benchmark logs, and boot backup (8 files + `lichee/` subdir).
 - `2026-07-11-q19c-d1-async-uart-closeout/` — Q19C planning, TX optimization, M1/M2/M3 analysis, and D1 board evidence logs after D1 async UART testing ended (8 files + `lichee/` subdir).

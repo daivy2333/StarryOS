@@ -1,7 +1,7 @@
 # StarryOS 异步高性能网卡初步路线图
 
-> 分析日期：2026-07-18  
-> 性质：探索结论，不是已接受实施计划  
+> 分析日期：2026-08-09
+> 性质：架构探索；已接受的执行顺序以 [tasks](../docs/tasks.md) 为准
 > 输入：StarryOS 异步 UART、Embassy 网络模块、ArceOS DWMAC/axnet 工作
 
 ## 1. 目标与非目标
@@ -32,7 +32,7 @@
 | `TxCompletion` 四阶段 drain | TX descriptor completion | 区分提交、doorbell、DMA 完成、descriptor 回收 |
 | TTY OUT backpressure | TX ring writable | ring full 返回 Pending/WouldBlock 并注册 waker |
 | register-recheck | IRQ/descriptor rearm | 必须保留 |
-| QEMU/D1 分证据 | QEMU/VF2/SMP 分证据 | 必须保留 |
+| QEMU/D1 分证据 | QEMU/目标真板/SMP 分证据 | 必须保留 |
 | 单 producer/consumer 契约 | queue owner 契约 | 每个 queue 由唯一任务推进 |
 
 网卡新增的 UART 不具备的问题包括 DMA cache、scatter-gather、MTU、checksum/offload、link state、burst traffic、multiqueue 和 interrupt moderation。
@@ -245,10 +245,10 @@ Discovered -> Probed -> Started -> Quiescing
 
 ## 11. 里程碑与 Gate
 
-### N0：基线与契约
+### N0：基线与契约（已由 MS01-MS03、MS16 建立）
 
 - 梳理 StarryOS 当前 axnet-ng/axdriver 调用路径。
-- 确认首个 QEMU 和真板设备。
+- 固定 QEMU VirtIO-MMIO；真板设备由后续板级事实 Gate 决定。
 - 固化同步基线和计数器。
 - 写出 descriptor ownership、IRQ rearm、backpressure 契约。
 - 写出 probe/quiesce/reset/remove 和 generation 契约。
@@ -274,20 +274,21 @@ Gate：无 busy loop、无 lost wakeup、ring 满/空可恢复。
 
 Gate：所有权无泄漏/重复回收，remove/reset 后 DMA 不触及已回收内存，指标能解释退化。
 
-### N3：SMP 与 multiqueue
+### N3：SMP 正确性
 
 - 跨 hart 唤醒。
 - queue affinity。
 - per-queue lock/owner。
-- 必要时引入 RSS 和多 queue。
+- RSS 和多 queue 只在真板性能数据触发后评估。
 
 Gate：不把单核 QEMU 证据扩大为 SMP 结论。
 
-### N4：VisionFive2 DWMAC 真板
+### N4：目标真板后端
 
-- 复用 ArceOS 平台和 DMA 证据。
-- 验证 cache、barrier、PLIC、clock/reset。
-- 完成稳定收发和性能基线。
+- 先采集板卡、MAC、PHY、IRQ、DMA/cache、clock/reset 和 bootloader handoff 事实。
+- 控制器兼容 DWMAC 时审计并参考 ArceOS DWMAC；否则只借 DMA ownership 和 bring-up 方法。
+- 先完成目标控制器轮询收发，再接入 QEMU 已验证的异步公共层。
+- 验证 cache、barrier、MMIO ordering、中断控制器和 SMP。
 
 Gate：QEMU 与真板报告分开，真板错误计数为零或有解释。
 
@@ -307,24 +308,26 @@ Gate：QEMU 与真板报告分开，真板错误计数为零或有解释。
 
 ## 12. 正式 planning 的建议切片
 
-第一份 OpenSpec change 建议只覆盖 N0 和 N1：
+下一份 OpenSpec change 只覆盖 MS04 的异步 RX 队列基线：
 
 ```text
 范围：
-  QEMU 单设备、单 RX queue、单 TX queue
-  queue task + stack runner
-  driver readiness + token
-  reset generation 的最小骨架
-  TCP/UDP/poll 基本回归
+  QEMU VirtIO-MMIO 单设备、单 RX queue
+  NetQueueControl + AtomicWaker
+  register-recheck
+  RX reap/refill + bounded budget
 
 不含：
-  真板 DWMAC
+  异步 TX
+  stack runner 和 socket readiness
+  reset 与 SMP
+  任何真板后端
   multiqueue
   user mmap ring
   全协议栈替换
 ```
 
-这样可以先验证异步边界是否正确，再让 DMA 真板问题和 SMP 问题各自拥有独立 Gate。
+这样先验证 IRQ 到 RX queue task 的异步边界，再让 TX、stack、恢复、SMP 和真板硬件各自拥有独立 Gate。
 
 ## 13. See also
 
