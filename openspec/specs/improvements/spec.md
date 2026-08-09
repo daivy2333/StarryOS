@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录尚未承诺实施的改进机会。条目使用 `Ixx` 编号。已完成的条目保留 tombstones。对应 Legacy: `openspec/specs/optimization/spec.md` (hash: `2ffa3af2`)。
+记录尚未承诺实施的改进机会。条目使用 `Ixx` 编号。已完成的条目保留 tombstones。Legacy 原文：`openspec/changes/archive/mig-20260720-legacy-specs/optimization-original.md`（hash: `2ffa3af2`）。
 
 ## Requirements
 
@@ -99,4 +99,4 @@ I15 提升时 MUST 保证原始 rootfs 不变。当前 QEMU 挂载 `make/disk.im
 
 <!-- arc: cleanup-uart-documentation-system --> I12 (UART benchmark measurement) archived 2026-07-25. Universal measurement rules migrated to quality-gate-baseline/spec.md:Benchmark measurement methodology.
 
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/optimization/spec.md (hash: 2ffa3af2), 439 lines. Active improvements extracted as I01-I10; I11 removed (console-specific, archived to `console-lichee` branch); I12 added from async UART benchmark measurement evidence. Completed/archived entries preserved as tombstones. Archive carriers: ARC-202607021535, ARC-202607021648, ARC-202607031929, ARC-202607111510.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy original: openspec/changes/archive/mig-20260720-legacy-specs/optimization-original.md (hash: 2ffa3af2), 439 lines. Active improvements extracted as I01-I10; I11 removed (console-specific, archived to `console-lichee` branch); I12 added from async UART benchmark measurement evidence. Completed/archived entries preserved as tombstones. Archive carriers: ARC-202607021535, ARC-202607021648, ARC-202607031929, ARC-202607111510.

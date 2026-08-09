@@ -122,7 +122,17 @@
 - Gates: <已通过和阻塞的 Gate>
 - Evidence: <证据编号、路径或 None required>
 - Plan decision needed: <需要 Plan 重新决定的问题>
-- Resume condition: <后续 iteration 的恢复条件>
+- Resume condition: <当前 iteration 可恢复的条件；需改 Plan 时说明>
+
+**Blocker Resolution**
+
+<未恢复时写 None；用户要求继续时追加：>
+
+- User instruction: <用户提供的事实、办法或风险豁免>
+- Resolution: <阻塞如何解除>
+- Accepted risk: <已接受风险或 None>
+- Resume point: <恢复的 task / step>
+- Required verification: <恢复前后需要重跑的 Gate>
 
 **Self-Review**
 

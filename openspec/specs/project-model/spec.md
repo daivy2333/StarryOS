@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录当前有效的跨模块模型、边界和约束。条目使用 `Mxx` 编号，不记录历史选择过程。对应 Legacy: `openspec/specs/architecture/spec.md` (hash: `5b054d98`) 中的当前有效约束。
+记录当前有效的跨模块模型、边界和约束。条目使用 `Mxx` 编号，不记录历史选择过程。Legacy 原文：`openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md`（hash: `5b054d98`）。
 
 ## Requirements
 
@@ -132,4 +132,4 @@ PLIC 初始化 MUST 保持 `init_primary()`（全局一次性初始化）与 `in
 
 <!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 <!-- arc: cleanup-uart-documentation-system --> M03, M33, M35 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98), 1053 lines, ADR-001~063. Current valid constraints extracted as M01-M40. Decisions rationale preserved in decisions/spec.md. Tombstoned ADRs (A014-A017, A020-A021, A032, A063-A064) noted here — details in archive carriers ARC-202607081429 and arc-202607152005. Also see ARC-202607251326 for M02-M40 partial archival.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy original: openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md (hash: 5b054d98), 1053 lines, ADR-001~063. Current valid constraints extracted as M01-M40. Decisions rationale preserved in decisions/spec.md. Tombstoned ADRs (A014-A017, A020-A021, A032, A063-A064) noted here — details in archive carriers ARC-202607081429 and arc-202607152005. Also see ARC-202607251326 for M02-M40 partial archival.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录已验证的行为、根因、适用范围和失效边界。条目使用 `Kxx` 编号。不记录单纯文件位置、可从签名读取的 API、未验证猜测或一次性实现细节。对应 Legacy: `openspec/specs/learned/spec.md` (hash: `f09d4cae`)。
+记录已验证的行为、根因、适用范围和失效边界。条目使用 `Kxx` 编号。不记录单纯文件位置、可从签名读取的 API、未验证猜测或一次性实现细节。Legacy 原文：`openspec/changes/archive/mig-20260720-legacy-specs/learned-original.md`（hash: `f09d4cae`）。
 
 ## Requirements
 
@@ -24,7 +24,7 @@ ISR MUST 最小化：读 ISR -> 禁用中断 -> AtomicWaker::wake() -> 返回。
 | **AtomicWaker**（本项目采用）| 静态 `AtomicWaker` 变量 | O(1)，无锁 | 固定数量的 waker（如 RX/TX 各一个）|
 | **register_irq_waker**（axtask 通用方案）| `BTreeMap<usize, PollSet>` | O(log n)，需要查找 | 通用场景（如同一 IRQ 注册多个 waker）|
 
-- **选型依据**: UART 驱动是专用场景，只有 RX/TX 两个方向各一个 waker；不需要动态注册/注销 waker；ISR 性能要求高（~1.5 µs），`AtomicWaker::wake()` 是原子操作无分支。
+- **选型依据**: UART 驱动是专用场景，仅 RX/TX 各一个 waker，无需动态注册/注销；ISR 性能要求高（~1.5 µs），`AtomicWaker::wake()` 是原子操作无分支。
 
 #### Scenario: 设计新的 ISR 唤醒路径
 

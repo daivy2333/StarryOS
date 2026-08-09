@@ -2,7 +2,7 @@
 
 ## Purpose
 
-记录有替代方案且影响长期维护的重要选择、原因、替代方案、影响和状态。条目使用 `Dxx` 编号，被替代后保留历史并标记 `superseded`。对应 Legacy: `openspec/specs/architecture/spec.md` (hash: `5b054d98`) 中的 ADR 决策详情。
+记录有替代方案且影响长期维护的重要选择、原因、替代方案、影响和状态。条目使用 `Dxx` 编号，被替代后保留历史并标记 `superseded`。Legacy ADR 原文：`openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md`（hash: `5b054d98`）。
 
 ## Requirements
 
@@ -89,6 +89,6 @@ QEMU 首条异步 NIC 路径 MUST 使用 VirtIO-MMIO。PCI 仅在 I13 的构建�
 - **AND** MUST 先单独验证 MMIO IRQ，再引入异步队列
 - **AND** MUST NOT 把 QEMU 结果声明为真板证据
 
-<!-- arc: MIG-20260720-legacy-specs --> Legacy: openspec/specs/architecture/spec.md (hash: 5b054d98). Decision rationale extracted as D01-D21. Tombstoned ADRs: A014-A017, A020-A021, A032, A035, A056, A063-A064 -> archive carriers ARC-202607081429, ARC-202607021648, arc-202607152005.
+<!-- arc: MIG-20260720-legacy-specs --> Legacy original: openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md (hash: 5b054d98). Decision rationale extracted as D01-D21. Tombstoned ADRs: A014-A017, A020-A021, A032, A035, A056, A063-A064 -> archive carriers ARC-202607081429, ARC-202607021648, arc-202607152005.
 <!-- arc: ARC-202607251326 --> 16 D 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 <!-- arc: cleanup-uart-documentation-system --> D03 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/

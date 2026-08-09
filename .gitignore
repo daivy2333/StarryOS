@@ -21,3 +21,10 @@ crates/*/Cargo.lock
 tests/network_benchmark
 tests/network_benchmark-host
 tests/network_benchmark-host-asan
+
+# Local OpenSpec documentation system
+/CLAUDE.md
+/AGENTS.md
+/.claude/
+/.agents/
+/openspec/
