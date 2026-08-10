@@ -424,8 +424,6 @@ dependencies = [
 [[package]]
 name = "axdriver_net"
 version = "0.1.4-preview.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dca0cded4fdabcf9176616b636d310a7179a89e31a6dd221d9ea7a6678ffaea4"
 dependencies = [
  "axdriver_base",
  "log",
@@ -444,8 +442,6 @@ dependencies = [
 [[package]]
 name = "axdriver_virtio"
 version = "0.1.4-preview.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da6c36cc900745f3bab9de0dd8d5a2d5ac720a253937b3c5f3ab81bbb9c9e139"
 dependencies = [
  "axdriver_base",
  "axdriver_block",
@@ -3081,6 +3077,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "chrono",
+ "critical-section",
  "downcast-rs",
  "embassy-hal-internal",
  "embassy-sync",
@@ -3491,8 +3488,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "virtio-drivers"
 version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6a39747311dabb3d37807037ed1c3c38d39f99198d091b5b79ecd5c8d82f799"
 dependencies = [
  "bitflags 2.13.0",
  "enumn",

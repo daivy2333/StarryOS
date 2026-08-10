@@ -3,9 +3,12 @@ resolver = "2"
 members = ["kernel"]
 exclude = [
     "arceos",
+    "crates/axdriver_net",
+    "crates/axdriver_virtio",
     "crates/axnet",
     "crates/smoltcp",
     "crates/uart_16550",
+    "crates/virtio-drivers",
 ]
 
 [workspace.package]
@@ -136,3 +139,6 @@ platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
 [patch.crates-io]
 axnet-ng = { path = "crates/axnet" }
 axfs-ng = { path = "crates/axfs-ng" }
+axdriver_net = { path = "crates/axdriver_net" }
+axdriver_virtio = { path = "crates/axdriver_virtio" }
+virtio-drivers = { path = "crates/virtio-drivers" }

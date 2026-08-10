@@ -86,6 +86,8 @@ host-test:
 	/tmp/memtrack-session-test
 	rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test
 	/tmp/ms03-irq-host-test
+	rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test
+	/tmp/ms04-async-rx-host-test
 	cc -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)

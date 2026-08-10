@@ -1,0 +1,113 @@
+## MODIFIED Requirements
+
+### Requirement: MS03 网卡 ISR 保持诊断边界
+
+VirtIO-net handler MUST 保持 cause、ack、snapshot、原子 telemetry 和固定 waker 的最小边界。MS04 异步 RX 激活后，used-ring cause MUST 唤醒唯一 RX queue task；handler MUST NOT 搬运 descriptor 或 packet，MUST NOT 获取 axnet `Service`，MUST NOT 运行协议栈。`RING_EVENT_IDX` 通知重臂 MUST 由唯一 queue owner 在任务上下文完成。
+
+#### Scenario: used-ring 中断
+
+- **WHEN** MMIO interrupt status 包含 used-ring update
+- **THEN** handler MUST 增加 used-ring 与 ack 计数
+- **AND** handler MUST 在返回前清除设备 cause
+- **AND** MS04 激活后 MUST 唤醒唯一 RX queue task
+
+#### Scenario: 配置变化中断
+
+- **WHEN** MMIO interrupt status 包含 config-change
+- **THEN** handler MUST 增加 config-change 与 ack 计数
+- **AND** 该事件 MUST 与 used-ring 分开记录
+- **AND** MUST NOT 伪造 RX completion
+
+#### Scenario: 无 pending cause
+
+- **WHEN** handler 运行但设备没有 pending cause
+- **THEN** handler MUST 增加 spurious 计数
+- **AND** handler MUST NOT 修改 descriptor 或协议栈状态
+
+### Requirement: 网卡实例与数据面 owner 唯一
+
+系统 MUST 只保留一个 VirtIO-net 设备实例和一个 RX queue owner。MS04 激活前，MS02 轮询路径 MUST 保持唯一数据面 owner；MS04 激活后，唯一 RX queue task MUST 取得 RX queue owner，轮询 fallback MUST NOT 再消费该 queue。IRQ control MUST NOT 持有第二份 queue 数据面状态，也 MUST NOT 实现第二个 `NetDriverOps` 设备。
+
+#### Scenario: MS04 启动网卡
+
+- **WHEN** VirtIO-net 完成 probe、IRQ 初始化和异步 RX 激活
+- **THEN** 系统 MUST 只创建一个网卡设备实例
+- **AND** RX descriptor 进度 MUST 由唯一 queue task 负责
+- **AND** TX MUST 保持 MS02 同步基线
+
+#### Scenario: IRQ control 处理事件
+
+- **WHEN** 网卡设备 handler 读取、ack 并发布 interrupt status
+- **THEN** IRQ control MUST NOT 获取第二份 queue 所有权
+- **AND** IRQ control MUST NOT 与 queue task 并发修改 descriptor
+
+#### Scenario: 异步激活前失败
+
+- **WHEN** MS04 初始化在 RX owner 切换前失败
+- **THEN** MS02 轮询路径 MUST 继续作为唯一 owner
+- **AND** 结果 MUST NOT 声明异步 RX 已可用
+
+#### Scenario: 分类 MS04 证据
+
+- **WHEN** MS04 中网络流量通过
+- **THEN** 证据 MUST 分别证明 IRQ 唤醒、queue task descriptor 进度和既有协议栈轮询
+- **AND** 仅有网络功能通过 MUST NOT 替代异步 owner 证明
+
+### Requirement: ack、EOI 和 rearm 顺序可验证
+
+设备 cause MUST 在设备 handler 返回前 ack。PLIC EOI MUST 在设备 handler 返回后发生。MS04 queue task MUST 在任务上下文控制通知抑制和重臂，并在 `Pending` 前完成 register-recheck。实现 MUST 保留 `RING_EVENT_IDX`，且 MUST 使用该模式下有效的 `used_event` 或等效规范机制。
+
+#### Scenario: 重复投递 used-ring 中断
+
+- **WHEN** 同一队列产生两次独立 used-ring 事件
+- **THEN** 两次事件 MUST 各有 handler 与 ack 计数
+- **AND** 第二次事件 MUST 在第一次 EOI 后到达
+- **AND** queue task MUST 分别观察到两次事件或对应 completion
+
+#### Scenario: `RING_EVENT_IDX` 已协商
+
+- **WHEN** 设备协商结果包含 `RING_EVENT_IDX`
+- **THEN** queue owner MUST 通过该模式的有效机制抑制并重臂 used-buffer 通知
+- **AND** handler 或 task MUST NOT 把 `set_dev_notify` 的 no-op 当作有效 rearm
+- **AND** 实现 MUST NOT 通过静默关闭 feature 获得通过
+
+#### Scenario: rearm 窗口出现 completion
+
+- **WHEN** completion 在 waker 注册、通知重臂和任务返回 `Pending` 之间到达
+- **THEN** queue task MUST 通过 recheck 或事件代次观察到它
+- **AND** MUST NOT 依赖 10ms fallback 恢复 RX queue 进度
+
+#### Scenario: cause 未清或 rearm 失效
+
+- **WHEN** IRQ 持续重复但没有新设备事件，或有新 completion 却不再投递和调度
+- **THEN** 对应 storm 或 lost-wakeup Gate MUST 失败
+- **AND** 诊断 MUST 区分 ack、EOI、rearm 与 task scheduling 失败
+
+### Requirement: MS02 与 UART 恢复路径保持可用
+
+MS04 MUST 保持 MS02 同步 TX、MS01/MS02 socket 行为和 MS03 IRQ 分类。异步 RX 在 owner 切换前初始化失败时 MUST 保留 MS02 轮询数据面；切换成功后，轮询 fallback MUST NOT 与 queue task 并发 reap。UART MUST 保留现有 waker、copier、early console 和 panic console，且共享 critical-section 的 IRQ 状态恢复修改 MUST 通过 UART 回归。
+
+#### Scenario: 网卡异步 RX 初始化失败
+
+- **WHEN** 网卡 IRQ、waker、queue control 或 task 初始化在 owner 切换前失败
+- **THEN** 网络 MUST 保留 MS02 轮询路径
+- **AND** 启动诊断 MUST 标记 MS04 不可用及失败阶段
+
+#### Scenario: 网卡异步 RX 已激活
+
+- **WHEN** queue task 已取得 RX owner
+- **THEN** 10ms fallback MAY 继续推进现有协议栈和 timer
+- **AND** fallback MUST NOT 直接调用目标 NIC 的 RX reap
+- **AND** 同步 TX MUST 保持可用
+
+#### Scenario: UART handler 初始化或回归失败
+
+- **WHEN** UART IRQ 10 注册失败，或 critical-section 修改破坏 UART waker/copy 行为
+- **THEN** 对应 Gate MUST 失败且 UART copier MUST NOT 在无 handler 时启动
+- **AND** 轮询 early/panic console MUST 继续提供诊断输出
+
+#### Scenario: MS04 功能通过
+
+- **WHEN** MS04 IRQ、queue task 和 RX ownership Gate 完成
+- **THEN** MS01、MS02、MS03 与 UART 回归 MUST 继续通过
+- **AND** 异步 TX、最终 packet slot、stack runner 和 socket readiness MUST 保持未引入

@@ -22,6 +22,7 @@ pub mod uart_init;
 pub mod virtio_net_irq;
 #[cfg(not(feature = "lichee-d1"))]
 pub(crate) mod virtio_net_irq_logic;
+pub(crate) mod critical_section_policy;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub use ntty_async::ASYNC_TTY;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]

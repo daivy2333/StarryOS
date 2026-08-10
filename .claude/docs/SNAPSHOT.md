@@ -1,8 +1,8 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-09
-> Revision: `2ccb836a6541bfcf13fd134b5b321fb31c9be52d`
+> Updated: 2026-08-10
+> Revision: `16d9a16a2b65a574022faaee39b465f6f7aebd45`
 > Branch: `net-k3`
 > Worktree: modified
 
@@ -25,6 +25,7 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 | `src/` | 顶层内核入口与产品组装 |
 | `kernel/` | 内核主体、系统调用、VFS、设备、平台和测试支持 |
 | `crates/axnet/`、`crates/smoltcp/` | 本地网络接口与协议栈实现 |
+| `crates/axdriver_net/`、`crates/axdriver_virtio/`、`crates/virtio-drivers/` | 本地化网络驱动依赖（workspace patch，含 EVENT_IDX 通知控制与 transport-neutral queue contract） |
 | `crates/uart_16550/` | 本地 UART 驱动实现 |
 | `crates/axfs-ng/` | 本地文件系统组件 |
 | `crates/axplat-riscv64-lichee-d1/` | Lichee RV Dock D1 平台组件 |
@@ -42,8 +43,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `2ccb836a6541bfcf13fd134b5b321fb31c9be52d`。
-- 工作树包含尚未提交的文档修改。
+- 当前 revision 为 `16d9a16a2b65a574022faaee39b465f6f7aebd45`。
+- 工作树包含尚未提交的修改。
 
 ## 权威入口
 

@@ -49,15 +49,32 @@ mod task;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod time;
 
-// Critical section implementation for embassy-sync AtomicWaker
+// Critical section implementation for embassy-sync AtomicWaker.
+//
+// IRQ restore uses the `critical-section` crate's official `set_impl!` +
+// `Impl` contract with the `restore-state-bool` feature: acquire saves the
+// prior IRQ enable state, release re-enables only when the matching acquire
+// entered from an enabled state. Nested sections (and ISR wake) therefore
+// never re-enable IRQs prematurely.
 mod critical_impl {
-    #[unsafe(no_mangle)]
-    unsafe fn _critical_section_1_0_acquire() {
-        axhal::asm::disable_irqs();
-    }
-    #[unsafe(no_mangle)]
-    unsafe fn _critical_section_1_0_release(_: ()) {
-        axhal::asm::enable_irqs();
+    use axhal::asm::{disable_irqs, enable_irqs, irqs_enabled};
+
+    struct KernelCriticalSection;
+
+    critical_section::set_impl!(KernelCriticalSection);
+
+    unsafe impl critical_section::Impl for KernelCriticalSection {
+        unsafe fn acquire() -> critical_section::RawRestoreState {
+            let was_enabled = irqs_enabled();
+            disable_irqs();
+            was_enabled
+        }
+
+        unsafe fn release(restore_state: critical_section::RawRestoreState) {
+            if restore_state {
+                enable_irqs();
+            }
+        }
     }
 }
 

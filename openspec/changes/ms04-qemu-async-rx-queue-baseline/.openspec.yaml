@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-09
+goal: Wake a unique bounded RX queue task from the VirtIO-MMIO ISR without lost
+  wakeups, busy polling, or descriptor leaks.

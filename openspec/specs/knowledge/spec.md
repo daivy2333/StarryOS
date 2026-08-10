@@ -292,3 +292,54 @@ device selection / routing 逻辑 MUST 提取为纯策略 helper，输入 `mask:
 - **WHEN** 某个 Nxx 项目没有可用结果
 - **THEN** MUST 先按 R49 判断它是 `not-run`、`infrastructure-unavailable`、execution failure、correctness invalid 或 performance invalid
 - **AND** MUST NOT 把测试设施缺失归因于被测网卡
+
+### Requirement: K38 — 工作区 exclude crate 的测试工具链由项目根 rust-toolchain 决定
+
+`--manifest-path` 运行 workspace-exclude 的本地化 crate 时，rustup 按**当前目录**向上查找 `rust-toolchain.toml`，不按 manifest 所在目录。crate 目录内自带的 `rust-toolchain.toml` 只有 `cd` 进该目录才生效；从项目根用 `--manifest-path` 运行时实际使用项目根 nightly 工具链。
+
+**证据**: `ms04-qemu-async-rx-queue-baseline` iter 000 T2.1；`crates/virtio-drivers` 在项目根 nightly 下 sound 测试挂起、目录内（stable 1.90）28/28 通过
+**状态**: ✅ 已验证，2026-08-10
+
+- **触发条件**: workspace `exclude` 列表中的本地化依赖（patch 到工作区的 registry crate）与项目根工具链存在行为差异（lint 严格度、UB 暴露、feature 行为）。
+- **诊断方法**: 从项目根 `cargo test --manifest-path <crate>/Cargo.toml` 与 `cd <crate> && cargo test` 对比；两者工具链不同会给出不同结果。
+- **处理原则**: 目标是让 crate 在**项目工具链**下健康（它是项目依赖），不是用 crate 自带工具链回避；必要时修复上游缺陷而非降级工具链。
+
+#### Scenario: 本地化依赖测试结果与基线不一致
+
+- **WHEN** 本地化 crate 的测试在项目根运行与目录内运行结果不同
+- **THEN** MUST 确认 rustup 工具链解析（当前目录向上，非 manifest 目录）
+- **AND** MUST 修复 crate 使其在项目工具链下通过，或用项目工具链的过滤测试作为 MS04 相关见证
+
+### Requirement: K39 — virtio-drivers 0.7.5 FakeSoundDevice config_space 悬垂指针
+
+`FakeSoundDevice::new` 把栈局部 `config_space` 的 `NonNull` 存入返回的 `FakeTransport`；函数返回后指针悬垂（dangling）。这是 UB：stable 下栈残留恰好读出正确值，nightly 下读垃圾（如 32586）导致断言失败、越界 panic 和子线程 join 永久挂起。根因是所有权设计缺陷，非工具链 bug。
+
+**证据**: `ms04-qemu-async-rx-queue-baseline` iter 000 T2.1；修复前 nightly 下 `empty_info` 断言 `left: 32586, right: 0`、`play`/`stream_info` 越界挂起；修复（`Box` 持有 config_space）后 sound 4/4、全量 34/34 通过
+**状态**: ✅ 已验证，2026-08-10
+
+- **修复模式**: 设备结构体持有 `Box<VirtIOSoundConfig>`（堆上稳定地址），transport 引用 `&*box`，生命周期与设备一致；配套给 `VirtIOSoundConfig`/`ReadOnly` 补 `Clone/Debug` derive。
+- **通用教训**: fake 设备把 config space 指针存入 transport 时 MUST 保证指针所有者与 transport 同生命周期；`NonNull::from(&mut stack_var)` 跨函数返回是悬垂。
+- **诊断特征**: "stable 过 / nightly 挂起" 的差异通常指向未定义行为而非工具链 bug；垃圾值、越界 panic、join 死等组合是悬垂指针典型症状。
+
+#### Scenario: fake 设备测试在新工具链挂起
+
+- **WHEN** fake transport 测试在某工具链下挂起或读垃圾值
+- **THEN** MUST 检查 config space / DMA buffer 指针是否由栈变量提供并跨返回逃逸
+- **AND** MUST 用 `Box` 或 `Arc` 持有使地址稳定，再判定是否为真实工具链问题
+
+### Requirement: K40 — EVENT_IDX used_event suppression 语义
+
+VirtIO 协商 `RING_EVENT_IDX` 后，`set_dev_notify(bool)` 的 flags 路径失效，必须通过 `used_event` 字段控制 used-buffer 通知。有效 suppression/arm 状态机：suppress 写 `used_event = last_used_idx.wrapping_sub(1)`（设备在写入下一 completion 前 used idx 等于该值才通知，因此不通知）；arm 写 `used_event = last_used_idx` 后执行 strong fence 再 recheck `can_pop()`。suppressed 期间 `pop_used` 只推进 `last_used_idx`，不得覆盖 `used_event`，否则 drain 中自动 rearm。
+
+**证据**: `ms04-qemu-async-rx-queue-baseline` iter 000 T2.1；`crates/virtio-drivers/src/queue.rs` 新增 `suppress_dev_notify`/`arm_dev_notify_and_check`，FakeTransport 6 个新测试（suppress 写入、suppressed-pop 不重臂、arm 空队列、arm 后 pending、flags 模式、u16 wrap）+ queue 15/15 通过
+**状态**: ✅ 已验证，2026-08-10
+
+- **arm 后 recheck 的必要性**: arm 写 `used_event` 与设备并发写 used idx 存在竞争；strong fence（`SeqCst`）保证 rearm 先于 recheck 被观测，否则可能错过 arm 与 completion 之间的事件。
+- **wrap 处理**: `last_used_idx`、`used_event` 均为 `u16`，suppress 的 `wrapping_sub(1)` 与 arm 的当前值在边界处必须用 `wrapping_*`，测试覆盖 `u16::MAX` 场景。
+- **RX-only 约束**: 设备层接口 MUST 只操作 receive queue（`VirtIONetRaw` 的 RX-only suppress/arm），不得复用同时操作 RX/TX 的 `disable_interrupts/enable_interrupts`。
+
+#### Scenario: 有界 drain 期间需要抑制 used 通知
+
+- **WHEN** queue task 要在不超过 budget 的有界循环中服务 completion，且不希望每 completion 触发 IRQ
+- **THEN** MUST 先 `suppress_dev_notify()`，drain 中 `pop_used` 不重臂，预算用尽保持 suppressed
+- **AND** MUST 恢复等待前 `arm_dev_notify_and_check()` 并以返回值决定是否自唤醒
