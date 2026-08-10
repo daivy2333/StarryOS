@@ -102,8 +102,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     #[cfg(not(feature = "lichee-d1"))]
     if cmd == NET_IRQ_SNAPSHOT {
         let snapshot = crate::drivers::virtio_net_irq::irq_snapshot();
-        (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshot)
-            .vm_write(snapshot)?;
+        (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshot).vm_write(snapshot)?;
         return Ok(0);
     }
     // TCSBRK (0x5409): tcdrain — wait for all TX stages (ring → copier → FIFO → wire)

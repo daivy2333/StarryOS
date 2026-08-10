@@ -13,13 +13,13 @@
 //! - Handler does not wake a queue or stack task.
 //! - MS02 10 ms polling fallback stays active.
 
-use axhal::mem::phys_to_virt;
 use core::sync::atomic::Ordering;
+
+use axhal::mem::phys_to_virt;
 use memory_addr::PhysAddr;
 
-use crate::platform;
-
 use super::virtio_net_irq_logic::{self, IrqTelemetry};
+use crate::platform;
 
 // ── VirtIO MMIO register offsets (32-bit aligned) ─────────────────────
 
@@ -51,7 +51,11 @@ fn net_irq_handler() {
     // SAFETY: base was validated during init; MMIO region is 0x1000 bytes.
     // InterruptStatus is a 32-bit register at offset 0x60.
     // Bits 1:0 carry used-ring (bit 0) and config-change (bit 1).
-    let status_raw: u32 = unsafe { (base as *const u32).add(MMIO_INTERRUPT_STATUS / 4).read_volatile() };
+    let status_raw: u32 = unsafe {
+        (base as *const u32)
+            .add(MMIO_INTERRUPT_STATUS / 4)
+            .read_volatile()
+    };
     let status = (status_raw & 0x03) as u8;
     if status == 0 {
         TELEMETRY.record(0);
@@ -104,12 +108,13 @@ pub fn init_virtio_net_irq_diag() {
     // Validate VirtIO transport header before trusting the IRQ.
     // SAFETY: base was converted from the platform descriptor's known-good
     // physical address; QEMU VirtIO-MMIO region is 4 KiB.
-    let magic: u32 =
-        unsafe { (base as *const u32).add(MMIO_MAGIC_VALUE / 4).read_volatile() };
-    let version: u32 =
-        unsafe { (base as *const u32).add(MMIO_VERSION / 4).read_volatile() };
-    let device_id: u32 =
-        unsafe { (base as *const u32).add(MMIO_DEVICE_ID / 4).read_volatile() };
+    let magic: u32 = unsafe {
+        (base as *const u32)
+            .add(MMIO_MAGIC_VALUE / 4)
+            .read_volatile()
+    };
+    let version: u32 = unsafe { (base as *const u32).add(MMIO_VERSION / 4).read_volatile() };
+    let device_id: u32 = unsafe { (base as *const u32).add(MMIO_DEVICE_ID / 4).read_volatile() };
 
     if magic != 0x74726976 {
         ax_println!(

@@ -6,9 +6,9 @@
 |---|---|---|
 | 000 | T1、T2 与 T3 的主体实现 | No |
 | 001 | 收紧 T3 的生产绑定测试见证；保留 D1 基线缺口 | No |
-| 002 | T4.1 one-completion device primitive | No |
-| 003 | T4.2 Router handoff 与 space wake | No |
-| 004 | T5.1 lifecycle/register-recheck 决策层 | No |
+| 002 | iteration 001 Review 修复 + T4.1 one-completion device primitive | No |
+| 003 | iteration 002 Review 修复 + T4.2 Router handoff 与 space wake | No |
+| 004 | iteration 003 Review 修复 + T5.1 lifecycle/register-recheck 决策层 | No |
 | 005 | T5.2 唯一 RX task 与 budget | No |
 | 006 | T6.1 ISR publish/wake 与 telemetry | No |
 | 007 | T6.2 probe/stimulus 与自动构建入口 | No |
@@ -81,35 +81,85 @@ iteration。若 Review 发现阻塞问题，优先插入小型修复轮次，后
 
   Iteration 000 已完成主体实现，但本项保持未完成：Review 发现 host harness 重复
   执行同一组 6 个模型测试，且生产 `KernelCriticalSection` 未复用被测 seam；D1
-  target compile 也未通过。Iteration 001 只收紧生产绑定见证并复核相关自动回归，
-  不把 T4 或手工测试并入同一轮。
+  target compile 也未通过。Iteration 001 已让生产与 host tests 复用同一 seam；
+  D1 未通过仍使本项保持未完成。
+
+- [x] 3.2 为 production glue 增加永久 source guard。WHY 是 iteration 001 的 host
+  tests 覆盖 seam 行为，但未来 `KernelCriticalSection` 仍可内联 axhal 调用并绕过
+  seam；HOW 是在 MS04 host harness 中加入对真实 `kernel/src/lib.rs` 的结构化断言，
+  同时用 legacy direct-call fixture 证明 guard 会 RED；EXPECTED 是 guard 要求
+  `critical_section_policy::acquire/release` 委托存在，并拒绝在 Impl 方法体内复制
+  restore 决策。若只能匹配整文件中的 axhal backend 合法调用、依赖行号或需要 Rust
+  parser 依赖，停止并返回 Plan。
+
+- [x] 3.3 修复当前 kernel manifest 的 rustfmt Gate。WHY 是 iteration 001 fresh
+  `cargo fmt --manifest-path kernel/Cargo.toml -- --check` 在 4 个既有文件上退出 1；
+  HOW 是只接受 rustfmt 对 `drivers/mod.rs`、`drivers/uart_init.rs`、
+  `drivers/virtio_net_irq.rs`、`syscall/fs/ctl.rs` 的机械输出，并用 whitespace-insensitive
+  diff 加人工检查确认只有 module/import 排序、换行和缩进；EXPECTED 是 kernel fmt
+  check 退出 0。若 rustfmt 触及更多文件、改变 cfg 归属或表达式语义，或掩盖产品
+  编译错误，停止。
 
 ## 4. 把 axnet RX 收敛为 one-completion 与现有 Router handoff
 
-- [ ] 4.1 修改 `crates/axnet/src/device/mod.rs::Device`、
-  `device/ethernet.rs::EthernetDevice` 和 `device/loopback.rs::LoopbackDevice`，用
+- [x] 4.1 修改 `crates/axnet/src/device/mod.rs::Device`、
+  `device/ethernet.rs::EthernetDevice`、`device/loopback.rs::LoopbackDevice` 和现有
+  `router.rs::Router::poll` caller，用携带 `DevError` 的
   `Empty/Consumed/Delivered/Fault` 一次物理进度替代当前 `recv() -> bool`。WHY 是
   Ethernet 当前会在一次调用内无界跳过 ARP/非 IPv4，budget 不可计数；HOW 是每次
   Ethernet 调用最多执行一个 driver receive，并保证已取得的 `NetBufPtr` 在返回前
   恰好 recycle 一次，正常 ARP 保持同步 TX；EXPECTED 是 malformed、非目标、ARP
-  算 Consumed，IPv4 算 Delivered，Again 算 Empty，receive/recycle error 算 Fault。
-  先用 fake one-step device/frame tests 建 RED，再实现 GREEN。若任何路径可持有
-  buffer 跨返回、recycle 失败被 unwrap/panic 隐藏或同步 TX 被改为 async，停止。
+  算 Consumed，IPv4 算 Delivered，Again 算 Empty，receive/recycle error 算 Fault；
+  Router polling 对 Consumed/Delivered 继续、Empty/Fault 停止，保持本轮前的 polling
+  行为。axnet tests 通过 test-only `axdriver/dyn` 和本地 `axdriver_net` buffer pool
+  建立 fake NIC，覆盖连续两帧每次只 receive 一次、ARP 同步 TX、malformed/非目标、
+  IPv4、Again、receive fault、recycle fault、Router buffer enqueue fault 和 loopback。
+  任何 enqueue 失败都必须先 recycle 再返回 `Fault(DevError::BadState)`，不得 unwrap。
+  若任何路径可持有 buffer 跨返回、需要修改 registry axdriver、recycle 失败被
+  unwrap/panic 隐藏、同步 TX 被改为 async，或 caller adaptation 提前实现 T4.2
+  owner/space-wake，停止。
 
-- [ ] 4.2 修改 `crates/axnet/src/router.rs::Router` 与
+- [x] 4.1R 关闭 iteration 002 Review 的 test witness 与 host stub 问题。把
+  `__axklib_0_3_mem_iomap` test-only stub 改为 trait-ffi 实际使用的 Rust ABI 和
+  `PhysAddr, usize -> AxResult<VirtAddr>` 精确签名，并返回可诊断错误而非依赖
+  `unreachable!`；补充 ARP reply 触发 pending IPv4 同步 TX，以及 Router enqueue
+  error 与 recycle error 同时发生时 recycle error 优先的 tests。WHY 是当前同名符号
+  只能满足链接，不能安全替代 extern contract，且两个获批场景没有永久见证。
+  EXPECTED 是新 tests 先 RED，修复后 axnet 全量 tests、QEMU feature tree 和 compile
+  回归通过。若需要产品 iomap、修改 axklib/trait-ffi、改变同步 TX 行为或隐藏 recycle
+  failure，停止。
+
+- [x] 4.2 修改 `crates/axnet/src/router.rs::Router` 与
   `service.rs::Service`，增加按唯一 target device 的 RX-only one-step service、
   active/faulted owner skip 和 Router-space software wake。WHY 是 queue task 必须在
   buffer full 时先停 reap，而 10ms Service 仍需消费 Router packet；HOW 是 fake
   Router tests 先覆盖 64-slot 满前进度、满时零 reap、释放空间一次 wake、active
-  eth skip、loopback 保持推进，再实现状态接口；EXPECTED 是 RX-only 入口不调用
+  eth skip、loopback 保持推进，再实现状态接口。T4.2 只增加
+  `PollingOwned/AsyncOwned` 消费权视图，不提前实现 T5 lifecycle；space signal 使用
+  单一 `embassy-sync::AtomicWaker`、非 Relaxed waiting bit 和 host-only
+  `critical-section/std`。EXPECTED 是 RX-only 入口不调用
   smoltcp maintenance/ingress/egress，普通 Service poll 仍执行这些阶段。验证：
   `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib -- --nocapture`。
   若需要第二个 NIC handle、复制 Service、busy polling 或创建 MS05 packet slot，
   停止。
 
+- [ ] 4.2R 关闭 iteration 003 Review 的可达性、竞态见证与定向格式问题。通过
+  `Service` 保存的唯一 target index 暴露 crate-private RX one-step seam；把现有
+  space signal 收敛为未来 sibling async RX 模块可注册的单 waiter 通知状态，并让
+  Router-full 等待在 Service 锁内重新检查空间后才发布。补充不依赖 sleep 的
+  register-before-wait、释放发生在 wait 前/后的确定性交错，以及 sibling-module
+  可调用性见证；只机械格式化 `tests/ms03-irq-host-harness.rs` 和
+  `tests/ms04-async-rx-host-harness.rs`。WHY 是 T4.2 的 Router primitive 与 signal
+  当前都被 `service.rs` 私有边界挡住，且现有顺序测试不能证明 lost-wake 窗口关闭。
+  EXPECTED 是 future caller 不传 raw device index、不取得第二个 NIC handle，并能按
+  “锁外 register、锁内 service/recheck、锁外 Pending”顺序使用 seam。若需要 public
+  API、第二个 waker、持有 Service guard 跨调度点，或必须清理 smoltcp/全工作区既有
+  fmt 与 warning 基线，停止。
+
 ## 5. 建立唯一 RX task、budget 与 register-recheck
 
-- [ ] 5.1 在 `crates/axnet` 增加可 host/unit-test 的生命周期和调度决策层，先写
+- [ ] 5.1 在 `crates/axnet` 增加可 host/unit-test 的生命周期和调度决策层，并把
+  T4.2R 的单 waiter signal 扩展为 generation/event/space 共用的通知状态；先写
   RED cases 覆盖 `Polling -> Spawned -> Active -> Faulted/Unavailable`、重复 start、
   preflight fail、event-before-register、register-during-event、arm 后事件、空 wake、
   budget=32、backlog self-yield 和 Router-full wait。WHY 是 owner、generation 和

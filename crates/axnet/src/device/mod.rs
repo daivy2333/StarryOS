@@ -1,9 +1,12 @@
 use core::task::Waker;
 
+use axdriver::prelude::DevError;
 use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
 mod ethernet;
 mod loopback;
+#[cfg(test)]
+mod tests;
 #[cfg(feature = "vsock")]
 mod vsock;
 
@@ -12,10 +15,24 @@ pub use loopback::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
 
+/// Outcome of a single physical RX step.
+pub enum RxStep {
+    /// No RX completion was available.
+    Empty,
+    /// One completion was reaped and refilled without delivering an IP packet
+    /// to the Router RX buffer.
+    Consumed,
+    /// One IP packet was delivered to the Router RX buffer.
+    Delivered,
+    /// A device or queue fault; the error carries the category.
+    Fault(DevError),
+}
+
 pub trait Device: Send + Sync {
     fn name(&self) -> &str;
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> bool;
+    /// Advances RX by at most one physical completion.
+    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> RxStep;
     /// Sends a packet to the next hop.
     ///
     /// Returns `true` if this operation resulted in the readiness of receive

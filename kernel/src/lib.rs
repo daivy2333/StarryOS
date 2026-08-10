@@ -56,8 +56,30 @@ mod time;
 // prior IRQ enable state, release re-enables only when the matching acquire
 // entered from an enabled state. Nested sections (and ISR wake) therefore
 // never re-enable IRQs prematurely.
+//
+// Restore policy lives in `drivers::critical_section_policy` (the seam
+// host-tested by `tests/ms04-async-rx-host-harness.rs`); keep no direct
+// `axhal` IRQ calls here.
 mod critical_impl {
     use axhal::asm::{disable_irqs, enable_irqs, irqs_enabled};
+
+    use crate::drivers::critical_section_policy::{self, IrqOps};
+
+    struct AxhalIrqOps;
+
+    impl IrqOps for AxhalIrqOps {
+        fn irqs_enabled(&self) -> bool {
+            irqs_enabled()
+        }
+
+        fn disable_irqs(&self) {
+            disable_irqs();
+        }
+
+        fn enable_irqs(&self) {
+            enable_irqs();
+        }
+    }
 
     struct KernelCriticalSection;
 
@@ -65,15 +87,11 @@ mod critical_impl {
 
     unsafe impl critical_section::Impl for KernelCriticalSection {
         unsafe fn acquire() -> critical_section::RawRestoreState {
-            let was_enabled = irqs_enabled();
-            disable_irqs();
-            was_enabled
+            critical_section_policy::acquire(&AxhalIrqOps)
         }
 
         unsafe fn release(restore_state: critical_section::RawRestoreState) {
-            if restore_state {
-                enable_irqs();
-            }
+            critical_section_policy::release(&AxhalIrqOps, restore_state);
         }
     }
 }

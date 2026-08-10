@@ -84,6 +84,10 @@ version = "1.0"
 [dependencies.enum_dispatch]
 version = "0.3"
 
+[dependencies.embassy-sync]
+version = "0.6.2"
+default-features = false
+
 [dependencies.event-listener]
 version = "5.4"
 default-features = false
@@ -125,3 +129,21 @@ default-features = false
 
 [dependencies.spin]
 version = "0.10"
+
+# Test-only dyn injection for fake NICs; must not leak into product deps.
+[dev-dependencies.axdriver]
+version = "=0.3.0-preview.2"
+features = ["net", "dyn"]
+
+[dev-dependencies.axdriver_net]
+version = "0.1.4-preview.3"
+
+# Exact address types used by the axklib `mem_iomap` trait-ffi ABI witness.
+[dev-dependencies.memory_addr]
+version = "0.4"
+
+# Host tests need a critical-section implementation for `embassy-sync`'s
+# AtomicWaker; the product build relies on the kernel's restore-state-bool impl.
+[dev-dependencies.critical-section]
+version = "1.2"
+features = ["std"]

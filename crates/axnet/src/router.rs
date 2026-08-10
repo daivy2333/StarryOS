@@ -1,5 +1,6 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 
+use axdriver::prelude::DevError;
 use smoltcp::{
     phy::{DeviceCapabilities, Medium},
     storage::PacketMetadata,
@@ -9,7 +10,7 @@ use smoltcp::{
 
 use crate::{
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::Device,
+    device::{Device, RxStep},
 };
 
 #[derive(Debug)]
@@ -32,6 +33,34 @@ impl Rule {
 }
 
 type PacketBuffer = smoltcp::storage::PacketBuffer<'static, ()>;
+
+/// Outcome of a single target-device RX-only service step.
+pub enum RxOutcome {
+    /// The Router RX buffer is full; the device was not touched.
+    Full,
+    /// The device reported no completion.
+    Empty,
+    /// One completion was reaped and refilled without delivering a packet.
+    Consumed,
+    /// One IP packet was delivered to the Router RX buffer.
+    Delivered,
+    /// A device or queue fault.
+    Fault(DevError),
+}
+
+/// Who currently holds the right to consume a target device's RX.
+///
+/// This is a consumption-right view, not a lifecycle state. T5 later maps
+/// `Polling/Spawned/Unavailable` to [`Self::PollingOwned`] and
+/// `Active/Faulted` to [`Self::AsyncOwned`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RxOwnerView {
+    /// Ordinary Router polling may consume the target device's RX.
+    PollingOwned,
+    /// Only the queue task may consume the target device's RX; ordinary
+    /// Router polling must skip it.
+    AsyncOwned,
+}
 
 // TODO(mivik): optimize
 pub struct RouteTable {
@@ -90,10 +119,53 @@ impl Router {
         self.devices.len() - 1
     }
 
-    pub fn poll(&mut self, timestamp: Instant) {
-        for dev in &mut self.devices {
-            while !self.rx_buffer.is_full() && dev.recv(&mut self.rx_buffer, timestamp) {}
+    pub fn poll(&mut self, owner: RxOwnerView, target_dev: Option<usize>, timestamp: Instant) {
+        for (i, dev) in self.devices.iter_mut().enumerate() {
+            if owner == RxOwnerView::AsyncOwned && Some(i) == target_dev {
+                continue;
+            }
+            while !self.rx_buffer.is_full() {
+                match dev.recv(&mut self.rx_buffer, timestamp) {
+                    RxStep::Consumed | RxStep::Delivered => {}
+                    RxStep::Empty => break,
+                    RxStep::Fault(err) => {
+                        warn!("receive failed: {err}");
+                        break;
+                    }
+                }
+            }
         }
+    }
+
+    /// Services the target device's RX by at most one physical completion.
+    ///
+    /// Returns `Full` before touching the device when the Router RX buffer is
+    /// full, so a queue task stops reaping while there is no room for the
+    /// handoff. An out-of-range `dev` index yields `Fault(BadState)` instead
+    /// of panicking.
+    pub fn rx_one_step(&mut self, dev: usize, timestamp: Instant) -> RxOutcome {
+        let Some(device) = self.devices.get_mut(dev) else {
+            return RxOutcome::Fault(DevError::BadState);
+        };
+        if self.rx_buffer.is_full() {
+            return RxOutcome::Full;
+        }
+        match device.recv(&mut self.rx_buffer, timestamp) {
+            RxStep::Empty => RxOutcome::Empty,
+            RxStep::Consumed => RxOutcome::Consumed,
+            RxStep::Delivered => RxOutcome::Delivered,
+            RxStep::Fault(err) => RxOutcome::Fault(err),
+        }
+    }
+
+    /// Whether the Router RX buffer has room for at least one packet.
+    pub fn rx_buffer_has_space(&self) -> bool {
+        !self.rx_buffer.is_full()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fill_rx_buffer_for_test(&mut self) {
+        while self.rx_buffer.enqueue(1, ()).is_ok() {}
     }
 
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {

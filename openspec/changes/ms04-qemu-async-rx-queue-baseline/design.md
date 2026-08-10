@@ -132,7 +132,10 @@ critical-section 才恢复 IRQ。顺序保证遵循 critical-section crate contr
 新增可被 host harness 引入的纯 restore-policy seam，测试 enabled、disabled 和
 两层嵌套。QEMU net handler 在调用 `AtomicWaker::wake()` 前后读取 IRQ enable
 状态，任何“进入 disabled、返回 enabled”都增加 violation counter 并使运行 Gate
-失败。UART unit/doctest 和 QEMU UART-only/concurrent 继续作为共享实现回归。
+失败。host harness 还必须审计真实 production glue 仍委托该 seam；guard 用一个
+legacy direct-call fixture 证明能拒绝复制 restore 决策，且不得依赖行号或把 backend
+中合法的 axhal primitive 调用误判为绕过。UART unit/doctest 和 QEMU
+UART-only/concurrent 继续作为共享实现回归。
 
 替代方案：继续导出 ABI 并只改返回类型。拒绝，因为官方 macro/trait 能让 feature
 选择与函数签名由同一依赖校验，减少 ABI 漂移。
@@ -207,7 +210,8 @@ task 开始 service、budget 用尽或 Router 满时保持通知 suppressed。At
 - `Consumed`：消费并 refill 一个 completion，但没有向 Router 交付 IP packet，
   例如 ARP、非目标帧或 malformed frame；
 - `Delivered`：消费、交付一个 IP packet 并 refill；
-- `Fault`：receive/recycle 或 queue 状态错误。
+- `Fault(DevError)`：receive/recycle、Router enqueue 或 queue 状态错误；保留错误类别
+  供后续 lifecycle telemetry 使用。
 
 Ethernet 路径每次只调用一次 driver `receive`。取得 `NetBufPtr` 后，无论 frame
 是否交付，都在该次调用返回前调用一次 `recycle_rx_buffer`；recycle 失败是 fatal。
@@ -216,10 +220,23 @@ Ethernet 路径每次只调用一次 driver `receive`。取得 `NetBufPtr` 后�
 ARP reply 和 pending ARP packet 仍可走现有同步 TX。Loopback 映射到相同结果，
 不获得异步 queue owner。
 
+axnet host tests 为 fake NIC 链接 `axdriver/dyn` 时，test-only axklib stub 必须匹配
+trait-ffi 生成的 `extern "Rust" fn(PhysAddr, usize) -> AxResult<VirtAddr>`。stub 只返回
+明确错误，不执行 iomap；ABI、参数或返回类型不允许仅凭“当前不调用”而缩减。
+
 Router 增加按目标 device index 的 RX-only service：它只检查现有 RX buffer 容量、
 调用一次 device RX、返回进度，不调用 smoltcp maintenance、ingress、egress 或
 socket readiness。普通 `Router::poll` 在状态为 `Active/Faulted` 时跳过目标
 Ethernet RX，但继续服务 loopback。
+
+该 Router primitive 由 `Service` 通过其已保存的唯一 target index 转发给未来同 crate
+的 async RX 模块；caller 不传 raw index，也不取得或复制 NIC handle。缺少 target 时
+返回可匹配的 `BadState` fault。这个 crate-private seam 必须由 sibling-module compile/
+unit witness 证明可达，不能只在 `service.rs` 自身测试里调用私有字段或私有 signal。
+
+T4.2 只引入 `PollingOwned/AsyncOwned` 消费权视图，不提前实现 lifecycle 转换。
+`poll_interfaces` 在 T5 接入前显式使用 PollingOwned；T5 再把
+Polling/Spawned/Unavailable 映射为 PollingOwned，把 Active/Faulted 映射为 AsyncOwned。
 
 替代方案：给现有 `recv(bool)` 外层加 32 次循环。拒绝，因为一次 `recv` 内部可能
 无界消费 ARP/非 IPv4 completion，budget 不成立。
@@ -249,6 +266,12 @@ Router 满时 task 在 reap 下一个 completion 前设置 `waiting_for_space` �
 ingress 后检测“task 等空间且 buffer 已有空位”，清该标志并软件 wake 同一 task。
 该 wake 不依赖新硬件 IRQ。telemetry 使用 Relaxed；生命周期、generation 和
 space handoff 使用 Release/Acquire 或 AcqRel CAS。
+
+event generation 与 Router-space wake 共享同一个 queue-task waiter 状态，而不是各自
+建立单槽 waker。task 在锁外注册同一个 `AtomicWaker`；取得 `SERVICE` 锁后执行 target
+one-step，若得到 Full，则在锁内重新检查 Router space，只有仍满时才 Release 发布
+`waiting_for_space`。若已出现空间则返回 retry/continue 决策，不睡眠。这样释放发生在
+register 后、waiting 发布前时也不会丢失进度。
 
 替代方案：Router 满后仍 reap 到临时 `NetBufPtr`。拒绝，因为会在 task 睡眠期间
 长期占有已完成 buffer，扩大 ownership 和泄漏边界。

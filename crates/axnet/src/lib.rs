@@ -50,7 +50,7 @@ use self::{
     consts::{GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
-    router::{Router, Rule},
+    router::{Router, Rule, RxOwnerView},
     service::Service,
     wrapper::SocketSetWrapper,
 };
@@ -105,7 +105,7 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         info!("  mac:  {}", eth0_address);
         info!("  ip:   {}", eth0_ip);
 
-        Some(eth0_ip)
+        Some((eth0_dev, eth0_ip))
     } else {
         warn!("  No network device found!");
         None
@@ -115,10 +115,10 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         info!("Device: {}", dev.name());
     }
 
-    let mut service = Service::new(router);
+    let mut service = Service::new(router, eth0_ip.as_ref().map(|(dev, _)| *dev));
     service.iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.push(lo_ip.into()).unwrap();
-        if let Some(eth0_ip) = eth0_ip {
+        if let Some((_, eth0_ip)) = eth0_ip {
             ip_addrs.push(eth0_ip.into()).unwrap();
         }
     });
@@ -142,5 +142,5 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 
 /// Poll all network interfaces for new events.
 pub fn poll_interfaces() {
-    while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+    while get_service().poll(RxOwnerView::PollingOwned, &mut SOCKET_SET.inner.lock()) {}
 }

@@ -372,10 +372,7 @@ pub fn init_uart_hardware() {
     {
         let irq = desc.console.irq.expect("QEMU console IRQ must be known");
         if !axhal::irq::register(irq, qemu_uart_irq_handler) {
-            panic!(
-                "[UART INIT] Failed to register UART IRQ {} handler",
-                irq
-            );
+            panic!("[UART INIT] Failed to register UART IRQ {} handler", irq);
         }
         ax_println!(
             "[UART INIT] QEMU UART IRQ {} registered as device handler, buffers={}KBx2",

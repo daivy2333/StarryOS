@@ -15,7 +15,7 @@ use smoltcp::{
 
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::Device,
+    device::{Device, RxStep},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
@@ -105,33 +105,34 @@ impl EthernetDevice {
         frame: &[u8],
         buffer: &mut PacketBuffer<()>,
         timestamp: Instant,
-    ) -> bool {
+    ) -> Result<RxStep, DevError> {
         let frame = EthernetFrame::new_unchecked(frame);
         let Ok(repr) = EthernetRepr::parse(&frame) else {
             warn!("Dropping malformed Ethernet frame");
-            return false;
+            return Ok(RxStep::Consumed);
         };
 
         if !repr.dst_addr.is_broadcast()
             && repr.dst_addr != EMPTY_MAC
             && repr.dst_addr != self.hardware_address()
         {
-            return false;
+            return Ok(RxStep::Consumed);
         }
 
         match repr.ethertype {
             EthernetProtocol::Ipv4 => {
-                buffer
-                    .enqueue(frame.payload().len(), ())
-                    .unwrap()
-                    .copy_from_slice(frame.payload());
-                return true;
+                let Ok(dst) = buffer.enqueue(frame.payload().len(), ()) else {
+                    return Err(DevError::BadState);
+                };
+                dst.copy_from_slice(frame.payload());
+                Ok(RxStep::Delivered)
             }
-            EthernetProtocol::Arp => self.process_arp(frame.payload(), timestamp),
-            _ => {}
+            EthernetProtocol::Arp => {
+                self.process_arp(frame.payload(), timestamp);
+                Ok(RxStep::Consumed)
+            }
+            _ => Ok(RxStep::Consumed),
         }
-
-        false
     }
 
     fn request_arp(&mut self, target_ip: IpAddress) {
@@ -261,28 +262,24 @@ impl Device for EthernetDevice {
         &self.name
     }
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> bool {
-        loop {
-            let rx_buf = match self.inner.receive() {
-                Ok(buf) => buf,
-                Err(err) => {
-                    if !matches!(err, DevError::Again) {
-                        warn!("receive failed: {:?}", err);
-                    }
-                    return false;
-                }
-            };
-            trace!(
-                "RECV {} bytes: {:02X?}",
-                rx_buf.packet_len(),
-                rx_buf.packet()
-            );
+    fn recv(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> RxStep {
+        let rx_buf = match self.inner.receive() {
+            Ok(buf) => buf,
+            Err(DevError::Again) => return RxStep::Empty,
+            Err(err) => return RxStep::Fault(err),
+        };
+        trace!(
+            "RECV {} bytes: {:02X?}",
+            rx_buf.packet_len(),
+            rx_buf.packet()
+        );
 
-            let result = self.handle_frame(rx_buf.packet(), buffer, timestamp);
-            self.inner.recycle_rx_buffer(rx_buf).unwrap();
-            if result {
-                return true;
-            }
+        let frame_result = self.handle_frame(rx_buf.packet(), buffer, timestamp);
+        let recycle_result = self.inner.recycle_rx_buffer(rx_buf);
+        match (frame_result, recycle_result) {
+            (_, Err(err)) => RxStep::Fault(err),
+            (Ok(step), Ok(())) => step,
+            (Err(err), Ok(())) => RxStep::Fault(err),
         }
     }
 

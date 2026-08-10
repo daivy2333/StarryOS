@@ -716,6 +716,7 @@ dependencies = [
  "axtask",
  "bitflags 2.13.0",
  "cfg-if",
+ "embassy-sync",
  "enum_dispatch",
  "event-listener",
  "hashbrown",

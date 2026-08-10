@@ -1,6 +1,7 @@
 use alloc::vec;
 use core::task::Waker;
 
+use axdriver::prelude::DevError;
 use axpoll::PollSet;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
@@ -10,7 +11,7 @@ use smoltcp::{
 
 use crate::{
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::Device,
+    device::{Device, RxStep},
 };
 
 pub struct LoopbackDevice {
@@ -35,14 +36,17 @@ impl Device for LoopbackDevice {
         "lo"
     }
 
-    fn recv(&mut self, buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> bool {
-        self.buffer.dequeue().ok().is_some_and(|(_, rx_buf)| {
-            buffer
-                .enqueue(rx_buf.len(), ())
-                .unwrap()
-                .copy_from_slice(rx_buf);
-            true
-        })
+    fn recv(&mut self, buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
+        let Some((_, rx_buf)) = self.buffer.dequeue().ok() else {
+            return RxStep::Empty;
+        };
+        match buffer.enqueue(rx_buf.len(), ()) {
+            Ok(dst) => {
+                dst.copy_from_slice(rx_buf);
+                RxStep::Delivered
+            }
+            Err(_) => RxStep::Fault(DevError::BadState),
+        }
     }
 
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], _timestamp: Instant) -> bool {
