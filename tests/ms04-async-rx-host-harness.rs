@@ -187,7 +187,7 @@ fn production_impl_delegates_to_seam() {
 
 mod production_guard {
     /// Brace-matched block body starting right after `marker`'s `{` (exclusive).
-    fn block_after<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
+    pub(crate) fn block_after<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
         let start = source.find(marker)? + marker.len();
         let open = source[start..].find('{')? + start + 1;
         let mut depth = 1usize;
@@ -235,5 +235,122 @@ mod production_guard {
             return Err("release inlines axhal IRQ calls instead of the seam".into());
         }
         Ok(())
+    }
+}
+
+/// Production source guard for the VirtIO-net IRQ handler (T6.1a).
+///
+/// The handler must keep the strict record -> ACK -> publish order, surround
+/// the wake with `irqs_enabled()` checks, and never touch the Service,
+/// queue-control, descriptors, smoltcp or print loops. This guard reads the
+/// actual kernel source so a future edit that breaks the ordering contract
+/// fails the host gate immediately.
+mod virtio_irq_guard {
+    use super::production_guard::block_after;
+
+    const VIRTIO_NET_IRQ_SOURCE: &str = include_str!("../kernel/src/drivers/virtio_net_irq.rs");
+
+    /// Forbidden data-path tokens that must never appear inside the handler.
+    /// `descriptor` is checked separately because the legitimate
+    /// `platform::descriptor()` config lookup must be allowed.
+    const FORBIDDEN_IN_HANDLER: &[&str] = &[
+        "Service",
+        "rx_one_step",
+        "rx_control",
+        "receive",
+        "recycle",
+        "smoltcp",
+        "queue_control",
+        "ax_println",
+    ];
+
+    /// True when any `descriptor` mention is *not* the legitimate
+    /// `platform::descriptor()` config lookup.
+    fn has_data_path_descriptor(body: &str) -> bool {
+        let mut search_from = 0usize;
+        while let Some(pos) = body[search_from..].find("descriptor") {
+            let pos = pos + search_from;
+            let before = body[..pos].rfind("platform::");
+            let in_lookup = before.is_some_and(|p| body[p..pos].trim_end() == "platform::");
+            if !in_lookup {
+                return true;
+            }
+            search_from = pos + "descriptor".len();
+        }
+        false
+    }
+
+    pub fn check() -> Result<(), String> {
+        let handler = block_after(VIRTIO_NET_IRQ_SOURCE, "fn net_irq_handler")
+            .ok_or("net_irq_handler body not found")?;
+
+        // record -> ACK -> publish order: each step must appear and the ACK
+        // write must precede the publish call.
+        let record_pos = handler
+            .find("TELEMETRY.record")
+            .ok_or("handler does not record raw status")?;
+        let ack_pos = handler
+            .find("write_volatile")
+            .ok_or("handler does not write the device ACK register")?;
+        let publish_pos = handler
+            .find("publish_rx_event")
+            .ok_or("handler does not publish used-ring RX events")?;
+        let restore_pos = handler
+            .find("restore_violation")
+            .ok_or("handler does not observe restore violations")?;
+
+        if !(record_pos < ack_pos && ack_pos < publish_pos && publish_pos < restore_pos) {
+            return Err("handler order must be record -> ACK -> publish -> restore check".into());
+        }
+
+        // Wake must be surrounded by IRQ enable-state reads: one read before
+        // the publish and a second, later read after it.
+        let irq_before_pos = handler
+            .find("irqs_enabled")
+            .ok_or("no irqs_enabled() read before publish")?;
+        let irq_after_pos = handler[irq_before_pos + 1..]
+            .find("irqs_enabled")
+            .map(|p| p + irq_before_pos + 1)
+            .ok_or("no irqs_enabled() read after publish")?;
+        if !(irq_before_pos < publish_pos && publish_pos < irq_after_pos) {
+            return Err("irqs_enabled() must be read before and after publish".into());
+        }
+
+        for token in FORBIDDEN_IN_HANDLER {
+            if handler.contains(token) {
+                return Err(format!(
+                    "handler must not contain data-path token `{token}`"
+                ));
+            }
+        }
+        if has_data_path_descriptor(handler) {
+            return Err("handler must not touch VirtIO queue descriptors".into());
+        }
+
+        // init must start the task only after successful registration.
+        let init = block_after(VIRTIO_NET_IRQ_SOURCE, "fn init_virtio_net_irq_diag")
+            .ok_or("init_virtio_net_irq_diag body not found")?;
+        let register_pos = init
+            .find("axhal::irq::register")
+            .ok_or("init does not register the IRQ handler")?;
+        let start_pos = init
+            .find("start_rx_task")
+            .ok_or("init does not start the async RX task")?;
+        if !(register_pos < start_pos) {
+            return Err("start_rx_task must be called only after register succeeds".into());
+        }
+        let fail_return = init.find("return;").ok_or("init lacks a failure return")?;
+        if !(fail_return < start_pos) {
+            return Err("registration failure must return before start_rx_task".into());
+        }
+
+        Ok(())
+    }
+}
+
+#[test]
+fn virtio_net_irq_handler_guard_passes() {
+    if let Err(reason) = virtio_irq_guard::check() {
+        panic!("virtio_net_irq handler violates the ISR contract: {reason}");
     }
 }

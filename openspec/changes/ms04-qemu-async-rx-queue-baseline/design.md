@@ -181,7 +181,9 @@ axnet 提供 ISR-safe 的固定通知入口。used-ring 或 combined cause 的 h
 
 config-only、unknown-only 和 spurious cause 不发布 RX generation，也不伪造
 completion。ISR 不取得 Service 锁，不调用 queue control/receive/recycle，不运行
-smoltcp。
+smoltcp。handler 把 MMIO status 的 raw low byte交给 classifier 和 telemetry，只用
+`raw & 0x03` 写 ACK；否则 unknown-only 会被误记为 spurious，known+unknown 也会丢失
+unknown 观测。
 
 task 准备等待时按以下顺序执行：
 
@@ -315,9 +317,17 @@ QEMU-only snapshot 在现有 MS03 cause/ACK counter 之外至少包含：lifecyc
 ISR publish/wake、task poll、reaped、refilled、delivered、non-IP consumed、budget
 exhaustion、self-yield、Router-full wait、space wake、empty check、fault、last error、
 critical-section IRQ restore violation。计数只观测，不作为 owner 正确性的唯一来源。
+现有 snapshot ioctl 没有长度参数并写完整 `repr(C)` 对象，不能通过原地 append 保持
+二进制兼容。`0x4e49_4431` 固定为 MS03 V1，只写原有 8 个 `u64`；MS04 使用新的
+`0x4e49_4432` V2 command 和独立固定结构。旧 probe、MS16 workload 和已编译 payload
+继续安全读取 V1，新 MS04 probe 只读取 V2。每个 command 的 Rust/C size、offset 和
+全部 consumer buffer 都必须有 source/type witness；未来扩展不得增大已有 command 的
+写入尺寸。
 
 新增 MS04 guest probe 和 host burst stimulus。probe 提供 idle、software nudge、
-RX burst/fairness 和 snapshot 模式；nudge 只发布一次软件 wake，不伪造 completion。
+RX burst/fairness 和 snapshot 模式。nudge 使用独立 `0x4e49_4e31` command，只调用
+不增加 generation 或 ISR counter 的 software wake，并单独增加 software-nudge counter；
+不得复用 ISR publisher 或伪造 completion。
 运行时以 `reaped delta == refilled delta`、fault/restore violation 为零、burst 下 IRQ
 和 task 都推进、budget/yield 可见、idle/nudge 不 busy-loop 为判据。MS01/MS02/MS03
 使用既有 payload 做独立回归。

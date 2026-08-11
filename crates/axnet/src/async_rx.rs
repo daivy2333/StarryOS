@@ -5,9 +5,8 @@
 //! pure lifecycle/event/budget decisions, and the unique named queue task
 //! wiring. No ISR publish or kernel caller lives here yet (T6.1).
 
+#[cfg(not(test))]
 use alloc::borrow::ToOwned;
-#[cfg(test)]
-use core::sync::atomic::AtomicUsize;
 use core::{
     future::Future,
     ops::{Deref, DerefMut},
@@ -192,6 +191,220 @@ pub(crate) static RX_NOTIFY: RxNotify = RxNotify::new();
 /// to map the RX consumption right each round.
 pub(crate) static RX_LIFECYCLE: RxLifecycle = RxLifecycle::new();
 
+/// Monotonic RX queue-task telemetry.
+///
+/// Every counter is `Relaxed` and observation-only: none of them participate
+/// in synchronization, ownership or wait correctness. Counters never reset and
+/// success never clears the last-error fields, so a snapshot always reflects
+/// the whole boot history of the async RX path.
+pub(crate) static RX_TELEMETRY: RxTelemetry = RxTelemetry::new();
+
+/// Stable diagnostic stage of the most recent RX queue-task error.
+///
+/// These values are part of the observable snapshot ABI: do not renumber them.
+pub mod rx_error_stage {
+    /// No error has been recorded yet.
+    pub const NONE: u64 = 0;
+    /// Activation preflight failed (missing Service/NIC/control).
+    pub const PREFLIGHT: u64 = 1;
+    /// RX notification suppression failed.
+    pub const SUPPRESS: u64 = 2;
+    /// RX completion visibility query failed.
+    pub const COMPLETION_QUERY: u64 = 3;
+    /// A receive/recycle (or Router handoff) aggregate failed.
+    pub const RECEIVE_RECYCLE: u64 = 4;
+    /// The register/arm/recheck wait protocol failed.
+    pub const ARM: u64 = 5;
+    /// A lifecycle transition was illegal.
+    pub const LIFECYCLE: u64 = 6;
+}
+
+/// Stable diagnostic code for a [`DevError`].
+///
+/// The codes are explicit and never derived from the enum discriminant, so
+/// they stay stable across dependency updates. Do not renumber them.
+pub fn rx_error_code(err: &DevError) -> u64 {
+    match err {
+        DevError::AlreadyExists => 1,
+        DevError::Again => 2,
+        DevError::BadState => 3,
+        DevError::InvalidParam => 4,
+        DevError::Io => 5,
+        DevError::NoMemory => 6,
+        DevError::ResourceBusy => 7,
+        DevError::Unsupported => 8,
+    }
+}
+
+/// Monotonic relaxed-atomics telemetry of the async RX queue path.
+#[derive(Debug)]
+pub(crate) struct RxTelemetry {
+    /// ISR event publishes (generation increments).
+    pub isr_publish: AtomicU64,
+    /// ISR wake calls on the sole queue-task waker.
+    pub isr_wake: AtomicU64,
+    /// Queue-task `Future::poll` invocations.
+    pub task_poll: AtomicU64,
+    /// Completions reaped (Consumed + Delivered).
+    pub reaped: AtomicU64,
+    /// Descriptors refilled (one per reap).
+    pub refilled: AtomicU64,
+    /// IP packets delivered to the Router.
+    pub delivered: AtomicU64,
+    /// Non-IP / non-target / malformed completions consumed.
+    pub non_ip_consumed: AtomicU64,
+    /// Budget exhausted rounds with a backlog present.
+    pub budget_exhausted: AtomicU64,
+    /// Self-wakes issued for `block_on` yielding.
+    pub self_yield: AtomicU64,
+    /// Router-full waits published (Waiting).
+    pub router_full_wait: AtomicU64,
+    /// Space wakes delivered by `Service::poll`.
+    pub space_wake: AtomicU64,
+    /// Empty-queue register/arm/recheck protocols run.
+    pub empty_check: AtomicU64,
+    /// Terminal queue/device faults (Faulted transitions).
+    pub fault: AtomicU64,
+    /// Stage of the most recent error ([`rx_error_stage`]).
+    pub last_error_stage: AtomicU64,
+    /// Stable code of the most recent error ([`rx_error_code`]).
+    pub last_error_code: AtomicU64,
+}
+
+impl RxTelemetry {
+    pub(crate) const fn new() -> Self {
+        Self {
+            isr_publish: AtomicU64::new(0),
+            isr_wake: AtomicU64::new(0),
+            task_poll: AtomicU64::new(0),
+            reaped: AtomicU64::new(0),
+            refilled: AtomicU64::new(0),
+            delivered: AtomicU64::new(0),
+            non_ip_consumed: AtomicU64::new(0),
+            budget_exhausted: AtomicU64::new(0),
+            self_yield: AtomicU64::new(0),
+            router_full_wait: AtomicU64::new(0),
+            space_wake: AtomicU64::new(0),
+            empty_check: AtomicU64::new(0),
+            fault: AtomicU64::new(0),
+            last_error_stage: AtomicU64::new(rx_error_stage::NONE),
+            last_error_code: AtomicU64::new(0),
+        }
+    }
+
+    /// Records a terminal fault and the most recent error category.
+    fn record_fault(&self, stage: u64, err: &DevError) {
+        self.fault.fetch_add(1, Ordering::Relaxed);
+        self.record_last_error(stage, err);
+    }
+
+    /// Records the most recent error category without a fault counter.
+    fn record_last_error(&self, stage: u64, err: &DevError) {
+        self.record_last_error_code(stage, rx_error_code(err));
+    }
+
+    /// Records the most recent error stage with an explicit stable code.
+    ///
+    /// Used for categories that carry no [`DevError`], e.g. illegal lifecycle
+    /// transitions where the observed state code is the payload.
+    fn record_last_error_code(&self, stage: u64, code: u64) {
+        self.last_error_stage.store(stage, Ordering::Relaxed);
+        self.last_error_code.store(code, Ordering::Relaxed);
+    }
+}
+
+/// Read-only bounded snapshot of the async RX queue path.
+///
+/// `repr(C)` and append-only: the kernel ioctl maps this into its own
+/// `IrqSnapshot` without taking the Service lock. All fields are `u64` so the
+/// Rust and C layouts stay trivially aligned.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RxSnapshot {
+    /// Lifecycle code: 0 Polling, 1 Spawned, 2 Active, 3 Faulted, 4 Unavailable.
+    pub lifecycle: u64,
+    /// Owner view: 0 polling-owned, 1 async-owned.
+    pub owner: u64,
+    /// ISR event publishes.
+    pub isr_publish: u64,
+    /// ISR wake calls.
+    pub isr_wake: u64,
+    /// Queue-task polls.
+    pub task_poll: u64,
+    /// Completions reaped.
+    pub reaped: u64,
+    /// Descriptors refilled.
+    pub refilled: u64,
+    /// IP packets delivered.
+    pub delivered: u64,
+    /// Non-IP completions consumed.
+    pub non_ip_consumed: u64,
+    /// Budget-exhausted rounds with backlog.
+    pub budget_exhausted: u64,
+    /// Self-yield wakes.
+    pub self_yield: u64,
+    /// Router-full waits.
+    pub router_full_wait: u64,
+    /// Space wakes.
+    pub space_wake: u64,
+    /// Empty-queue rechecks.
+    pub empty_check: u64,
+    /// Terminal faults.
+    pub fault: u64,
+    /// Last error stage code.
+    pub last_error_stage: u64,
+    /// Last error code.
+    pub last_error_code: u64,
+}
+
+/// Pure snapshot mapping over a lifecycle and telemetry pair.
+///
+/// Exposed so host tests can build a snapshot from injected local state;
+/// [`rx_snapshot`] binds the production globals and delegates here.
+fn rx_snapshot_impl(lifecycle: &RxLifecycle, telemetry: &RxTelemetry) -> RxSnapshot {
+    let owner = match lifecycle.load().owner_view() {
+        RxOwnerView::PollingOwned => 0,
+        RxOwnerView::AsyncOwned => 1,
+    };
+    let t = telemetry;
+    RxSnapshot {
+        lifecycle: lifecycle.load().code() as u64,
+        owner,
+        isr_publish: t.isr_publish.load(Ordering::Relaxed),
+        isr_wake: t.isr_wake.load(Ordering::Relaxed),
+        task_poll: t.task_poll.load(Ordering::Relaxed),
+        reaped: t.reaped.load(Ordering::Relaxed),
+        refilled: t.refilled.load(Ordering::Relaxed),
+        delivered: t.delivered.load(Ordering::Relaxed),
+        non_ip_consumed: t.non_ip_consumed.load(Ordering::Relaxed),
+        budget_exhausted: t.budget_exhausted.load(Ordering::Relaxed),
+        self_yield: t.self_yield.load(Ordering::Relaxed),
+        router_full_wait: t.router_full_wait.load(Ordering::Relaxed),
+        space_wake: t.space_wake.load(Ordering::Relaxed),
+        empty_check: t.empty_check.load(Ordering::Relaxed),
+        fault: t.fault.load(Ordering::Relaxed),
+        last_error_stage: t.last_error_stage.load(Ordering::Relaxed),
+        last_error_code: t.last_error_code.load(Ordering::Relaxed),
+    }
+}
+
+/// Read-only RX snapshot for the kernel ioctl. Never takes the Service lock.
+pub fn rx_snapshot() -> RxSnapshot {
+    rx_snapshot_impl(&RX_LIFECYCLE, &RX_TELEMETRY)
+}
+
+/// ISR-safe fixed RX event publisher.
+///
+/// The kernel handler calls this *after* device ACK and telemetry. It updates
+/// the publish/wake-call counters, then performs the existing Release
+/// generation increment and the sole `AtomicWaker` wake. It never touches the
+/// Service, queue-control, descriptors or smoltcp.
+pub fn publish_rx_event() {
+    RX_TELEMETRY.isr_publish.fetch_add(1, Ordering::Relaxed);
+    RX_TELEMETRY.isr_wake.fetch_add(1, Ordering::Relaxed);
+    RX_NOTIFY.publish_event();
+}
+
 /// Fixed name of the single async RX queue task.
 pub const RX_TASK_NAME: &str = "axnet-rx-queue";
 
@@ -267,6 +480,7 @@ pub(crate) struct RxRxFuture {
     service: ServiceAccess,
     lifecycle: &'static RxLifecycle,
     notify: &'static RxNotify,
+    telemetry: &'static RxTelemetry,
 }
 
 /// Outcome of one RX servicing round before releasing the guard.
@@ -286,28 +500,69 @@ impl RxRxFuture {
     /// returns the next action. The guard never crosses a Pending/Ready.
     fn service_round(&self, service: &mut Service) -> RoundOutcome {
         if let Err(err) = service.rx_suppress_target() {
+            self.telemetry.record_fault(rx_error_stage::SUPPRESS, &err);
             return RoundOutcome::Fault(err);
         }
         let mut processed = 0usize;
         loop {
             processed += 1;
             let outcome = service.rx_one_step_target();
+            match &outcome {
+                RxOutcome::Consumed => {
+                    self.telemetry.reaped.fetch_add(1, Ordering::Relaxed);
+                    self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
+                    self.telemetry
+                        .non_ip_consumed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                RxOutcome::Delivered => {
+                    self.telemetry.reaped.fetch_add(1, Ordering::Relaxed);
+                    self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
+                    self.telemetry.delivered.fetch_add(1, Ordering::Relaxed);
+                }
+                RxOutcome::Fault(err) => {
+                    self.telemetry
+                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
+                }
+                _ => {}
+            }
             let backlog = match outcome {
                 RxOutcome::Consumed | RxOutcome::Delivered if processed >= RX_BUDGET => {
                     match service.rx_completion_visible_target() {
                         Ok(backlog) => backlog,
-                        Err(err) => return RoundOutcome::Fault(err),
+                        Err(err) => {
+                            self.telemetry
+                                .record_fault(rx_error_stage::COMPLETION_QUERY, &err);
+                            return RoundOutcome::Fault(err);
+                        }
                     }
                 }
                 _ => false,
             };
             match decide_after_step(processed, backlog, outcome) {
                 RxDecision::Continue => continue,
-                RxDecision::SelfWakeYield => return RoundOutcome::SelfWakeYield,
-                RxDecision::RegisterRecheck => return RoundOutcome::RegisterRecheck,
-                RxDecision::WaitSpace => {
-                    return RoundOutcome::WaitSpace(service.rx_space_recheck_or_wait());
+                RxDecision::SelfWakeYield => {
+                    self.telemetry
+                        .budget_exhausted
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
+                    return RoundOutcome::SelfWakeYield;
                 }
+                RxDecision::RegisterRecheck => {
+                    self.telemetry.empty_check.fetch_add(1, Ordering::Relaxed);
+                    return RoundOutcome::RegisterRecheck;
+                }
+                RxDecision::WaitSpace => {
+                    let decision = service.rx_space_recheck_or_wait();
+                    if decision == SpaceDecision::Waiting {
+                        self.telemetry
+                            .router_full_wait
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    return RoundOutcome::WaitSpace(decision);
+                }
+                // The Fault outcome was already recorded with the
+                // RECEIVE_RECYCLE stage above; just hand the error up.
                 RxDecision::Fault(err) => return RoundOutcome::Fault(err),
             }
         }
@@ -320,20 +575,36 @@ impl RxRxFuture {
         if !self.service.is_available() {
             // Missing Service cannot be preflighted: Unavailable keeps the
             // polling owner (D4), never panics and never pends forever.
-            let _ = self.lifecycle.preflight(false);
+            self.transition_preflight(false);
             return Poll::Ready(());
         }
         let Some(mut service) = self.service.try_lock() else {
             self.notify.register(cx.waker());
             return Poll::Pending;
         };
-        let preflight_ok = service.rx_preflight_target().is_ok();
-        let _ = self.lifecycle.preflight(preflight_ok);
+        let preflight = service.rx_preflight_target();
+        if let Err(err) = &preflight {
+            self.telemetry
+                .record_last_error(rx_error_stage::PREFLIGHT, err);
+        }
+        let preflight_ok = preflight.is_ok();
+        self.transition_preflight(preflight_ok);
         drop(service);
         if preflight_ok {
             self.poll_active(cx)
         } else {
             Poll::Ready(())
+        }
+    }
+
+    /// Records the illegal-lifecycle transition as a LIFECYCLE-stage error.
+    ///
+    /// The payload is the observed lifecycle state code, which is stable and
+    /// never derived from the enum discriminant position alone.
+    fn transition_preflight(&self, ok: bool) {
+        if let Err(TransitionError::Illegal(state)) = self.lifecycle.preflight(ok) {
+            self.telemetry
+                .record_last_error_code(rx_error_stage::LIFECYCLE, state.code() as u64);
         }
     }
 
@@ -363,11 +634,21 @@ impl RxRxFuture {
                 drop(service);
                 self.poll_register_recheck(cx)
             }
-            RoundOutcome::Fault(_) => {
-                let _ = self.lifecycle.fatal();
+            RoundOutcome::Fault(err) => {
+                self.telemetry
+                    .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                self.transition_fatal();
                 drop(service);
                 Poll::Ready(())
             }
+        }
+    }
+
+    /// Records an illegal `Active -> Faulted` transition as LIFECYCLE-stage.
+    fn transition_fatal(&self) {
+        if let Err(TransitionError::Illegal(state)) = self.lifecycle.fatal() {
+            self.telemetry
+                .record_last_error_code(rx_error_stage::LIFECYCLE, state.code() as u64);
         }
     }
 
@@ -392,8 +673,9 @@ impl RxRxFuture {
                 Poll::Pending
             }
             WaitDecision::Sleep => Poll::Pending,
-            WaitDecision::Fault(_) => {
-                let _ = self.lifecycle.fatal();
+            WaitDecision::Fault(err) => {
+                self.telemetry.record_fault(rx_error_stage::ARM, &err);
+                self.transition_fatal();
                 Poll::Ready(())
             }
         }
@@ -404,6 +686,7 @@ impl Future for RxRxFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.telemetry.task_poll.fetch_add(1, Ordering::Relaxed);
         match self.lifecycle.load() {
             RxTaskLifecycle::Spawned => self.poll_first(cx),
             RxTaskLifecycle::Active => self.poll_active(cx),
@@ -414,11 +697,8 @@ impl Future for RxRxFuture {
     }
 }
 
-/// Spawn seam. Host tests witness the single-spawn decision with a counter
-/// instead of running the axtask scheduler.
-#[cfg(test)]
-static SPAWN_COUNT: AtomicUsize = AtomicUsize::new(0);
-
+/// Spawn seam. Host tests inject their own counting closure instead of
+/// running the axtask scheduler or touching any production global.
 #[cfg(not(test))]
 fn spawn_rx_task() {
     axtask::spawn_with_name(
@@ -427,15 +707,29 @@ fn spawn_rx_task() {
                 service: ServiceAccess::Global,
                 lifecycle: &RX_LIFECYCLE,
                 notify: &RX_NOTIFY,
+                telemetry: &RX_TELEMETRY,
             })
         },
         RX_TASK_NAME.to_owned(),
     );
 }
 
+/// Test-mode binding so the production [`start_rx_task`] wrapper still
+/// compiles. Tests never call it: they exercise [`start_with`] with a local
+/// lifecycle and counting closure, so the global is never advanced.
 #[cfg(test)]
-fn spawn_rx_task() {
-    SPAWN_COUNT.fetch_add(1, Ordering::Relaxed);
+fn spawn_rx_task() {}
+
+/// Core start decision: CAS the given lifecycle `Polling -> Spawned`, then
+/// run the spawn action exactly once.
+///
+/// Production binds the global lifecycle and the fixed-name spawn via
+/// [`start_rx_task`]; host tests inject a local lifecycle and a counting
+/// closure so the production `RX_LIFECYCLE` is never advanced by a test.
+fn start_with(lifecycle: &RxLifecycle, spawn: impl FnOnce()) -> Result<(), StartError> {
+    lifecycle.start()?;
+    spawn();
+    Ok(())
 }
 
 /// Activates the async RX path. The CAS winner alone requests one fixed-name
@@ -444,9 +738,7 @@ fn spawn_rx_task() {
 /// Dormant in this iteration: no kernel caller exists until T6.1 wires the
 /// ISR publish/wake, so the polling owner remains active at runtime.
 pub fn start_rx_task() -> Result<(), StartError> {
-    RX_LIFECYCLE.start()?;
-    spawn_rx_task();
-    Ok(())
+    start_with(&RX_LIFECYCLE, spawn_rx_task)
 }
 
 /// Outcome of the Service-guard full-space recheck.
@@ -589,9 +881,10 @@ mod tests {
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
     use super::{
-        ArmObservation, RX_BUDGET, RX_NOTIFY, RxDecision, RxLifecycle, RxNotify, RxRxFuture,
-        RxTaskLifecycle, SERIAL, SPAWN_COUNT, ServiceAccess, SpaceDecision, StartError,
-        TransitionError, WaitDecision, decide_after_step, start_rx_task,
+        ArmObservation, RX_BUDGET, RX_LIFECYCLE, RX_NOTIFY, RX_TELEMETRY, RxDecision, RxLifecycle,
+        RxNotify, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL, ServiceAccess, SpaceDecision,
+        StartError, TransitionError, WaitDecision, decide_after_step, rx_error_code,
+        rx_error_stage, start_with,
     };
     use crate::{
         device::{Device, LoopbackDevice, RxStep},
@@ -1147,18 +1440,20 @@ mod tests {
         (mutex, recv_calls, stats)
     }
 
-    /// Builds an injected Future: local leaked lifecycle/notify, spin service
-    /// mutex, lifecycle already driven to `Spawned`.
+    /// Builds an injected Future: local leaked lifecycle/notify/telemetry,
+    /// spin service mutex, lifecycle already driven to `Spawned`.
     fn leaked_future(
         service_mutex: &'static spin::Mutex<Service>,
         notify: &'static RxNotify,
     ) -> (&'static RxLifecycle, RxRxFuture) {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
         let fut = RxRxFuture {
             service: ServiceAccess::Injected(service_mutex),
             lifecycle,
             notify,
+            telemetry,
         };
         (lifecycle, fut)
     }
@@ -1170,17 +1465,35 @@ mod tests {
     }
 
     #[test]
-    fn start_rx_task_spawns_once_and_rejects_duplicate() {
-        // Touches the global lifecycle/spawn counter: serialize.
-        let _serial = SERIAL.lock();
-        SPAWN_COUNT.store(0, Ordering::Relaxed);
-        assert!(start_rx_task().is_ok());
-        assert_eq!(SPAWN_COUNT.load(Ordering::Relaxed), 1);
+    fn start_seam_spawns_once_and_rejects_duplicate_with_local_state() {
+        // Local lifecycle + counting closure: never touches the production
+        // globals, so any test order leaves RX_LIFECYCLE at its initial state.
+        let lifecycle = RxLifecycle::new();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let spawn_count = spawns.clone();
+
+        assert!(
+            start_with(&lifecycle, || {
+                spawn_count.fetch_add(1, Ordering::Relaxed);
+            })
+            .is_ok()
+        );
+        assert_eq!(spawns.load(Ordering::Relaxed), 1);
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
+
         assert_eq!(
-            start_rx_task(),
+            start_with(&lifecycle, || {
+                spawn_count.fetch_add(1, Ordering::Relaxed);
+            }),
             Err(StartError::AlreadyStarted(RxTaskLifecycle::Spawned))
         );
-        assert_eq!(SPAWN_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(spawns.load(Ordering::Relaxed), 1);
+
+        // The fixed task name is bound by the production spawn path.
+        assert_eq!(super::RX_TASK_NAME, "axnet-rx-queue");
+
+        // The global lifecycle was never advanced by the seam test.
+        assert_eq!(RX_LIFECYCLE.load(), RxTaskLifecycle::Polling);
     }
 
     #[test]
@@ -1191,10 +1504,12 @@ mod tests {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
         let notify: &'static RxNotify = Box::leak(Box::new(RxNotify::new()));
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
         let mut fut = RxRxFuture {
             service: ServiceAccess::Global,
             lifecycle,
             notify,
+            telemetry,
         };
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
@@ -1270,6 +1585,27 @@ mod tests {
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
         assert_eq!(recv_calls.load(Ordering::Relaxed), 2);
+        assert!(mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn future_31_completions_then_empty_registers_once() {
+        // Exactly 31 progress steps then an Empty on the 32nd observation:
+        // the future performs exactly RX_BUDGET (32) receive calls, arms once,
+        // self-wakes zero times and releases the Service guard. The literal 31
+        // keeps the RX_BUDGET boundary mutation witness sensitive.
+        let steps: Vec<RxStep> = (0..31)
+            .map(|_| RxStep::Consumed)
+            .chain([RxStep::Empty])
+            .collect();
+        let (mutex, recv_calls, control) = leaked_service(steps, true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(recv_calls.load(Ordering::Relaxed), 32);
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 1);
         assert!(mutex.try_lock().is_some());
     }
 
@@ -1354,5 +1690,186 @@ mod tests {
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
         mutex.lock().poll(RxOwnerView::PollingOwned, &mut sockets);
         assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    // ---- T6.1b: monotonic telemetry deltas ----
+
+    #[test]
+    fn telemetry_empty_round_increments_empty_check_once() {
+        let (mutex, ..) = leaked_service(vec![RxStep::Empty], true);
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(fut.telemetry.task_poll.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.reaped.load(Ordering::Relaxed), 0);
+        assert_eq!(fut.telemetry.empty_check.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn telemetry_consumed_increments_reap_refill_and_non_ip() {
+        let (mutex, ..) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(fut.telemetry.reaped.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.refilled.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.delivered.load(Ordering::Relaxed), 0);
+        assert_eq!(fut.telemetry.non_ip_consumed.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.empty_check.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn telemetry_delivered_increments_delivered_counter() {
+        let (mutex, ..) = leaked_service(vec![RxStep::Delivered, RxStep::Empty], true);
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(fut.telemetry.reaped.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.refilled.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.delivered.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.non_ip_consumed.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn telemetry_budget_backlog_increments_exhausted_and_self_yield() {
+        let steps: Vec<RxStep> = (0..=RX_BUDGET).map(|_| RxStep::Consumed).collect();
+        let (mutex, _, control) = leaked_service(steps, true);
+        control.completion_visible.store(true, Ordering::Relaxed);
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(fut.telemetry.budget_exhausted.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.self_yield.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fut.telemetry.reaped.load(Ordering::Relaxed),
+            RX_BUDGET as u64
+        );
+    }
+
+    #[test]
+    fn telemetry_router_full_increments_wait_and_space_wake() {
+        // The wait/space handoff shares the production `RX_NOTIFY` with
+        // `Service::poll` and the space-wake counter is recorded on the
+        // production `RX_TELEMETRY` global: serialize against sibling tests.
+        let _serial = SERIAL.lock();
+        let (mutex, ..) = leaked_service(vec![RxStep::Consumed], true);
+        {
+            let mut guard = mutex.lock();
+            guard.fill_rx_buffer_for_test();
+        }
+        let (_, mut fut) = leaked_future(mutex, &RX_NOTIFY);
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(fut.telemetry.router_full_wait.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.space_wake.load(Ordering::Relaxed), 0);
+
+        let space_wake_before = RX_TELEMETRY.space_wake.load(Ordering::Relaxed);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        mutex.lock().poll(RxOwnerView::PollingOwned, &mut sockets);
+        assert_eq!(
+            RX_TELEMETRY.space_wake.load(Ordering::Relaxed) - space_wake_before,
+            1
+        );
+        assert_eq!(fut.telemetry.router_full_wait.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn telemetry_preflight_failure_records_last_error_without_fault() {
+        let (mutex, _, control) = leaked_service(vec![], true);
+        control.suppress_error.store(true, Ordering::Relaxed);
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(
+            poll_once(&mut fut, count.clone()),
+            Poll::Ready(())
+        ));
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
+            rx_error_stage::PREFLIGHT
+        );
+        assert_eq!(
+            fut.telemetry.last_error_code.load(Ordering::Relaxed),
+            rx_error_code(&DevError::Io)
+        );
+    }
+
+    #[test]
+    fn telemetry_active_arm_fault_records_fault_and_stage() {
+        let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
+        control.arm_error.store(true, Ordering::Relaxed);
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(
+            poll_once(&mut fut, count.clone()),
+            Poll::Ready(())
+        ));
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
+            rx_error_stage::ARM
+        );
+        assert_eq!(
+            fut.telemetry.last_error_code.load(Ordering::Relaxed),
+            rx_error_code(&DevError::Io)
+        );
+    }
+
+    #[test]
+    fn telemetry_illegal_preflight_records_lifecycle_stage() {
+        // Drive the lifecycle past Spawned so the Spawned-only preflight
+        // transition must fail; the failure is recorded as LIFECYCLE-stage
+        // with the observed state code, and never increments the fault counter.
+        let (mutex, ..) = leaked_service(vec![], true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        lifecycle.preflight(true).unwrap();
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+
+        fut.transition_preflight(true);
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
+            rx_error_stage::LIFECYCLE
+        );
+        assert_eq!(
+            fut.telemetry.last_error_code.load(Ordering::Relaxed),
+            RxTaskLifecycle::Active.code() as u64
+        );
+    }
+
+    #[test]
+    fn telemetry_illegal_fatal_records_lifecycle_stage() {
+        // The fatal transition requires Active; from Spawned it must fail and
+        // be recorded as LIFECYCLE-stage without changing the state.
+        let (mutex, ..) = leaked_service(vec![], true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
+
+        fut.transition_fatal();
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
+            rx_error_stage::LIFECYCLE
+        );
+        assert_eq!(
+            fut.telemetry.last_error_code.load(Ordering::Relaxed),
+            RxTaskLifecycle::Spawned.code() as u64
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
+    }
+
+    #[test]
+    fn telemetry_snapshot_mirrors_lifecycle_and_counters() {
+        let (mutex, _, control) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
+        control.completion_visible.store(true, Ordering::Relaxed);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        let snap = super::rx_snapshot_impl(fut.lifecycle, fut.telemetry);
+        assert_eq!(snap.lifecycle, RxTaskLifecycle::Active.code() as u64);
+        assert_eq!(snap.owner, 1);
+        assert_eq!(snap.reaped, 1);
+        assert_eq!(snap.empty_check, 1);
     }
 }

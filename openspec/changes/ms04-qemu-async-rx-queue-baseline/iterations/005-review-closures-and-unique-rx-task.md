@@ -418,28 +418,91 @@ None。本轮为标准 TDD 收敛 + 注入 seam 测试模式，无可复用高�
 
 ## Plan Review
 
-- Status: pending
+- Status: follow-up-required
 
 **Review Result**
 
-Pending.
+follow-up-required
 
 **Findings**
 
-Pending.
+Iteration 005 的 queue-control seam、唯一 Future、单调 owner 切换、budget=32、
+register-recheck 和 Router-space wake 主体实现可以保留。独立复验确认 axnet 90 tests、
+100×16-thread stress、host 6+8+20+8、QEMU kernel compile、定向格式、OpenSpec strict 与
+diff checks 全部通过；未发现产品路径的 Critical correctness 回归。
+
+1. **PASS — 主体异步 RX 语义成立。** 首次 poll 在 Service guard 内 preflight/suppress
+   后才发布 Active；Active/Faulted 都让普通 Router 跳过目标 NIC；单轮最多 reap 32，
+   backlog 通过 queue-control 查询而非第 33 次 receive；empty 走 generation/register/
+   arm/recheck；Router full 在锁内 recheck 后等待软件 wake；所有已测试 Pending/Ready
+   路径返回后 Service mutex 可立即取得。
+2. **IMPORTANT — start test 永久修改生产 lifecycle，测试隔离结论不完整。**
+   `start_rx_task_spawns_once_and_rejects_duplicate` 直接调用 public `start_rx_task()`，把
+   static `RX_LIFECYCLE` 从 Polling 留在 Spawned。`SERIAL` 只防止并发访问，不能恢复
+   单调 global；当前 suite 通过是因为没有后续测试读取该 static。新增 telemetry、
+   owner 或 kernel assembly tests 后将产生顺序依赖。修复应抽取“给定 lifecycle + spawn
+   seam 的 start 决策”并用局部状态测试，不能添加 test-only global reset。
+3. **IMPORTANT — 获批的 31-completion Future 边界没有直接见证。** Act Response 声明
+   覆盖 0/1/31/32/33，但 12 个 Future tests 只有 empty、1 completion、32 后无 backlog
+   和 33-input/32-reap backlog case；31 只在纯 `decide_after_step` 的 below-limit case
+   间接出现。缺少“31 次进度后第 32 次观察 Empty、随后 arm、无 self-wake、guard 已释放”
+   的端到端 Future 断言，故 acceptance 的完整覆盖声明需在下一轮补齐。
+4. **MINOR — test build 新增一个可消除 warning。** `alloc::borrow::ToOwned` 只由
+   `cfg(not(test))` 的生产 spawn 使用，但 import 未加同样 cfg；fresh axnet lib test
+   报 unused import。两个 `Fault(DevError)` payload warning 和 `publish_event` dead code
+   则是 T6.1 尚未接 telemetry/ISR 的预期 seam，将在下一轮自然消失，不应以 allow
+   隐藏。
+5. **IMPORTANT — production handler 当前丢弃 unknown status bits。** handler 在调用
+   `TELEMETRY.record` 前先执行 `status_raw & 0x03`；因此 unknown-only 被记为 spurious，
+   used/config 混合 unknown 也不会增加 unknown counter，和已通过的 pure logic harness
+   不一致。T6.1 正在修改同一 handler，应改为用 raw low byte 分类/记录、仅用 known mask
+   ACK，并由“cause 是否包含 used”决定 publish。
+6. **IMPORTANT — T6.1 扩展 snapshot 必须同步现存 C ABI consumer。** 当前 ioctl 直接
+   `vm_write(IrqSnapshot)`，`tests/ms03_irq_probe.c` 只分配 8 个 `u64`。若 T6.1 仅向 Rust
+   `repr(C)` 结构 append 字段，旧 probe 会被内核写越界。虽然新 MS04 probe 属 T6.2，
+   T6.1 仍必须同步扩展 MS03 probe struct/打印与 host syntax Gate，或引入显式长度/
+   版本 contract；不能把 ABI 修复推迟到下一轮。
 
 **Deviation Classification**
 
-Pending.
+- `ACT-DEVIATION`：T5.1R 要求所有生产 global 测试隔离；start test 虽串行化，却永久
+  改写 `RX_LIFECYCLE`，没有做到跨测试状态隔离。
+- `ACT-DEVIATION`：T5.2b RED/GREEN 明确要求 0/1/31/32/33 completion rounds；31 只有
+  纯决策层间接覆盖，Act Response 对 Future 见证的表述过强。
+- `NEW-EVIDENCE`：fresh test build 发现 T5.2 新增 `ToOwned` unused warning；属 Minor。
+- `NEW-EVIDENCE`：production handler 在 pure classifier 前屏蔽 unknown bits，现有 host
+  tests 只验证 pure seam，未见证实际 handler 输入；并入 T6.1 修复与 source guard。
+- `PLAN-CLARIFICATION`：T6.1 的 append-only snapshot 会扩大 ioctl 写入尺寸，必须把
+  已存在的 MS03 C consumer 纳入同一原子 ABI 修改面。
+- 未发现 `PLAN-INVALID`、Critical finding 或需要回退主体实现的问题。
 
 **Evidence**
 
-Pending.
+2026-08-11 独立复验：
+
+| Command / inspection | Result |
+|---|---|
+| `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib` | PASS：90 tests，exit 0；同时复现 `ToOwned` unused 与两个待 T6 消费的 payload warnings |
+| 同一 suite，`--test-threads=16` 重复 100 次 | PASS：100/100，exit 0；证明现有 notify race 已关闭，但不消除 lifecycle 永久状态问题 |
+| `make host-test` | PASS：6 + 8 + 20 + 8；MS03 C syntax，exit 0 |
+| `cargo check --offline -p starry-kernel --features qemu` | PASS，exit 0；仅既有与预期 seam warnings |
+| axnet/direct harness fmt；OpenSpec strict；staged/unstaged diff checks | PASS，exit 0 |
+| `async_rx.rs` source inspection | start test 调用 global public entry且无 reset；Future tests 缺少 31-completion round；所有已测返回路径释放 injected guard |
+| `virtio_net_irq.rs` vs pure classifier inspection | handler 传入 `status_raw & 0x03`，导致 unknown telemetry 与 host-classifier 语义分叉 |
+| `virtio_net_irq_logic.rs`、`ctl.rs`、`ms03_irq_probe.c` inspection | ioctl 写完整 Rust snapshot；现存 C buffer 固定为 8×`u64`，T6.1 append 若不同步会越界 |
+| staged full diff review | 15 files、2401 insertions/113 deletions；未发现 ISR/kernel caller 被提前接入，产品边界仍 dormant |
+
+Persisted Evidence 模式为 none；没有 Evidence 目录不构成问题。
 
 **Follow-up Decision**
 
-Pending.
+创建 iteration 006，把上述 T5.2R 小修复并入原定 T6.1，不单独拆轮。执行顺序为：先用
+局部 start seam、31 boundary 和 cfg import 关闭 Review；再接 axnet 固定 ISR publish/
+snapshot API、kernel cause→ACK→telemetry→publish 与注册成功后 start；最后扩展单调
+telemetry/snapshot、critical-section restore violation 和现存 MS03 C ABI consumer。
+本轮不新增 MS04 probe/stimulus、不运行 QEMU runtime；T6.2、全量自动 Gate 和最终
+user-only 手测仍各自保持独立 iteration。
 
 **Next Iteration**
 
-Pending.
+`iterations/006-review-closures-and-isr-observability.md`，等待 Gate 2 批准。

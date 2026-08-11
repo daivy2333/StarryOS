@@ -15,7 +15,7 @@ use smoltcp::{
 
 use crate::{
     LISTEN_TABLE, SOCKET_SET,
-    async_rx::{RX_NOTIFY, SpaceDecision},
+    async_rx::{RX_NOTIFY, RX_TELEMETRY, SpaceDecision},
     router::{Router, RxOutcome, RxOwnerView},
 };
 
@@ -93,7 +93,11 @@ impl Service {
             }
         }
         LISTEN_TABLE.reconcile(sockets);
-        RX_NOTIFY.wake_if_space(self.router.rx_buffer_has_space());
+        if RX_NOTIFY.wake_if_space(self.router.rx_buffer_has_space()) {
+            RX_TELEMETRY
+                .space_wake
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         self.router.dispatch(timestamp) || changed
     }
 

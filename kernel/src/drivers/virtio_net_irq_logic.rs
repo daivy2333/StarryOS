@@ -69,6 +69,24 @@ pub fn has_unknown_bits(status: u8) -> bool {
     (status & !0x03u8) != 0
 }
 
+/// Known status bits (0x03) that must be acknowledged at the device.
+///
+/// Unknown/reserved bits are never ACKed; they are only observed through
+/// [`has_unknown_bits`] so unknown-only causes are not misrecorded as
+/// spurious.
+pub fn ack_mask(status: u8) -> u8 {
+    status & 0x03
+}
+
+/// Whether a raw status byte must publish an RX queue event.
+///
+/// Only causes carrying the used-ring bit (0x01) publish: used-only,
+/// used+unknown and combined each publish exactly once; config-only,
+/// unknown-only and zero never publish.
+pub fn should_publish_rx(status: u8) -> bool {
+    (status & 0x01) != 0
+}
+
 // ── Monotonic telemetry ────────────────────────────────────────────────
 
 /// High-watermark telemetry counters for VirtIO-net IRQ diagnostics.
@@ -90,6 +108,9 @@ pub struct IrqTelemetry {
     pub spurious: AtomicU64,
     /// ACK write count (MMIO write to offset 0x64).
     pub ack_count: AtomicU64,
+    /// IRQ restore violations: an ISR `AtomicWaker::wake()` re-enabled IRQs
+    /// before the platform completed the interrupt.
+    pub restore_violation: AtomicU64,
 }
 
 impl IrqTelemetry {
@@ -103,6 +124,7 @@ impl IrqTelemetry {
             unknown: AtomicU64::new(0),
             spurious: AtomicU64::new(0),
             ack_count: AtomicU64::new(0),
+            restore_violation: AtomicU64::new(0),
         }
     }
 
@@ -154,6 +176,27 @@ impl IrqTelemetry {
             spurious: self.spurious.load(Ordering::Relaxed),
             ack_count: self.ack_count.load(Ordering::Relaxed),
             uart_irq_count: 0,
+            restore_violation: self.restore_violation.load(Ordering::Relaxed),
+            // The appended RX fields are filled by the kernel glue from the
+            // bounded `axnet::rx_snapshot()`; the pure seam initializes them
+            // to zero so the ABI is total before the mapping runs.
+            rx_lifecycle: 0,
+            rx_owner: 0,
+            isr_publish: 0,
+            isr_wake: 0,
+            task_poll: 0,
+            reaped: 0,
+            refilled: 0,
+            delivered: 0,
+            non_ip_consumed: 0,
+            budget_exhausted: 0,
+            self_yield: 0,
+            router_full_wait: 0,
+            space_wake: 0,
+            empty_check: 0,
+            fault: 0,
+            last_error_stage: 0,
+            last_error_code: 0,
         }
     }
 }
@@ -165,8 +208,10 @@ impl IrqTelemetry {
 /// # ABI stability
 ///
 /// This is a diagnostic-only, QEMU-cfg-gated interface.
-/// Fields are append-only; existing fields must not be reordered or
-/// removed.
+/// The first 8 `u64` fields are append-only and must not be reordered or
+/// removed; MS03 guest consumers depend on their layout. All fields appended
+/// by MS04 (T6.1) keep the same 8-byte stride and must stay in order. The C
+/// consumer in `tests/ms03_irq_probe.c` is synchronized in the same iteration.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrqSnapshot {
@@ -178,4 +223,40 @@ pub struct IrqSnapshot {
     pub spurious: u64,
     pub ack_count: u64,
     pub uart_irq_count: u64,
+    /// IRQ restore violations (wake re-enabled IRQs before EOI).
+    pub restore_violation: u64,
+    /// Async RX lifecycle code (0 Polling .. 4 Unavailable).
+    pub rx_lifecycle: u64,
+    /// Async RX owner view (0 polling-owned, 1 async-owned).
+    pub rx_owner: u64,
+    /// ISR event publishes.
+    pub isr_publish: u64,
+    /// ISR wake calls.
+    pub isr_wake: u64,
+    /// Queue-task polls.
+    pub task_poll: u64,
+    /// Completions reaped.
+    pub reaped: u64,
+    /// Descriptors refilled.
+    pub refilled: u64,
+    /// IP packets delivered.
+    pub delivered: u64,
+    /// Non-IP completions consumed.
+    pub non_ip_consumed: u64,
+    /// Budget-exhausted rounds with backlog.
+    pub budget_exhausted: u64,
+    /// Self-yield wakes.
+    pub self_yield: u64,
+    /// Router-full waits.
+    pub router_full_wait: u64,
+    /// Space wakes.
+    pub space_wake: u64,
+    /// Empty-queue rechecks.
+    pub empty_check: u64,
+    /// Terminal faults.
+    pub fault: u64,
+    /// Last error stage code.
+    pub last_error_stage: u64,
+    /// Last error code.
+    pub last_error_code: u64,
 }

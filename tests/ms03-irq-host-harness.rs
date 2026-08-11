@@ -73,6 +73,34 @@ fn has_unknown_bits_false_for_known_only() {
     assert!(!has_unknown_bits(0x03));
 }
 
+// ── ACK mask and publish decision (T6.1a) ──────────────────────────────
+
+#[test]
+fn ack_mask_never_touches_unknown_bits() {
+    assert_eq!(ack_mask(0x00), 0x00);
+    assert_eq!(ack_mask(0x01), 0x01);
+    assert_eq!(ack_mask(0x02), 0x02);
+    assert_eq!(ack_mask(0x03), 0x03);
+    assert_eq!(ack_mask(0x04), 0x00);
+    assert_eq!(ack_mask(0x05), 0x01);
+    assert_eq!(ack_mask(0x0C), 0x00);
+    assert_eq!(ack_mask(0xFF), 0x03);
+}
+
+#[test]
+fn publish_only_for_causes_with_used_ring_bit() {
+    // used-only, used+unknown and combined publish; zero, config-only and
+    // unknown-only never publish (D5).
+    assert!(!should_publish_rx(0x00));
+    assert!(!should_publish_rx(0x02));
+    assert!(!should_publish_rx(0x04));
+    assert!(!should_publish_rx(0x0C));
+    assert!(should_publish_rx(0x01));
+    assert!(should_publish_rx(0x03));
+    assert!(should_publish_rx(0x05));
+    assert!(should_publish_rx(0x07));
+}
+
 // ── Telemetry ──────────────────────────────────────────────────────────
 
 #[test]
@@ -200,12 +228,48 @@ fn telemetry_ack_count_requires_explicit_increment() {
 
 #[test]
 fn snapshot_is_repr_c_compatible() {
-    // Verify field layout is stable by checking size and offset.
-    assert_eq!(core::mem::size_of::<IrqSnapshot>(), 8 * 8);
+    // 8 MS03 u64 fields + restore_violation + 17 MS04 appended u64 fields.
+    assert_eq!(core::mem::size_of::<IrqSnapshot>(), 26 * 8);
     assert_eq!(
         core::mem::align_of::<IrqSnapshot>(),
         core::mem::align_of::<u64>()
     );
+}
+
+#[test]
+fn snapshot_abi_preserves_first_eight_fields() {
+    // The MS03 C consumer (ms03_irq_probe.c) depends on the first 8 u64
+    // fields keeping their order and stride.
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, total), 0 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, used_ring), 1 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, config_change), 2 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, combined), 3 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, unknown), 4 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, spurious), 5 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, ack_count), 6 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, uart_irq_count), 7 * 8);
+}
+
+#[test]
+fn snapshot_abi_appended_fields_follow_in_order() {
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, restore_violation), 8 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, rx_lifecycle), 9 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, rx_owner), 10 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, isr_publish), 11 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, isr_wake), 12 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, task_poll), 13 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, reaped), 14 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, refilled), 15 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, delivered), 16 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, non_ip_consumed), 17 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, budget_exhausted), 18 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, self_yield), 19 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, router_full_wait), 20 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, space_wake), 21 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, empty_check), 22 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, fault), 23 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, last_error_stage), 24 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshot, last_error_code), 25 * 8);
 }
 
 #[test]
@@ -220,4 +284,5 @@ fn snapshot_zero_fields_on_new_telemetry() {
     assert_eq!(s.spurious, 0);
     assert_eq!(s.ack_count, 0);
     assert_eq!(s.uart_irq_count, 0);
+    assert_eq!(s.restore_violation, 0);
 }

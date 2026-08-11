@@ -35,7 +35,10 @@
 #define SERVER_PORT        15555
 #define IDLE_WINDOW_MS     2000
 
-/* Must match kernel/src/drivers/virtio_net_irq_logic.rs::IrqSnapshot */
+/* Must match kernel/src/drivers/virtio_net_irq_logic.rs::IrqSnapshot.
+ * The first 8 fields are the MS03 ABI; the appended fields carry the MS04
+ * async RX telemetry mapped from axnet. Producer and consumer sizes must
+ * stay identical (26 * 8 bytes). */
 struct irq_snapshot {
     uint64_t total;
     uint64_t used_ring;
@@ -45,6 +48,25 @@ struct irq_snapshot {
     uint64_t spurious;
     uint64_t ack_count;
     uint64_t uart_irq_count;
+    /* MS04 appended fields */
+    uint64_t restore_violation;
+    uint64_t rx_lifecycle;
+    uint64_t rx_owner;
+    uint64_t isr_publish;
+    uint64_t isr_wake;
+    uint64_t task_poll;
+    uint64_t reaped;
+    uint64_t refilled;
+    uint64_t delivered;
+    uint64_t non_ip_consumed;
+    uint64_t budget_exhausted;
+    uint64_t self_yield;
+    uint64_t router_full_wait;
+    uint64_t space_wake;
+    uint64_t empty_check;
+    uint64_t fault;
+    uint64_t last_error_stage;
+    uint64_t last_error_code;
 };
 
 static int read_snapshot(struct irq_snapshot *snap)
@@ -61,7 +83,12 @@ static int read_snapshot(struct irq_snapshot *snap)
 static void print_snapshot(const char *label, const struct irq_snapshot *snap)
 {
     printf("%s total=%lu used_ring=%lu config_change=%lu combined=%lu "
-           "unknown=%lu spurious=%lu ack_count=%lu uart_irq=%lu\n",
+           "unknown=%lu spurious=%lu ack_count=%lu uart_irq=%lu "
+           "restore_violation=%lu rx_lifecycle=%lu rx_owner=%lu "
+           "isr_publish=%lu isr_wake=%lu task_poll=%lu reaped=%lu "
+           "refilled=%lu delivered=%lu non_ip=%lu budget=%lu yield=%lu "
+           "router_full=%lu space_wake=%lu empty_check=%lu fault=%lu "
+           "err_stage=%lu err_code=%lu\n",
            label,
            (unsigned long)snap->total,
            (unsigned long)snap->used_ring,
@@ -70,7 +97,25 @@ static void print_snapshot(const char *label, const struct irq_snapshot *snap)
            (unsigned long)snap->unknown,
            (unsigned long)snap->spurious,
            (unsigned long)snap->ack_count,
-           (unsigned long)snap->uart_irq_count);
+           (unsigned long)snap->uart_irq_count,
+           (unsigned long)snap->restore_violation,
+           (unsigned long)snap->rx_lifecycle,
+           (unsigned long)snap->rx_owner,
+           (unsigned long)snap->isr_publish,
+           (unsigned long)snap->isr_wake,
+           (unsigned long)snap->task_poll,
+           (unsigned long)snap->reaped,
+           (unsigned long)snap->refilled,
+           (unsigned long)snap->delivered,
+           (unsigned long)snap->non_ip_consumed,
+           (unsigned long)snap->budget_exhausted,
+           (unsigned long)snap->self_yield,
+           (unsigned long)snap->router_full_wait,
+           (unsigned long)snap->space_wake,
+           (unsigned long)snap->empty_check,
+           (unsigned long)snap->fault,
+           (unsigned long)snap->last_error_stage,
+           (unsigned long)snap->last_error_code);
 }
 
 static void print_delta(const char *label,
@@ -78,7 +123,12 @@ static void print_delta(const char *label,
                         const struct irq_snapshot *post)
 {
     printf("%s total=%lu used_ring=%lu config_change=%lu combined=%lu "
-           "unknown=%lu spurious=%lu ack_count=%lu uart_irq=%lu\n",
+           "unknown=%lu spurious=%lu ack_count=%lu uart_irq=%lu "
+           "restore_violation=%lu rx_lifecycle=%lu rx_owner=%lu "
+           "isr_publish=%lu isr_wake=%lu task_poll=%lu reaped=%lu "
+           "refilled=%lu delivered=%lu non_ip=%lu budget=%lu yield=%lu "
+           "router_full=%lu space_wake=%lu empty_check=%lu fault=%lu "
+           "err_stage=%lu err_code=%lu\n",
            label,
            (unsigned long)(post->total - pre->total),
            (unsigned long)(post->used_ring - pre->used_ring),
@@ -87,7 +137,25 @@ static void print_delta(const char *label,
            (unsigned long)(post->unknown - pre->unknown),
            (unsigned long)(post->spurious - pre->spurious),
            (unsigned long)(post->ack_count - pre->ack_count),
-           (unsigned long)(post->uart_irq_count - pre->uart_irq_count));
+           (unsigned long)(post->uart_irq_count - pre->uart_irq_count),
+           (unsigned long)(post->restore_violation - pre->restore_violation),
+           (unsigned long)(post->rx_lifecycle - pre->rx_lifecycle),
+           (unsigned long)(post->rx_owner - pre->rx_owner),
+           (unsigned long)(post->isr_publish - pre->isr_publish),
+           (unsigned long)(post->isr_wake - pre->isr_wake),
+           (unsigned long)(post->task_poll - pre->task_poll),
+           (unsigned long)(post->reaped - pre->reaped),
+           (unsigned long)(post->refilled - pre->refilled),
+           (unsigned long)(post->delivered - pre->delivered),
+           (unsigned long)(post->non_ip_consumed - pre->non_ip_consumed),
+           (unsigned long)(post->budget_exhausted - pre->budget_exhausted),
+           (unsigned long)(post->self_yield - pre->self_yield),
+           (unsigned long)(post->router_full_wait - pre->router_full_wait),
+           (unsigned long)(post->space_wake - pre->space_wake),
+           (unsigned long)(post->empty_check - pre->empty_check),
+           (unsigned long)(post->fault - pre->fault),
+           (unsigned long)(post->last_error_stage - pre->last_error_stage),
+           (unsigned long)(post->last_error_code - pre->last_error_code));
 }
 
 /* Flush UART TX before snapshot window. */

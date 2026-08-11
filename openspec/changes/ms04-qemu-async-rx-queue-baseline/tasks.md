@@ -10,13 +10,14 @@
 | 003 | iteration 002 Review 修复 + T4.2 Router handoff 与 space wake | No |
 | 004 | iteration 003 Review 修复 + T5.1 lifecycle/register-recheck 决策层 | No |
 | 005 | iteration 004 Review 修复 + T5.2 唯一 RX task 与 budget | No |
-| 006 | T6.1 ISR publish/wake 与 telemetry | No |
-| 007 | T6.2 probe/stimulus 与自动构建入口 | No |
+| 006 | iteration 005 Review 修复 + T6.1 ISR publish/wake 与 telemetry | No |
+| 007 | iteration 006 Review 修复 + T6.2 probe/stimulus 与自动构建入口 | No |
 | 008 | T7 全量自动 Gate、diff Review 与 Evidence 准备 | No |
 | 009 | T8 sandbox 复跑和 QEMU runtime 手测 | Yes, user-only |
 
 只有当前一轮通过 Plan Review 后才创建下一轮；编号是当前计划顺序，不预先生成空
-iteration。若 Review 发现阻塞问题，优先插入小型修复轮次，后续编号顺延。最终一轮
+iteration。若 Review 发现可控的小粒度问题，修复并入下一原定 iteration；只有无法安全
+合并且会阻塞后续工作的缺口才单独拆轮，后续编号顺延。最终一轮
 只包含用户手工测试及其 Evidence，不夹带产品实现。
 
 ## 1. 本地化依赖并建立 queue contract
@@ -200,27 +201,67 @@ iteration。若 Review 发现阻塞问题，优先插入小型修复轮次，后
   mapping、ServiceAccess Global/Injected 注入 seam、12 个 future 测试与 guard-release
   witness，90 axnet tests + 100×16-thread gate GREEN，2026-08-11 Act）。 -->
 
+- [x] 5.2R 关闭 iteration 005 Review 的测试隔离、budget 边界见证和定向 warning。
+  把 start-once/duplicate 的决策抽成可注入 lifecycle/spawn seam，让测试使用局部
+  `RxLifecycle` 和 counter，不再永久推进生产 `RX_LIFECYCLE`；增加 Future 层恰好 31
+  completions 后 empty 的直接见证，并把仅产品 spawn 使用的 `ToOwned` import 限定到
+  `cfg(not(test))`。WHY 是当前 100×并发 gate 虽通过，但全局 lifecycle 已被测试永久
+  留在 Spawned，且 Act 对 0/1/31/32/33 的覆盖声明缺少 31 的直接证据；HOW 是不增加
+  test-only reset、不放宽单调状态机、不触碰生产启动语义。EXPECTED 是任意测试顺序
+  下 global lifecycle 保持初始状态，31 路径精确执行 31 次进度加一次 empty 检查并
+  rearm，axnet test build 不再产生 `ToOwned` warning。若修复需要重置生产 static、
+  第二个 task/waker 或改变 budget=32，停止。
+  <!-- 2026-08-11 Act：`start_with` crate-private seam + `spawn_rx_task` test binding；
+  `future_31_completions_then_empty_registers_once`；`#[cfg(not(test))] ToOwned`；
+  axnet 101 tests + 100×16-thread GREEN。 -->
+
 ## 6. 接入最小 ISR 与运行观测
 
-- [ ] 6.1 修改 `kernel/src/drivers/virtio_net_irq.rs` 及其 pure logic/snapshot seam，
+- [x] 6.1 修改 `kernel/src/drivers/virtio_net_irq.rs` 及其 pure logic/snapshot seam，
   让 used-ring/combined cause 在设备 ACK 和 telemetry 后调用 axnet 固定 publish+wake；
   config-only、unknown-only、spurious 不发布 RX 事件。WHY 是 descriptor 只能在 task
   context 推进；HOW 是扩展单调 snapshot，包含 lifecycle、ISR publish、task、reap/
   refill、budget/yield、Router wait/wake、fault、last error 和 critical-section restore
   violation，并在 `AtomicWaker::wake()` 前后检查 IRQ 仍 disabled；EXPECTED 是 ISR
   无 Service/queue/descriptor/smoltcp 访问，PLIC EOI 仍在 handler 返回后。先扩展
-  MS03/MS04 host harness 为 RED，再实现 GREEN。若 ISR 需要锁 Service、调用 receive
-  或 config-only 伪造 completion，停止。
+  MS03/MS04 host harness 为 RED，再实现 GREEN。生产 handler 必须把 raw low byte 交给
+  classifier/telemetry，只 ACK known bits，避免把 unknown-only 错记为 spurious；IRQ 注册
+  成功后才调用唯一 start entry。append `IrqSnapshot` 时同轮更新现存
+  `tests/ms03_irq_probe.c` 的结构与打印，保持 ioctl producer/consumer 尺寸一致。若 ISR
+  需要锁 Service、调用 receive、config-only 伪造 completion，或 Rust/C snapshot 尺寸
+  分叉，停止。
+  <!-- 2026-08-11 Act：axnet `publish_rx_event` + `rx_snapshot` 固定入口；handler raw
+  classification + `ack_mask`/`should_publish_rx` seam + record→ACK→publish 顺序 +
+  IRQ enabled 检查 + restore violation；register-before-start 唯一 start；
+  `IrqSnapshot` 追加 17 字段 + Rust size/offset tests + `ms03_irq_probe.c` 同步；
+  MS03 host harness 24 tests、MS04 host harness 9 tests（含 ISR contract source guard）
+  GREEN。T6.2 probe/stimulus 留待下一轮。 -->
+
+- [ ] 6.1R 关闭 iteration 006 Review 的 telemetry、IRQ witness 和 snapshot ABI 缺口。
+  active suppress、completion-query 和 receive/recycle fault 每次只增加一次 fault，并保留
+  原始 stage/code；missing Service 记录 PREFLIGHT/BadState。snapshot 对 lifecycle/owner
+  使用同一次状态观察，并让 last-error stage/code 作为一个一致 pair 发布；同时记录
+  IRQ enabled-on-entry，补强 handler guard 对 raw record 参数和 registration-failure
+  branch return 的见证，清理本轮新增的 3 个 test warning。WHY 是当前 common fault
+  分支会二次计数并把 stage 覆盖为 RECEIVE_RECYCLE，关联字段也可能被并发 snapshot
+  撕裂。旧 `0x4e49_4431` 必须恢复为固定 8-field V1，新增 `0x4e49_4432` V2 承载 MS04
+  字段；`ms03_irq_probe.c`、MS16 platform adapter 和既有 binary contract 继续使用 V1，
+  不得再扩大原 command 的 kernel write。若只能依赖更新所有旧二进制、保留超长 V1
+  write、用两次独立原子发布 last-error pair 或让 fault delta 大于一次，停止。
 
 - [ ] 6.2 新增 `tests/ms04_rx_probe.c`、host RX burst stimulus 及 Makefile targets；
   probe 固定提供 snapshot、idle、single software-nudge、RX burst/fairness 模式，
   host stimulus 只发流量，不驱动 QEMU console。WHY 是运行时要分别观察 IRQ wake、
   task descriptor 进度、budget yield、spurious/no-work、守恒和 socket 回归；HOW 是
-  每个模式输出固定 PRE/POST/DELTA/PASS/FAIL marker，quiet window 中不打印，nudge
-  只 wake 不伪造 completion。EXPECTED 是 host C syntax、host stimulus self-test 和
-  RISC-V static probe build 通过；`reaped_delta == refilled_delta`、fault/restore
-  violation 为零是运行判据。若 probe reset counter、在 ISR 打印、自动输入 guest
-  shell 或把部分 telemetry 当 PASS，停止。
+  V2 snapshot 用 `0x4e49_4432`，nudge 用独立 `0x4e49_4e31` software-wake command，
+  只增加 software-nudge counter，不增加 generation、ISR publish/wake 或 completion。
+  每个模式输出固定 PRE/POST/DELTA/PASS/FAIL marker，counter 才相减，lifecycle/owner/
+  last-error 等 gauge 输出 POST 值；quiet window 中不打印。host UDP stimulus 在收到 guest
+  registration 后发送带 sequence 的有界 burst，不驱动 console，并提供无 QEMU self-test。
+  EXPECTED 是 host C syntax、stimulus self-test、Makefile targets 和 RISC-V static probe
+  build 通过；运行判据仍为 `reaped_delta == refilled_delta`、fault/restore/IRQ-entry
+  violation 为零。若 probe reset counter、复用 ISR publisher 做 nudge、自动输入 guest
+  shell、把 gauge 当 delta 或把部分 telemetry 当 PASS，停止。
 
 ## 7. 完成全部自动 Gate 与 Review
 
