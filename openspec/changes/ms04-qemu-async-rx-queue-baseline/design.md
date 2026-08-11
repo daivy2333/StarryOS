@@ -149,9 +149,10 @@ Polling -> Spawned -> Active -> Faulted
                    \-> Unavailable
 ```
 
-kernel 在 MS03 IRQ 7 handler 注册成功后调用 axnet start。start 用 CAS 将
-`Polling` 改为 `Spawned`，只创建一个有固定名称的 axtask。重复调用不得创建第二个
-task。
+T5.2 由 axnet 提供 start entry。start 用 CAS 将 `Polling` 改为 `Spawned`，只创建一个
+有固定名称的 axtask；重复调用不得创建第二个 task。T5.2 不从 kernel 调用该入口，
+因为 MS03 handler 尚不发布 queue event；T6.1 把 handler 升级为 publish/wake 后，才在
+IRQ 注册成功路径调用 start。这样不会出现通知已抑制但 ISR 仍只做诊断的半接线状态。
 
 新 task 第一次运行时取得 `SERVICE` 锁，确认恰好一个目标 Ethernet device、
 queue control 可用且 Router/driver 状态可服务；随后先 suppress RX 通知，再在同一
@@ -194,6 +195,11 @@ task 准备等待时按以下顺序执行：
   -> 否则返回 Pending
 ```
 
+`arm_rx_notify_and_check` 的错误属于 queue-control fatal，必须由 wait decision 连同
+`DevError` 明确返回，不得映射为 Quiescent/Sleep、藏在 closure side channel 或依赖
+10ms fallback。激活前 arm/suppress/preflight 失败进入 Unavailable；Active 后失败进入
+Faulted 并保留 async owner。
+
 task 开始 service、budget 用尽或 Router 满时保持通知 suppressed。AtomicWaker
 只有该 queue task 一个 waiter；MS05 以后 socket waiter 由 stack runner 分发，
 不在本轮复用这个单槽。
@@ -233,6 +239,12 @@ Ethernet RX，但继续服务 loopback。
 的 async RX 模块；caller 不传 raw index，也不取得或复制 NIC handle。缺少 target 时
 返回可匹配的 `BadState` fault。这个 crate-private seam 必须由 sibling-module compile/
 unit witness 证明可达，不能只在 `service.rs` 自身测试里调用私有字段或私有 signal。
+
+T5.2 在 axnet `Device` 层增加 transport-neutral queue-control wrapper：目标
+`EthernetDevice` 只把 completion-visible、suppress 和 arm-and-check 委托给其内部
+`NetDriverOps::queue_control()`；Loopback 与不支持的设备返回明确 unavailable/error。
+Router/Service 仍按保存的 target index 调用 wrapper，不向 task 暴露 VirtIO 类型、raw
+descriptor、device index 或第二个 NIC handle，也不修改 registry axdriver。
 
 T4.2 只引入 `PollingOwned/AsyncOwned` 消费权视图，不提前实现 lifecycle 转换。
 `poll_interfaces` 在 T5 接入前显式使用 PollingOwned；T5 再把

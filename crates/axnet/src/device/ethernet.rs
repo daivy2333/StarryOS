@@ -2,6 +2,7 @@ use alloc::{string::String, vec};
 use core::task::Waker;
 
 use axdriver::prelude::*;
+use axdriver_net::NetQueueControl;
 use axtask::future::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
@@ -332,6 +333,10 @@ impl Device for EthernetDevice {
 
     fn requires_polling(&self) -> bool {
         self.inner.irq_num().is_none()
+    }
+
+    fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+        self.inner.queue_control()
     }
 
     fn register_waker(&self, waker: &Waker) {

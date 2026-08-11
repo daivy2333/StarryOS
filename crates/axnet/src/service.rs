@@ -1,13 +1,12 @@
 use alloc::boxed::Box;
 use core::{
     pin::Pin,
-    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Waker},
 };
 
+use axdriver::prelude::{DevError, DevResult};
 use axhal::time::{NANOS_PER_MICROS, TimeValue, wall_time_nanos};
 use axtask::future::sleep_until;
-use embassy_sync::waitqueue::AtomicWaker;
 use smoltcp::{
     iface::{Interface, PollIngressSingleResult, PollResult, SocketSet},
     time::{Duration, Instant},
@@ -16,7 +15,8 @@ use smoltcp::{
 
 use crate::{
     LISTEN_TABLE, SOCKET_SET,
-    router::{Router, RxOwnerView},
+    async_rx::{RX_NOTIFY, SpaceDecision},
+    router::{Router, RxOutcome, RxOwnerView},
 };
 
 const POLLING_FALLBACK: Duration = Duration::from_millis(10);
@@ -36,47 +36,6 @@ fn select_wake_deadline(
         (None, None) => None,
     }
 }
-
-/// Router-space software wake for the future RX queue task.
-///
-/// The queue side registers a waker without taking the `SERVICE` lock, then
-/// publishes the waiting bit (Release) inside the Service lock only after
-/// confirming the Router RX buffer is full. `Service::poll` clears the bit
-/// (AcqRel) and wakes the task exactly once, after ingress has freed Router
-/// buffer space. No `Relaxed` ordering is used because the waiting bit
-/// participates in control flow.
-struct RxSpaceSignal {
-    waker: AtomicWaker,
-    waiting: AtomicBool,
-}
-
-impl RxSpaceSignal {
-    const fn new() -> Self {
-        Self {
-            waker: AtomicWaker::new(),
-            waiting: AtomicBool::new(false),
-        }
-    }
-
-    fn register(&self, waker: &Waker) {
-        self.waker.register(waker);
-    }
-
-    fn wait_for_space(&self) {
-        self.waiting.store(true, Ordering::Release);
-    }
-
-    fn wake_if_space(&self, has_space: bool) -> bool {
-        if has_space && self.waiting.swap(false, Ordering::AcqRel) {
-            self.waker.wake();
-            true
-        } else {
-            false
-        }
-    }
-}
-
-static RX_SPACE: RxSpaceSignal = RxSpaceSignal::new();
 
 /// `polling_capabilities` yields one `requires_polling()` result per device,
 /// where bit `i` in `mask` selects device `i`.
@@ -134,8 +93,65 @@ impl Service {
             }
         }
         LISTEN_TABLE.reconcile(sockets);
-        RX_SPACE.wake_if_space(self.router.rx_buffer_has_space());
+        RX_NOTIFY.wake_if_space(self.router.rx_buffer_has_space());
         self.router.dispatch(timestamp) || changed
+    }
+
+    /// RX-only one-step for the stored target device.
+    ///
+    /// Uses only the saved target index and generates the timestamp from the
+    /// current time internally, so the caller never passes a raw device index,
+    /// never obtains a second NIC handle and never copies the `now()`
+    /// conversion. A missing target maps to `Fault(BadState)`.
+    pub(crate) fn rx_one_step_target(&mut self) -> RxOutcome {
+        let Some(dev) = self.target_dev else {
+            return RxOutcome::Fault(DevError::BadState);
+        };
+        self.router.rx_one_step(dev, now())
+    }
+
+    fn target_index(&self) -> DevResult<usize> {
+        self.target_dev.ok_or(DevError::BadState)
+    }
+
+    /// Activation-time preflight on the stored target: queue control must
+    /// exist and accept suppression; no completion is reaped.
+    pub(crate) fn rx_preflight_target(&mut self) -> DevResult {
+        self.router.rx_control_preflight(self.target_index()?)
+    }
+
+    /// Suppresses RX notifications on the stored target device.
+    pub(crate) fn rx_suppress_target(&mut self) -> DevResult {
+        self.router.rx_control_suppress(self.target_index()?)
+    }
+
+    /// Rearms RX notifications on the stored target and reports whether a
+    /// completion is still pending after the transport barrier.
+    pub(crate) fn rx_arm_and_check_target(&mut self) -> DevResult<bool> {
+        self.router.rx_control_arm_and_check(self.target_index()?)
+    }
+
+    /// Returns whether the stored target currently sees an RX completion.
+    pub(crate) fn rx_completion_visible_target(&mut self) -> DevResult<bool> {
+        self.router.rx_control_has_completion(self.target_index()?)
+    }
+
+    /// Full-space recheck, callable only while holding the Service guard.
+    ///
+    /// Returns `Retry` when space is already available; otherwise publishes
+    /// the waiting bit (Release) and returns `Waiting`.
+    pub(crate) fn rx_space_recheck_or_wait(&self) -> SpaceDecision {
+        if self.router.rx_buffer_has_space() {
+            SpaceDecision::Retry
+        } else {
+            RX_NOTIFY.publish_waiting();
+            SpaceDecision::Waiting
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fill_rx_buffer_for_test(&mut self) {
+        self.router.fill_rx_buffer_for_test();
     }
 
     pub fn get_source_address(&self, dst_addr: &IpAddress) -> IpAddress {
@@ -201,11 +217,11 @@ mod tests {
 
     use smoltcp::time::Instant;
 
-    use super::{RxSpaceSignal, any_masked_device_requires_polling, select_wake_deadline};
+    use super::{Service, any_masked_device_requires_polling, select_wake_deadline};
     use crate::{
+        async_rx::{RX_NOTIFY, SERIAL},
         device::LoopbackDevice,
         router::{Router, RxOwnerView},
-        service::Service,
     };
 
     #[derive(Default)]
@@ -297,59 +313,16 @@ mod tests {
     }
 
     #[test]
-    fn space_signal_full_waiting_then_space_wakes_once() {
-        let signal = RxSpaceSignal::new();
-        let count = Arc::new(AtomicUsize::new(0));
-        signal.register(&counting_waker(count.clone()));
-        signal.wait_for_space();
-        assert!(signal.wake_if_space(true));
-        assert_eq!(count.load(Ordering::Relaxed), 1);
-        assert!(!signal.wake_if_space(true));
-        assert_eq!(count.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn space_signal_still_full_does_not_wake() {
-        let signal = RxSpaceSignal::new();
-        let count = Arc::new(AtomicUsize::new(0));
-        signal.register(&counting_waker(count.clone()));
-        signal.wait_for_space();
-        assert!(!signal.wake_if_space(false));
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn space_signal_not_waiting_does_not_wake() {
-        let signal = RxSpaceSignal::new();
-        let count = Arc::new(AtomicUsize::new(0));
-        signal.register(&counting_waker(count.clone()));
-        assert!(!signal.wake_if_space(true));
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn space_signal_second_poll_after_clear_does_not_wake() {
-        let signal = RxSpaceSignal::new();
-        let count = Arc::new(AtomicUsize::new(0));
-        signal.register(&counting_waker(count.clone()));
-        signal.wait_for_space();
-        assert!(signal.wake_if_space(true));
-        signal.wait_for_space();
-        assert!(signal.wake_if_space(true));
-        assert!(!signal.wake_if_space(true));
-        assert_eq!(count.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
     fn service_poll_wakes_waiting_rx_task_after_ingress_frees_space() {
+        let _serial = SERIAL.lock();
         let mut router = Router::new();
         router.add_device(Box::new(LoopbackDevice::new()));
         router.fill_rx_buffer_for_test();
         let mut service = Service::new(router, None);
 
         let count = Arc::new(AtomicUsize::new(0));
-        super::RX_SPACE.register(&counting_waker(count.clone()));
-        super::RX_SPACE.wait_for_space();
+        RX_NOTIFY.register(&counting_waker(count.clone()));
+        RX_NOTIFY.publish_waiting();
 
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
         service.poll(RxOwnerView::PollingOwned, &mut sockets);

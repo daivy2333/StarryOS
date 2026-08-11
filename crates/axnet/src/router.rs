@@ -1,6 +1,7 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 
-use axdriver::prelude::DevError;
+use axdriver::prelude::{DevError, DevResult};
+use axdriver_net::NetQueueControl;
 use smoltcp::{
     phy::{DeviceCapabilities, Medium},
     storage::PacketMetadata,
@@ -161,6 +162,38 @@ impl Router {
     /// Whether the Router RX buffer has room for at least one packet.
     pub fn rx_buffer_has_space(&self) -> bool {
         !self.rx_buffer.is_full()
+    }
+
+    /// Borrows the queue-control interface of device `dev` for one atomic
+    /// operation. A missing device maps to `BadState`; a device without
+    /// explicit notification control maps to `Unsupported`.
+    fn rx_queue_control(&mut self, dev: usize) -> DevResult<&mut dyn NetQueueControl> {
+        let Some(device) = self.devices.get_mut(dev) else {
+            return Err(DevError::BadState);
+        };
+        device.queue_control().ok_or(DevError::Unsupported)
+    }
+
+    /// Activation-time preflight: the device must expose queue control and
+    /// accept suppression. No completion is reaped.
+    pub fn rx_control_preflight(&mut self, dev: usize) -> DevResult {
+        self.rx_control_suppress(dev)
+    }
+
+    /// Suppresses RX used-buffer notifications on device `dev`.
+    pub fn rx_control_suppress(&mut self, dev: usize) -> DevResult {
+        self.rx_queue_control(dev)?.suppress_rx_notify()
+    }
+
+    /// Rearms RX notifications on device `dev` and reports whether a
+    /// completion is still pending after the transport barrier.
+    pub fn rx_control_arm_and_check(&mut self, dev: usize) -> DevResult<bool> {
+        self.rx_queue_control(dev)?.arm_rx_notify_and_check()
+    }
+
+    /// Returns whether device `dev` currently sees an RX completion.
+    pub fn rx_control_has_completion(&mut self, dev: usize) -> DevResult<bool> {
+        Ok(self.rx_queue_control(dev)?.has_rx_completion())
     }
 
     #[cfg(test)]

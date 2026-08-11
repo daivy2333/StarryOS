@@ -288,3 +288,257 @@ feature-tree 结论。若未接 T5.2 导致 crate-private seam 仍有 dead-code 
   register/recheck 见证，以及 T5.1 lifecycle、generation/register-recheck 和 budget=32
   纯决策层。批准不启动 Act，也不授权 T5.2 named task、真实 queue-control、ISR/probe、
   QEMU runtime 或其他手工测试、Maintainer、Recorder 或归档工作。
+
+## Act Response
+
+- Status: reported
+
+**Implemented**
+
+T4.2R-fmt、T4.2R-seam、T5.1a、T5.1b 全部完成：
+
+- T4.2R-fmt：两处机械 rustfmt（`ms03-irq-host-harness.rs` 的 `fetch_add` 折行、
+  `ms04-async-rx-host-harness.rs` 的 import 排序）。RED 时直接
+  `rustfmt --edition 2024 --check` 恰好在这两处退出 1；修复后同一命令退出 0，
+  `make host-test` 保持 GREEN。
+- T4.2R-seam：`Service::rx_one_step_target` 只使用保存的 target index，缺 target
+  返回 `Fault(BadState)`；`Service::rx_space_recheck_or_wait` 仅能在 Service guard
+  内调用，有空间返回 `Retry`（不发布 waiting），仍 full 才 Release 发布 waiting
+  并返回 `Waiting`。原 `RxSpaceSignal` 收敛为新模块 `async_rx.rs` 的 crate-private
+  `RxNotify`：单 `AtomicWaker`，Release 发布 waiting，普通 `Service::poll` 保留
+  ingress 后 AcqRel clear+wake-once。sibling 模块编译与调用见证由
+  `async_rx::tests` 自身承担。
+- T5.1a：`RxLifecycle` 单调原子状态机，`Polling→Spawned→Active→Faulted` 与
+  `Spawned→Unavailable` 是唯一合法转换；重复 start 返回
+  `StartError::AlreadyStarted(current)`，非法转换返回
+  `TransitionError::Illegal(current)`，不 panic、不回退。`owner_view`：
+  `Active/Faulted→AsyncOwned`，`Polling/Spawned/Unavailable→PollingOwned`。
+  load 用 Acquire，CAS 成功 AcqRel、失败观察 Acquire。
+- T5.1b：`RxNotify` 增加 `AtomicU64` generation，`publish_event` 执行 wrapping
+  `fetch_add(Release)` 后 wake 唯一 waiter，`generation()` 为 Acquire 快照；
+  `wait_decision` 按 Acquire generation → register → arm/recheck → Acquire
+  generation 顺序，`Pending` 或 generation 变化返回 `Retry`，否则 `Sleep`；
+  `RX_BUDGET = 32`；`decide_after_step` 纯决策：进度未到 budget 为 `Continue`，
+  恰好 32 且 backlog 为真为 `SelfWakeYield`、为假为 `RegisterRecheck`，`Empty`
+  为 `RegisterRecheck`，`Full` 为 `WaitSpace`（不 reap），`Fault` 终态。backlog
+  是决策输入，不靠第 33 次 reap 探测。
+
+**Changed Files and Symbols**
+
+| 文件 | 符号 | 变化 |
+|---|---|---|
+| `crates/axnet/src/async_rx.rs` | `RxNotify`、`RX_NOTIFY`、`SpaceDecision`、`RxTaskLifecycle`、`StartError`、`TransitionError`、`RxLifecycle`、`ArmObservation`、`WaitDecision`、`RX_BUDGET`、`RxDecision`、`decide_after_step`、`SERIAL`(cfg test) | 新增模块：通知状态 + 纯决策层 + 29 个测试 |
+| `crates/axnet/src/service.rs` | 删除 `RxSpaceSignal`/`RX_SPACE`；`Service::poll` 改用 `RX_NOTIFY`；新增 `rx_one_step_target`、`rx_space_recheck_or_wait`；4 个 `space_signal_*` 测试随 signal 迁出并改名；`service_poll_wakes_*` 测试加 `SERIAL` 串行化 | seam 收敛 + target 入口 |
+| `crates/axnet/src/lib.rs` | `mod async_rx;` | 注册模块 |
+| `tests/ms03-irq-host-harness.rs` | `fetch_add` 折行 | 机械 rustfmt |
+| `tests/ms04-async-rx-host-harness.rs` | import 排序 | 机械 rustfmt |
+
+**Deviations from Plan**
+
+1. generation publish/snapshot 落在 T5.1b 组而非 T4.2R-seam 组。Plan item 3 描述了
+   seam 终态（含 generation snapshot），但 T4.2R-seam 的 GREEN 判据只要求
+   register/recheck/Retry/Waiting/wake-once；为保持每组先 RED 后 GREEN，
+   `publish_event`/`generation()`/`wait_decision` 与 T5.1b 的 RED 用例同组落地。
+   seam 终态与 item 3 一致。
+2. `TransitionError::Illegal(RxTaskLifecycle)` 用无名载荷携带当前状态（即 Plan 文字
+   中的 `from`）；信息量相同。
+3. 4 个原 `service.rs` 的 `space_signal_*` 测试随 signal 收敛迁入 `async_rx.rs` 并
+   改名 `notify_*`；`service.rs` 只保留 Service 行为测试。
+
+**Blocker Handoff**
+
+None
+
+**Blocker Resolution**
+
+None
+
+**Self-Review**
+
+- Plan compliance: PASS
+- Full diff reviewed: PASS
+- Critical findings unresolved: 0
+- Important findings unresolved: 0
+- Minor findings unresolved: 2
+
+已修复发现：实现期 `cargo fmt --check` 在新增 `async_rx.rs` 上退出 1（`send`
+签名折行），已做机械修复并复跑 GREEN；mutation 见证后两个文件均已还原并复跑确认。
+
+遗留 Minor：
+
+1. 非 test 构建下 crate-private seam 有 13 项 dead-code warning（`RxLifecycle`、
+   `RxNotify` 方法组、`rx_one_step_target`/`rx_space_recheck_or_wait`、
+   `decide_after_step`、各决策枚举与 `RX_BUDGET` 等），T5.2 接生产 caller 前按
+   Plan 要求如实保留，未加 `allow(dead_code)`，也未虚构生产 caller。
+2. `SpaceDecision::Retry` 与 `WaitDecision::Retry` 同名不同层（space handoff 与
+   empty-wait 协议）；按 Plan 词汇保留，未自行改名。
+
+**Verification Evidence**
+
+| 验证项 | 命令 | 输出摘录 | 结论 |
+|---|---|---|---|
+| 定向 fmt（RED） | `rustfmt --edition 2024 --check tests/ms03-irq-host-harness.rs tests/ms04-async-rx-host-harness.rs` | 恰好 `fetch_add` 折行与 import 排序两处 diff | 退出 1，符合 Plan 预期 |
+| 定向 fmt（GREEN） | 同上 | 无 diff | 退出 0 |
+| axnet lib tests | `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib` | 66 passed; 0 failed | PASS（基线 41 → seam 46 → T5.1a 53 → T5.1b 66） |
+| axnet fmt | `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check` | 无 diff | 退出 0 |
+| host-test | `make host-test` | 6+8+20+8 passed；`cc -fsyntax-only ms03_irq_probe.c` | 退出 0 |
+| UART | `cargo test --manifest-path crates/uart_16550/Cargo.toml --offline --features async` | 62+8+10 passed | 退出 0 |
+| axdriver_net | `cargo test --manifest-path crates/axdriver_net/Cargo.toml --offline` | 4 passed | 退出 0 |
+| VirtQueue | `cargo test --manifest-path crates/virtio-drivers/Cargo.toml --offline --lib queue::tests` | 15 passed | 退出 0 |
+| host feature tree | `cargo tree --manifest-path crates/axnet/Cargo.toml --offline -e features -i critical-section` | `std` 仅在 `[dev-dependencies]` 下；`restore-state-bool` 存在 | PASS |
+| product feature tree | `cargo tree -p starryos --features qemu --target riscv64gc-unknown-none-elf -e features -i critical-section` | `"std"` 出现 0 次；`restore-state-bool` 存在 | PASS |
+| kernel compile | `cargo check --offline -p starry-kernel --features qemu` | Finished，仅 dead-code/smoltcp 基线 warnings | 退出 0 |
+| OpenSpec | `openspec validate ms04-qemu-async-rx-queue-baseline --strict` | `Change 'ms04-qemu-async-rx-queue-baseline' is valid` | 退出 0 |
+| diff check | `git diff --check` | 无输出 | 退出 0 |
+
+Mutation 见证（T5.1b Witness 要求）：
+
+| Mutation | 命令 | 结果 | 处置 |
+|---|---|---|---|
+| 删除 `wait_decision` 第二次 Acquire generation 观察 | `cargo test ... --lib event_during_register_window` | `event_during_register_window_retries` FAILED（断言 Retry≠Sleep） | 已还原并复跑 GREEN |
+| `RX_BUDGET` 32→33 | `cargo test ... --lib budget_exact` | `budget_exact_with_backlog_self_wakes_and_yields`、`budget_exact_without_backlog_goes_register_recheck` FAILED | 已还原并复跑 GREEN |
+
+新增 test 名称/数量：新增 25 个，迁移改名 4 个，全套 66 个。
+
+- seam（5 新增 + 4 迁移）：`sibling_caller_reaches_target_one_step_and_register_seam`、
+  `one_step_missing_target_maps_to_bad_state`、`one_step_full_router_buffer_does_not_touch_device`、
+  `space_freed_before_waiting_rechecks_to_retry_without_publish`、
+  `still_full_publishes_waiting_then_space_wakes_once`；迁移：
+  `notify_full_waiting_then_space_wakes_once`、`notify_still_full_does_not_wake`、
+  `notify_not_waiting_does_not_wake`、`notify_second_publish_after_clear_wakes_again`。
+- lifecycle（7）：`lifecycle_start_moves_polling_to_spawned`、
+  `lifecycle_duplicate_start_is_rejected_without_state_change`、
+  `lifecycle_preflight_only_from_spawned`、`lifecycle_preflight_outcomes_from_spawned`、
+  `lifecycle_fatal_only_from_active`、`lifecycle_terminal_states_accept_no_transition`、
+  `lifecycle_owner_view_mapping`。
+- generation/budget（13）：`publish_event_increments_generation_and_wakes`、
+  `publish_event_generation_wraps`、`event_before_register_is_caught_by_arm_recheck`、
+  `event_during_register_window_retries`、`event_after_arm_wakes_sleep_decision`、
+  `pending_found_by_arm_recheck_retries_without_event`、`quiescent_arm_without_event_sleeps`、
+  `budget_below_limit_continues_on_progress`、`budget_exact_with_backlog_self_wakes_and_yields`、
+  `budget_exact_without_backlog_goes_register_recheck`、`empty_goes_register_recheck_at_any_count`、
+  `full_goes_wait_space_without_reaping`、`fault_is_terminal_for_the_decision_layer`。
+
+Transition matrix（全部有测试见证，`drive_to` 只经合法转换构造状态）：
+
+| 操作 \ 当前态 | Polling | Spawned | Active | Faulted | Unavailable |
+|---|---|---|---|---|---|
+| start | → Spawned | Err(AlreadyStarted) | Err(AlreadyStarted) | Err(AlreadyStarted) | Err(AlreadyStarted) |
+| preflight(true) | Err(Illegal) | → Active | Err(Illegal) | Err(Illegal) | Err(Illegal) |
+| preflight(false) | Err(Illegal) | → Unavailable | Err(Illegal) | Err(Illegal) | Err(Illegal) |
+| fatal | Err(Illegal) | Err(Illegal) | → Faulted | Err(Illegal) | Err(Illegal) |
+| owner_view | PollingOwned | PollingOwned | AsyncOwned | AsyncOwned | PollingOwned |
+
+Race/budget case 的明确 decision：
+
+| Case | Decision |
+|---|---|
+| event-before-register（publish 先于 wait，arm 见 Pending） | Retry，不消耗 wake |
+| register-during-event（arm 窗口内 publish） | Retry（第二次 Acquire 观察捕获；mutation 敏感） |
+| event after arm（Sleep 后 publish） | publish_event wake 一次，task 重检 |
+| arm 发现 Pending、无事件 | Retry |
+| quiescent arm、无事件 | Sleep，无 wake |
+| spurious/empty wake | Sleep（重检不依赖 wake 计数） |
+| 进度 1..31（Consumed/Delivered） | Continue |
+| 恰好 32 且 backlog | SelfWakeYield |
+| 恰好 32 无 backlog | RegisterRecheck |
+| Empty（任意计数） | RegisterRecheck |
+| Full（任意计数） | WaitSpace，不 reap |
+| Fault（任意计数） | Fault，决策层终态 |
+| Router 空间在 waiting 发布前释放 | Retry，不发布 waiting |
+| 仍 full | Waiting（Release 发布） |
+| waiting 后空间释放 | 恰好 wake 一次 |
+
+**Persisted Evidence**
+
+None required。Plan 设定 mode none；本轮输出均为短确定性文本，由本 Response
+承载，未创建 `evidence/` 目录。
+
+**Experience Candidates**
+
+None。本轮为标准 TDD 收敛，无可复用操作路径或故障。
+
+**Remaining Issues**
+
+- crate-private seam 的 13 项 dead-code warning 属 T5.2 接线前的预期状态（见
+  Self-Review Minor 1）。
+- change 内 3.1（D1 target compile）、5.2、6.x、7.x、8.x 按 iteration allocation
+  留待后续轮次；本轮未触碰。
+
+**Commit or Diff Reference**
+
+`net-k3` 工作树 diff：`crates/axnet/src/lib.rs`、`crates/axnet/src/service.rs`
+修改，`crates/axnet/src/async_rx.rs` 新增，`tests/ms03-irq-host-harness.rs`、
+`tests/ms04-async-rx-host-harness.rs` 机械格式化。未创建 commit。
+
+## Plan Review
+
+- Status: follow-up-required
+
+**Review Result**
+
+follow-up-required
+
+**Findings**
+
+Iteration 004 的 lifecycle、owner mapping、Service target seam、space recheck、generation
+双观察和 budget=32 决策实现可以保留。独立复验确认单次 axnet 66 tests、定向/axnet
+fmt、host/UART/driver/queue 回归、QEMU compile、feature isolation、OpenSpec strict 与
+diff check 均通过；未发现产品路径的 Critical correctness 回归。
+
+1. **PASS — 主体决策语义成立。** 状态只沿批准路径单调转换；Active/Faulted 保持
+   AsyncOwned；target-bound one-step 不泄漏 raw index；Router full 在 Service 锁内
+   recheck 后才发布 waiting；Release/Acquire/AcqRel 角色与设计一致。
+2. **IMPORTANT — 全局通知测试缺少统一隔离，确定性声明不成立。**
+   `sibling_caller_reaches_target_one_step_and_register_seam` 会注册全局 `RX_NOTIFY`，但未
+   获取 `SERIAL`；两个 space seam tests 和 Service 集成测试则依赖同一 static 中当前
+   waker。16 线程重复运行时已复现 waker 被覆盖，
+   `still_full_publishes_waiting_then_space_wakes_once` 观察到 wake count 0 而失败。
+3. **IMPORTANT — arm/recheck error 没有进入纯决策层。**
+   `NetQueueControl::arm_rx_notify_and_check` 返回 `DevResult<bool>`，D9 把 queue-control
+   error 定义为 fatal；当前 `ArmObservation` 只有 Pending/Quiescent，`WaitDecision` 只有
+   Retry/Sleep。T5.2 直接接线时只能旁路 `wait_decision`、用 side channel 保存 error，
+   或错误地睡眠，均不满足“所有交错有 service/self-wake/sleep/fault 明确结果”。
+4. **PASS — 报告中的预期 dead-code 不是本轮缺陷。** fresh QEMU compile 报告 17 个
+   warning group，均来自尚未接 T5.2 caller 的 seams 或既有 smoltcp/virtio baseline；
+   没有 `allow(dead_code)` 或虚构 caller。T5.2 正常接线后再按实际剩余项判断。
+
+**Deviation Classification**
+
+- `ACT-DEVIATION`：计划要求 tests 用确定性隔离见证交错，但一个写全局 `RX_NOTIFY` 的
+  sibling test 未使用共享串行 guard，fresh 并发压力可复现失败。
+- `PLAN-OMISSION`：Iteration 004 把实际 queue-control call 留给 T5.2，却没有让
+  `ArmObservation/WaitDecision` 承载 `DevResult` error；该遗漏与 D9 fatal 语义冲突。
+- 其余实现未发现 `PLAN-INVALID`、基线变化或 Critical finding。
+
+**Evidence**
+
+2026-08-11 独立复验：
+
+| Command / inspection | Result |
+|---|---|
+| `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib -- --nocapture` | PASS：66 tests，exit 0 |
+| 同一 axnet suite，`--test-threads=16` 重复最多 100 次 | FAIL：首轮即复现 65 pass / 1 fail；`still_full_publishes_waiting_then_space_wakes_once` 期望 1、实际 0，exit 1 |
+| direct harness rustfmt；axnet fmt | PASS，exit 0 |
+| `make host-test` | PASS：6 + 8 + 20 + 8，exit 0 |
+| UART async tests | PASS：62 + 8 + 10，exit 0 |
+| axdriver_net；VirtQueue | PASS：4；15 tests，exit 0 |
+| `cargo check --offline -p starry-kernel --features qemu` | PASS，exit 0；仅已记录 dead-code/baseline warnings |
+| host/product critical-section feature trees | PASS：`std` 仅 dev tree；产品保留 restore-state-bool |
+| `openspec validate ... --strict`; `git diff --check` | PASS，exit 0 |
+| `async_rx.rs` source inspection | global `RX_NOTIFY` uses at lines 422/452/468；只有后两处持 `SERIAL`；wait enums cannot carry DevError |
+| `axdriver_net::NetQueueControl` inspection | `arm_rx_notify_and_check(&mut self) -> DevResult<bool>`；suppress also returns DevResult |
+
+Persisted Evidence 模式为 none；没有 Evidence 目录不构成问题。
+
+**Follow-up Decision**
+
+创建 iteration 005，把测试隔离和 arm-error 小修复合入原定 T5.2。按 T5.1R→T5.2a
+transport-neutral Device/Service queue-control seam→T5.2b unique future/named task 三段执行，
+每段有独立 RED/GREEN 与停止条件。为避免半接线，本轮提供 axnet start entry 但不从
+kernel 调用；T6.1 在 ISR publish/wake 就绪后再接生产 caller。QEMU runtime 与 sandbox
+复跑继续保留给最终 user-only iteration。
+
+**Next Iteration**
+
+`iterations/005-review-closures-and-unique-rx-task.md`，等待 Gate 2 批准。

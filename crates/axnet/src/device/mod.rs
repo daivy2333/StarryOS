@@ -1,6 +1,7 @@
 use core::task::Waker;
 
 use axdriver::prelude::DevError;
+use axdriver_net::NetQueueControl;
 use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
 mod ethernet;
@@ -43,6 +44,12 @@ pub trait Device: Send + Sync {
     /// Returns whether this device needs periodic polling to make progress.
     fn requires_polling(&self) -> bool {
         false
+    }
+
+    /// Returns the transport-neutral RX queue-control interface, if the
+    /// underlying driver supports explicit notification control.
+    fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+        None
     }
 
     fn register_waker(&self, waker: &Waker);

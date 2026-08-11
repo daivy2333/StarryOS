@@ -17,6 +17,7 @@
 extern crate log;
 extern crate alloc;
 
+mod async_rx;
 mod consts;
 mod device;
 mod general;
@@ -45,14 +46,18 @@ use axsync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
 
-pub use self::socket::*;
 use self::{
+    async_rx::RX_LIFECYCLE,
     consts::{GATEWAY, IP, IP_PREFIX},
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
-    router::{Router, Rule, RxOwnerView},
+    router::{Router, Rule},
     service::Service,
     wrapper::SocketSetWrapper,
+};
+pub use self::{
+    async_rx::{RX_TASK_NAME, start_rx_task},
+    socket::*,
 };
 
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
@@ -141,6 +146,11 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 }
 
 /// Poll all network interfaces for new events.
+///
+/// The RX consumption right follows the global lifecycle: Spawned/Unavailable
+/// keep the polling owner, Active/Faulted skip the target NIC in ordinary
+/// polling (only the queue task reaps it then).
 pub fn poll_interfaces() {
-    while get_service().poll(RxOwnerView::PollingOwned, &mut SOCKET_SET.inner.lock()) {}
+    let owner = RX_LIFECYCLE.owner_view();
+    while get_service().poll(owner, &mut SOCKET_SET.inner.lock()) {}
 }

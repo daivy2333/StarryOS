@@ -4,7 +4,7 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 
 use axdriver::prelude::*;
-use axdriver_net::{NetBuf, NetBufPool};
+use axdriver_net::{NetBuf, NetBufPool, NetQueueControl};
 use axerrno::{AxError, AxResult};
 use memory_addr::{PhysAddr, VirtAddr};
 use smoltcp::{
@@ -58,6 +58,44 @@ struct FakeStats {
 struct FakeNic {
     pool: Arc<NetBufPool>,
     stats: Arc<FakeStats>,
+    control: Option<FakeQueueControl>,
+}
+
+#[derive(Default)]
+struct FakeControlStats {
+    suppress_calls: Mutex<usize>,
+    arm_calls: Mutex<usize>,
+    completion_visible: Mutex<bool>,
+    suppress_error: Mutex<bool>,
+    arm_error: Mutex<bool>,
+}
+
+struct FakeQueueControl {
+    stats: Arc<FakeControlStats>,
+}
+
+impl NetQueueControl for FakeQueueControl {
+    fn has_rx_completion(&self) -> bool {
+        *self.stats.completion_visible.lock()
+    }
+
+    // Repeated suppression is idempotent, matching the VirtIO adapter whose
+    // suppress only rewrites `used_event` and a flag.
+    fn suppress_rx_notify(&mut self) -> DevResult {
+        *self.stats.suppress_calls.lock() += 1;
+        if *self.stats.suppress_error.lock() {
+            return Err(DevError::Io);
+        }
+        Ok(())
+    }
+
+    fn arm_rx_notify_and_check(&mut self) -> DevResult<bool> {
+        *self.stats.arm_calls.lock() += 1;
+        if *self.stats.arm_error.lock() {
+            return Err(DevError::Io);
+        }
+        Ok(*self.stats.completion_visible.lock())
+    }
 }
 
 impl BaseDriverOps for FakeNic {
@@ -136,17 +174,44 @@ impl NetDriverOps for FakeNic {
         buf.set_packet_len(size);
         Ok(buf.into_buf_ptr())
     }
+
+    fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+        self.control
+            .as_mut()
+            .map(|control| control as &mut dyn NetQueueControl)
+    }
 }
 
-fn make_ethernet() -> (EthernetDevice, Arc<FakeStats>) {
+fn make_ethernet_with_control(
+    with_control: bool,
+) -> (EthernetDevice, Arc<FakeStats>, Arc<FakeControlStats>) {
     let pool = NetBufPool::new(8, 2048).expect("pool alloc");
     let stats = Arc::new(FakeStats::default());
+    let control_stats = Arc::new(FakeControlStats::default());
+    let control = with_control.then(|| FakeQueueControl {
+        stats: control_stats.clone(),
+    });
     let nic = FakeNic {
         pool,
         stats: stats.clone(),
+        control,
     };
     let dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
+    (dev, stats, control_stats)
+}
+
+fn make_ethernet() -> (EthernetDevice, Arc<FakeStats>) {
+    let (dev, stats, _) = make_ethernet_with_control(false);
     (dev, stats)
+}
+
+fn service_with_ethernet_target(
+    with_control: bool,
+) -> (Service, Arc<FakeStats>, Arc<FakeControlStats>) {
+    let (dev, stats, control_stats) = make_ethernet_with_control(with_control);
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    (Service::new(router, Some(eth)), stats, control_stats)
 }
 
 fn rx_buffer(slots: usize) -> PacketBuffer<'static, ()> {
@@ -661,4 +726,103 @@ fn service_without_target_dev_async_owned_is_safe() {
     let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
     service.poll(RxOwnerView::AsyncOwned, &mut sockets);
     assert_eq!(*target_calls.lock(), 2);
+}
+
+#[test]
+fn ethernet_delegates_queue_control_to_inner() {
+    let (mut dev, ..) = make_ethernet_with_control(true);
+    assert!(dev.queue_control().is_some());
+
+    let (mut dev, ..) = make_ethernet_with_control(false);
+    assert!(dev.queue_control().is_none());
+}
+
+#[test]
+fn preflight_suppresses_target_control_without_reaping() {
+    let (mut service, stats, control) = service_with_ethernet_target(true);
+    service.rx_preflight_target().unwrap();
+    assert_eq!(*control.suppress_calls.lock(), 1);
+    assert_eq!(*stats.receive_calls.lock(), 0);
+}
+
+#[test]
+fn preflight_missing_target_is_bad_state() {
+    let router = Router::new();
+    let mut service = Service::new(router, None);
+    assert!(matches!(
+        service.rx_preflight_target(),
+        Err(DevError::BadState)
+    ));
+}
+
+#[test]
+fn preflight_missing_control_is_unsupported() {
+    let (mut service, ..) = service_with_ethernet_target(false);
+    assert!(matches!(
+        service.rx_preflight_target(),
+        Err(DevError::Unsupported)
+    ));
+}
+
+#[test]
+fn preflight_suppress_error_propagates() {
+    let (mut service, _, control) = service_with_ethernet_target(true);
+    *control.suppress_error.lock() = true;
+    assert!(matches!(service.rx_preflight_target(), Err(DevError::Io)));
+}
+
+#[test]
+fn completion_visible_reports_control_state() {
+    let (mut service, _, control) = service_with_ethernet_target(true);
+    assert!(matches!(service.rx_completion_visible_target(), Ok(false)));
+    *control.completion_visible.lock() = true;
+    assert!(matches!(service.rx_completion_visible_target(), Ok(true)));
+}
+
+#[test]
+fn completion_visible_without_control_is_unsupported() {
+    let (mut service, ..) = service_with_ethernet_target(false);
+    assert!(matches!(
+        service.rx_completion_visible_target(),
+        Err(DevError::Unsupported)
+    ));
+}
+
+#[test]
+fn repeated_suppress_is_idempotent() {
+    let (mut service, _, control) = service_with_ethernet_target(true);
+    service.rx_suppress_target().unwrap();
+    service.rx_suppress_target().unwrap();
+    assert_eq!(*control.suppress_calls.lock(), 2);
+}
+
+#[test]
+fn arm_reports_pending_and_quiescent() {
+    let (mut service, _, control) = service_with_ethernet_target(true);
+    service.rx_suppress_target().unwrap();
+    assert!(matches!(service.rx_arm_and_check_target(), Ok(false)));
+    *control.completion_visible.lock() = true;
+    assert!(matches!(service.rx_arm_and_check_target(), Ok(true)));
+    assert_eq!(*control.arm_calls.lock(), 2);
+}
+
+#[test]
+fn arm_error_propagates_with_category() {
+    let (mut service, _, control) = service_with_ethernet_target(true);
+    *control.arm_error.lock() = true;
+    assert!(matches!(
+        service.rx_arm_and_check_target(),
+        Err(DevError::Io)
+    ));
+}
+
+#[test]
+fn loopback_target_control_is_unsupported() {
+    let mut router = Router::new();
+    let lo = router.add_device(Box::new(LoopbackDevice::new()));
+    let mut service = Service::new(router, Some(lo));
+    assert!(matches!(
+        service.rx_preflight_target(),
+        Err(DevError::Unsupported)
+    ));
 }

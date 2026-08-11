@@ -47,6 +47,9 @@ version = "=0.3.0-preview.2"
 version = "=0.3.0-preview.2"
 features = ["net"]
 
+[dependencies.axdriver_net]
+version = "0.1.4-preview.3"
+
 [dependencies.axerrno]
 version = "0.2"
 
@@ -135,9 +138,6 @@ version = "0.10"
 version = "=0.3.0-preview.2"
 features = ["net", "dyn"]
 
-[dev-dependencies.axdriver_net]
-version = "0.1.4-preview.3"
-
 # Exact address types used by the axklib `mem_iomap` trait-ffi ABI witness.
 [dev-dependencies.memory_addr]
 version = "0.4"
@@ -147,3 +147,9 @@ version = "0.4"
 [dev-dependencies.critical-section]
 version = "1.2"
 features = ["std"]
+
+# This crate is excluded from the root workspace, so the root patch table does
+# not apply here; redirect axdriver_net to the same workspace-local copy the
+# root build uses (queue-control contract lives only there).
+[patch.crates-io]
+axdriver_net = { path = "../axdriver_net" }

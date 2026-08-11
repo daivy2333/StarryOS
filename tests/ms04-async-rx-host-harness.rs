@@ -21,7 +21,7 @@ mod critical_section_policy;
 
 use core::cell::Cell;
 
-use critical_section_policy::{acquire, release, IrqOps};
+use critical_section_policy::{IrqOps, acquire, release};
 
 /// Fake IRQ backend: simulates the global IRQ enable state and records
 /// disable/enable call counts.

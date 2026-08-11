@@ -9,7 +9,7 @@
 | 002 | iteration 001 Review 修复 + T4.1 one-completion device primitive | No |
 | 003 | iteration 002 Review 修复 + T4.2 Router handoff 与 space wake | No |
 | 004 | iteration 003 Review 修复 + T5.1 lifecycle/register-recheck 决策层 | No |
-| 005 | T5.2 唯一 RX task 与 budget | No |
+| 005 | iteration 004 Review 修复 + T5.2 唯一 RX task 与 budget | No |
 | 006 | T6.1 ISR publish/wake 与 telemetry | No |
 | 007 | T6.2 probe/stimulus 与自动构建入口 | No |
 | 008 | T7 全量自动 Gate、diff Review 与 Evidence 准备 | No |
@@ -143,7 +143,7 @@ iteration。若 Review 发现阻塞问题，优先插入小型修复轮次，后
   若需要第二个 NIC handle、复制 Service、busy polling 或创建 MS05 packet slot，
   停止。
 
-- [ ] 4.2R 关闭 iteration 003 Review 的可达性、竞态见证与定向格式问题。通过
+- [x] 4.2R 关闭 iteration 003 Review 的可达性、竞态见证与定向格式问题。通过
   `Service` 保存的唯一 target index 暴露 crate-private RX one-step seam；把现有
   space signal 收敛为未来 sibling async RX 模块可注册的单 waiter 通知状态，并让
   Router-full 等待在 Service 锁内重新检查空间后才发布。补充不依赖 sleep 的
@@ -158,7 +158,7 @@ iteration。若 Review 发现阻塞问题，优先插入小型修复轮次，后
 
 ## 5. 建立唯一 RX task、budget 与 register-recheck
 
-- [ ] 5.1 在 `crates/axnet` 增加可 host/unit-test 的生命周期和调度决策层，并把
+- [x] 5.1 在 `crates/axnet` 增加可 host/unit-test 的生命周期和调度决策层，并把
   T4.2R 的单 waiter signal 扩展为 generation/event/space 共用的通知状态；先写
   RED cases 覆盖 `Polling -> Spawned -> Active -> Faulted/Unavailable`、重复 start、
   preflight fail、event-before-register、register-during-event、arm 后事件、空 wake、
@@ -169,17 +169,36 @@ iteration。若 Review 发现阻塞问题，优先插入小型修复轮次，后
   Pending 或双 owner。若测试只能依赖时序 sleep、需要第二 executor 或仍有未决定
   状态，停止。
 
-- [ ] 5.2 在 `crates/axnet/src/lib.rs`、`router.rs`、`service.rs` 和新增 async RX
-  模块接入唯一 named axtask：kernel start 只把生命周期 CAS 到 Spawned；task 首次
+- [x] 5.1R 关闭 iteration 004 Review 的共享通知测试隔离和 arm-error 缺口。所有
+  触碰全局 `RX_NOTIFY` 的 tests 必须使用同一串行 guard 或改用局部 `RxNotify`，并以
+  高并发重复测试证明 waker 不再被测试间覆盖；`wait_decision` 必须接收
+  `arm_rx_notify_and_check` 的 `DevResult`，把错误连同 `DevError` 映射为明确 Fault，
+  不得伪装为 Quiescent/Sleep 或依赖 side channel。WHY 是 iteration 004 的单次 66
+  tests 会通过，但 16 线程重复运行已复现共享 `RX_NOTIFY` waker 被覆盖；现有
+  `ArmObservation` 也不能承载 queue-control error。若修复需要第二个 waker、时序
+  sleep、全局单线程运行全部测试或丢弃 error category，停止。
+
+- [x] 5.2 在 `crates/axnet/src/lib.rs`、`device/{mod,ethernet}.rs`、`router.rs`、
+  `service.rs` 和 async RX 模块接入唯一 named axtask。Device 只通过 transport-neutral
+  wrapper 暴露目标 NIC 的 completion/suppress/arm 操作；axnet start 只把生命周期
+  CAS 到 Spawned 并创建一次固定名称任务。task 首次
   poll 在 Service 锁内完成 queue-control preflight、suppression 和 Active 发布，
   然后每轮最多服务 32 completion。WHY 是 task 未启动或 preflight 失败时 polling
   必须保持 owner；EXPECTED 是 budget 用尽保持 suppressed、自 wake 并经 axtask
   `block_on` 让出，Router 满等待软件 wake，空队列执行 check/register/arm/recheck，
   fatal 后保持 owner=Faulted 且不回退；所有 Pending/exit/fault 路径先释放 Service
   guard，future 不持锁跨调度点。T5.1 与 axnet full lib tests 必须 GREEN；
-  source review 必须证明 active/faulted 下只有 task 调用目标 NIC receive。若
+  source review 必须证明 active/faulted 下只有 task 调用目标 NIC receive。本轮只
+  交付可调用 start entry，不从 kernel 启动；T6.1 在 ISR publish/wake 就绪后才接生产
+  caller，避免 task 抑制通知后没有硬件事件入口。若
   `spawn_with_name` 之前必须切 owner、10ms fallback 仍可 reap 或 fatal 会自动启动
   polling，停止。
+  <!-- T5.2a 已完成（Device/Router/Service transport-neutral queue-control seam、fake
+  Ethernet/control tests、Service target methods、时间戳内部化，2026-08-11 Act）。
+  T5.2b 已完成（RxRxFuture + service_round、global RX_LIFECYCLE、dormant pub
+  start_rx_task + RX_TASK_NAME、cfg(test) spawn counter seam、poll_interfaces owner
+  mapping、ServiceAccess Global/Injected 注入 seam、12 个 future 测试与 guard-release
+  witness，90 axnet tests + 100×16-thread gate GREEN，2026-08-11 Act）。 -->
 
 ## 6. 接入最小 ISR 与运行观测
 

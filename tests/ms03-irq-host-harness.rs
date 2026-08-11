@@ -190,7 +190,8 @@ fn telemetry_ack_count_requires_explicit_increment() {
     assert_eq!(s.ack_count, 0);
 
     // explicit ACK increment (simulating MMIO write to 0x64)
-    t.ack_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    t.ack_count
+        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let s2 = t.snapshot();
     assert_eq!(s2.ack_count, 1);
 }
