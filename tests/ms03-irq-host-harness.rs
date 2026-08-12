@@ -224,14 +224,37 @@ fn telemetry_ack_count_requires_explicit_increment() {
     assert_eq!(s2.ack_count, 1);
 }
 
+#[test]
+fn irq_state_observation_distinguishes_entry_and_restore_violation() {
+    let disabled_stays_disabled = observe_irq_state(false, false);
+    assert!(!disabled_stays_disabled.enabled_on_entry);
+    assert!(!disabled_stays_disabled.restore_violation);
+
+    let disabled_becomes_enabled = observe_irq_state(false, true);
+    assert!(!disabled_becomes_enabled.enabled_on_entry);
+    assert!(disabled_becomes_enabled.restore_violation);
+
+    let enabled_stays_enabled = observe_irq_state(true, true);
+    assert!(enabled_stays_enabled.enabled_on_entry);
+    assert!(!enabled_stays_enabled.restore_violation);
+
+    let enabled_becomes_disabled = observe_irq_state(true, false);
+    assert!(enabled_becomes_disabled.enabled_on_entry);
+    assert!(!enabled_becomes_disabled.restore_violation);
+}
+
 // ── Snapshot ABI ───────────────────────────────────────────────────────
 
 #[test]
 fn snapshot_is_repr_c_compatible() {
-    // 8 MS03 u64 fields + restore_violation + 17 MS04 appended u64 fields.
-    assert_eq!(core::mem::size_of::<IrqSnapshot>(), 26 * 8);
+    assert_eq!(core::mem::size_of::<IrqSnapshotV1>(), 8 * 8);
     assert_eq!(
-        core::mem::align_of::<IrqSnapshot>(),
+        core::mem::align_of::<IrqSnapshotV1>(),
+        core::mem::align_of::<u64>()
+    );
+    assert_eq!(core::mem::size_of::<IrqSnapshotV2>(), 28 * 8);
+    assert_eq!(
+        core::mem::align_of::<IrqSnapshotV2>(),
         core::mem::align_of::<u64>()
     );
 }
@@ -240,36 +263,68 @@ fn snapshot_is_repr_c_compatible() {
 fn snapshot_abi_preserves_first_eight_fields() {
     // The MS03 C consumer (ms03_irq_probe.c) depends on the first 8 u64
     // fields keeping their order and stride.
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, total), 0 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, used_ring), 1 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, config_change), 2 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, combined), 3 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, unknown), 4 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, spurious), 5 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, ack_count), 6 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, uart_irq_count), 7 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, total), 0 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, used_ring), 1 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, config_change), 2 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, combined), 3 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, unknown), 4 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, spurious), 5 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, ack_count), 6 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV1, uart_irq_count), 7 * 8);
+
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, total), 0 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, used_ring), 1 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, config_change), 2 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, combined), 3 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, unknown), 4 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, spurious), 5 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, ack_count), 6 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, uart_irq_count), 7 * 8);
 }
 
 #[test]
 fn snapshot_abi_appended_fields_follow_in_order() {
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, restore_violation), 8 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, rx_lifecycle), 9 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, rx_owner), 10 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, isr_publish), 11 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, isr_wake), 12 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, task_poll), 13 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, reaped), 14 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, refilled), 15 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, delivered), 16 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, non_ip_consumed), 17 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, budget_exhausted), 18 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, self_yield), 19 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, router_full_wait), 20 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, space_wake), 21 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, empty_check), 22 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, fault), 23 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, last_error_stage), 24 * 8);
-    assert_eq!(core::mem::offset_of!(IrqSnapshot, last_error_code), 25 * 8);
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, restore_violation),
+        8 * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, irq_enabled_entry),
+        9 * 8
+    );
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, rx_lifecycle), 10 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, rx_owner), 11 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, isr_publish), 12 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, isr_wake), 13 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, software_nudge), 14 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, task_poll), 15 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, reaped), 16 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, refilled), 17 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, delivered), 18 * 8);
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, non_ip_consumed),
+        19 * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, budget_exhausted),
+        20 * 8
+    );
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, self_yield), 21 * 8);
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, router_full_wait),
+        22 * 8
+    );
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, space_wake), 23 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, empty_check), 24 * 8);
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV2, fault), 25 * 8);
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, last_error_stage),
+        26 * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV2, last_error_code),
+        27 * 8
+    );
 }
 
 #[test]
@@ -284,5 +339,24 @@ fn snapshot_zero_fields_on_new_telemetry() {
     assert_eq!(s.spurious, 0);
     assert_eq!(s.ack_count, 0);
     assert_eq!(s.uart_irq_count, 0);
-    assert_eq!(s.restore_violation, 0);
+    let s2 = t.snapshot_v2();
+    assert_eq!(s2.restore_violation, 0);
+    assert_eq!(s2.irq_enabled_entry, 0);
+    assert_eq!(s2.software_nudge, 0);
+}
+
+#[test]
+fn legacy_v1_write_does_not_touch_adjacent_canaries() {
+    let snapshot = IrqTelemetry::new().snapshot();
+    let mut guarded = [0xa5a5_a5a5_a5a5_a5a5u64; 10];
+    let source = &snapshot as *const IrqSnapshotV1 as *const u8;
+    let destination = guarded[1..9].as_mut_ptr() as *mut u8;
+
+    // SAFETY: destination is exactly one V1-sized, non-overlapping slice.
+    unsafe {
+        core::ptr::copy_nonoverlapping(source, destination, core::mem::size_of::<IrqSnapshotV1>());
+    }
+
+    assert_eq!(guarded[0], 0xa5a5_a5a5_a5a5_a5a5);
+    assert_eq!(guarded[9], 0xa5a5_a5a5_a5a5_a5a5);
 }

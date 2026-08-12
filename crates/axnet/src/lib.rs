@@ -56,7 +56,9 @@ use self::{
     wrapper::SocketSetWrapper,
 };
 pub use self::{
-    async_rx::{RX_TASK_NAME, RxSnapshot, publish_rx_event, rx_snapshot, start_rx_task},
+    async_rx::{
+        RX_TASK_NAME, RxSnapshot, publish_rx_event, rx_snapshot, software_nudge, start_rx_task,
+    },
     socket::*,
 };
 

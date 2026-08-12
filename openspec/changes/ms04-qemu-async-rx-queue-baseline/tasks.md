@@ -237,7 +237,7 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   MS03 host harness 24 tests、MS04 host harness 9 tests（含 ISR contract source guard）
   GREEN。T6.2 probe/stimulus 留待下一轮。 -->
 
-- [ ] 6.1R 关闭 iteration 006 Review 的 telemetry、IRQ witness 和 snapshot ABI 缺口。
+- [x] 6.1R 关闭 iteration 006 Review 的 telemetry、IRQ witness 和 snapshot ABI 缺口。
   active suppress、completion-query 和 receive/recycle fault 每次只增加一次 fault，并保留
   原始 stage/code；missing Service 记录 PREFLIGHT/BadState。snapshot 对 lifecycle/owner
   使用同一次状态观察，并让 last-error stage/code 作为一个一致 pair 发布；同时记录
@@ -248,8 +248,12 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   字段；`ms03_irq_probe.c`、MS16 platform adapter 和既有 binary contract 继续使用 V1，
   不得再扩大原 command 的 kernel write。若只能依赖更新所有旧二进制、保留超长 V1
   write、用两次独立原子发布 last-error pair 或让 fault delta 大于一次，停止。
+  <!-- 2026-08-12 Act：active suppress/completion-query/receive faults 精确单计数并保留
+  stage/code；missing Service、单次 lifecycle 观察、packed last-error pair、四态 IRQ
+  witness 与 handler guards GREEN。旧 command 固定为 64-byte V1，新 command 使用独立
+  224-byte V2；V1 canary、全 offset 与 consumer inventory tests GREEN。 -->
 
-- [ ] 6.2 新增 `tests/ms04_rx_probe.c`、host RX burst stimulus 及 Makefile targets；
+- [x] 6.2 新增 `tests/ms04_rx_probe.c`、host RX burst stimulus 及 Makefile targets；
   probe 固定提供 snapshot、idle、single software-nudge、RX burst/fairness 模式，
   host stimulus 只发流量，不驱动 QEMU console。WHY 是运行时要分别观察 IRQ wake、
   task descriptor 进度、budget yield、spurious/no-work、守恒和 socket 回归；HOW 是
@@ -262,6 +266,11 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   build 通过；运行判据仍为 `reaped_delta == refilled_delta`、fault/restore/IRQ-entry
   violation 为零。若 probe reset counter、复用 ISR publisher 做 nudge、自动输入 guest
   shell、把 gauge 当 delta 或把部分 telemetry 当 PASS，停止。
+  <!-- 2026-08-12 Act：独立 software-nudge、V2 guest probe 四模式、两阶段有界 UDP
+  stimulus、6 个 host decision tests、strict C11 与 Makefile 入口完成。109 个 axnet tests
+  和 100×16-thread stress、host/upstream/kernel/build gates GREEN；RISC-V static probe
+  build 在受限沙箱因 SIGSYS/Bad system call 按 R44 记为 ENV-BLOCKED，未用旧 artifact
+  代替。本轮未运行 QEMU、未修改 rootfs、未创建 Evidence。 -->
 
 ## 7. 完成全部自动 Gate 与 Review
 

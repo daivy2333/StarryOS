@@ -265,9 +265,101 @@ Response 记录；不创建 `evidence/` 目录。
   progress counters 稳定的连续读数，否则 FAIL/timeout，不用不稳定值判断守恒。
 - QEMU result 只适用于单 hart VirtIO-MMIO；本轮不产生该类证据。
 
+## Gate 2 Approval Addendum
+
+- Status: PASS
+- Approved: 2026-08-12
+- User instruction: “批准”
+- Effect: 本追加记录取代上文审批前的 `Status: awaiting-gate-2` 和
+  `User Approval: BLOCKED` 快照；Gate 2 全部检查项现为 PASS，iteration 007 可由后续
+  明确的 `openspec-act` 请求执行。
+- Scope: 批准范围包括 T6.1R-a 的 fault、snapshot pair 和 IRQ witness 修复，T6.1R-b 的
+  固定 8-field V1 与独立 V2 snapshot ABI，以及 T6.2 的独立 software nudge、MS04 guest
+  probe、host UDP stimulus 和自动构建入口。批准不启动 Act，也不授权 QEMU runtime、
+  rootfs 修改、sandbox 外复跑、最终 Evidence、Maintainer、Recorder 或归档工作。
+
 ## Act Response
 
-- Status: pending
+- Status: implemented-with-env-deferred-check
+- Completed: 2026-08-12
+- Scope: T6.1R-a、T6.1R-b、T6.2
+
+### Implementation
+
+- Fault telemetry now records active suppress `(fault +1, stage 2, code 5)`, completion-query
+  `(fault +1, stage 3, code 8)`, and receive/recycle `(fault +1, stage 4, code 5)` exactly once.
+  Missing Service records `(stage 1, code 3)` without incrementing `fault`, publishes
+  `Unavailable`, and keeps polling ownership.
+- RX snapshots derive lifecycle and owner from one lifecycle load. Last-error stage/code use one
+  packed `AtomicU64` publication and one snapshot load.
+- IRQ diagnostics distinguish all four before/after states. Enabled-on-entry and false-to-true
+  restore violations have separate counters; source guards require `TELEMETRY.record(status)` and
+  a return inside the registration-failure branch.
+- `0x4e49_4431` now writes the fixed 8-field/64-byte V1. Independent command `0x4e49_4432`
+  writes the 28-field/224-byte V2. Rust size/offset tests, a V1 adjacent-canary test, and the
+  MS03/MS16/MS04 consumer inventory all pass.
+- `0x4e49_4e31` performs a software-only nudge: local tests observe waker `+1`, generation
+  unchanged, ISR publish/wake `+0`, and software-nudge `+1`.
+- Added the four-mode guest probe, bounded two-phase UDP stimulus, strict host decision tests, and
+  Make targets. Probe counters reject regression; lifecycle/owner/error remain POST gauges; stable
+  reads have a fixed deadline; all execution paths emit a PASS/FAIL marker.
+- The 16-thread stress run exposed three older `Service::poll` tests that touched global
+  `RX_NOTIFY` outside the existing serial guard. They now share that guard; the repeated stress
+  gate is green.
+
+### Gate 4 self-review
+
+| Task | Spec compliance | Code quality | Result |
+|---|---|---|---|
+| T6.1R-a | Exact fault source, coherent pairs, missing-Service state, and IRQ witness match the approved contract. | Duplicate recording removed; packed-pair and single-load guards are deterministic. | PASS |
+| T6.1R-b | V1 remains exactly 64 bytes and V2 is an independent 224-byte wire type with a duplicate prefix. | Typed writes, complete offsets, canary, and consumer inventory prevent accidental growth. | PASS |
+| T6.2 | Nudge is separate from hardware publication; probe and stimulus obey bounded/manual boundaries. | Early FAIL paths, timeout arithmetic, protocol bounds, and test isolation were reviewed and corrected. | PASS |
+
+Unresolved product findings: none.
+
+### Verification
+
+| Command or gate | Result |
+|---|---|
+| axnet full unit suite | PASS, exit 0, 109/109 |
+| axnet 100× `--test-threads=16` stress | PASS, exit 0, 100/100 after test-isolation correction |
+| `make host-test` | PASS, exit 0: 6 early-console, 8 memtrack, 26 MS03, 12 MS04, 6 probe decisions, stimulus self-test |
+| `make network-benchmark-test` | PASS, exit 0: 26 protocol, 20 platform, 21 tool, 9 integration tests |
+| stimulus `--self-test` | PASS, exit 0: 96 packets, exact sequence/payload, bounds and malformed controls |
+| strict C11 syntax | PASS, exit 0 for MS03 and MS04 probes |
+| UART / axdriver-net / virtio queue regressions | PASS, exit 0: 62+18 doctests, 4, and 15 tests |
+| axnet fmt and directed rustfmt | PASS, exit 0 |
+| `cargo check --offline -p starry-kernel --features qemu` | PASS, exit 0 |
+| `make LOG=info build` | PASS, exit 0; attempted cargo-binutils installation emitted read-only/network noise but the cached build completed |
+| `openspec validate ms04-qemu-async-rx-queue-baseline --strict` | PASS, exit 0; change valid, 17/23 tasks |
+| `git diff --check` | PASS, exit 0 |
+
+Existing warnings are limited to the prior cargo-config deprecation, one `virtio-drivers`
+lifetime warning, one `axdriver_virtio` lifetime warning during the full build, and 11 existing
+smoltcp warnings. This iteration introduced no remaining Rust warning.
+
+### Environment-deferred checks
+
+- `make tests/ms03_irq_probe tests/ms04_rx_probe` stopped at the first
+  `riscv64-linux-musl-gcc` invocation with `Bad system call` (SIGSYS), exit 2. Per R44 this is
+  `ENV-BLOCKED`, not a product diagnostic.
+- The tracked `tests/ms03_irq_probe` is a pre-existing artifact and was not accepted as current
+  evidence; `tests/ms04_rx_probe` was not created. Therefore no static artifact size/hash is
+  claimed. Both static targets must be rerun in the final user-controlled environment.
+- The sandbox also rejects host UDP socket creation with `EPERM`. The stimulus self-test therefore
+  exercised the same parser, handshake, packet generator, bounds, malformed inputs, and exact
+  96-packet sequence through an in-memory datagram seam. The production path still uses a real
+  UDP socket; real loopback remains part of the final environment rerun.
+
+### Boundaries and handoff
+
+- Persisted Evidence: none, as approved.
+- QEMU runtime: not run and not claimed.
+- Rootfs and guest console: unchanged and untouched.
+- Blocker handoff: none; the two environment-only checks are explicitly deferred by R44.
+- Experience candidates: none.
+- Base revision: `e0fac50ce01527a1c5dea83c36c37616a1a92590`; implementation remains in the working tree for
+  Plan Review.
 
 ## Plan Review
 

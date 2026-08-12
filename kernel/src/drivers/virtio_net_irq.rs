@@ -88,7 +88,11 @@ fn net_irq_handler() {
         let before = axhal::asm::irqs_enabled();
         axnet::publish_rx_event();
         let after = axhal::asm::irqs_enabled();
-        if !before && after {
+        let irq_state = virtio_net_irq_logic::observe_irq_state(before, after);
+        if irq_state.enabled_on_entry {
+            TELEMETRY.irq_enabled_entry.fetch_add(1, Ordering::Relaxed);
+        }
+        if irq_state.restore_violation {
             TELEMETRY.restore_violation.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -189,17 +193,24 @@ pub fn init_virtio_net_irq_diag() {
 
 // ── Snapshot for ioctl ─────────────────────────────────────────────────
 
-pub fn irq_snapshot() -> virtio_net_irq_logic::IrqSnapshot {
+pub fn irq_snapshot_v1() -> virtio_net_irq_logic::IrqSnapshotV1 {
     let mut s = TELEMETRY.snapshot();
     s.uart_irq_count = uart_16550::async_::isr::irq_count();
+    s
+}
 
-    // Map the bounded axnet snapshot (no Service lock) into the appended
-    // ABI fields so the guest probe sees lifecycle/task/backpressure state.
+pub fn irq_snapshot_v2() -> virtio_net_irq_logic::IrqSnapshotV2 {
+    let mut s = TELEMETRY.snapshot_v2();
+    s.uart_irq_count = uart_16550::async_::isr::irq_count();
+
+    // Map the bounded axnet snapshot (no Service lock) into V2 so the guest
+    // probe sees lifecycle/task/backpressure state without changing V1.
     let rx = axnet::rx_snapshot();
     s.rx_lifecycle = rx.lifecycle;
     s.rx_owner = rx.owner;
     s.isr_publish = rx.isr_publish;
     s.isr_wake = rx.isr_wake;
+    s.software_nudge = rx.software_nudge;
     s.task_poll = rx.task_poll;
     s.reaped = rx.reaped;
     s.refilled = rx.refilled;

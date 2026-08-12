@@ -88,7 +88,10 @@ host-test:
 	/tmp/ms03-irq-host-test
 	rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test
 	/tmp/ms04-async-rx-host-test
-	cc -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c
+	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c tests/ms04_rx_probe.c
+	cc -std=c11 -Wall -Wextra -Werror tests/ms04_rx_probe_test.c -o /tmp/ms04-rx-probe-test
+	/tmp/ms04-rx-probe-test
+	python3 scripts/ms04_rx_stimulus.py --self-test
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)
 network-benchmark-test:
@@ -154,6 +157,10 @@ tests/network_benchmark-host-asan: tests/network_benchmark.c \
 # MS03 IRQ probe (RISC-V static — user boundary, requires musl cross toolchain)
 tests/ms03_irq_probe: tests/ms03_irq_probe.c
 	$(BENCH_CC) -static -Os -o $@ $<
+
+# MS04 async RX probe (RISC-V static — built automatically, run manually)
+tests/ms04_rx_probe: tests/ms04_rx_probe.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
 # Aliases
 rv:

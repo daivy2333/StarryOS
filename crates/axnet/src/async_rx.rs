@@ -243,6 +243,8 @@ pub(crate) struct RxTelemetry {
     pub isr_publish: AtomicU64,
     /// ISR wake calls on the sole queue-task waker.
     pub isr_wake: AtomicU64,
+    /// Explicit software-only wake requests.
+    pub software_nudge: AtomicU64,
     /// Queue-task `Future::poll` invocations.
     pub task_poll: AtomicU64,
     /// Completions reaped (Consumed + Delivered).
@@ -265,10 +267,11 @@ pub(crate) struct RxTelemetry {
     pub empty_check: AtomicU64,
     /// Terminal queue/device faults (Faulted transitions).
     pub fault: AtomicU64,
-    /// Stage of the most recent error ([`rx_error_stage`]).
-    pub last_error_stage: AtomicU64,
-    /// Stable code of the most recent error ([`rx_error_code`]).
-    pub last_error_code: AtomicU64,
+    /// Packed `(stage, code)` of the most recent error.
+    ///
+    /// A single atomic publication prevents snapshots from combining the
+    /// stage from one fault with the code from another.
+    pub last_error: AtomicU64,
 }
 
 impl RxTelemetry {
@@ -276,6 +279,7 @@ impl RxTelemetry {
         Self {
             isr_publish: AtomicU64::new(0),
             isr_wake: AtomicU64::new(0),
+            software_nudge: AtomicU64::new(0),
             task_poll: AtomicU64::new(0),
             reaped: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
@@ -287,8 +291,7 @@ impl RxTelemetry {
             space_wake: AtomicU64::new(0),
             empty_check: AtomicU64::new(0),
             fault: AtomicU64::new(0),
-            last_error_stage: AtomicU64::new(rx_error_stage::NONE),
-            last_error_code: AtomicU64::new(0),
+            last_error: AtomicU64::new(pack_last_error(rx_error_stage::NONE, 0)),
         }
     }
 
@@ -308,9 +311,26 @@ impl RxTelemetry {
     /// Used for categories that carry no [`DevError`], e.g. illegal lifecycle
     /// transitions where the observed state code is the payload.
     fn record_last_error_code(&self, stage: u64, code: u64) {
-        self.last_error_stage.store(stage, Ordering::Relaxed);
-        self.last_error_code.store(code, Ordering::Relaxed);
+        self.last_error
+            .store(pack_last_error(stage, code), Ordering::Relaxed);
     }
+
+    fn last_error(&self) -> (u64, u64) {
+        unpack_last_error(self.last_error.load(Ordering::Relaxed))
+    }
+}
+
+const LAST_ERROR_HALF_BITS: u32 = u64::BITS / 2;
+const LAST_ERROR_HALF_MASK: u64 = u32::MAX as u64;
+
+const fn pack_last_error(stage: u64, code: u64) -> u64 {
+    debug_assert!(stage <= LAST_ERROR_HALF_MASK);
+    debug_assert!(code <= LAST_ERROR_HALF_MASK);
+    (stage << LAST_ERROR_HALF_BITS) | code
+}
+
+fn unpack_last_error(value: u64) -> (u64, u64) {
+    (value >> LAST_ERROR_HALF_BITS, value & LAST_ERROR_HALF_MASK)
 }
 
 /// Read-only bounded snapshot of the async RX queue path.
@@ -329,6 +349,8 @@ pub struct RxSnapshot {
     pub isr_publish: u64,
     /// ISR wake calls.
     pub isr_wake: u64,
+    /// Explicit software-only wake requests.
+    pub software_nudge: u64,
     /// Queue-task polls.
     pub task_poll: u64,
     /// Completions reaped.
@@ -362,16 +384,19 @@ pub struct RxSnapshot {
 /// Exposed so host tests can build a snapshot from injected local state;
 /// [`rx_snapshot`] binds the production globals and delegates here.
 fn rx_snapshot_impl(lifecycle: &RxLifecycle, telemetry: &RxTelemetry) -> RxSnapshot {
-    let owner = match lifecycle.load().owner_view() {
+    let lifecycle = lifecycle.load();
+    let owner = match lifecycle.owner_view() {
         RxOwnerView::PollingOwned => 0,
         RxOwnerView::AsyncOwned => 1,
     };
     let t = telemetry;
+    let (last_error_stage, last_error_code) = t.last_error();
     RxSnapshot {
-        lifecycle: lifecycle.load().code() as u64,
+        lifecycle: lifecycle.code() as u64,
         owner,
         isr_publish: t.isr_publish.load(Ordering::Relaxed),
         isr_wake: t.isr_wake.load(Ordering::Relaxed),
+        software_nudge: t.software_nudge.load(Ordering::Relaxed),
         task_poll: t.task_poll.load(Ordering::Relaxed),
         reaped: t.reaped.load(Ordering::Relaxed),
         refilled: t.refilled.load(Ordering::Relaxed),
@@ -383,8 +408,8 @@ fn rx_snapshot_impl(lifecycle: &RxLifecycle, telemetry: &RxTelemetry) -> RxSnaps
         space_wake: t.space_wake.load(Ordering::Relaxed),
         empty_check: t.empty_check.load(Ordering::Relaxed),
         fault: t.fault.load(Ordering::Relaxed),
-        last_error_stage: t.last_error_stage.load(Ordering::Relaxed),
-        last_error_code: t.last_error_code.load(Ordering::Relaxed),
+        last_error_stage,
+        last_error_code,
     }
 }
 
@@ -403,6 +428,16 @@ pub fn publish_rx_event() {
     RX_TELEMETRY.isr_publish.fetch_add(1, Ordering::Relaxed);
     RX_TELEMETRY.isr_wake.fetch_add(1, Ordering::Relaxed);
     RX_NOTIFY.publish_event();
+}
+
+fn software_nudge_impl(notify: &RxNotify, telemetry: &RxTelemetry) {
+    telemetry.software_nudge.fetch_add(1, Ordering::Relaxed);
+    notify.waker.wake();
+}
+
+/// Wake the unique RX task without publishing a hardware event.
+pub fn software_nudge() {
+    software_nudge_impl(&RX_NOTIFY, &RX_TELEMETRY);
 }
 
 /// Fixed name of the single async RX queue task.
@@ -575,6 +610,8 @@ impl RxRxFuture {
         if !self.service.is_available() {
             // Missing Service cannot be preflighted: Unavailable keeps the
             // polling owner (D4), never panics and never pends forever.
+            self.telemetry
+                .record_last_error(rx_error_stage::PREFLIGHT, &DevError::BadState);
             self.transition_preflight(false);
             return Poll::Ready(());
         }
@@ -634,9 +671,7 @@ impl RxRxFuture {
                 drop(service);
                 self.poll_register_recheck(cx)
             }
-            RoundOutcome::Fault(err) => {
-                self.telemetry
-                    .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+            RoundOutcome::Fault(_err) => {
                 self.transition_fatal();
                 drop(service);
                 Poll::Ready(())
@@ -884,7 +919,7 @@ mod tests {
         ArmObservation, RX_BUDGET, RX_LIFECYCLE, RX_NOTIFY, RX_TELEMETRY, RxDecision, RxLifecycle,
         RxNotify, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL, ServiceAccess, SpaceDecision,
         StartError, TransitionError, WaitDecision, decide_after_step, rx_error_code,
-        rx_error_stage, start_with,
+        rx_error_stage, software_nudge_impl, start_with,
     };
     use crate::{
         device::{Device, LoopbackDevice, RxStep},
@@ -1196,6 +1231,23 @@ mod tests {
     }
 
     #[test]
+    fn software_nudge_wakes_without_publishing_hardware_event() {
+        let notify = RxNotify::new();
+        let telemetry = RxTelemetry::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        notify.register(&counting_waker(count.clone()));
+        let generation_before = notify.generation();
+
+        software_nudge_impl(&notify, &telemetry);
+
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert_eq!(notify.generation(), generation_before);
+        assert_eq!(telemetry.isr_publish.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.isr_wake.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.software_nudge.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn publish_event_generation_wraps() {
         let notify = RxNotify::with_generation(u64::MAX);
         notify.publish_event();
@@ -1355,9 +1407,11 @@ mod tests {
     struct ScriptedControlStats {
         suppress_calls: AtomicUsize,
         arm_calls: AtomicUsize,
+        control_calls: AtomicUsize,
         completion_visible: AtomicBool,
         suppress_error: AtomicBool,
         arm_error: AtomicBool,
+        missing_after_first_control_call: AtomicBool,
     }
 
     struct ScriptedControl {
@@ -1409,6 +1463,21 @@ mod tests {
         }
 
         fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+            let call = self
+                .control
+                .as_ref()
+                .map(|control| control.stats.control_calls.fetch_add(1, Ordering::Relaxed))
+                .unwrap_or(0);
+            if call > 0
+                && self.control.as_ref().is_some_and(|control| {
+                    control
+                        .stats
+                        .missing_after_first_control_call
+                        .load(Ordering::Relaxed)
+                })
+            {
+                return None;
+            }
             self.control.as_mut().map(|c| c as &mut dyn NetQueueControl)
         }
 
@@ -1786,12 +1855,8 @@ mod tests {
         ));
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
         assert_eq!(
-            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
-            rx_error_stage::PREFLIGHT
-        );
-        assert_eq!(
-            fut.telemetry.last_error_code.load(Ordering::Relaxed),
-            rx_error_code(&DevError::Io)
+            fut.telemetry.last_error(),
+            (rx_error_stage::PREFLIGHT, rx_error_code(&DevError::Io))
         );
     }
 
@@ -1807,12 +1872,139 @@ mod tests {
         ));
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
         assert_eq!(
-            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
-            rx_error_stage::ARM
+            fut.telemetry.last_error(),
+            (rx_error_stage::ARM, rx_error_code(&DevError::Io))
         );
+    }
+
+    #[test]
+    fn telemetry_active_suppress_fault_records_exactly_once() {
+        let (mutex, _, control) = leaked_service(vec![], true);
+        control.suppress_error.store(true, Ordering::Relaxed);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
         assert_eq!(
-            fut.telemetry.last_error_code.load(Ordering::Relaxed),
-            rx_error_code(&DevError::Io)
+            fut.telemetry.last_error(),
+            (rx_error_stage::SUPPRESS, rx_error_code(&DevError::Io))
+        );
+    }
+
+    #[test]
+    fn telemetry_active_completion_query_fault_records_exactly_once() {
+        let steps: Vec<RxStep> = (0..RX_BUDGET).map(|_| RxStep::Consumed).collect();
+        let (mutex, _, control) = leaked_service(steps, true);
+        control
+            .missing_after_first_control_call
+            .store(true, Ordering::Relaxed);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fut.telemetry.last_error(),
+            (
+                rx_error_stage::COMPLETION_QUERY,
+                rx_error_code(&DevError::Unsupported),
+            )
+        );
+    }
+
+    #[test]
+    fn telemetry_active_receive_fault_records_exactly_once() {
+        let (mutex, ..) = leaked_service(vec![RxStep::Fault(DevError::Io)], true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fut.telemetry.last_error(),
+            (
+                rx_error_stage::RECEIVE_RECYCLE,
+                rx_error_code(&DevError::Io),
+            )
+        );
+    }
+
+    #[test]
+    fn telemetry_missing_service_records_preflight_bad_state() {
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
+        let mut fut = RxRxFuture {
+            service: ServiceAccess::Global,
+            lifecycle,
+            notify: Box::leak(Box::new(RxNotify::new())),
+            telemetry,
+        };
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Unavailable);
+        assert_eq!(telemetry.fault.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            telemetry.last_error(),
+            (
+                rx_error_stage::PREFLIGHT,
+                rx_error_code(&DevError::BadState),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_source_uses_one_lifecycle_observation() {
+        let source = include_str!("async_rx.rs");
+        let start = source.find("fn rx_snapshot_impl").unwrap();
+        let end = source[start..]
+            .find("/// Read-only RX snapshot for the kernel ioctl")
+            .map(|offset| start + offset)
+            .unwrap();
+        let body = &source[start..end];
+
+        assert_eq!(
+            body.matches("lifecycle.load()").count(),
+            1,
+            "lifecycle and owner must derive from one acquired state"
+        );
+    }
+
+    #[test]
+    fn last_error_pair_uses_one_atomic_publication() {
+        let source = include_str!("async_rx.rs");
+        let start = source.find("pub(crate) struct RxTelemetry").unwrap();
+        let end = source[start..]
+            .find("impl RxTelemetry")
+            .map(|offset| start + offset)
+            .unwrap();
+        let fields = &source[start..end];
+
+        assert!(fields.contains("last_error: AtomicU64"));
+        assert!(!fields.contains("last_error_stage: AtomicU64"));
+        assert!(!fields.contains("last_error_code: AtomicU64"));
+    }
+
+    #[test]
+    fn last_error_pair_round_trips_as_one_value() {
+        let telemetry = RxTelemetry::new();
+        assert_eq!(telemetry.last_error(), (rx_error_stage::NONE, 0));
+
+        telemetry.record_last_error_code(rx_error_stage::SUPPRESS, 7);
+        assert_eq!(telemetry.last_error(), (rx_error_stage::SUPPRESS, 7));
+
+        telemetry.record_last_error_code(rx_error_stage::ARM, u32::MAX as u64);
+        assert_eq!(
+            telemetry.last_error(),
+            (rx_error_stage::ARM, u32::MAX as u64)
         );
     }
 
@@ -1822,19 +2014,18 @@ mod tests {
         // transition must fail; the failure is recorded as LIFECYCLE-stage
         // with the observed state code, and never increments the fault counter.
         let (mutex, ..) = leaked_service(vec![], true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
         lifecycle.preflight(true).unwrap();
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
 
         fut.transition_preflight(true);
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
         assert_eq!(
-            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
-            rx_error_stage::LIFECYCLE
-        );
-        assert_eq!(
-            fut.telemetry.last_error_code.load(Ordering::Relaxed),
-            RxTaskLifecycle::Active.code() as u64
+            fut.telemetry.last_error(),
+            (
+                rx_error_stage::LIFECYCLE,
+                RxTaskLifecycle::Active.code() as u64,
+            )
         );
     }
 
@@ -1843,18 +2034,17 @@ mod tests {
         // The fatal transition requires Active; from Spawned it must fail and
         // be recorded as LIFECYCLE-stage without changing the state.
         let (mutex, ..) = leaked_service(vec![], true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
 
         fut.transition_fatal();
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
         assert_eq!(
-            fut.telemetry.last_error_stage.load(Ordering::Relaxed),
-            rx_error_stage::LIFECYCLE
-        );
-        assert_eq!(
-            fut.telemetry.last_error_code.load(Ordering::Relaxed),
-            RxTaskLifecycle::Spawned.code() as u64
+            fut.telemetry.last_error(),
+            (
+                rx_error_stage::LIFECYCLE,
+                RxTaskLifecycle::Spawned.code() as u64,
+            )
         );
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
     }
@@ -1863,7 +2053,7 @@ mod tests {
     fn telemetry_snapshot_mirrors_lifecycle_and_counters() {
         let (mutex, _, control) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
         control.completion_visible.store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         let snap = super::rx_snapshot_impl(fut.lifecycle, fut.telemetry);

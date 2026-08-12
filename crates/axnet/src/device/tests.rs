@@ -18,6 +18,7 @@ use smoltcp::{
 use spin::Mutex;
 
 use crate::{
+    async_rx::SERIAL,
     consts::STANDARD_MTU,
     device::{Device, EthernetDevice, LoopbackDevice, RxStep},
     router::{Router, RxOwnerView},
@@ -693,6 +694,7 @@ fn service_with_target(target_steps: Vec<RxStep>, target_calls: Arc<Mutex<usize>
 
 #[test]
 fn service_poll_polling_owned_drains_target() {
+    let _serial = SERIAL.lock();
     let target_calls = Arc::new(Mutex::new(0usize));
     let mut service = service_with_target(
         vec![RxStep::Consumed, RxStep::Delivered, RxStep::Empty],
@@ -705,6 +707,7 @@ fn service_poll_polling_owned_drains_target() {
 
 #[test]
 fn service_poll_async_owned_skips_target() {
+    let _serial = SERIAL.lock();
     let target_calls = Arc::new(Mutex::new(0usize));
     let mut service = service_with_target(
         vec![RxStep::Consumed, RxStep::Delivered],
@@ -717,6 +720,7 @@ fn service_poll_async_owned_skips_target() {
 
 #[test]
 fn service_without_target_dev_async_owned_is_safe() {
+    let _serial = SERIAL.lock();
     let target_calls = Arc::new(Mutex::new(0usize));
     let router = router_with_target_and_loopback(
         vec![RxStep::Consumed, RxStep::Empty],

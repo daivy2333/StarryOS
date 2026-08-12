@@ -87,6 +87,23 @@ pub fn should_publish_rx(status: u8) -> bool {
     (status & 0x01) != 0
 }
 
+/// Diagnostic classification of the IRQ enable state around the RX wake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrqStateObservation {
+    /// The handler unexpectedly entered the wake section with IRQs enabled.
+    pub enabled_on_entry: bool,
+    /// The wake changed an IRQ-disabled entry state to enabled.
+    pub restore_violation: bool,
+}
+
+/// Classify the IRQ state before and after the fixed RX wake.
+pub fn observe_irq_state(before: bool, after: bool) -> IrqStateObservation {
+    IrqStateObservation {
+        enabled_on_entry: before,
+        restore_violation: !before && after,
+    }
+}
+
 // ── Monotonic telemetry ────────────────────────────────────────────────
 
 /// High-watermark telemetry counters for VirtIO-net IRQ diagnostics.
@@ -111,6 +128,8 @@ pub struct IrqTelemetry {
     /// IRQ restore violations: an ISR `AtomicWaker::wake()` re-enabled IRQs
     /// before the platform completed the interrupt.
     pub restore_violation: AtomicU64,
+    /// Handler wake sections entered with IRQs unexpectedly enabled.
+    pub irq_enabled_entry: AtomicU64,
 }
 
 impl IrqTelemetry {
@@ -125,6 +144,7 @@ impl IrqTelemetry {
             spurious: AtomicU64::new(0),
             ack_count: AtomicU64::new(0),
             restore_violation: AtomicU64::new(0),
+            irq_enabled_entry: AtomicU64::new(0),
         }
     }
 
@@ -162,12 +182,12 @@ impl IrqTelemetry {
         cause
     }
 
-    /// Take a read-only snapshot of all counters.
+    /// Take the fixed MS03 V1 snapshot.
     ///
     /// Individual counter loads are not atomic with respect to each
     /// other — this is acceptable for diagnostic telemetry.
-    pub fn snapshot(&self) -> IrqSnapshot {
-        IrqSnapshot {
+    pub fn snapshot(&self) -> IrqSnapshotV1 {
+        IrqSnapshotV1 {
             total: self.total.load(Ordering::Relaxed),
             used_ring: self.used_ring.load(Ordering::Relaxed),
             config_change: self.config_change.load(Ordering::Relaxed),
@@ -176,14 +196,28 @@ impl IrqTelemetry {
             spurious: self.spurious.load(Ordering::Relaxed),
             ack_count: self.ack_count.load(Ordering::Relaxed),
             uart_irq_count: 0,
+        }
+    }
+
+    /// Take the fixed MS04 V2 snapshot before axnet fields are mapped.
+    pub fn snapshot_v2(&self) -> IrqSnapshotV2 {
+        let v1 = self.snapshot();
+        IrqSnapshotV2 {
+            total: v1.total,
+            used_ring: v1.used_ring,
+            config_change: v1.config_change,
+            combined: v1.combined,
+            unknown: v1.unknown,
+            spurious: v1.spurious,
+            ack_count: v1.ack_count,
+            uart_irq_count: v1.uart_irq_count,
             restore_violation: self.restore_violation.load(Ordering::Relaxed),
-            // The appended RX fields are filled by the kernel glue from the
-            // bounded `axnet::rx_snapshot()`; the pure seam initializes them
-            // to zero so the ABI is total before the mapping runs.
+            irq_enabled_entry: self.irq_enabled_entry.load(Ordering::Relaxed),
             rx_lifecycle: 0,
             rx_owner: 0,
             isr_publish: 0,
             isr_wake: 0,
+            software_nudge: 0,
             task_poll: 0,
             reaped: 0,
             refilled: 0,
@@ -203,18 +237,32 @@ impl IrqTelemetry {
 
 // ── Snapshot ABI ───────────────────────────────────────────────────────
 
-/// Read-only IRQ diagnostic snapshot for guest ioctl `0x4e49_4431`.
+/// Fixed MS03 IRQ diagnostic snapshot for guest ioctl `0x4e49_4431`.
 ///
 /// # ABI stability
 ///
-/// This is a diagnostic-only, QEMU-cfg-gated interface.
-/// The first 8 `u64` fields are append-only and must not be reordered or
-/// removed; MS03 guest consumers depend on their layout. All fields appended
-/// by MS04 (T6.1) keep the same 8-byte stride and must stay in order. The C
-/// consumer in `tests/ms03_irq_probe.c` is synchronized in the same iteration.
+/// This type is exactly eight `u64` fields (64 bytes). It must never grow:
+/// existing binaries call a lengthless ioctl with a 64-byte destination.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IrqSnapshot {
+pub struct IrqSnapshotV1 {
+    pub total: u64,
+    pub used_ring: u64,
+    pub config_change: u64,
+    pub combined: u64,
+    pub unknown: u64,
+    pub spurious: u64,
+    pub ack_count: u64,
+    pub uart_irq_count: u64,
+}
+
+/// Fixed MS04 extended snapshot for guest ioctl `0x4e49_4432`.
+///
+/// The first eight fields match [`IrqSnapshotV1`] byte-for-byte. This is an
+/// independent wire type and must not be aliased to or embedded in V1.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrqSnapshotV2 {
     pub total: u64,
     pub used_ring: u64,
     pub config_change: u64,
@@ -225,6 +273,8 @@ pub struct IrqSnapshot {
     pub uart_irq_count: u64,
     /// IRQ restore violations (wake re-enabled IRQs before EOI).
     pub restore_violation: u64,
+    /// Handler wake sections entered with IRQs enabled.
+    pub irq_enabled_entry: u64,
     /// Async RX lifecycle code (0 Polling .. 4 Unavailable).
     pub rx_lifecycle: u64,
     /// Async RX owner view (0 polling-owned, 1 async-owned).
@@ -233,6 +283,8 @@ pub struct IrqSnapshot {
     pub isr_publish: u64,
     /// ISR wake calls.
     pub isr_wake: u64,
+    /// Explicit software-only wake requests.
+    pub software_nudge: u64,
     /// Queue-task polls.
     pub task_poll: u64,
     /// Completions reaped.
