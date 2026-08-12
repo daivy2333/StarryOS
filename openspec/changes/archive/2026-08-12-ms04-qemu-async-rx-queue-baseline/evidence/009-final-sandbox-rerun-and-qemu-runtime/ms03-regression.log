@@ -1,0 +1,14 @@
+Source: qemu-serial.log, lines 29-58.
+
+PASS idle (total delta=0 in 2000ms)
+PASS uart (net used_ring delta=0 uart_irq delta=0)
+PASS rx2
+  DELTA total=3 used_ring=3 config_change=0 combined=0 unknown=0 spurious=0 ack_count=3 uart_irq=0
+PASS tx2
+  DELTA total=1 used_ring=1 config_change=0 combined=0 unknown=0 spurious=0 ack_count=1 uart_irq=0
+
+WAIVED/SKIPPED by user:
+- `both`: not present in qemu-serial.log.
+- repeat `rx2`: not present, so repeated delivery after later modes is not claimed.
+
+No MS03 FAIL, fatal or panic marker appears in the supplied log.

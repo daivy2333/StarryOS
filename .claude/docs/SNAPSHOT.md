@@ -1,8 +1,8 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-10
-> Revision: `16d9a16a2b65a574022faaee39b465f6f7aebd45`
+> Updated: 2026-08-12
+> Revision: `8f5b5228747dc817a5a9de7a3461dccdf06e0c24`
 > Branch: `net-k3`
 > Worktree: modified
 
@@ -35,6 +35,9 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 支持范围与交付形态
 
 - QEMU virt 是仓库内可配置的虚拟平台交付形态。
+- QEMU virt 的单 hart VirtIO-MMIO 已具备 IRQ 唤醒、唯一 RX queue task、EVENT_IDX
+  通知控制和有界 RX burst 核心基线；异步 TX、独立 stack runner、SMP、真板与性能资格
+  不在该结论内。
 - Lichee RV Dock D1 与 VisionFive 2 是仓库覆盖的 RISC-V 真实平台形态。
 - 当前异步 NIC 的最终目标板尚未在仓库中登记；VisionFive 2 支持和 ArceOS DWMAC 经验不构成目标板选择。
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2` 与 `smp` 等产品组装入口。
@@ -43,7 +46,7 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `16d9a16a2b65a574022faaee39b465f6f7aebd45`。
+- 当前 revision 为 `8f5b5228747dc817a5a9de7a3461dccdf06e0c24`。
 - 工作树包含尚未提交的修改。
 
 ## 权威入口

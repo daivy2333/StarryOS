@@ -1,0 +1,94 @@
+MS04 iteration 009 command ledger
+
+T7.3R agent commands (2026-08-12T16:54:12+08:00):
+PASS exit=0 | openspec validate ms04-qemu-async-rx-queue-baseline --strict
+PASS exit=0 | openspec validate references --strict
+PASS exit=0 | git diff --check -- . ':(exclude,glob)openspec/changes/ms04-qemu-async-rx-queue-baseline/evidence/**'
+PASS exit=0 | git diff --cached --check -- . ':(exclude,glob)openspec/changes/ms04-qemu-async-rx-queue-baseline/evidence/**'
+PASS exit=0 | git diff 16d9a16a2b65a574022faaee39b465f6f7aebd45 --check -- . ':(exclude,glob)openspec/changes/ms04-qemu-async-rx-queue-baseline/evidence/**'
+PASS exit=0 | find openspec/changes/ms04-qemu-async-rx-queue-baseline/evidence/008-probe-decision-closures-and-automatic-gates -type f -size 0 -print
+PASS exit=0 | sha256sum openspec/changes/ms04-qemu-async-rx-queue-baseline/evidence/008-probe-decision-closures-and-automatic-gates/*
+REVIEWED exit=0 | git diff --cached --check
+REVIEWED exit=2 | git diff 16d9a16a2b65a574022faaee39b465f6f7aebd45 --check
+
+T8.1 user terminal (paste complete output into sandbox-rerun.log and build.log):
+cd /home/daivy/projects/serial/work/StarryOS
+python3 scripts/ms04_rx_stimulus.py --loopback-self-test
+make tests/ms03_irq_probe tests/ms04_rx_probe
+riscv64-linux-musl-gcc -static -O2 -o tests/ms02_guest_service tests/ms02_guest_service.c
+riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
+file tests/ms03_irq_probe tests/ms04_rx_probe tests/ms02_guest_service tests/ms01_socket_baseline
+stat -c '%y %s %n' tests/ms03_irq_probe tests/ms04_rx_probe tests/ms02_guest_service tests/ms01_socket_baseline
+sha256sum tests/ms03_irq_probe tests/ms04_rx_probe tests/ms02_guest_service tests/ms01_socket_baseline
+T8.1 start=2026-08-12T17:06:46+08:00 end=2026-08-12T17:15:07+08:00
+T8.1 exits=loopback 0; initial static probes 2; authorized include-fix rerun 0; MS02 0; MS01 0
+T8.1 collection note=long path wrapped after sandbox- and before artifacts.sha256; exact static output was recovered from sandbox-, artifact output was revalidated from the produced files
+
+Terminal A, HTTP server:
+cd /home/daivy/projects/serial/work/StarryOS/tests
+python3 -m http.server 18765 --bind 0.0.0.0
+Terminal A start/end/interruption=not recorded; WAIVED by user
+
+Terminal B, manual QEMU recorder:
+cd /home/daivy/projects/serial/work/StarryOS
+script -q -f openspec/changes/ms04-qemu-async-rx-queue-baseline/evidence/009-final-sandbox-rerun-and-qemu-runtime/qemu-serial.log -c 'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
+Terminal B start/end/exit=not recorded; serial payload excerpt supplied; WAIVED by user
+
+Guest shell, one command per prompt:
+wget -q -O /tmp/ms04_rx_probe http://10.0.2.2:18765/ms04_rx_probe
+wget -q -O /tmp/ms03_irq_probe http://10.0.2.2:18765/ms03_irq_probe
+wget -q -O /tmp/ms02_guest_service http://10.0.2.2:18765/ms02_guest_service
+wget -q -O /tmp/ms01_socket_baseline http://10.0.2.2:18765/ms01_socket_baseline
+chmod +x /tmp/ms04_rx_probe /tmp/ms03_irq_probe /tmp/ms02_guest_service /tmp/ms01_socket_baseline
+/tmp/ms04_rx_probe snapshot
+/tmp/ms04_rx_probe idle
+/tmp/ms04_rx_probe nudge
+
+Terminal C, before guest burst:
+cd /home/daivy/projects/serial/work/StarryOS
+python3 scripts/ms04_rx_stimulus.py --host 0.0.0.0 --port 15556
+Terminal C MS04 start/end/exit=not recorded; guest burst PASS is present; WAIVED by user
+
+Guest shell:
+/tmp/ms04_rx_probe burst
+
+Terminal C, MS03 server:
+nc -l -p 15555 -k
+Terminal C MS03 start/end/interruption=not recorded; WAIVED by user
+
+Guest shell, ordered MS03 modes:
+/tmp/ms03_irq_probe idle
+/tmp/ms03_irq_probe uart
+/tmp/ms03_irq_probe rx2
+/tmp/ms03_irq_probe tx2
+/tmp/ms03_irq_probe both
+/tmp/ms03_irq_probe rx2
+
+Guest shell, MS02 service:
+/tmp/ms02_guest_service
+
+Terminal C, two separate interactive TCP sessions:
+nc 127.0.0.1 5555
+input=MS02_TCP_REQUEST
+response=MS02_TCP_RESPONSE implied by guest `MS02_TCP_PASS connection=1`
+nc 127.0.0.1 5555
+input=MS02_TCP_REQUEST
+response=SKIPPED by explicit user waiver
+echo 'MS02_UDP_REQUEST' | nc -u -w1 127.0.0.1 5555
+response=SKIPPED by explicit user waiver
+
+Guest shell, final regression and safety snapshot:
+/tmp/ms01_socket_baseline
+/tmp/ms04_rx_probe snapshot
+
+QEMU termination=not recorded; SKIPPED by explicit user waiver
+Host server termination=not recorded; SKIPPED by explicit user waiver
+
+Actually executed guest modes in qemu-serial.log:
+- MS04 snapshot, idle, nudge, burst: PASS
+- MS03 idle, uart, rx2, tx2: PASS
+- MS02 TCP connection 1: PASS
+
+Not executed or not present; SKIPPED by explicit user waiver:
+- boot signature capture; MS03 both/repeat-rx2; MS02 TCP#2/UDP/COMPLETE; MS01 14/14;
+  post-regression final MS04 snapshot; terminal termination metadata

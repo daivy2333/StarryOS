@@ -1,0 +1,62 @@
+starry:~# wget -q -O /tmp/ms04_rx_probe http://10.0.2.2:18765/ms04_rx_probe
+starry:~# wget -q -O /tmp/ms03_irq_probe http://10.0.2.2:18765/ms03_irq_probe
+starry:~# wget -q -O /tmp/ms02_guest_service http://10.0.2.2:18765/ms02_guest_se
+rvice
+starry:~# wget -q -O /tmp/ms01_socket_baseline http://10.0.2.2:18765/ms01_socket
+_baseline
+starry:~# chmod +x /tmp/ms04_rx_probe /tmp/ms03_irq_probe /tmp/ms02_guest_servic
+e /tmp/ms01_socket_baseline
+starry:~# /tmp/ms04_rx_probe snapshot
+MS04 PRE total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=21 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 POST total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=21 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=0 isr_wake=0 nudge=0 task=0 reaped=0 refilled=0 delivered=0 non_ip=0 budget=0 yield=0 router_full=0 space_wake=0 empty=0 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=snapshot
+starry:~# /tmp/ms04_rx_probe idle
+MS04 PRE total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=24 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 POST total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=24 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=0 isr_wake=0 nudge=0 task=0 reaped=0 refilled=0 delivered=0 non_ip=0 budget=0 yield=0 router_full=0 space_wake=0 empty=0 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=idle
+starry:~# /tmp/ms04_rx_probe nudge
+MS04 PRE total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=27 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 POST total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=27 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=1 task=71 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=71 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=0 isr_wake=0 nudge=1 task=1 reaped=0 refilled=0 delivered=0 non_ip=0 budget=0 yield=0 router_full=0 space_wake=0 empty=1 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=nudge
+starry:~# /tmp/ms04_rx_probe burst
+MS04 PRE total=76 used=76 config=0 combined=0 unknown=0 spurious=0 ack=76 uart=30 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=76 isr_wake=76 nudge=1 task=73 reaped=410 refilled=410 delivered=408 non_ip=2 budget=0 yield=0 router_full=0 space_wake=0 empty=73 fault=0 err_stage=0 err_code=0
+MS04 POST total=77 used=77 config=0 combined=0 unknown=0 spurious=0 ack=77 uart=30 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=77 isr_wake=77 nudge=1 task=77 reaped=506 refilled=506 delivered=504 non_ip=2 budget=2 yield=2 router_full=1 space_wake=1 empty=74 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=1 isr_wake=1 nudge=0 task=4 reaped=96 refilled=96 delivered=96 non_ip=0 budget=2 yield=2 router_full=1 space_wake=1 empty=1 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=burst
+starry:~# /tmp/ms03_irq_probe idle
+READY
+PRE total=77 used_ring=77 config_change=0 combined=0 unknown=0 spurious=0 ack_count=77 uart_irq=33
+POST total=77 used_ring=77 config_change=0 combined=0 unknown=0 spurious=0 ack_count=77 uart_irq=33
+DELTA total=0 used_ring=0 config_change=0 combined=0 unknown=0 spurious=0 ack_count=0 uart_irq=0
+PASS idle (total delta=0 in 2000ms)
+starry:~# /tmp/ms03_irq_probe uart
+READY
+uart probe hello
+PRE total=77 used_ring=77 config_change=0 combined=0 unknown=0 spurious=0 ack_count=77 uart_irq=36
+MID total=77 used_ring=77 config_change=0 combined=0 unknown=0 spurious=0 ack_count=77 uart_irq=36
+POST total=77 used_ring=77 config_change=0 combined=0 unknown=0 spurious=0 ack_count=77 uart_irq=36
+DELTA total=0 used_ring=0 config_change=0 combined=0 unknown=0 spurious=0 ack_count=0 uart_irq=0
+PASS uart (net used_ring delta=0 uart_irq delta=0)
+starry:~# /tmp/ms03_irq_probe rx2
+READY
+rx2 read1=4
+rx2 read2=2
+PRE total=77 used_ring=77 config_change=0 combined=0 unknown=0 spurious=0 ack_count=77 uart_irq=39
+MID total=80 used_ring=80 config_change=0 combined=0 unknown=0 spurious=0 ack_count=80 uart_irq=39
+POST total=83 used_ring=83 config_change=0 combined=0 unknown=0 spurious=0 ack_count=83 uart_irq=39
+DELTA total=3 used_ring=3 config_change=0 combined=0 unknown=0 spurious=0 ack_count=3 uart_irq=0
+PASS rx2
+starry:~# /tmp/ms03_irq_probe tx2
+READY
+PRE total=87 used_ring=87 config_change=0 combined=0 unknown=0 spurious=0 ack_count=87 uart_irq=42
+MID total=89 used_ring=89 config_change=0 combined=0 unknown=0 spurious=0 ack_count=89 uart_irq=42
+POST total=90 used_ring=90 config_change=0 combined=0 unknown=0 spurious=0 ack_count=90 uart_irq=42
+DELTA total=1 used_ring=1 config_change=0 combined=0 unknown=0 spurious=0 ack_count=1 uart_irq=0
+PASS tx2
+starry:~# /tmp/ms02_guest_service
+MS02_READY tcp=5555 udp=5555
+MS02_TCP_ACCEPTED connection=1
+MS02_TCP_PASS connection=1

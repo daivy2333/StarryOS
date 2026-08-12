@@ -295,7 +295,10 @@ device selection / routing 逻辑 MUST 提取为纯策略 helper，输入 `mask:
 
 ### Requirement: K38 — 工作区 exclude crate 的测试工具链由项目根 rust-toolchain 决定
 
-`--manifest-path` 运行 workspace-exclude 的本地化 crate 时，rustup 按**当前目录**向上查找 `rust-toolchain.toml`，不按 manifest 所在目录。crate 目录内自带的 `rust-toolchain.toml` 只有 `cd` 进该目录才生效；从项目根用 `--manifest-path` 运行时实际使用项目根 nightly 工具链。
+`--manifest-path` 运行 workspace-exclude 的本地化 crate 时，工具链解析 MUST 以 rustup
+从**当前目录**向上查找的 `rust-toolchain.toml` 为准，不得按 manifest 所在目录推断。crate
+目录内自带的 `rust-toolchain.toml` 只有 `cd` 进该目录才生效；从项目根用
+`--manifest-path` 运行时实际使用项目根 nightly 工具链。
 
 **证据**: `ms04-qemu-async-rx-queue-baseline` iter 000 T2.1；`crates/virtio-drivers` 在项目根 nightly 下 sound 测试挂起、目录内（stable 1.90）28/28 通过
 **状态**: ✅ 已验证，2026-08-10
@@ -343,3 +346,30 @@ VirtIO 协商 `RING_EVENT_IDX` 后，`set_dev_notify(bool)` 的 flags 路径失�
 - **WHEN** queue task 要在不超过 budget 的有界循环中服务 completion，且不希望每 completion 触发 IRQ
 - **THEN** MUST 先 `suppress_dev_notify()`，drain 中 `pop_used` 不重臂，预算用尽保持 suppressed
 - **AND** MUST 恢复等待前 `arm_dev_notify_and_check()` 并以返回值决定是否自唤醒
+
+### Requirement: K41 — MS04 核心异步 RX 的运行时判定边界
+
+单 hart QEMU VirtIO-MMIO 的 MS04 核心基线 MUST 同时证明唯一 RX queue task、空闲无进度、
+软件唤醒不搬 descriptor、有界 burst 的回收守恒，以及 budget/self-yield。网络功能成功本身
+不能替代 owner、wakeup 和 descriptor 证据。
+
+**证据**: R51；`openspec/changes/archive/2026-08-12-ms04-qemu-async-rx-queue-baseline/`
+iteration 009
+**状态**: ✅ 核心基线已验证，2026-08-12；⚠ 完整 compatibility 与 exact-binary
+重放未声明
+
+- **生命周期**: snapshot 见证 `lifecycle=2`、`owner=1`，且 safety/fault 计数为 0。
+- **quiet/wake**: idle 的 IRQ、软件事件、task、descriptor 和 budget delta 全为 0；nudge
+  只允许 software/task/empty 各推进一次，descriptor delta 必须为 0。
+- **有界 burst**: iteration 009 的 96 包运行满足 reaped/refilled/delivered 守恒，且
+  budget exhausted、self-yield、Router full/space wake 均出现。
+- **证据边界**: 用户豁免的 MS01/MS02/MS03 重复兼容项、boot raw signature、终止元数据
+  和 post-regression safety 仍为 `WAIVED/SKIPPED`，不得提升为 PASS。
+- **可复现性边界**: Evidence 中记录的 kernel hash 与后续工作树重建产物不同，因此本次
+  结论只绑定已保存的核心运行证据，不声明当前重建镜像的 exact-binary replay。
+
+#### Scenario: 后继 change 复用 MS04 基线
+
+- **WHEN** MS05 或后续 change 依赖 MS04 异步 RX
+- **THEN** MUST 按 R51 重跑其受影响的核心模式，或明确引用未受影响的既有证据
+- **AND** MUST 将完整 compatibility、SMP、真板和性能资格作为独立 Gate 处理

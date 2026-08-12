@@ -1,0 +1,13 @@
+Source: qemu-serial.log, lines 59-62.
+
+MS02_READY tcp=5555 udp=5555
+MS02_TCP_ACCEPTED connection=1
+MS02_TCP_PASS connection=1
+
+WAIVED/SKIPPED by user:
+- MS02 TCP connection 2.
+- MS02 UDP datagram and `MS02_COMPLETE tcp=2 udp=1`.
+- MS01 socket baseline START/END and 14 cases.
+
+The supplied evidence proves one MS02 TCP round trip only. It does not support an MS01/MS02 complete
+compatibility claim. No MS02/MS01 FAIL, fatal or panic marker appears in the supplied log.

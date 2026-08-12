@@ -28,6 +28,13 @@ VirtIO-net handler MUST 保持 cause、ack、snapshot、原子 telemetry 和固�
 
 系统 MUST 只保留一个 VirtIO-net 设备实例和一个 RX queue owner。MS04 激活前，MS02 轮询路径 MUST 保持唯一数据面 owner；MS04 激活后，唯一 RX queue task MUST 取得 RX queue owner，轮询 fallback MUST NOT 再消费该 queue。IRQ control MUST NOT 持有第二份 queue 数据面状态，也 MUST NOT 实现第二个 `NetDriverOps` 设备。
 
+#### Scenario: MS03 启动网卡
+
+- **WHEN** VirtIO-net 完成 probe 和 IRQ 初始化
+- **THEN** 系统 MUST 只创建一个网卡设备实例
+- **AND** descriptor 进度 MUST 仍由 MS02 轮询路径负责
+- **AND** `AxNetDevice::irq_num()` MUST 在 MS03 保持 `None`
+
 #### Scenario: MS04 启动网卡
 
 - **WHEN** VirtIO-net 完成 probe、IRQ 初始化和异步 RX 激活
@@ -52,6 +59,12 @@ VirtIO-net handler MUST 保持 cause、ack、snapshot、原子 telemetry 和固�
 - **WHEN** MS04 中网络流量通过
 - **THEN** 证据 MUST 分别证明 IRQ 唤醒、queue task descriptor 进度和既有协议栈轮询
 - **AND** 仅有网络功能通过 MUST NOT 替代异步 owner 证明
+
+#### Scenario: 分类 MS03 证据
+
+- **WHEN** MS03 中网络流量通过
+- **THEN** 结果 MUST 只证明轮询数据面与 IRQ 控制面共存
+- **AND** 结果 MUST NOT 声明异步网卡已经可用
 
 ### Requirement: ack、EOI 和 rearm 顺序可验证
 
@@ -87,6 +100,12 @@ VirtIO-net handler MUST 保持 cause、ack、snapshot、原子 telemetry 和固�
 
 MS04 MUST 保持 MS02 同步 TX、MS01/MS02 socket 行为和 MS03 IRQ 分类。异步 RX 在 owner 切换前初始化失败时 MUST 保留 MS02 轮询数据面；切换成功后，轮询 fallback MUST NOT 与 queue task 并发 reap。UART MUST 保留现有 waker、copier、early console 和 panic console，且共享 critical-section 的 IRQ 状态恢复修改 MUST 通过 UART 回归。
 
+#### Scenario: 网卡 IRQ 初始化失败
+
+- **WHEN** 网卡 IRQ 映射或注册失败
+- **THEN** 网络 MUST 回退到 MS02 轮询路径
+- **AND** 启动诊断 MUST 标记 IRQ baseline 不可用
+
 #### Scenario: 网卡异步 RX 初始化失败
 
 - **WHEN** 网卡 IRQ、waker、queue control 或 task 初始化在 owner 切换前失败
@@ -106,8 +125,20 @@ MS04 MUST 保持 MS02 同步 TX、MS01/MS02 socket 行为和 MS03 IRQ 分类。�
 - **THEN** 对应 Gate MUST 失败且 UART copier MUST NOT 在无 handler 时启动
 - **AND** 轮询 early/panic console MUST 继续提供诊断输出
 
+#### Scenario: UART handler 初始化失败
+
+- **WHEN** UART IRQ 10 注册失败
+- **THEN** UART copier MUST NOT 启动
+- **AND** 轮询 console MUST 继续提供诊断输出
+
 #### Scenario: MS04 功能通过
 
 - **WHEN** MS04 IRQ、queue task 和 RX ownership Gate 完成
 - **THEN** MS01、MS02、MS03 与 UART 回归 MUST 继续通过
 - **AND** 异步 TX、最终 packet slot、stack runner 和 socket readiness MUST 保持未引入
+
+#### Scenario: MS03 功能通过
+
+- **WHEN** MS03 IRQ Gate 完成
+- **THEN** MS01 与 MS02 网络回归 MUST 继续通过
+- **AND** 网卡 waker、queue task 和 stack runner MUST 保持未引入

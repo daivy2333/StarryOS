@@ -1,0 +1,40 @@
+daivy@daivy:~/projects/serial/work/StarryOS$ riscv64-linux-musl-gcc -static -O2 \
+    -o tests/ms02_guest_service tests/ms02_guest_service.c
+  echo "EXIT=$?"
+EXIT=0
+daivy@daivy:~/projects/serial/work/StarryOS$ riscv64-linux-musl-gcc -static -O2 \
+    -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
+  echo "EXIT=$?"
+
+  file tests/ms03_irq_probe tests/ms04_rx_probe \
+    tests/ms02_guest_service tests/ms01_socket_baseline
+
+  stat -c '%y %s %n' \
+    tests/ms03_irq_probe tests/ms04_rx_probe \
+    tests/ms02_guest_service tests/ms01_socket_baseline
+EXIT=0
+tests/ms03_irq_probe:       ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms04_rx_probe:        cannot open `tests/ms04_rx_probe' (No such file or directory)
+tests/ms02_guest_service:   ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms01_socket_baseline: ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+2026-08-12 17:06:08.081749699 +0800 138600 tests/ms03_irq_probe
+stat: cannot statx 'tests/ms04_rx_probe': No such file or directory
+2026-08-12 17:07:15.946904614 +0800 134712 tests/ms02_guest_service
+2026-08-12 17:07:26.398893174 +0800 150832 tests/ms01_socket_baseline
+daivy@daivy:~/projects/serial/work/StarryOS$ 2026-08-12T17:14:56+08:00
+MS02_BUILD_EXIT=0
+MS01_BUILD_EXIT=0
+tests/ms03_irq_probe:       ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms04_rx_probe:        ELF 64-bit LSB executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), statically linked, with debug_info, not stripped
+tests/ms02_guest_service:   ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms01_socket_baseline: ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+2026-08-12 17:14:16.201827552 +0800 138600 tests/ms03_irq_probe
+2026-08-12 17:14:16.291931641 +0800 134232 tests/ms04_rx_probe
+2026-08-12 17:14:56.178306047 +0800 134712 tests/ms02_guest_service
+2026-08-12 17:14:56.313601987 +0800 150832 tests/ms01_socket_baseline
+
+--- STATIC PROBE CLEAN RERUN RECOVERED FROM ACCIDENTAL TEE FILE ---
+2026-08-12T17:14:16+08:00
+riscv64-linux-musl-gcc -static -Os -o tests/ms03_irq_probe tests/ms03_irq_probe.c
+riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o tests/ms04_rx_probe tests/ms04_rx_probe.c
+STATIC_PROBE_RERUN_EXIT=0

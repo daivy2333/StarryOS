@@ -426,80 +426,209 @@ Plan does not create this directory. Act may create the index/provenance skeleto
 
 ## Act Response
 
-- Status: pending
+- Status: reported
 
 **Implemented**
 
-Pending.
+- T7.3R：重建 `16d9a16a`、`e0fac50c`、`78e1f7ab` 与当前 `8f5b5228` 的 revision
+  角色；分离源码/文档 whitespace Gate 与原始 Evidence 完整性 Gate。
+- 创建全部 12 个 iteration 009 required Evidence 文件。T7.3R 文件已写入新鲜结果；
+  T8.1/T8.2 文件包含可直接替换或由 `script -f` 覆盖的 `PENDING` 采集位置。
+- 更新 change Evidence 索引和 change-local task 7.3R 状态；T7.3R 本身未修改产品代码。
+- 按用户限量豁免修复 T8.1 暴露的 musl 可移植性错误：`ms04_rx_probe.c` 显式包含
+  `<sys/time.h>`；host harness 增加禁止依赖 libc 间接包含的永久 guard。
+- 审核用户提供的 QEMU serial：提取 MS04、MS03、MS02 分项 Evidence；确认 MS04
+  snapshot/idle/nudge/burst 核心 runtime Gate PASS，并按用户授权记录未运行项和声明边界。
 
 **Changed Files and Symbols**
 
-Pending.
+- `evidence/README.md`：登记 iteration 009 Evidence。
+- `evidence/009-final-sandbox-rerun-and-qemu-runtime/*`：T7.3R provenance、命令和环境，
+  以及 T8.1/T8.2 原始日志、hash、分项日志和最终 Review 的预创建采集文件。
+- `tasks.md`：勾选 7.3R，并记录新鲜 Gate 结果和未过滤 cached/range 的实际差异。
+- 本 iteration 的 `Act Response`：记录手工测试能力边界和恢复条件。
+- `tests/ms04_rx_probe.c`：补充 `struct timeval` 的权威定义头文件。
+- `tests/ms04-async-rx-host-harness.rs`：增加显式头文件 source guard。
 
 **Deviations from Plan**
 
-Pending.
+- Plan 预期未过滤 cached/range whitespace checks 均 exit 2。执行时 008 Evidence 已进入
+  commit `8f5b5228`，所以 cached check exit 0，完整 initial revision range 仍 exit 2。
+  该基线变化不改变 raw-log Gate，也未改写 008 Evidence。
+- 用户要求在手测前预创建全部文件。计划已要求这些文件且模式为 `required`，因此只提前
+  创建采集载体；其中的 `PENDING` 不计 Evidence PASS。
+- 用户在最终审核时明确授权跳过未运行的重复/兼容性用例。Act 未把这些项目标记 PASS，
+  而是记录为 `WAIVED/SKIPPED`，并把完成结论收窄到 MS04 核心单 hart VirtIO-MMIO
+  异步 RX runtime baseline。
 
 **Blocker Handoff**
 
-Pending.
+- Discovered at: T8.1 / authorization and capability boundary after T7.3R Gate 5.
+- Expected: T7.3R PASS 后由用户在 unrestricted environment 复跑 loopback/static build，
+  再手工运行单 hart QEMU T8.2。
+- Actual: T7.3R PASS；当前 agent sandbox 的既知 UDP `EPERM` 和 musl GCC `SIGSYS` 不能
+  产生 T8.1 PASS，R44 又禁止 agent 驱动 guest console。
+- Impact: T8.1/T8.2 required Evidence 尚未采集，8.1、8.2 和本 iteration 不得完成。
+- Completed work: T7.3R；全部 required Evidence 文件已预创建。
+- Partial work: T8.1/T8.2 只有采集说明和 `PENDING` 文件，无运行结果。
+- Unstarted work: 用户 T8.1、T8.2-a/b/c；agent T8.2-d 最终 Evidence/diff Review。
+- Worktree state: 只有 change-local tasks、iteration 和 Evidence 修改；产品源未改。
+- Gates: Gate 3/4/5 for T7.3R PASS；T8.1 Gate 3 BLOCKED at user capability boundary。
+- Evidence: EV-009-01、EV-009-04 至 EV-009-06 PASS；EV-009-02/03 PARTIAL；
+  EV-009-07 至 EV-009-11 BLOCKED。
+- Plan decision needed: None；这是获批计划中的预期用户边界。
+- Resume condition: 用户完成 T8.1 并把完整输出写入预创建文件后明确要求继续；Act 先审核
+  T8.1。只有 PASS 才进入 T8.2；T8.2 日志齐全后再次恢复完成 T8.2-d。
+- Update after limited repair: 首次用户复跑中 loopback exit 0；static build exit 2，首个产品
+  错误是 `struct timeval` incomplete type。修复后本地 host Gates 全部 PASS；sandbox 内
+  musl build 已不再输出该诊断，只在既知 `Bad system call` 处 exit 2。等待用户环境 GREEN。
+- Update after user clean rerun: 2026-08-12 17:14 外部 static probe rerun exit 0；MS01/MS02
+  builds exit 0；四个 payload 的 ELF 类型、mtime、size 与 SHA-256 完整。长路径换行产生的
+  `sandbox-` 意外文件已在保留原文后合并并删除。T8.1 Gate 5 PASS，阻塞点推进到 T8.2。
 
 **Blocker Resolution**
 
-None.
+- User instruction: “不用，如果这是一个小问题的话，请你直接解决，解决然后再给我命令行，
+  没必要进行阻塞，你可以把这句话写入回复当授权记录”。
+- Resolution: 用户授权在 iteration 009 内直接修复 T8.1 暴露的小型 guest probe
+  可移植性缺口。范围限定为给 `tests/ms04_rx_probe.c` 补充 `struct timeval` 的权威头文件，
+  并增加永久 source guard；不改变 probe 协议、runtime 判定、内核或异步 RX 产品行为。
+- Accepted risk: 豁免本轮“runtime 产品错误返回 Plan”的停止边界，仅覆盖上述显式头文件
+  修复。其他编译、产品或 QEMU runtime 失败仍按原停止条件处理。
+- Resume point: T8.1 static payload build。
+- Required verification: 复用用户 musl build exit 2 作为 RED；修复后运行 host syntax、
+  probe decision tests、source guard、host-test 和可用环境中的交叉构建。若 sandbox 再次
+  SIGSYS，则保留为用户同命令复跑边界，不计 GREEN。
+- User instruction: “当前没有遇到fatal，至于少的几个测试我都觉得没必要重复进行了，我
+  授权的，你看看，没有问题就填写回复”。
+- Resolution: 审核现有 serial 后未发现 FAIL、fatal、panic 或安全计数异常；将缺失项逐项
+  标为 `WAIVED/SKIPPED`，不扩大 PASS 声明，并完成 T8.2 Evidence Review。
+- Accepted risk: 不取得 boot 原始签名、MS03 both/repeat、完整 MS01/MS02 compatibility、
+  post-regression safety snapshot 或 termination metadata；这些能力不在本轮完成结论中。
+- Resume point: T8.2-d Evidence and full-range review。
+- Required verification: serial marker/counter review、derived-log traceability、完整 diff Review、
+  strict validation 和 non-Evidence whitespace checks。
 
 **Self-Review**
 
-- Plan compliance: pending
-- Full diff reviewed: pending
-- Critical findings unresolved: pending
-- Important findings unresolved: pending
-- Minor findings unresolved: pending
+- Plan compliance: PASS WITH EXPLICIT USER WAIVER
+- Full diff reviewed: PASS
+- Critical findings unresolved: 0
+- Important findings unresolved: 0
+- Minor findings unresolved: 0
+
+Spec review 先确认了 revision 角色、non-Evidence whitespace、raw file nonzero/hash 和手工
+边界均符合 T7.3R contract；随后 code-quality/document review 确认没有产品修改、没有改写
+008 raw log，且所有 `PENDING` 状态明确不构成 PASS。
+
+限量修复的 Spec Review 确认只改变 guest probe 的编译可移植性，不改变 wire protocol、
+timeout 值或 runtime verdict。Code Review 确认 `<sys/time.h>` 是 `struct timeval` 的直接
+定义来源，source guard 会阻止回归。未解决 Critical/Important/Minor finding 仍为 0。
+
+最终 Spec Review 逐项核对 serial：MS04 四模式 PASS；idle 与 nudge 精确矩阵成立；burst
+96 个 completion 守恒且 budget/yield 可见；已记录的 fault/restore/IRQ-entry 均为零。
+Code/Evidence Review 确认分项日志可追溯到 raw serial，缺失项目明确标记 waiver，结论未
+外推到完整 compatibility、真板、SMP、PCI、DMA coherency 或性能。
 
 **Verification Evidence**
 
-Pending.
+| 验证项 | 命令或操作 | 输出摘录 | 退出码 / 结论 |
+|---|---|---|---|
+| Change strict | `openspec validate ms04-qemu-async-rx-queue-baseline --strict` | `Change ... is valid` | 0 / PASS |
+| References strict | `openspec validate references --strict` | `Specification 'references' is valid` | 0 / PASS |
+| Non-Evidence whitespace | working tree、cached、`16d9a16a..` 三项 path-limited checks | 无输出 | 0 / PASS |
+| 008 completeness | zero-size find + SHA-256 | 无空文件；8 个 hash | 0 / PASS |
+| Raw full range | 未过滤 `git diff 16d9a16a... --check` | 只报告 `automatic-gates.log` preserved terminal whitespace | 2 / REVIEWED，不计 PASS |
+| User RED | sandbox 外 `make tests/ms03_irq_probe tests/ms04_rx_probe` | `struct timeval` incomplete type | 2 / RED |
+| Timeval guard RED | 定向 Rust source guard | 1 failed，14 filtered | 101 / RED |
+| Timeval guard GREEN | MS04 host harness | 15 passed，0 failed | 0 / PASS |
+| Probe decisions | C decision suite | `10 passed` | 0 / PASS |
+| Host syntax | 严格 C syntax check | 无输出 | 0 / PASS |
+| Sandbox cross-build | `make tests/ms03_irq_probe tests/ms04_rx_probe` | 原 C 诊断消失；compiler `Bad system call` | 2 / ENV-BLOCKED |
+| External clean build | 用户 `make -B tests/ms03_irq_probe tests/ms04_rx_probe` | `STATIC_PROBE_RERUN_EXIT=0` | 0 / PASS |
+| Payload qualification | `file`、`stat`、`sha256sum` | 四个 fresh static RISC-V ELF；五个运行产物 hash 完整 | 0 / PASS |
+| MS04 runtime | `qemu-serial.log` snapshot/idle/nudge/burst | 4 PASS；96/96/96；budget=2，yield=2；safety/fault=0 | PASS |
+| MS03 partial regression | idle/uart/rx2/tx2 | 4 PASS；无 FAIL | PASS WITH WAIVER |
+| MS02 partial regression | TCP connection 1 | `MS02_TCP_PASS connection=1` | PASS WITH WAIVER |
+| Missing runtime cases | 用户明确授权跳过 | 逐项记录于 `final-review.md` | WAIVED/SKIPPED |
 
 **Persisted Evidence**
 
-`../evidence/009-final-sandbox-rerun-and-qemu-runtime/README.md` once created during execution.
+`../evidence/009-final-sandbox-rerun-and-qemu-runtime/README.md`。EV-009-01、EV-009-04 至
+EV-009-06、EV-009-08、EV-009-11 PASS；EV-009-02/03/07/09/10 PASS WITH WAIVER。
 
 **Experience Candidates**
 
-Pending.
+None。现有 QEMU 流程包含显式 waiver，不满足端到端 Runbook 候选门槛；普通 probe
+可移植性修复不构成 Incident。
 
 **Remaining Issues**
 
-Pending.
+- Accepted scope 内无未解决问题。
+- 未运行的完整 MS01/MS02/MS03 compatibility 与 post-regression safety 仍无 PASS 证据；
+  这是显式接受的 Evidence 缺口，不应在后续文档中改写为已验证。
 
 **Commit or Diff Reference**
 
-Pending.
+T7.3R start HEAD: `8f5b5228747dc817a5a9de7a3461dccdf06e0c24`；本批为其上的
+change-local worktree diff。
 
 ## Plan Review
 
-- Status: pending
+- Status: completed — PASS WITH EXPLICIT USER WAIVER
 
 **Review Result**
 
-Pending.
+Plan 独立复核通过。实际产品 diff 只有 `ms04_rx_probe.c` 的直接 `<sys/time.h>` include
+和 host harness 的永久 source guard；未发现 ownership、IRQ、descriptor、wire protocol 或
+runtime verdict 变化。OpenSpec strict、15 个 MS04 Rust host tests、严格 C syntax、10 个
+probe decision tests、96-packet stimulus self-test 和三层 non-Evidence whitespace checks
+均 exit 0。
+
+QEMU raw serial 与三个派生日志逐行一致：MS04 snapshot/idle/nudge/burst 四模式 PASS，burst
+为 96 reaped = 96 refilled = 96 delivered，budget/yield 各为 2，已记录的 safety/fault 计数
+为零；MS03 idle/uart/rx2/tx2 和 MS02 TCP#1 的已执行结果也与摘要一致。没有发现产品失败、
+fatal、panic 或范围外推。
 
 **Findings**
 
-Pending.
+- Critical: 0。
+- Important: 0。
+- Minor: 0 个需要修复或后续执行的问题。
+- Bounded observation: `artifacts.sha256` 在 17:16 记录 iteration 008 QEMU kernel hash
+  `84b7b5c8...`，工作区 kernel 随后于 17:22 被重建，审计时 hash 为 `1fa4a11c...`；由于
+  Terminal B 启动时间未记录，无法事后对已加载 binary 做 contemporaneous re-hash。这是
+  已明确接受的 terminal timing metadata 缺口，不反证 raw serial，也不支持 exact-binary
+  reproducibility 声明。当前结论仅保留为同一 revision/worktree 上的单 hart VirtIO-MMIO
+  MS04 核心功能基线。
 
 **Deviation Classification**
 
-Pending.
+- `ACT-DEVIATION`：T8.1 首次外部构建暴露缺少 `<sys/time.h>`；用户明确授权限量修复，
+  TDD RED/GREEN、外部 clean rebuild 和独立复核均通过，偏差已闭合。
+- `ACT-DEVIATION`：T8.2 未完成原计划全部 compatibility/repeat/final-snapshot cases；用户
+  明确承担风险并授权跳过。缺项均记为 `WAIVED/SKIPPED`，没有改写为 PASS。
+- `NEW-EVIDENCE`：审计发现 kernel artifact 在 hash 采集后被重建；按上面的 bounded
+  observation 收窄可复现性结论，不构成产品或核心 runtime Gate 失败。
+- `PLAN-OMISSION`、`PLAN-INVALID`、`BASELINE-CHANGED`：None。
 
 **Evidence**
 
-Pending.
+- `evidence/009-final-sandbox-rerun-and-qemu-runtime/` 的 12 个 required 文件均存在且非空；
+  raw serial SHA-256 复算为 `186ad7c39dc13831892faf2459a5071c7455244bcb66a8662c288062e859a4e7`。
+- `qemu-serial.log` lines 9-28 对应 MS04 派生记录，lines 29-58 对应 MS03，lines 59-62
+  对应 MS02 TCP#1；marker、delta 和 waiver 边界一致。
+- 当前四个 guest payload 的 size/type/hash 与 qualified artifact set 一致；QEMU kernel
+  的当前 hash 变化按 Findings 限制使用，不改写历史 Evidence。
+- `openspec list` 显示 change 为 `Complete`；change-local tasks 为 25/25。
 
 **Follow-up Decision**
 
-Pending.
+`no-follow-up`。用户已明确说明本轮是测试轮次，并授权跳过剩余重复/兼容性项目；独立审计
+未发现 unresolved Critical/Important、未获授权的 required Evidence 缺口、产品失败或范围
+夸大。bounded artifact observation 已通过声明收窄处理，不值得单独创建 iteration 010。
 
 **Next Iteration**
 
-Pending.
+None。iteration 009 是本 change 的最后一个 implementation iteration；本次未调用 Act、
+Maintainer、Recorder 或归档流程。

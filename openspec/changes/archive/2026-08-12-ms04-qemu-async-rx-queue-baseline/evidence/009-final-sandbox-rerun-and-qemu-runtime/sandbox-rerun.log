@@ -1,0 +1,44 @@
+daivy@daivy:~/projects/serial/work/StarryOS$ python3 scripts/ms04_rx_stimulus.py --loopback-self-test 
+  echo "EXIT=$?"
+ms04 stimulus loopback self-test: protocol=PASS packets=96 sequence=PASS bounded=PASS
+EXIT=0
+daivy@daivy:~/projects/serial/work/StarryOS$ make tests/ms03_irq_probe tests/ms04_rx_probe
+  echo "EXIT=$?"
+riscv64-linux-musl-gcc -static -Os -o tests/ms03_irq_probe tests/ms03_irq_probe.c
+riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o tests/ms04_rx_probe tests/ms04_rx_probe.c
+tests/ms04_rx_probe.c: In function ‘run_burst’:
+tests/ms04_rx_probe.c:369:12: error: variable ‘timeout’ has initializer but incomplete type
+  369 |     struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+      |            ^~~~~~~
+tests/ms04_rx_probe.c:369:32: error: ‘struct timeval’ has no member named ‘tv_sec’
+  369 |     struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+      |                                ^~~~~~
+tests/ms04_rx_probe.c:369:41: error: excess elements in struct initializer [-Werror]
+  369 |     struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+      |                                         ^
+tests/ms04_rx_probe.c:369:41: note: (near initialization for ‘timeout’)
+tests/ms04_rx_probe.c:369:45: error: ‘struct timeval’ has no member named ‘tv_usec’
+  369 |     struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+      |                                             ^~~~~~~
+tests/ms04_rx_probe.c:369:55: error: excess elements in struct initializer [-Werror]
+  369 |     struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+      |                                                       ^
+tests/ms04_rx_probe.c:369:55: note: (near initialization for ‘timeout’)
+tests/ms04_rx_probe.c:369:20: error: storage size of ‘timeout’ isn’t known
+  369 |     struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+      |                    ^~~~~~~
+tests/ms04_rx_probe.c:369:20: error: unused variable ‘timeout’ [-Werror=unused-variable]
+cc1: all warnings being treated as errors
+make: *** [Makefile:164: tests/ms04_rx_probe] Error 1
+EXIT=2
+daivy@daivy:~/projects/serial/work/StarryOS$ 
+
+--- CLEAN RERUN AFTER AUTHORIZED TIMEVAL INCLUDE FIX ---
+2026-08-12T17:14:16+08:00
+riscv64-linux-musl-gcc -static -Os -o tests/ms03_irq_probe tests/ms03_irq_probe.c
+riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o tests/ms04_rx_probe tests/ms04_rx_probe.c
+STATIC_PROBE_RERUN_EXIT=0
+
+Collection note: the shell command wrapped the intended `sandbox-rerun.log` path after `sandbox-`.
+The exact tee output was recovered from the resulting `sandbox-` file and appended above. The
+unreferenced accidental file was then removed. This collection error did not affect the build exit.

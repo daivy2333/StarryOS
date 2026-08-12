@@ -489,6 +489,15 @@ fn probe_modes_have_one_central_terminal_marker_path() {
 }
 
 #[test]
+fn probe_includes_the_timeval_definition_directly() {
+    const SOURCE: &str = include_str!("ms04_rx_probe.c");
+    assert!(
+        SOURCE.contains("#include <sys/time.h>"),
+        "struct timeval must not depend on libc-specific transitive includes"
+    );
+}
+
+#[test]
 fn probe_terminal_guard_rejects_a_missing_failure_path() {
     const MUTATED: &str = r#"
 static int finish_mode() { printf("MS04 %s mode="); }

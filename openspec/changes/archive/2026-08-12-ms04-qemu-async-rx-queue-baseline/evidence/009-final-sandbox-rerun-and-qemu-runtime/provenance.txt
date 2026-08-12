@@ -1,0 +1,45 @@
+MS04 iteration 009 provenance
+captured_at=2026-08-12T16:54:12+08:00
+branch=net-k3
+initial_change_revision=16d9a16a2b65a574022faaee39b465f6f7aebd45
+iteration_008_capture_head=e0fac50ce01527a1c5dea83c36c37616a1a92590
+iteration_008_capture_head_time=2026-08-11T19:34:21+08:00
+iteration_008_act_base=78e1f7abfa1614c188a24ebe7150ffb7c71e46d0
+iteration_008_act_base_time=2026-08-12T16:13:59+08:00
+iteration_009_t7_3r_head=8f5b5228747dc817a5a9de7a3461dccdf06e0c24
+iteration_009_t7_3r_head_time=2026-08-12T16:50:36+08:00
+iteration_009_report_head=8f5b5228747dc817a5a9de7a3461dccdf06e0c24
+iteration_009_report_index=contains staged iteration 009 Evidence, change docs, timeval fix/guard and qualified probe artifact
+iteration_009_report_worktree=contains post-index Evidence review and waiver updates
+qemu_serial_sha256=186ad7c39dc13831892faf2459a5071c7455244bcb66a8662c288062e859a4e7
+
+Revision reconstruction:
+- 16d9a16a is an ancestor of iteration_009_t7_3r_head: PASS (git merge-base exit 0)
+- e0fac50c is an ancestor of iteration_009_t7_3r_head: PASS (git merge-base exit 0)
+- 78e1f7ab is an ancestor of iteration_009_t7_3r_head: PASS (git merge-base exit 0)
+
+T7.3R command results:
+- openspec validate ms04-qemu-async-rx-queue-baseline --strict: exit 0
+- openspec validate references --strict: exit 0
+- git diff --check excluding change Evidence: exit 0
+- git diff --cached --check excluding change Evidence: exit 0
+- git diff 16d9a16a... --check excluding change Evidence: exit 0
+- find 008 Evidence files with size 0: exit 0, no paths printed
+- sha256sum over all 8 iteration 008 Evidence files: exit 0
+- git diff --cached --check without exclusion: exit 0 because the 008 Evidence is now committed
+- git diff 16d9a16a... --check without exclusion: exit 2 only for preserved terminal whitespace in automatic-gates.log
+
+Raw-log gate:
+Source, test, script and Markdown whitespace is validated with the change Evidence tree excluded.
+Preserved raw Evidence is validated by existence, nonzero byte size, file index, SHA-256 and provenance.
+The unfiltered full-range exit 2 is not a product failure and is not represented as PASS.
+
+Iteration 008 SHA-256:
+4a5b2bb21a7263338ab72399d19de103c6e2ba3ff16c7c727f21319dd3746377  README.md
+21ff98c68aceaff764eb2b485603aae90c02e4cf6b7f6858d7eb35cb13087327  artifacts.sha256
+7cb097f6601fc9881ad014df9f1ef45604eda71ca6775ca9ce475f3255b59254  automatic-gates.log
+392f34d81dbd690cd1aa969913735a20a1f9d95fa263c3e1a98df6fefaa5986c  build.log
+f7247ba7c9ebfcd44934bf4784b5c0cfe2490dc0ea031e241bc3d4b2b3d52c69  commands.txt
+1aee99f33b1adceb7ab2cb5a46098e40614ab66a57872d56a5c335cf05f61141  env-blocked.txt
+e96bf298b673a66873d77a9ae86c3e9a7f95fffccc82d03ed95bcdad852e420a  environment.txt
+8489261c49cd08785a1ddd197fa12adcfa50534b47f710be0c7271bbdbad19bf  review.md

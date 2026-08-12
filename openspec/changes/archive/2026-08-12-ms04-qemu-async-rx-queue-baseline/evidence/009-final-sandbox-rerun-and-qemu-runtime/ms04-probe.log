@@ -1,0 +1,30 @@
+Source: qemu-serial.log, lines 9-28. Extracted without changing counter values.
+
+/tmp/ms04_rx_probe snapshot
+MS04 PRE total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=21 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 POST total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=21 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=0 isr_wake=0 nudge=0 task=0 reaped=0 refilled=0 delivered=0 non_ip=0 budget=0 yield=0 router_full=0 space_wake=0 empty=0 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=snapshot
+
+/tmp/ms04_rx_probe idle
+MS04 PRE total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=24 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 POST total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=24 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=0 isr_wake=0 nudge=0 task=0 reaped=0 refilled=0 delivered=0 non_ip=0 budget=0 yield=0 router_full=0 space_wake=0 empty=0 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=idle
+
+/tmp/ms04_rx_probe nudge
+MS04 PRE total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=27 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=0 task=70 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=70 fault=0 err_stage=0 err_code=0
+MS04 POST total=74 used=74 config=0 combined=0 unknown=0 spurious=0 ack=74 uart=27 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=74 isr_wake=74 nudge=1 task=71 reaped=407 refilled=407 delivered=406 non_ip=1 budget=0 yield=0 router_full=0 space_wake=0 empty=71 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=0 isr_wake=0 nudge=1 task=1 reaped=0 refilled=0 delivered=0 non_ip=0 budget=0 yield=0 router_full=0 space_wake=0 empty=1 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=nudge
+
+/tmp/ms04_rx_probe burst
+MS04 PRE total=76 used=76 config=0 combined=0 unknown=0 spurious=0 ack=76 uart=30 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=76 isr_wake=76 nudge=1 task=73 reaped=410 refilled=410 delivered=408 non_ip=2 budget=0 yield=0 router_full=0 space_wake=0 empty=73 fault=0 err_stage=0 err_code=0
+MS04 POST total=77 used=77 config=0 combined=0 unknown=0 spurious=0 ack=77 uart=30 restore=0 irq_entry=0 lifecycle=2 owner=1 isr_publish=77 isr_wake=77 nudge=1 task=77 reaped=506 refilled=506 delivered=504 non_ip=2 budget=2 yield=2 router_full=1 space_wake=1 empty=74 fault=0 err_stage=0 err_code=0
+MS04 DELTA isr_publish=1 isr_wake=1 nudge=0 task=4 reaped=96 refilled=96 delivered=96 non_ip=0 budget=2 yield=2 router_full=1 space_wake=1 empty=1 fault=0 restore=0 irq_entry=0
+MS04 PASS mode=burst
+
+WAIVED by user: post-regression final snapshot was not run. The last recorded MS04 POST is the burst
+POST above; it proves zero safety/fault counters through the core MS04 sequence, not after later
+compatibility workloads.
+ms04 stimulus: PASS packets=96 payload=64

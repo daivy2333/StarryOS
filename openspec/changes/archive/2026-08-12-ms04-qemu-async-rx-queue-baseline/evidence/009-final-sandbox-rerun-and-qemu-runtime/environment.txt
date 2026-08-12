@@ -1,0 +1,39 @@
+MS04 iteration 009 environment
+
+Agent-side T7.3R:
+captured_at=2026-08-12T16:54:12+08:00
+host=Linux WSL2 x86_64
+rustc=rustc 1.95.0-nightly (859951e3c 2026-02-24)
+cargo=cargo 1.95.0-nightly (8cc0cb136 2026-02-17)
+openspec=1.6.0
+qemu=QEMU emulator version 7.0.0
+agent_mode=restricted sandbox
+agent_limitations=UDP socket creation EPERM; riscv64-linux-musl-gcc SIGSYS recorded in iteration 008
+
+User-side T8.1:
+captured_at=2026-08-12T17:14:16+08:00 through 2026-08-12T17:15:07+08:00
+host=Linux daivy WSL2 x86_64, user terminal outside the restricted agent sandbox
+working_directory=/home/daivy/projects/serial/work/StarryOS
+rustc=unchanged from agent baseline; not used by T8.1 user commands
+cargo=unchanged from agent baseline; not used by T8.1 user commands
+riscv64_linux_musl_gcc=/opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc
+riscv64_linux_musl_gcc_sha256=1cfe9ff56527191c293652b4887e363403c32154eaa90f4773e8c02af91359c8
+loopback_sandbox_difference=external user terminal permitted UDP socket creation; 96-packet self-test exit 0
+static_build_sandbox_difference=external user terminal permitted the musl compiler; all four payload builds exit 0 after the authorized include fix
+
+User-side T8.2:
+captured_at=serial file mtime 2026-08-12T17:30:31+08:00; terminal start/end not recorded
+qemu_version=QEMU emulator version 7.0.0
+machine=virt
+memory=1G
+harts=1
+network_device=one virtio-net-device over VirtIO-MMIO
+network_backend=user-net
+rootfs=make/disk.img, raw ext4 image
+kernel=StarryOS_riscv64-qemu-virt.bin
+guest_console=manual commands, one command per shell prompt
+terminal_recorder=script -q -f; recording only, no automated input
+session_interruption_status=not recorded; user reports no fatal and explicitly waives termination metadata
+
+Claim limit: QEMU single-hart functional evidence only. No hardware, SMP, PCI, DMA coherency,
+physical timing or performance claim.

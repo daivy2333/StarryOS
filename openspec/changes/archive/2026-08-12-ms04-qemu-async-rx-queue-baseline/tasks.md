@@ -324,7 +324,7 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   full-range Review 与 required Evidence 完成。D1/QEMU artifact 已记录 fresh hash；
   static probe compiler 在 SIGSYS 处按 R44 交给 8.1。未运行 QEMU。 -->
 
-- [ ] 7.3R 在最终 iteration 的 Evidence 中补充 iteration 008 revision provenance 和
+- [x] 7.3R 在最终 iteration 的 Evidence 中补充 iteration 008 revision provenance 和
   raw-log whitespace Gate 说明。WHY 是 008 的 `environment.txt` 记录采集 HEAD
   `e0fac50`，而 README/Act Response 使用 `78e1f7a` 作为 Act HEAD；同时 staged
   `automatic-gates.log` 保留 ANSI/CRLF/终端行尾空格，使不排除 raw Evidence 的
@@ -334,10 +334,15 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   路径限定 whitespace check，raw logs 单独检查存在、非空、hash 和时间范围。EXPECTED
   是不存在矛盾的 provenance 声明，所有非 raw-Evidence diff check 退出 0。不得删除、
   截断或“清洗”008 原始日志来制造通过，也不得把 raw-log 空格当作产品源码失败。
+  <!-- 2026-08-12 iteration 009 Act：T7.3R PASS。strict change/references、working
+  tree/cached/full-range 的 non-Evidence whitespace checks 均 exit 0；008 的 8 个文件
+  全部非空且 SHA-256 成功。未过滤 full-range 仍只因原始 automatic-gates.log 的终端
+  空白 exit 2；当前 index 已提交，因此未过滤 cached check 现为 exit 0。revision 角色
+  与该基线变化记录于 evidence/009.../provenance.txt。 -->
 
 ## 8. 最终独立 iteration 的用户手工批次
 
-- [ ] 8.1 仅在 1-7 的产品 Gate 全部通过后，在最终独立 manual iteration 中由用户
+- [x] 8.1 仅在 1-7 的产品 Gate 全部通过后，在最终独立 manual iteration 中由用户
   在 sandbox 外复跑 7.1/7.2 记录的 `ENV-BLOCKED` 原命令；若没有环境阻塞则明确
   记录 None。WHY 是 R44 要求
   环境能力问题由用户边界完成，但不能掩盖产品失败；HOW 是保存环境差异、完整输出、
@@ -345,8 +350,12 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   EXPECTED 是
   每项最终 PASS 后才进入 8.2。出现 Rust/C/link/test/source 错误、中断、缺日志或
   缺产物时本任务保持未完成并停止。
+  <!-- 2026-08-12 iteration 009 Act：首次外部复跑 loopback 96/96 PASS，但 static
+  probe 因缺少显式 <sys/time.h> exit 2。用户授权本轮直接修复该小问题；增加一行头文件
+  和永久 source guard 后，外部 clean rerun exit 0。MS01-MS04 四个 payload 均为 fresh
+  static RISC-V ELF，file/stat/SHA-256 完整；T8.1 PASS。首次失败和 clean rerun 均保留。 -->
 
-- [ ] 8.2 用户按 R44 在终端中手工提供 guest payload、启动单 hart/单
+- [x] 8.2 用户按 R44 在终端中手工提供 guest payload、启动单 hart/单
   VirtIO-MMIO NIC QEMU，并逐条运行 MS04 `idle`、`nudge`、`burst/fairness` 与
   snapshot 模式，再运行 MS03 IRQ/UART、MS02 TCP/UDP 和 MS01 socket 回归；host
   burst 工具只负责流量刺激，不输入 guest shell。WHY 是最终证明 IRQ 唤醒、唯一
@@ -361,3 +370,10 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   使用 `scripts/ms04_rx_stimulus.py --host 0.0.0.0 --port 15556`；不得沿用 iteration
   000 的旧 `burst 256` 或 `tests/ms04_rx_burst.py` 示例。MS02 guest service 必须观察
   两次独立 TCP `MS02_TCP_PASS` 和一次 UDP PASS 后得到 `MS02_COMPLETE tcp=2 udp=1`。
+  <!-- 2026-08-12 iteration 009 Act：用户提供手工 qemu-serial.log，并明确授权跳过
+  缺少的重复/兼容性测试。MS04 snapshot/idle/nudge/burst 全部 PASS；burst 精确 96，
+  reaped=refilled=delivered，budget/yield 可见，已记录 safety/fault 为零。MS03
+  idle/uart/rx2/tx2 PASS；MS02 TCP#1 PASS。SKIPPED by explicit user waiver：boot 原始签名、
+  MS03 both/repeat-rx2、MS02 TCP#2/UDP/COMPLETE、MS01 14/14、post-regression final snapshot
+  与 session termination metadata。结论收窄为单 hart VirtIO-MMIO MS04 核心异步 RX
+  runtime baseline；不声明完整 MS01/MS02/MS03 compatibility。 -->

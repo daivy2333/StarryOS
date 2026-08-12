@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 最后更新: 2026-08-09 | 分支: net-k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、M41、D22、K31-K32、K37；MS01-MS03 与 MS16 已归档。
+> 最后更新: 2026-08-12 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
 
 ---
 
@@ -17,9 +17,9 @@
 | <!-- T02 --> T02 | QEMU I/O 边界见证 | 固化串口、网络和 hostfwd 的独立路径；固定 VirtIO-MMIO 启动签名 | 无 hostfwd 仍可进 shell；MMIO net/block 可探测；串口成功不计网络成功 | T01 | ✅ 完成 |
 | <!-- T03 --> T03 | MMIO 轮询网络基线 | 保持轮询驱动；建立明确 guest 服务和宿主端到端用例 | ARP/ICMP、UDP、TCP 5555 各有独立见证；空闲 CPU 只作基线记录 | T02 | ✅ 完成 |
 | <!-- T04 --> T04 | MMIO IRQ 事实 | 解析设备地址、PLIC IRQ、claim/ack/rearm；只增加计数器 | 注入 RX/TX 事件时 IRQ 可重复增长；错误 IRQ 不触碰异步队列 | T03 | ✅ 完成 |
-| <!-- T05 --> T05 | IRQ 唤醒原语 | 建立 `NetQueueControl`、AtomicWaker 和 register-recheck；ISR 不搬包 | event-before-register、register-during-event、spurious IRQ 无 lost wakeup | T04 | 🔄 MS04 进行中（依赖本地化、NetQueueControl 契约、EVENT_IDX 已就绪） |
-| <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ⏳ 等待 T05 |
-| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ⏳ 等待 T06 |
+| <!-- T05 --> T05 | IRQ 唤醒原语 | 建立 `NetQueueControl`、AtomicWaker 和 register-recheck；ISR 不搬包 | event-before-register、register-during-event、spurious IRQ 无 lost wakeup | T04 | ✅ 完成（MS04） |
+| <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ✅ 完成（MS04 核心 Gate；兼容性重复项按用户授权豁免） |
+| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ⏳ 待 MS05 Plan |
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ⏳ 等待 T07 |
 | <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ⏳ 等待 T08 |
 | <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ⏳ 等待 T09 |
@@ -122,7 +122,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS04：QEMU 异步 RX 队列基线
 
-- Status: planned
+- Status: completed — 2026-08-12，核心运行时 Gate PASS；完整 compatibility 重复项按用户授权豁免
 - Outcome: MMIO RX 由最小 ISR 唤醒唯一 queue task，以有界 budget 推进。
 - Rationale: T05 的唤醒原语与 T06 的 RX 服务共同证明第一条可用的异步队列路径。
 - Dependencies: MS16
@@ -133,7 +133,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: event-before-register、register-during-event、spurious IRQ 和 budget exhausted 可复现。
 - Diagnostic boundary: 失败限制在 IRQ 到 queue task 的通知、RX ownership 或调度公平性。
 - Split signals: queue contract 需要同时支持多个互不兼容的 transport 语义。
-- Related changes: None
+- Related changes: `ms04-qemu-async-rx-queue-baseline`（归档于 `openspec/changes/archive/2026-08-12-ms04-qemu-async-rx-queue-baseline/`；10 iterations，25/25 tasks，最终 Review: PASS WITH EXPLICIT USER WAIVER）。Runbook `ms04-qemu-async-rx-core-evidence.md` (R51) 已发布。
 
 ### MS05：QEMU 有界双向设备数据面
 
@@ -316,4 +316,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-MS01-MS03 与 MS16 已归档。当前活跃 change：`ms04-qemu-async-rx-queue-baseline`（Gate 1 与 Gate 2 已批准，2026-08-10）。iteration 000 实施中：T1-T3.1 完成（依赖本地化、NetQueueControl 契约、EVENT_IDX 修复、critical-section restore），T4-T8 未开始。详见 `openspec/changes/ms04-qemu-async-rx-queue-baseline/iterations/000-initial.md` Act Response。
+当前无活跃 change。MS01-MS04 与 MS16 已归档；下一里程碑为 MS05，尚未建立获批 change。
