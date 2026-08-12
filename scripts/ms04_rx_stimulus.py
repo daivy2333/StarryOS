@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import socket
 import struct
+import threading
 
 
 MAGIC = 0x4D533034
@@ -15,6 +16,7 @@ MIN_COUNT = 65
 MAX_COUNT = 256
 MIN_PAYLOAD = 16
 MAX_PAYLOAD = 1200
+SELF_TEST_TIMEOUT = 2.0
 
 
 def parse_control(data: bytes, verb: str) -> tuple[int, int]:
@@ -97,15 +99,64 @@ def self_test() -> None:
     print("ms04 stimulus self-test: protocol=PASS packets=96 sequence=PASS bounds=PASS malformed=PASS")
 
 
+def loopback_self_test() -> None:
+    worker_result: list[tuple[int, int]] = []
+    worker_error: list[Exception] = []
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+        server.settimeout(SELF_TEST_TIMEOUT)
+        server.bind(("127.0.0.1", 0))
+        server_address = server.getsockname()
+
+        def run_server() -> None:
+            try:
+                worker_result.append(serve_once(server))
+            except Exception as error:
+                worker_error.append(error)
+
+        worker = threading.Thread(target=run_server, name="ms04-loopback-server")
+        worker.start()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                client.settimeout(SELF_TEST_TIMEOUT)
+                client.connect(server_address)
+                client.send(b"MS04 REGISTER 96 64")
+                assert client.recv(256) == b"MS04 READY 96 64"
+                client.send(b"MS04 START 96 64")
+                for sequence in range(96):
+                    packet = client.recv(12 + 64)
+                    assert len(packet) == 12 + 64
+                    magic, actual_sequence, count = struct.unpack("!III", packet[:12])
+                    assert (magic, actual_sequence, count) == (MAGIC, sequence, 96)
+                    assert packet[12:] == bytes(
+                        (sequence + index) & 0xFF for index in range(64)
+                    )
+        finally:
+            worker.join(SELF_TEST_TIMEOUT)
+
+        if worker.is_alive():
+            raise TimeoutError("real-loopback worker did not finish")
+        if worker_error:
+            raise worker_error[0]
+        assert worker_result == [(96, 64)]
+    print("ms04 stimulus loopback self-test: protocol=PASS packets=96 sequence=PASS bounded=PASS")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--loopback-self-test", action="store_true")
     args = parser.parse_args()
 
+    if args.self_test and args.loopback_self_test:
+        parser.error("self-test modes are mutually exclusive")
     if args.self_test:
         self_test()
+        return 0
+    if args.loopback_self_test:
+        loopback_self_test()
         return 0
     if not 1 <= args.port <= 65535:
         parser.error("port must be in 1..65535")

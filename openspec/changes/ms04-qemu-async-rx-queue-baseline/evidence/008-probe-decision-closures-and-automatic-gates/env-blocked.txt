@@ -1,0 +1,15 @@
+T6.2R-b
+Command: python3 scripts/ms04_rx_stimulus.py --loopback-self-test
+Exit: 1
+Earliest capability failure: socket(AF_INET, SOCK_DGRAM) returned EPERM (Operation not permitted)
+Classification: ENV-BLOCKED under R44
+Artifact status: no artifact expected; protocol-only self-test passed separately
+T8.1 handoff: rerun the exact command outside the restricted sandbox
+
+T7.2 static probes
+Command: make tests/ms03_irq_probe tests/ms04_rx_probe
+Exit: 2
+Earliest capability failure: riscv64-linux-musl-gcc terminated with SIGSYS (`Bad system call`) while producing tests/ms03_irq_probe
+Classification: ENV-BLOCKED under R44
+Artifact status: tests/ms03_irq_probe remains a stale 2026-08-03 artifact and is unqualified; tests/ms04_rx_probe is absent
+T8.1 handoff: rerun the exact command outside the restricted sandbox and record fresh sizes and SHA-256 values

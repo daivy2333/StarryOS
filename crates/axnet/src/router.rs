@@ -51,7 +51,7 @@ pub enum RxOutcome {
 
 /// Who currently holds the right to consume a target device's RX.
 ///
-/// This is a consumption-right view, not a lifecycle state. T5 later maps
+/// This is a consumption-right view, not a lifecycle state. The lifecycle maps
 /// `Polling/Spawned/Unavailable` to [`Self::PollingOwned`] and
 /// `Active/Faulted` to [`Self::AsyncOwned`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

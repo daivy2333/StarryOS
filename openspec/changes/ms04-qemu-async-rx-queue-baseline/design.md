@@ -332,14 +332,40 @@ RX burst/fairness 和 snapshot 模式。nudge 使用独立 `0x4e49_4e31` command
 和 task 都推进、budget/yield 可见、idle/nudge 不 busy-loop 为判据。MS01/MS02/MS03
 使用既有 payload 做独立回归。
 
+`fault`、`restore_violation` 和 `irq_enabled_entry` 是整次启动的安全计数。probe 必须同时
+要求 POST 绝对值为零，不能只检查测量窗口 delta；否则 PRE 前发生的安全失败会被后续
+窗口掩盖。idle 必须拒绝 ISR publish/wake、software nudge、descriptor、budget、yield
+和 Router backpressure 进度；nudge 除 software-nudge、一次 task poll 和一次 empty
+check 外，不得接受任何 ISR、descriptor、delivery、budget、yield 或 backpressure 进度。
+稳定快照的 deadline 优先于“连续两次相等”：到期后的相等读数仍为 timeout。
+
+已识别 mode 必须输出且只输出一个终态 `MS04 PASS|FAIL mode=...` marker。PRE、POST 和
+DELTA 只在对应数据成功取得并通过单调性检查后输出；读取失败不得伪造全零或复用旧
+snapshot。host 协议保留纯内存 self-test，并增加独立的有界真实 loopback self-test，
+供自动环境尝试并按 R44 交接。
+
 替代方案：在 ISR 或每个 packet 打印。拒绝，因为串口 I/O 会改变 IRQ 时序并污染
 burst 结果。
 
 ### D10：自动 Gate 在前，R44 环境交接与 QEMU 手测使用最终独立 iteration
 
 Act 必须先执行依赖 unit tests、MS04 host race/state tests、axnet tests、UART tests、
-format/source/diff checks、QEMU target build 和 D1 async-UART compile check。自动
+change-owned source 的 format/source/diff checks、QEMU target build 和 D1 async-UART
+compile check。自动
 命令出现产品错误时停止，不进入手工任务。
+
+三个本地化依赖保留所复制版本的源码布局；全 manifest rustfmt 会重排未修改的 vendor
+snapshot，不是本 change 的产品 Gate。格式检查必须覆盖 axnet、kernel、host harness 和
+本 change 实际修改的 adapter/queue 文件；不得为了通过 Gate 批量格式化未修改的 block、
+sound、socket、PCI 或 smoltcp 源码。vendor 边界改用依赖 test/check、修改文件的定向
+rustfmt、source audit 和从 change 初始 revision 开始的 full diff Review。
+
+原始 terminal Evidence 可以保留 ANSI、CRLF 和终端产生的行尾空格，不作为源码/文档
+whitespace Gate 的输入；否则完整日志与 `git diff --check` 的目标发生冲突。最终 Review
+必须对产品源码、测试、脚本和 OpenSpec Markdown 运行排除 raw Evidence 的路径限定
+whitespace check，并独立检查 Evidence 文件存在、非空、hash、时间和 revision provenance。
+若采集时 HEAD、Act 基线和最终 Review revision 不同，索引必须逐项记录，不得用单个
+“Act HEAD”覆盖不同时间点。
 
 实现按单一可诊断目标拆成多个 iteration；每轮只承担一个紧密内聚的接口、状态机
 或集成面，并在进入下一轮前完成本轮自动回归和 Plan Review。全量自动 Gate 单独

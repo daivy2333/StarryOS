@@ -1,0 +1,73 @@
+Iteration 008 command index
+Collection window: 2026-08-12T16:17:43+08:00 through 2026-08-12T16:33:38+08:00
+
+T6.2R/T7.1 automatic gates (automatic-gates.log)
+- make host-test
+  Exit 2: all product checks passed; final real-loopback self-test failed at socket creation with EPERM and is ENV-BLOCKED under R44.
+- make network-benchmark-test
+  Exit 0.
+- cargo check -p axdriver_net
+  Exit 0.
+- cargo test -p axdriver_net
+  Exit 0: 4 unit tests, 0 doc tests.
+- cargo check -p axdriver_virtio --features net
+  Exit 0.
+- cargo test -p virtio-drivers --lib -- --nocapture
+  Exit 0: 34 tests.
+- cargo test -p axnet --lib -- --nocapture
+  Exit 0: 109 tests.
+- for run in $(seq 1 100); do RUST_TEST_THREADS=16 cargo test -p axnet --lib --quiet || exit $?; done
+  Exit 0: 100/100 runs.
+- cargo test -p axdriver_uart --lib -- --nocapture
+  Exit 0: 62 tests.
+- cargo test -p axdriver_uart --doc
+  Exit 0: 8 normal and 10 compile-fail doc tests.
+- cargo fmt --manifest-path kernel/Cargo.toml --all -- --check
+  Exit 0.
+- cargo fmt --manifest-path crates/axnet/Cargo.toml --all -- --check
+  Exit 0.
+- rustfmt --check crates/axdriver_virtio/src/net.rs crates/virtio-drivers/src/queue.rs crates/virtio-drivers/src/device/net/dev_raw.rs
+  Initial exit 1; scoped mechanical formatting applied, final exit 0.
+- rustfmt --edition 2024 --check kernel/src/net/ioctl.rs kernel/src/net/mod.rs tests/ms04-async-rx-host-harness.rs
+  Exit 0.
+- gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms04_rx_probe.c
+  Exit 0.
+- gcc -std=c11 -Wall -Wextra -Werror -DMS04_RX_PROBE_TEST tests/ms04_rx_probe_test.c -o /tmp/ms04_rx_probe_test && /tmp/ms04_rx_probe_test
+  Exit 0: 10 tests.
+- python3 scripts/ms04_rx_stimulus.py --self-test
+  Exit 0.
+- python3 scripts/ms04_rx_stimulus.py --loopback-self-test
+  Exit 1: socket(AF_INET, SOCK_DGRAM) returned EPERM; see env-blocked.txt.
+- rustc --edition 2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-harness && /tmp/ms04-async-rx-host-harness
+  Exit 0: 14 tests.
+
+T7.2 builds and audits (build.log)
+- make ARCH=riscv64 APP_FEATURES=lichee-d1-kbench MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$PWD/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
+  Exit 0; produced the D1 ELF and bin listed in artifacts.sha256.
+- cargo check --offline -p starry-kernel --features qemu
+  Exit 0.
+- make LOG=info build
+  Exit 0; produced the QEMU ELF and bin listed in artifacts.sha256.
+- make tests/ms03_irq_probe tests/ms04_rx_probe
+  Exit 2: riscv64-linux-musl-gcc terminated with SIGSYS/Bad system call; see env-blocked.txt.
+- cargo tree -p axnet -e features
+  Exit 0.
+- cargo tree -p starry-kernel --features qemu -e features
+  Exit 0.
+- cargo tree -p axdriver_virtio --features net
+  Exit 0; virtio-drivers resolves to the repository-local path.
+
+T7.3 review and validation (automatic-gates.log)
+- openspec validate ms04-qemu-async-rx-queue-baseline --strict
+  Exit 0.
+- openspec validate references --strict
+  Exit 0.
+- git diff --check
+  Exit 0.
+- git diff --cached --check
+  Exit 0.
+- git diff 16d9a16a2b65a574022faaee39b465f6f7aebd45 --check
+  Initial exit 2 for a trailing blank line in .gitignore; repaired, final exit 0.
+
+Artifact producer mapping and hashes are in artifacts.sha256. Complete outputs,
+including warnings, remain in automatic-gates.log and build.log.

@@ -92,6 +92,7 @@ host-test:
 	cc -std=c11 -Wall -Wextra -Werror tests/ms04_rx_probe_test.c -o /tmp/ms04-rx-probe-test
 	/tmp/ms04-rx-probe-test
 	python3 scripts/ms04_rx_stimulus.py --self-test
+	python3 scripts/ms04_rx_stimulus.py --loopback-self-test
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)
 network-benchmark-test:

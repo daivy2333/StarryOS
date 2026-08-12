@@ -1,0 +1,12 @@
+98401ffd7d70731ca216acef2134e472b428da1d9f38d303133ed69946a87b2b  478672  StarryOS_riscv64-lichee-d1.elf
+d33596d1145c3377cf52038dc2fdde04708407411bce7961552c531570a6be10  159936  StarryOS_riscv64-lichee-d1.bin
+cf0c1ea6a9bbd42f8f7b7099010b8bffffc101600f7c4de6accd4c142be48393  46894056  StarryOS_riscv64-qemu-virt.elf
+84b7b5c88cf8fb75d68b27174463a1af746fb383a0da1fe2a31cb5d75777f435  40046784  StarryOS_riscv64-qemu-virt.bin
+
+Producer commands:
+- D1 artifacts: `make ARCH=riscv64 APP_FEATURES=lichee-d1-kbench MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$PWD/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build` (exit 0)
+- QEMU artifacts: `make LOG=info build` (exit 0)
+
+Static probes are unqualified and intentionally have no hashes:
+- `tests/ms03_irq_probe`: stale pre-iteration artifact dated 2026-08-03; producer failed before replacement.
+- `tests/ms04_rx_probe`: absent.

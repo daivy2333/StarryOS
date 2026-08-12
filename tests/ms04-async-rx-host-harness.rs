@@ -451,3 +451,52 @@ fn snapshot_command_consumer_inventory_is_versioned_and_bounded() {
     assert!(MS04.contains("28 * sizeof(uint64_t)"));
     assert!(!MS04.contains("0x4e494431"));
 }
+
+mod probe_terminal_guard {
+    use super::production_guard::block_after;
+
+    const SOURCE: &str = include_str!("ms04_rx_probe.c");
+
+    pub fn check(source: &str) -> Result<(), String> {
+        if source.matches("MS04 FAIL mode=").count() != 1
+            || source.matches("MS04 %s mode=").count() != 1
+        {
+            return Err("terminal markers must be emitted only by the two report helpers".into());
+        }
+        for runner in ["run_snapshot", "run_idle", "run_nudge", "run_burst"] {
+            let body = block_after(source, &format!("static int {runner}"))
+                .ok_or_else(|| format!("{runner} body not found"))?;
+            if !body.contains("fail_mode") || !body.contains("finish_mode") {
+                return Err(format!("{runner} must terminate through a report helper"));
+            }
+            if body.contains("MS04 PASS mode=") || body.contains("MS04 FAIL mode=") {
+                return Err(format!("{runner} emits a terminal marker directly"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_production() -> Result<(), String> {
+        check(SOURCE)
+    }
+}
+
+#[test]
+fn probe_modes_have_one_central_terminal_marker_path() {
+    if let Err(reason) = probe_terminal_guard::check_production() {
+        panic!("MS04 probe terminal marker contract failed: {reason}");
+    }
+}
+
+#[test]
+fn probe_terminal_guard_rejects_a_missing_failure_path() {
+    const MUTATED: &str = r#"
+static int finish_mode() { printf("MS04 %s mode="); }
+static int fail_mode() { printf("MS04 FAIL mode="); }
+static int run_snapshot() { return finish_mode(); }
+static int run_idle() { return fail_mode(); }
+static int run_nudge() { return fail_mode() + finish_mode(); }
+static int run_burst() { return fail_mode() + finish_mode(); }
+"#;
+    assert!(probe_terminal_guard::check(MUTATED).is_err());
+}

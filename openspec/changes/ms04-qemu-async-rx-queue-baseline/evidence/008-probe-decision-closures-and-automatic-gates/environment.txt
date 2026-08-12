@@ -1,0 +1,10 @@
+Captured: 2026-08-12T16:17:43+08:00
+Branch: net-k3
+HEAD: e0fac50ce01527a1c5dea83c36c37616a1a92590
+Kernel: Linux daivy 6.18.33.2-microsoft-standard-WSL2 x86_64 GNU/Linux
+Rust: rustc 1.95.0-nightly (859951e3c 2026-02-24)
+Cargo: cargo 1.95.0-nightly (8cc0cb136 2026-02-17)
+C compiler: cc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+Python: Python 3.10.12
+OpenSpec: 1.6.0
+Mode: restricted workspace-write sandbox; network and socket capabilities may be denied

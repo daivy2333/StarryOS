@@ -2,8 +2,8 @@
 //!
 //! This module hosts the crate-private seam between the future RX queue task
 //! and [`crate::service::Service`]: a single-waiter queue notification state,
-//! pure lifecycle/event/budget decisions, and the unique named queue task
-//! wiring. No ISR publish or kernel caller lives here yet (T6.1).
+//! pure lifecycle/event/budget decisions, the unique named queue task wiring,
+//! and fixed ISR/software event publication entry points.
 
 #[cfg(not(test))]
 use alloc::borrow::ToOwned;
@@ -770,8 +770,8 @@ fn start_with(lifecycle: &RxLifecycle, spawn: impl FnOnce()) -> Result<(), Start
 /// Activates the async RX path. The CAS winner alone requests one fixed-name
 /// spawn; a repeated call returns `AlreadyStarted` without a second task.
 ///
-/// Dormant in this iteration: no kernel caller exists until T6.1 wires the
-/// ISR publish/wake, so the polling owner remains active at runtime.
+/// The kernel calls this only after the VirtIO-net IRQ handler has been
+/// registered, so no task can suppress notifications without a wake source.
 pub fn start_rx_task() -> Result<(), StartError> {
     start_with(&RX_LIFECYCLE, spawn_rx_task)
 }

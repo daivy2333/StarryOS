@@ -12,8 +12,8 @@
 | 005 | iteration 004 Review 修复 + T5.2 唯一 RX task 与 budget | No |
 | 006 | iteration 005 Review 修复 + T6.1 ISR publish/wake 与 telemetry | No |
 | 007 | iteration 006 Review 修复 + T6.2 probe/stimulus 与自动构建入口 | No |
-| 008 | T7 全量自动 Gate、diff Review 与 Evidence 准备 | No |
-| 009 | T8 sandbox 复跑和 QEMU runtime 手测 | Yes, user-only |
+| 008 | iteration 007 Review 修复 + T7 全量自动 Gate、diff Review 与 Evidence 准备 | No |
+| 009 | iteration 008 Evidence Review 修复 + T8 sandbox 复跑和 QEMU runtime 手测 | Yes, user-only |
 
 只有当前一轮通过 Plan Review 后才创建下一轮；编号是当前计划顺序，不预先生成空
 iteration。若 Review 发现可控的小粒度问题，修复并入下一原定 iteration；只有无法安全
@@ -69,7 +69,7 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
 
 ## 3. 修复 shared critical-section 的 IRQ restore
 
-- [ ] 3.1 新增可由 `tests/ms04-async-rx-host-harness.rs` 引入的 kernel 纯
+- [x] 3.1 新增可由 `tests/ms04-async-rx-host-harness.rs` 引入的 kernel 纯
   restore-policy seam，并把它加入 `Makefile::host-test`；先写 enabled、disabled、
   nested RED cases，再在 `kernel/Cargo.toml` 启用 `critical-section 1.2` 的
   `restore-state-bool`，以 `set_impl! + Impl` 替换 `kernel/src/lib.rs` 的手写 ABI。
@@ -84,6 +84,10 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   执行同一组 6 个模型测试，且生产 `KernelCriticalSection` 未复用被测 seam；D1
   target compile 也未通过。Iteration 001 已让生产与 host tests 复用同一 seam；
   D1 未通过仍使本项保持未完成。
+  <!-- 2026-08-12 iteration 007 Plan Review：相同 D1 命令在当前 HEAD
+  `e0fac50ce01527a1c5dea83c36c37616a1a92590` 完整退出 0，并生成新鲜 ELF/bin；结合
+  已通过的 policy/host/UART/QEMU compile 见证，本项现已闭合。T7.2 仍会复跑 D1，
+  但不再需要产品修复或 waiver。 -->
 
 - [x] 3.2 为 production glue 增加永久 source guard。WHY 是 iteration 001 的 host
   tests 覆盖 seam 行为，但未来 `KernelCriticalSection` 仍可内联 axhal 调用并绕过
@@ -272,24 +276,42 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   build 在受限沙箱因 SIGSYS/Bad system call 按 R44 记为 ENV-BLOCKED，未用旧 artifact
   代替。本轮未运行 QEMU、未修改 rootfs、未创建 Evidence。 -->
 
+- [x] 6.2R 关闭 iteration 007 Review 的 probe 判定、deadline、marker 与真实 loopback
+  缺口。四模式必须在 POST 同时要求 boot-history `fault`、`restore_violation` 和
+  `irq_enabled_entry` 绝对值为零；idle 拒绝 ISR/software/descriptor/budget/yield/
+  backpressure 进度，nudge 除 software `+1`、task `+1`、empty `+1` 外拒绝所有进度。
+  稳定快照先判 deadline，再接受相等 progress；已识别 mode 恰好输出一个终态 marker，
+  只在数据实际存在时输出 PRE/POST/DELTA。host 工具保留纯协议 self-test，并新增有界
+  real-loopback self-test；当前 sandbox 若以 EPERM/SIGSYS 拒绝，只能按 R44 记录并交给
+  8.1。RED 必须通过 C decision mutations 复现“旧 violation 被 delta 掩盖”、idle/nudge
+  漏检和 equal-after-deadline；GREEN 为 mutation 全拒绝、strict C11、host-test 和两个
+  stimulus self-test 的可执行部分通过。不得扩大固定 V2、重置 counter、伪造 snapshot、
+  把缺失 PRE/POST 打印为零或让 self-test 驱动 QEMU console。
+  <!-- 2026-08-12 Act：absolute safety、idle/nudge exact matrix、deadline-first stable
+  snapshot 和 centralized terminal marker 已由 10 个 C decision tests 与 14 个 host
+  harness tests 覆盖。纯协议 self-test PASS；真实 UDP loopback 在 socket 创建处 EPERM，
+  按 R44 原命令交给 8.1。 -->
+
 ## 7. 完成全部自动 Gate 与 Review
 
-- [ ] 7.1 运行本地依赖 unit/check、`make host-test`、axnet full lib tests、UART
-  unit/doctest、probe host syntax/stimulus self-test、各 manifest 与 workspace fmt
-  check。WHY 是先关闭纯状态、接口、EVENT_IDX、critical-section 和兼容性缺口；
+- [x] 7.1 运行本地依赖 unit/check、`make host-test`、axnet full lib tests与 100×并发、
+  UART unit/doctest、probe host syntax/stimulus self-test，以及 kernel/axnet manifest fmt
+  和 change-owned adapter/queue 文件的定向 rustfmt。WHY 是先关闭纯状态、接口、
+  EVENT_IDX、critical-section 和兼容性缺口；全 manifest fmt 会批量重排未修改的 vendor
+  snapshot，已由 iteration 007 Review 判为无效 Gate，禁止借 T7 清理该范围；
   EXPECTED 是全部退出 0，测试数量和关键输出记录在 Act Response。任何产品编译、
   assertion、source 或格式失败都停止，不能转入任务 8。若某命令最终仅因 R44
   明确的 sandbox 能力拒绝失败，记录原命令、退出码和最早失败层为
   `ENV-BLOCKED`，继续其余自动 Gate，并把同一命令加入 8.1。
 
-- [ ] 7.2 依次运行 D1 async-UART compile check、`make LOG=info build`、MS04 guest
+- [x] 7.2 依次运行 D1 async-UART compile check、`make LOG=info build`、MS04 guest
   probe static build，并确认 QEMU 镜像存在且记录 size/hash。WHY 是 critical-section
   是跨平台共享实现，QEMU 手测前必须先尝试所有自动 target 产物；EXPECTED 是命令
   退出 0、source/dependency audit 确认未关闭 EVENT_IDX，且产物可供手工批次使用；
   实际协商结果由 8.2 串口日志确认。产品诊断立即停止；仅
   R44 `ENV-BLOCKED` 可按 7.1 规则延后。不得以归档镜像或旧 Evidence 替代本轮产物。
 
-- [ ] 7.3 执行 specs-vs-code、完整 code diff 和 full diff review，运行
+- [x] 7.3 执行 specs-vs-code、完整 code diff 和 full diff review，运行
   `openspec validate ms04-qemu-async-rx-queue-baseline --strict`、references strict
   validation、`git diff --check` 与结构化 source assertions；创建
   对应自动 Gate iteration 的 Evidence 索引，并写入已完成的
@@ -298,6 +320,20 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   未批准 Simplified、TBD 或未解决 Critical/Important finding；EXPECTED 是自动
   Gate 全 PASS 或只有可定位的环境交接，Evidence 索引列出每个最终文件和通过条件。
   任一产品 Gate、追踪或 review 缺口必须停止，不得请求任务 8。
+  <!-- 2026-08-12 Act：自动 Gate、D1/QEMU target build、source/dependency audit、
+  full-range Review 与 required Evidence 完成。D1/QEMU artifact 已记录 fresh hash；
+  static probe compiler 在 SIGSYS 处按 R44 交给 8.1。未运行 QEMU。 -->
+
+- [ ] 7.3R 在最终 iteration 的 Evidence 中补充 iteration 008 revision provenance 和
+  raw-log whitespace Gate 说明。WHY 是 008 的 `environment.txt` 记录采集 HEAD
+  `e0fac50`，而 README/Act Response 使用 `78e1f7a` 作为 Act HEAD；同时 staged
+  `automatic-gates.log` 保留 ANSI/CRLF/终端行尾空格，使不排除 raw Evidence 的
+  `git diff --cached --check` 与 full-range `--check` 退出 2。HOW 是保留 008 原始
+  Evidence 不改写，在 009 索引逐项记录采集 HEAD、Act 基线、最终 Review revision 和
+  worktree/index 层；源码、测试、脚本与 OpenSpec Markdown 使用排除 raw Evidence 的
+  路径限定 whitespace check，raw logs 单独检查存在、非空、hash 和时间范围。EXPECTED
+  是不存在矛盾的 provenance 声明，所有非 raw-Evidence diff check 退出 0。不得删除、
+  截断或“清洗”008 原始日志来制造通过，也不得把 raw-log 空格当作产品源码失败。
 
 ## 8. 最终独立 iteration 的用户手工批次
 
@@ -321,3 +357,7 @@ iteration。若 Review 发现可控的小粒度问题，修复并入下一原定
   `qemu-serial.log`、`ms04-probe.log`、`ms03-regression.log`、
   `ms01-ms02-regression.log` 和 README 判定。任何中断、文件缺失、旧日志复用或范围
   超出单 hart VirtIO-MMIO 的声明都不能计为 MS04 通过。
+  当前 MS04 probe 的 burst/fairness 入口是无额外参数的 `ms04_rx_probe burst`，host
+  使用 `scripts/ms04_rx_stimulus.py --host 0.0.0.0 --port 15556`；不得沿用 iteration
+  000 的旧 `burst 256` 或 `tests/ms04_rx_burst.py` 示例。MS02 guest service 必须观察
+  两次独立 TCP `MS02_TCP_PASS` 和一次 UDP PASS 后得到 `MS02_COMPLETE tcp=2 udp=1`。

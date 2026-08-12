@@ -180,6 +180,30 @@ MS04 MUST 保持 MS01/MS02 socket 行为、同步 TX、MS03 IRQ 分类、UART as
 - **THEN** 对应 runtime Gate MUST 标记为未完成或失败
 - **AND** 部分 telemetry MUST NOT 计为 MS04 通过
 
+#### Scenario: 原始日志与 revision provenance 不可判定
+
+- **WHEN** raw terminal Evidence 含 ANSI、CRLF 或终端行尾空格，或采集 HEAD、Act 基线与最终 Review revision 不同
+- **THEN** source/document whitespace Gate MUST 排除 raw Evidence，并分别验证日志完整性与 revision provenance
+- **AND** Evidence 索引 MUST 记录每个 revision 的角色和采集时间，不得把矛盾元数据或未纳入检查的日志声明为完整 diff PASS
+
+#### Scenario: 测量窗口前已有安全失败
+
+- **WHEN** probe 的 PRE snapshot 已包含非零 fault、IRQ restore violation 或 IRQ-enabled entry
+- **THEN** snapshot、idle、nudge 和 burst 模式 MUST 失败，即使本窗口对应 delta 为零
+- **AND** probe MUST NOT 用新的安静窗口掩盖同次启动中已经发生的安全失败
+
+#### Scenario: idle 或 nudge 出现额外进度
+
+- **WHEN** idle 窗口出现 ISR、software-nudge、descriptor、budget、yield 或 Router backpressure 进度，或 nudge 窗口出现约定三项之外的进度
+- **THEN** 对应模式 MUST 输出 FAIL 并返回非零
+- **AND** nudge 的允许进度 MUST 仅为 software-nudge `+1`、task poll `+1` 和 empty check `+1`
+
+#### Scenario: 稳定快照在 deadline 后才相等
+
+- **WHEN** 两次 progress snapshot 相等，但第二次观察已达到或超过固定 deadline
+- **THEN** probe MUST 把结果判为 timeout/FAIL
+- **AND** MUST NOT 因相等检查先于 deadline 检查而接受过期 snapshot
+
 #### Scenario: 证据范围声明
 
 - **WHEN** MS04 QEMU Gate 全部通过

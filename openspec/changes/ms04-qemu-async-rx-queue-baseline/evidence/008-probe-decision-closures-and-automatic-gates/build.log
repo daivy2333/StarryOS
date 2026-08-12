@@ -1,0 +1,1003 @@
+MS04 iteration 008 target build transcript
+Captured from fresh commands on 2026-08-12.
+
+Script started on 2026-08-12 16:20:37+08:00 [<not executed on terminal>]
+make[1]: Entering directory '/home/daivy/projects/serial/work/StarryOS/make'
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+error: failed to open: /home/daivy/.cargo/.crates.toml
+
+Caused by:
+  Read-only file system (os error 30)
+Installing cargo-binutils...
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating crates.io index
+warning: spurious network error (3 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (2 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (1 try remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+error: download of config.json failed
+
+Caused by:
+  failed to download from `https://index.crates.io/config.json`
+
+Caused by:
+  [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+[37maxconfig-gen[0m [90mdefconfig.toml /home/daivy/projects/serial/work/StarryOS/crates/axplat-riscv64-lichee-d1/axconfig.toml  -w arch=riscv64 -w platform=riscv64-lichee-d1 -o "/home/daivy/projects/serial/work/StarryOS/.axconfig.toml" -w plat.phys-memory-size=536870912[0m
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'
+make[1]: Entering directory '/home/daivy/projects/serial/work/StarryOS/make'
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+error: failed to open: /home/daivy/.cargo/.crates.toml
+
+Caused by:
+  Read-only file system (os error 30)
+Installing cargo-binutils...
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating crates.io index
+warning: spurious network error (3 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (2 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (1 try remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+error: download of config.json failed
+
+Caused by:
+  failed to download from `https://index.crates.io/config.json`
+
+Caused by:
+  [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+[37maxconfig-gen[0m [90mdefconfig.toml /home/daivy/projects/serial/work/StarryOS/crates/axplat-riscv64-lichee-d1/axconfig.toml  -w arch=riscv64 -w platform=riscv64-lichee-d1 -o "/home/daivy/projects/serial/work/StarryOS/.axconfig.toml" -w plat.phys-memory-size=536870912 -c "/home/daivy/projects/serial/work/StarryOS/.axconfig.toml"[0m
+    [92;1mBuilding[0m App: StarryOS, Arch: riscv64, Platform: riscv64-lichee-d1, App type: rust
+[37mcargo -C /home/daivy/projects/serial/work/StarryOS build[0m [90m-Z unstable-options --target riscv64gc-unknown-none-elf --target-dir /home/daivy/projects/serial/work/StarryOS/target --release  --features "axfeat/myplat axfeat/bus-mmio lichee-d1-kbench"[0m
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Finished `release` profile [optimized] target(s) in 0.40s
+[37mrust-objcopy --binary-architecture=riscv64[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-lichee-d1.elf --strip-all -O binary /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-lichee-d1.bin[0m
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'
+
+Script done on 2026-08-12 16:20:59+08:00 [COMMAND_EXIT_CODE="0"]
+Script started on 2026-08-12 16:21:10+08:00 [<not executed on terminal>]
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Checking virtio-drivers v0.7.5 (/home/daivy/projects/serial/work/StarryOS/crates/virtio-drivers)
+warning: unused import: `crate::iface::Route`
+ --> crates/smoltcp/src/iface/interface/ipv6.rs:3:5
+  |
+3 | use crate::iface::Route;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `super::fragmentation::PacketAssemblerSet`
+  --> crates/smoltcp/src/iface/interface/mod.rs:35:5
+   |
+35 | use super::fragmentation::PacketAssemblerSet;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `IFACE_MAX_PREFIX_COUNT` and `IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT`
+  --> crates/smoltcp/src/iface/interface/mod.rs:42:27
+   |
+42 |     IFACE_MAX_ADDR_COUNT, IFACE_MAX_PREFIX_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/smoltcp/src/iface/interface/ipv4.rs:103:13
+    |
+103 |         let mut ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `frag`
+   --> crates/smoltcp/src/iface/interface/ipv4.rs:101:9
+    |
+101 |         frag: &'a mut FragmentsBuffer,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_frag`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `repr`
+    --> crates/smoltcp/src/iface/interface/mod.rs:1274:26
+     |
+1274 |             IpRepr::Ipv4(repr) => {
+     |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_repr`
+
+warning: variable does not need to be mutable
+   --> crates/smoltcp/src/socket/dns.rs:247:13
+    |
+247 |         let mut mdns = MulticastDns::Disabled;
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: methods `link_local_ipv6_address` and `mldv2_report_packet` are never used
+   --> crates/smoltcp/src/iface/interface/ipv6.rs:173:8
+    |
+ 23 | impl InterfaceInner {
+    | ------------------- methods in this implementation
+...
+173 |     fn link_local_ipv6_address(&self) -> Option<Ipv6Address> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+565 |     pub(super) fn mldv2_report_packet<'any>(
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `HopByHopIcmpv6` is never constructed
+   --> crates/smoltcp/src/iface/packet.rs:218:5
+    |
+210 | pub(crate) enum IpPayload<'p> {
+    |                 --------- variant in this enum
+...
+218 |     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `IpPayload` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `is_solicited_node_multicast` is never used
+   --> crates/smoltcp/src/wire/ipv6.rs:125:8
+    |
+ 80 | pub(crate) trait AddressExt {
+    |                  ---------- method in this trait
+...
+125 |     fn is_solicited_node_multicast(&self) -> bool;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `emit_header` is never used
+   --> crates/smoltcp/src/wire/udp.rs:275:19
+    |
+232 | impl Repr {
+    | --------- method in this implementation
+...
+275 |     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
+    |                   ^^^^^^^^^^^
+
+warning: `smoltcp` (lib) generated 11 warnings (run `cargo fix --lib -p smoltcp` to apply 7 suggestions)
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates/virtio-drivers/src/transport/pci/bus.rs:242:25
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator {
+    |                         ^^^^^ the lifetime is elided here          ^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator<'_> {
+    |                                                                                      ++++
+
+warning: `virtio-drivers` (lib) generated 1 warning (run `cargo fix --lib -p virtio-drivers` to apply 1 suggestion)
+    Checking axdriver_pci v0.1.4-preview.3
+    Checking axdriver_virtio v0.1.4-preview.3 (/home/daivy/projects/serial/work/StarryOS/crates/axdriver_virtio)
+    Checking axdriver v0.3.0-preview.2
+    Checking axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng)
+    Checking axfs v0.3.0-preview.2
+    Checking axdisplay v0.3.0-preview.2
+    Checking axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+    Checking axruntime v0.3.0-preview.2
+    Checking axfeat v0.3.0-preview.2
+    Checking starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.09s
+
+Script done on 2026-08-12 16:21:13+08:00 [COMMAND_EXIT_CODE="0"]
+Script started on 2026-08-12 16:21:17+08:00 [<not executed on terminal>]
+make[1]: Entering directory '/home/daivy/projects/serial/work/StarryOS/make'
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+error: failed to open: /home/daivy/.cargo/.crates.toml
+
+Caused by:
+  Read-only file system (os error 30)
+Installing cargo-binutils...
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating crates.io index
+warning: spurious network error (3 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (2 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (1 try remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+error: download of config.json failed
+
+Caused by:
+  failed to download from `https://index.crates.io/config.json`
+
+Caused by:
+  [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+[37maxconfig-gen[0m [90mdefconfig.toml /home/daivy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axplat-riscv64-qemu-virt-0.3.1-pre.6/axconfig.toml  -w arch=riscv64 -w platform=riscv64-qemu-virt -o "/home/daivy/projects/serial/work/StarryOS/.axconfig.toml" -w plat.phys-memory-size=1073741824[0m
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'
+make[1]: Entering directory '/home/daivy/projects/serial/work/StarryOS/make'
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+error: failed to open: /home/daivy/.cargo/.crates.toml
+
+Caused by:
+  Read-only file system (os error 30)
+Installing cargo-binutils...
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Updating crates.io index
+warning: spurious network error (3 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (2 tries remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: spurious network error (1 try remaining): [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+error: download of config.json failed
+
+Caused by:
+  failed to download from `https://index.crates.io/config.json`
+
+Caused by:
+  [7] Could not connect to server (Failed to connect to 172.23.128.1 port 17897 after 0 ms: Could not connect to server)
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+[37maxconfig-gen[0m [90mdefconfig.toml /home/daivy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axplat-riscv64-qemu-virt-0.3.1-pre.6/axconfig.toml  -w arch=riscv64 -w platform=riscv64-qemu-virt -o "/home/daivy/projects/serial/work/StarryOS/.axconfig.toml" -w plat.phys-memory-size=1073741824 -c "/home/daivy/projects/serial/work/StarryOS/.axconfig.toml"[0m
+    [92;1mBuilding[0m App: StarryOS, Arch: riscv64, Platform: riscv64-qemu-virt, App type: rust
+[37mcargo -C /home/daivy/projects/serial/work/StarryOS build[0m [90m-Z unstable-options --target riscv64gc-unknown-none-elf --target-dir /home/daivy/projects/serial/work/StarryOS/target --release  --features "axfeat/defplat axfeat/bus-mmio axfeat/dwarf qemu"[0m
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+   Compiling axconfig v0.3.0-preview.2
+   Compiling axplat-riscv64-qemu-virt v0.3.1-pre.6
+   Compiling virtio-drivers v0.7.5 (/home/daivy/projects/serial/work/StarryOS/crates/virtio-drivers)
+warning: unused import: `crate::iface::Route`
+ --> crates/smoltcp/src/iface/interface/ipv6.rs:3:5
+  |
+3 | use crate::iface::Route;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `super::fragmentation::PacketAssemblerSet`
+  --> crates/smoltcp/src/iface/interface/mod.rs:35:5
+   |
+35 | use super::fragmentation::PacketAssemblerSet;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `IFACE_MAX_PREFIX_COUNT` and `IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT`
+  --> crates/smoltcp/src/iface/interface/mod.rs:42:27
+   |
+42 |     IFACE_MAX_ADDR_COUNT, IFACE_MAX_PREFIX_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/smoltcp/src/iface/interface/ipv4.rs:103:13
+    |
+103 |         let mut ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `frag`
+   --> crates/smoltcp/src/iface/interface/ipv4.rs:101:9
+    |
+101 |         frag: &'a mut FragmentsBuffer,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_frag`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `repr`
+    --> crates/smoltcp/src/iface/interface/mod.rs:1274:26
+     |
+1274 |             IpRepr::Ipv4(repr) => {
+     |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_repr`
+
+warning: variable does not need to be mutable
+   --> crates/smoltcp/src/socket/dns.rs:247:13
+    |
+247 |         let mut mdns = MulticastDns::Disabled;
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: methods `link_local_ipv6_address` and `mldv2_report_packet` are never used
+   --> crates/smoltcp/src/iface/interface/ipv6.rs:173:8
+    |
+ 23 | impl InterfaceInner {
+    | ------------------- methods in this implementation
+...
+173 |     fn link_local_ipv6_address(&self) -> Option<Ipv6Address> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+565 |     pub(super) fn mldv2_report_packet<'any>(
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `HopByHopIcmpv6` is never constructed
+   --> crates/smoltcp/src/iface/packet.rs:218:5
+    |
+210 | pub(crate) enum IpPayload<'p> {
+    |                 --------- variant in this enum
+...
+218 |     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `IpPayload` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `is_solicited_node_multicast` is never used
+   --> crates/smoltcp/src/wire/ipv6.rs:125:8
+    |
+ 80 | pub(crate) trait AddressExt {
+    |                  ---------- method in this trait
+...
+125 |     fn is_solicited_node_multicast(&self) -> bool;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `emit_header` is never used
+   --> crates/smoltcp/src/wire/udp.rs:275:19
+    |
+232 | impl Repr {
+    | --------- method in this implementation
+...
+275 |     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
+    |                   ^^^^^^^^^^^
+
+warning: `smoltcp` (lib) generated 11 warnings (run `cargo fix --lib -p smoltcp` to apply 7 suggestions)
+   Compiling axhal v0.3.0-preview.2
+   Compiling axtask v0.3.0-preview.2
+   Compiling axmm v0.3.0-preview.2
+   Compiling axsync v0.3.0-preview.2
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates/virtio-drivers/src/transport/pci/bus.rs:242:25
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator {
+    |                         ^^^^^ the lifetime is elided here          ^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator<'_> {
+    |                                                                                      ++++
+
+   Compiling axdriver_pci v0.1.4-preview.3
+   Compiling axdriver_virtio v0.1.4-preview.3 (/home/daivy/projects/serial/work/StarryOS/crates/axdriver_virtio)
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> crates/axdriver_virtio/src/gpu.rs:56:11
+   |
+56 |     fn fb(&self) -> FrameBuffer {
+   |           ^^^^^     ^^^^^^^^^^^ the same lifetime is hidden here
+   |           |
+   |           the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+56 |     fn fb(&self) -> FrameBuffer<'_> {
+   |                                ++++
+
+   Compiling axdriver v0.3.0-preview.2
+warning: `axdriver_virtio` (lib) generated 1 warning (run `cargo fix --lib -p axdriver_virtio` to apply 1 suggestion)
+   Compiling axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng)
+   Compiling axdisplay v0.3.0-preview.2
+   Compiling axinput v0.3.0-preview.2
+   Compiling axfs v0.3.0-preview.2
+warning: `virtio-drivers` (lib) generated 1 warning (run `cargo fix --lib -p virtio-drivers` to apply 1 suggestion)
+   Compiling axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+   Compiling axruntime v0.3.0-preview.2
+   Compiling axfeat v0.3.0-preview.2
+   Compiling starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+   Compiling starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS)
+    Finished `release` profile [optimized] target(s) in 10.64s
+[37m./dwarf.sh[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf rust-objcopy --binary-architecture=riscv64[0m
+[37mrust-objcopy --binary-architecture=riscv64[0m [90m/home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.elf --strip-all -O binary /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.bin[0m
+make[1]: Leaving directory '/home/daivy/projects/serial/work/StarryOS/make'
+
+Script done on 2026-08-12 16:21:52+08:00 [COMMAND_EXIT_CODE="0"]
+Script started on 2026-08-12 16:22:04+08:00 [<not executed on terminal>]
+riscv64-linux-musl-gcc -static -Os -o tests/ms03_irq_probe tests/ms03_irq_probe.c
+make: *** [Makefile:160: tests/ms03_irq_probe] Bad system call (core dumped)
+
+Script done on 2026-08-12 16:22:04+08:00 [COMMAND_EXIT_CODE="2"]
+Script started on 2026-08-12 16:22:30+08:00 [<not executed on terminal>]
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+critical-section v1.2.0
+├── critical-section feature "default"
+│   └── embassy-sync v0.6.2
+│       └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+│           └── axnet-ng feature "default" (command-line)
+│   [dev-dependencies]
+│   └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+├── critical-section feature "restore-state-bool"
+│   └── critical-section feature "std"
+│       [dev-dependencies]
+│       └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+└── critical-section feature "std" (*)
+
+Script done on 2026-08-12 16:22:30+08:00 [COMMAND_EXIT_CODE="0"]
+Script started on 2026-08-12 16:22:30+08:00 [<not executed on terminal>]
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+critical-section v1.2.0
+├── critical-section feature "default"
+│   ├── embassy-sync v0.6.2
+│   │   ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+│   │   │   ├── axnet-ng feature "default"
+│   │   │   │   ├── axruntime v0.3.0-preview.2
+│   │   │   │   │   ├── axruntime feature "alloc"
+│   │   │   │   │   │   └── axfeat feature "alloc"
+│   │   │   │   │   │       ├── axfeat feature "display"
+│   │   │   │   │   │       │   └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       ├── axfeat feature "fs"
+│   │   │   │   │   │       │   └── axfeat feature "fs-ng"
+│   │   │   │   │   │       │       ├── axfeat feature "fs-ng-ext4"
+│   │   │   │   │   │       │       │   └── starry-kernel feature "qemu"
+│   │   │   │   │   │       │       │       └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       │       └── axfeat feature "fs-ng-times"
+│   │   │   │   │   │       │           └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       ├── axfeat feature "input"
+│   │   │   │   │   │       │   └── starry-kernel feature "input"
+│   │   │   │   │   │       │       └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       ├── axfeat feature "multitask"
+│   │   │   │   │   │       │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+│   │   │   │   │   │       │       ├── starry-kernel feature "axdriver"
+│   │   │   │   │   │       │       │   └── starry-kernel feature "qemu" (*)
+│   │   │   │   │   │       │       ├── starry-kernel feature "default"
+│   │   │   │   │   │       │       │   └── starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS)
+│   │   │   │   │   │       │       │       ├── starryos feature "default" (command-line)
+│   │   │   │   │   │       │       │       └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       │       ├── starry-kernel feature "dev-log"
+│   │   │   │   │   │       │       │   └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       │       ├── starry-kernel feature "input" (*)
+│   │   │   │   │   │       │       ├── starry-kernel feature "qemu" (*)
+│   │   │   │   │   │       │       └── starry-kernel feature "vsock"
+│   │   │   │   │   │       │           └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │       └── axfeat feature "paging"
+│   │   │   │   │   │           ├── axfeat feature "display" (*)
+│   │   │   │   │   │           ├── axfeat feature "fs" (*)
+│   │   │   │   │   │           └── axfeat feature "input" (*)
+│   │   │   │   │   ├── axruntime feature "axdriver"
+│   │   │   │   │   │   ├── axruntime feature "display"
+│   │   │   │   │   │   │   └── axfeat feature "display" (*)
+│   │   │   │   │   │   ├── axruntime feature "fs"
+│   │   │   │   │   │   │   └── axfeat feature "fs" (*)
+│   │   │   │   │   │   ├── axruntime feature "fs-ng"
+│   │   │   │   │   │   │   └── axfeat feature "fs-ng" (*)
+│   │   │   │   │   │   ├── axruntime feature "input"
+│   │   │   │   │   │   │   └── axfeat feature "input" (*)
+│   │   │   │   │   │   └── axruntime feature "net-ng"
+│   │   │   │   │   │       ├── axruntime feature "vsock"
+│   │   │   │   │   │       │   └── axfeat feature "vsock"
+│   │   │   │   │   │       │       └── starry-kernel feature "vsock" (*)
+│   │   │   │   │   │       └── starry-kernel feature "qemu" (*)
+│   │   │   │   │   ├── axruntime feature "axnet-ng"
+│   │   │   │   │   │   └── axruntime feature "vsock" (*)
+│   │   │   │   │   ├── axruntime feature "axtask"
+│   │   │   │   │   │   └── axruntime feature "multitask"
+│   │   │   │   │   │       └── axfeat feature "multitask" (*)
+│   │   │   │   │   ├── axruntime feature "default"
+│   │   │   │   │   │   ├── axfeat v0.3.0-preview.2
+│   │   │   │   │   │   │   ├── axfeat feature "alloc" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "alloc-slab"
+│   │   │   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   ├── axfeat feature "axalloc"
+│   │   │   │   │   │   │   │   ├── axfeat feature "alloc" (*)
+│   │   │   │   │   │   │   │   ├── axfeat feature "alloc-slab" (*)
+│   │   │   │   │   │   │   │   └── axfeat feature "page-alloc-4g"
+│   │   │   │   │   │   │   │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   ├── axfeat feature "axdriver"
+│   │   │   │   │   │   │   │   ├── axfeat feature "display" (*)
+│   │   │   │   │   │   │   │   ├── axfeat feature "fs" (*)
+│   │   │   │   │   │   │   │   └── axfeat feature "input" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "axfs-ng"
+│   │   │   │   │   │   │   │   ├── axfeat feature "fs-ng-ext4" (*)
+│   │   │   │   │   │   │   │   └── axfeat feature "fs-ng-times" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "axsync"
+│   │   │   │   │   │   │   │   └── axfeat feature "multitask" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "axtask"
+│   │   │   │   │   │   │   │   ├── axfeat feature "multitask" (*)
+│   │   │   │   │   │   │   │   ├── axfeat feature "sched-rr"
+│   │   │   │   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   │   └── axfeat feature "task-ext"
+│   │   │   │   │   │   │   │       └── starry-kernel feature "qemu" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "bus-pci"
+│   │   │   │   │   │   │   │   └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │   │   ├── axfeat feature "default"
+│   │   │   │   │   │   │   │   ├── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   │   └── starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS) (*)
+│   │   │   │   │   │   │   ├── axfeat feature "defplat"
+│   │   │   │   │   │   │   │   └── starryos feature "qemu" (command-line)
+│   │   │   │   │   │   │   ├── axfeat feature "display" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "fp-simd"
+│   │   │   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   ├── axfeat feature "fs" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "fs-ng" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "fs-ng-ext4" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "fs-ng-times" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "input" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "irq"
+│   │   │   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   │   └── axfeat feature "sched-rr" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "multitask" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "page-alloc-4g" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "paging" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "rtc"
+│   │   │   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   ├── axfeat feature "sched-rr" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "task-ext" (*)
+│   │   │   │   │   │   │   ├── axfeat feature "uspace"
+│   │   │   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   │   │   └── axfeat feature "vsock" (*)
+│   │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   │   ├── axruntime feature "display" (*)
+│   │   │   │   │   ├── axruntime feature "fs" (*)
+│   │   │   │   │   ├── axruntime feature "fs-ng" (*)
+│   │   │   │   │   ├── axruntime feature "input" (*)
+│   │   │   │   │   ├── axruntime feature "irq"
+│   │   │   │   │   │   └── axfeat feature "irq" (*)
+│   │   │   │   │   ├── axruntime feature "multitask" (*)
+│   │   │   │   │   ├── axruntime feature "net-ng" (*)
+│   │   │   │   │   ├── axruntime feature "paging"
+│   │   │   │   │   │   └── axfeat feature "paging" (*)
+│   │   │   │   │   ├── axruntime feature "rtc"
+│   │   │   │   │   │   └── axfeat feature "rtc" (*)
+│   │   │   │   │   └── axruntime feature "vsock" (*)
+│   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   └── axnet-ng feature "vsock"
+│   │   │       └── axruntime feature "vsock" (*)
+│   │   └── uart_16550 v0.6.0 (/home/daivy/projects/serial/work/StarryOS/crates/uart_16550)
+│   │       ├── uart_16550 feature "async"
+│   │       │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       └── uart_16550 feature "default"
+│   │           └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   └── embassy-sync feature "default"
+│   │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   ├── riscv v0.16.0
+│   │   └── page_table_multiarch v0.6.1
+│   │       ├── page_table_multiarch feature "axerrno"
+│   │       │   └── axhal v0.3.0-preview.2
+│   │       │       ├── axhal feature "default"
+│   │       │       │   ├── axdriver v0.3.0-preview.2
+│   │       │       │   │   ├── axdriver feature "axdriver_virtio"
+│   │       │       │   │   │   ├── axdriver feature "virtio-blk"
+│   │       │       │   │   │   │   └── axfeat feature "fs" (*)
+│   │       │       │   │   │   ├── axdriver feature "virtio-gpu"
+│   │       │       │   │   │   │   └── axfeat feature "display" (*)
+│   │       │       │   │   │   ├── axdriver feature "virtio-input"
+│   │       │       │   │   │   │   └── axfeat feature "input" (*)
+│   │       │       │   │   │   └── axdriver feature "virtio-net"
+│   │       │       │   │   │       └── starry-kernel feature "qemu" (*)
+│   │       │       │   │   ├── axdriver feature "axdriver_vsock"
+│   │       │       │   │   │   └── axdriver feature "vsock"
+│   │       │       │   │   │       └── axnet-ng feature "vsock" (*)
+│   │       │       │   │   ├── axdriver feature "block"
+│   │       │       │   │   │   ├── axfs v0.3.0-preview.2
+│   │       │       │   │   │   │   └── axfs feature "default"
+│   │       │       │   │   │   │       ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │   │       └── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │   │   └── axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng)
+│   │       │       │   │   │       ├── axfs-ng feature "default"
+│   │       │       │   │   │       │   ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │       │   ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │       │   ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │   │       │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   │   │       ├── axfs-ng feature "ext4"
+│   │       │       │   │   │       │   └── axfeat feature "fs-ng-ext4" (*)
+│   │       │       │   │   │       └── axfs-ng feature "times"
+│   │       │       │   │   │           └── axfeat feature "fs-ng-times" (*)
+│   │       │       │   │   │   └── axdriver feature "virtio-blk" (*)
+│   │       │       │   │   ├── axdriver feature "bus-mmio"
+│   │       │       │   │   │   └── axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng) (*)
+│   │       │       │   │   ├── axdriver feature "bus-pci"
+│   │       │       │   │   │   ├── axfeat feature "bus-pci" (*)
+│   │       │       │   │   │   └── axdriver feature "default"
+│   │       │       │   │   │       ├── axdisplay v0.3.0-preview.2
+│   │       │       │   │   │       │   └── axdisplay feature "default"
+│   │       │       │   │   │       │       ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │       │       ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │   │       │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   │   │       ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │       ├── axfs v0.3.0-preview.2 (*)
+│   │       │       │   │   │       ├── axinput v0.3.0-preview.2
+│   │       │       │   │   │       │   └── axinput feature "default"
+│   │       │       │   │   │       │       ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │       │       ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │   │       │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   │   │       ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │       ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │   │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   │   ├── axdriver feature "default" (*)
+│   │       │       │   │   ├── axdriver feature "display"
+│   │       │       │   │   │   └── axdisplay v0.3.0-preview.2 (*)
+│   │       │       │   │   │   └── axdriver feature "virtio-gpu" (*)
+│   │       │       │   │   ├── axdriver feature "input"
+│   │       │       │   │   │   └── axinput v0.3.0-preview.2 (*)
+│   │       │       │   │   │   └── axdriver feature "virtio-input" (*)
+│   │       │       │   │   ├── axdriver feature "irq"
+│   │       │       │   │   │   └── axfeat feature "irq" (*)
+│   │       │       │   │   ├── axdriver feature "net"
+│   │       │       │   │   │   └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │   └── axdriver feature "virtio-net" (*)
+│   │       │       │   │   ├── axdriver feature "virtio"
+│   │       │       │   │   │   ├── axdriver feature "virtio-blk" (*)
+│   │       │       │   │   │   ├── axdriver feature "virtio-gpu" (*)
+│   │       │       │   │   │   ├── axdriver feature "virtio-input" (*)
+│   │       │       │   │   │   └── axdriver feature "virtio-net" (*)
+│   │       │       │   │   ├── axdriver feature "virtio-blk" (*)
+│   │       │       │   │   ├── axdriver feature "virtio-gpu" (*)
+│   │       │       │   │   ├── axdriver feature "virtio-input" (*)
+│   │       │       │   │   ├── axdriver feature "virtio-net" (*)
+│   │       │       │   │   └── axdriver feature "vsock" (*)
+│   │       │       │   ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   ├── axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng) (*)
+│   │       │       │   ├── axmm v0.3.0-preview.2
+│   │       │       │   │   └── axmm feature "default"
+│   │       │       │   │       ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   ├── axtask v0.3.0-preview.2
+│   │       │       │   │   ├── axtask feature "default"
+│   │       │       │   │   │   ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │   ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │   ├── axruntime v0.3.0-preview.2 (*)
+│   │       │       │   │   │   ├── axsync v0.3.0-preview.2
+│   │       │       │   │   │   │   ├── axsync feature "default"
+│   │       │       │   │   │   │   │   ├── axdisplay v0.3.0-preview.2 (*)
+│   │       │       │   │   │   │   │   ├── axfeat v0.3.0-preview.2 (*)
+│   │       │       │   │   │   │   │   ├── axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng) (*)
+│   │       │       │   │   │   │   │   ├── axinput v0.3.0-preview.2 (*)
+│   │       │       │   │   │   │   │   ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   │   │   │   └── axsync feature "multitask"
+│   │       │       │   │   │   │       └── axfeat feature "multitask" (*)
+│   │       │       │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       │   │   ├── axtask feature "irq"
+│   │       │       │   │   │   └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │   ├── axfeat feature "irq" (*)
+│   │       │       │   │   │   ├── axtask feature "preempt"
+│   │       │       │   │   │   │   └── axtask feature "sched-rr"
+│   │       │       │   │   │   │       └── axfeat feature "sched-rr" (*)
+│   │       │       │   │   │   └── axruntime feature "irq" (*)
+│   │       │       │   │   ├── axtask feature "kernel_guard"
+│   │       │       │   │   │   └── axtask feature "preempt" (*)
+│   │       │       │   │   ├── axtask feature "multitask"
+│   │       │       │   │   │   └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+│   │       │       │   │   │   ├── axfeat feature "multitask" (*)
+│   │       │       │   │   │   ├── axsync feature "multitask" (*)
+│   │       │       │   │   │   ├── axtask feature "sched-rr" (*)
+│   │       │       │   │   │   └── axruntime feature "multitask" (*)
+│   │       │       │   │   ├── axtask feature "preempt" (*)
+│   │       │       │   │   ├── axtask feature "sched-rr" (*)
+│   │       │       │   │   └── axtask feature "task-ext"
+│   │       │       │   │       └── axfeat feature "task-ext" (*)
+│   │       │       │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       │       ├── axhal feature "defplat"
+│   │       │       │   └── axfeat feature "defplat" (*)
+│   │       │       ├── axhal feature "fp-simd"
+│   │       │       │   └── axfeat feature "fp-simd" (*)
+│   │       │       ├── axhal feature "irq"
+│   │       │       │   ├── axfeat feature "irq" (*)
+│   │       │       │   ├── axtask feature "irq" (*)
+│   │       │       │   └── axruntime feature "irq" (*)
+│   │       │       ├── axhal feature "paging"
+│   │       │       │   └── axmm v0.3.0-preview.2 (*)
+│   │       │       │   ├── axfeat feature "paging" (*)
+│   │       │       │   ├── axhal feature "uspace"
+│   │       │       │   │   └── axfeat feature "uspace" (*)
+│   │       │       │   └── axruntime feature "paging" (*)
+│   │       │       ├── axhal feature "rtc"
+│   │       │       │   └── axfeat feature "rtc" (*)
+│   │       │       └── axhal feature "uspace" (*)
+│   │       ├── page_table_multiarch feature "copy-from"
+│   │       │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │       └── page_table_multiarch feature "default"
+│   │           ├── axhal v0.3.0-preview.2 (*)
+│   │           └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   ├── riscv feature "default"
+│   │   │   ├── axcpu v0.3.0-preview.8
+│   │   │   │   ├── axcpu feature "default"
+│   │   │   │   │   ├── axhal v0.3.0-preview.2 (*)
+│   │   │   │   │   ├── axplat-riscv64-qemu-virt v0.3.1-pre.6
+│   │   │   │   │   │   ├── axplat-riscv64-qemu-virt feature "default"
+│   │   │   │   │   │   │   └── axhal v0.3.0-preview.2 (*)
+│   │   │   │   │   │   ├── axplat-riscv64-qemu-virt feature "fp-simd"
+│   │   │   │   │   │   │   └── axhal feature "fp-simd" (*)
+│   │   │   │   │   │   ├── axplat-riscv64-qemu-virt feature "irq"
+│   │   │   │   │   │   │   └── axhal feature "irq" (*)
+│   │   │   │   │   │   └── axplat-riscv64-qemu-virt feature "rtc"
+│   │   │   │   │   │       └── axhal feature "rtc" (*)
+│   │   │   │   │   └── starry-signal v0.3.0
+│   │   │   │   │       └── starry-signal feature "default"
+│   │   │   │   │           └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   │   │   ├── axcpu feature "fp-simd"
+│   │   │   │   │   ├── axhal feature "fp-simd" (*)
+│   │   │   │   │   └── axplat-riscv64-qemu-virt feature "fp-simd" (*)
+│   │   │   │   └── axcpu feature "uspace"
+│   │   │   │       └── starry-signal v0.3.0 (*)
+│   │   │   │       └── axhal feature "uspace" (*)
+│   │   │   ├── axplat-riscv64-qemu-virt v0.3.1-pre.6 (*)
+│   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+│   │   └── riscv feature "riscv-macros"
+│   │       └── riscv feature "default" (*)
+│   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+└── critical-section feature "restore-state-bool"
+    └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+
+Script done on 2026-08-12 16:22:30+08:00 [COMMAND_EXIT_CODE="0"]
+Script started on 2026-08-12 16:22:30+08:00 [<not executed on terminal>]
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+virtio-drivers v0.7.5 (/home/daivy/projects/serial/work/StarryOS/crates/virtio-drivers)
+└── axdriver_virtio v0.1.4-preview.3 (/home/daivy/projects/serial/work/StarryOS/crates/axdriver_virtio)
+    ├── axdriver_virtio feature "alloc"
+    │   ├── axdriver_virtio feature "gpu"
+    │   │   └── axdriver feature "virtio-gpu"
+    │   │       └── axfeat feature "display"
+    │   │           └── starryos feature "qemu" (command-line)
+    │   ├── axdriver_virtio feature "input"
+    │   │   └── axdriver feature "virtio-input"
+    │   │       └── axfeat feature "input"
+    │   │           └── starry-kernel feature "input"
+    │   │               └── starryos feature "qemu" (command-line)
+    │   └── axdriver_virtio feature "net"
+    │       └── axdriver feature "virtio-net"
+    │           └── starry-kernel feature "qemu"
+    │               └── starryos feature "qemu" (command-line)
+    ├── axdriver_virtio feature "axdriver_block"
+    │   └── axdriver_virtio feature "block"
+    │       └── axdriver feature "virtio-blk"
+    │           └── axfeat feature "fs"
+    │               └── axfeat feature "fs-ng"
+    │                   ├── axfeat feature "fs-ng-ext4"
+    │                   │   └── starry-kernel feature "qemu" (*)
+    │                   └── axfeat feature "fs-ng-times"
+    │                       └── starryos feature "qemu" (command-line)
+    ├── axdriver_virtio feature "axdriver_display"
+    │   └── axdriver_virtio feature "gpu" (*)
+    ├── axdriver_virtio feature "axdriver_input"
+    │   └── axdriver_virtio feature "input" (*)
+    ├── axdriver_virtio feature "axdriver_net"
+    │   └── axdriver_virtio feature "net" (*)
+    ├── axdriver_virtio feature "block" (*)
+    ├── axdriver_virtio feature "default"
+    │   └── axdriver v0.3.0-preview.2
+    │       ├── axdriver feature "axdriver_virtio"
+    │       │   ├── axdriver feature "virtio-blk" (*)
+    │       │   ├── axdriver feature "virtio-gpu" (*)
+    │       │   ├── axdriver feature "virtio-input" (*)
+    │       │   └── axdriver feature "virtio-net" (*)
+    │       ├── axdriver feature "axdriver_vsock"
+    │       │   └── axdriver feature "vsock"
+    │       │       └── axnet-ng feature "vsock"
+    │       │           └── axruntime feature "vsock"
+    │       │               └── axfeat feature "vsock"
+    │       │                   └── starry-kernel feature "vsock"
+    │       │                       └── starryos feature "qemu" (command-line)
+    │       ├── axdriver feature "block"
+    │       │   ├── axfs v0.3.0-preview.2
+    │       │   │   └── axfs feature "default"
+    │       │   │       ├── axfeat v0.3.0-preview.2
+    │       │   │       │   ├── axfeat feature "alloc"
+    │       │   │       │   │   ├── axfeat feature "display" (*)
+    │       │   │       │   │   ├── axfeat feature "fs" (*)
+    │       │   │       │   │   ├── axfeat feature "input" (*)
+    │       │   │       │   │   ├── axfeat feature "multitask"
+    │       │   │       │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+    │       │   │       │   │   │       ├── starry-kernel feature "axdriver"
+    │       │   │       │   │   │       │   └── starry-kernel feature "qemu" (*)
+    │       │   │       │   │   │       ├── starry-kernel feature "default"
+    │       │   │       │   │   │       │   └── starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS)
+    │       │   │       │   │   │       │       ├── starryos feature "default" (command-line)
+    │       │   │       │   │   │       │       └── starryos feature "qemu" (command-line)
+    │       │   │       │   │   │       ├── starry-kernel feature "dev-log"
+    │       │   │       │   │   │       │   └── starryos feature "qemu" (command-line)
+    │       │   │       │   │   │       ├── starry-kernel feature "input" (*)
+    │       │   │       │   │   │       ├── starry-kernel feature "qemu" (*)
+    │       │   │       │   │   │       └── starry-kernel feature "vsock" (*)
+    │       │   │       │   │   └── axfeat feature "paging"
+    │       │   │       │   │       ├── axfeat feature "display" (*)
+    │       │   │       │   │       ├── axfeat feature "fs" (*)
+    │       │   │       │   │       └── axfeat feature "input" (*)
+    │       │   │       │   ├── axfeat feature "alloc-slab"
+    │       │   │       │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   ├── axfeat feature "axalloc"
+    │       │   │       │   │   ├── axfeat feature "alloc" (*)
+    │       │   │       │   │   ├── axfeat feature "alloc-slab" (*)
+    │       │   │       │   │   └── axfeat feature "page-alloc-4g"
+    │       │   │       │   │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   ├── axfeat feature "axdriver"
+    │       │   │       │   │   ├── axfeat feature "display" (*)
+    │       │   │       │   │   ├── axfeat feature "fs" (*)
+    │       │   │       │   │   └── axfeat feature "input" (*)
+    │       │   │       │   ├── axfeat feature "axfs-ng"
+    │       │   │       │   │   ├── axfeat feature "fs-ng-ext4" (*)
+    │       │   │       │   │   └── axfeat feature "fs-ng-times" (*)
+    │       │   │       │   ├── axfeat feature "axsync"
+    │       │   │       │   │   └── axfeat feature "multitask" (*)
+    │       │   │       │   ├── axfeat feature "axtask"
+    │       │   │       │   │   ├── axfeat feature "multitask" (*)
+    │       │   │       │   │   ├── axfeat feature "sched-rr"
+    │       │   │       │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   │   └── axfeat feature "task-ext"
+    │       │   │       │   │       └── starry-kernel feature "qemu" (*)
+    │       │   │       │   ├── axfeat feature "bus-pci"
+    │       │   │       │   │   └── starryos feature "qemu" (command-line)
+    │       │   │       │   ├── axfeat feature "default"
+    │       │   │       │   │   ├── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   │   └── starryos v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS) (*)
+    │       │   │       │   ├── axfeat feature "defplat"
+    │       │   │       │   │   └── starryos feature "qemu" (command-line)
+    │       │   │       │   ├── axfeat feature "display" (*)
+    │       │   │       │   ├── axfeat feature "fp-simd"
+    │       │   │       │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   ├── axfeat feature "fs" (*)
+    │       │   │       │   ├── axfeat feature "fs-ng" (*)
+    │       │   │       │   ├── axfeat feature "fs-ng-ext4" (*)
+    │       │   │       │   ├── axfeat feature "fs-ng-times" (*)
+    │       │   │       │   ├── axfeat feature "input" (*)
+    │       │   │       │   ├── axfeat feature "irq"
+    │       │   │       │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   │   └── axfeat feature "sched-rr" (*)
+    │       │   │       │   ├── axfeat feature "multitask" (*)
+    │       │   │       │   ├── axfeat feature "page-alloc-4g" (*)
+    │       │   │       │   ├── axfeat feature "paging" (*)
+    │       │   │       │   ├── axfeat feature "rtc"
+    │       │   │       │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   ├── axfeat feature "sched-rr" (*)
+    │       │   │       │   ├── axfeat feature "task-ext" (*)
+    │       │   │       │   ├── axfeat feature "uspace"
+    │       │   │       │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │       │   └── axfeat feature "vsock" (*)
+    │       │   │       └── axruntime v0.3.0-preview.2
+    │       │   │           ├── axruntime feature "alloc"
+    │       │   │           │   └── axfeat feature "alloc" (*)
+    │       │   │           ├── axruntime feature "axdriver"
+    │       │   │           │   ├── axruntime feature "display"
+    │       │   │           │   │   └── axfeat feature "display" (*)
+    │       │   │           │   ├── axruntime feature "fs"
+    │       │   │           │   │   └── axfeat feature "fs" (*)
+    │       │   │           │   ├── axruntime feature "fs-ng"
+    │       │   │           │   │   └── axfeat feature "fs-ng" (*)
+    │       │   │           │   ├── axruntime feature "input"
+    │       │   │           │   │   └── axfeat feature "input" (*)
+    │       │   │           │   └── axruntime feature "net-ng"
+    │       │   │           │       ├── axruntime feature "vsock" (*)
+    │       │   │           │       └── starry-kernel feature "qemu" (*)
+    │       │   │           ├── axruntime feature "axnet-ng"
+    │       │   │           │   └── axruntime feature "vsock" (*)
+    │       │   │           ├── axruntime feature "axtask"
+    │       │   │           │   └── axruntime feature "multitask"
+    │       │   │           │       └── axfeat feature "multitask" (*)
+    │       │   │           ├── axruntime feature "default"
+    │       │   │           │   ├── axfeat v0.3.0-preview.2 (*)
+    │       │   │           │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │   │           ├── axruntime feature "display" (*)
+    │       │   │           ├── axruntime feature "fs" (*)
+    │       │   │           ├── axruntime feature "fs-ng" (*)
+    │       │   │           ├── axruntime feature "input" (*)
+    │       │   │           ├── axruntime feature "irq"
+    │       │   │           │   └── axfeat feature "irq" (*)
+    │       │   │           ├── axruntime feature "multitask" (*)
+    │       │   │           ├── axruntime feature "net-ng" (*)
+    │       │   │           ├── axruntime feature "paging"
+    │       │   │           │   └── axfeat feature "paging" (*)
+    │       │   │           ├── axruntime feature "rtc"
+    │       │   │           │   └── axfeat feature "rtc" (*)
+    │       │   │           └── axruntime feature "vsock" (*)
+    │       │   └── axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng)
+    │       │       ├── axfs-ng feature "default"
+    │       │       │   ├── axfeat v0.3.0-preview.2 (*)
+    │       │       │   ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet)
+    │       │       │   │   ├── axnet-ng feature "default"
+    │       │       │   │   │   ├── axruntime v0.3.0-preview.2 (*)
+    │       │       │   │   │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │       │   │   └── axnet-ng feature "vsock" (*)
+    │       │       │   ├── axruntime v0.3.0-preview.2 (*)
+    │       │       │   └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │       ├── axfs-ng feature "ext4"
+    │       │       │   └── axfeat feature "fs-ng-ext4" (*)
+    │       │       └── axfs-ng feature "times"
+    │       │           └── axfeat feature "fs-ng-times" (*)
+    │       │   └── axdriver feature "virtio-blk" (*)
+    │       ├── axdriver feature "bus-mmio"
+    │       │   └── axfs-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axfs-ng) (*)
+    │       ├── axdriver feature "bus-pci"
+    │       │   ├── axfeat feature "bus-pci" (*)
+    │       │   └── axdriver feature "default"
+    │       │       ├── axdisplay v0.3.0-preview.2
+    │       │       │   └── axdisplay feature "default"
+    │       │       │       ├── axfeat v0.3.0-preview.2 (*)
+    │       │       │       ├── axruntime v0.3.0-preview.2 (*)
+    │       │       │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │       ├── axfeat v0.3.0-preview.2 (*)
+    │       │       ├── axfs v0.3.0-preview.2 (*)
+    │       │       ├── axinput v0.3.0-preview.2
+    │       │       │   └── axinput feature "default"
+    │       │       │       ├── axfeat v0.3.0-preview.2 (*)
+    │       │       │       ├── axruntime v0.3.0-preview.2 (*)
+    │       │       │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       │       ├── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+    │       │       ├── axruntime v0.3.0-preview.2 (*)
+    │       │       └── starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel) (*)
+    │       ├── axdriver feature "default" (*)
+    │       ├── axdriver feature "display"
+    │       │   └── axdisplay v0.3.0-preview.2 (*)
+    │       │   └── axdriver feature "virtio-gpu" (*)
+    │       ├── axdriver feature "input"
+    │       │   └── axinput v0.3.0-preview.2 (*)
+    │       │   └── axdriver feature "virtio-input" (*)
+    │       ├── axdriver feature "irq"
+    │       │   └── axfeat feature "irq" (*)
+    │       ├── axdriver feature "net"
+    │       │   └── axnet-ng v0.3.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/crates/axnet) (*)
+    │       │   └── axdriver feature "virtio-net" (*)
+    │       ├── axdriver feature "virtio"
+    │       │   ├── axdriver feature "virtio-blk" (*)
+    │       │   ├── axdriver feature "virtio-gpu" (*)
+    │       │   ├── axdriver feature "virtio-input" (*)
+    │       │   └── axdriver feature "virtio-net" (*)
+    │       ├── axdriver feature "virtio-blk" (*)
+    │       ├── axdriver feature "virtio-gpu" (*)
+    │       ├── axdriver feature "virtio-input" (*)
+    │       ├── axdriver feature "virtio-net" (*)
+    │       └── axdriver feature "vsock" (*)
+    ├── axdriver_virtio feature "gpu" (*)
+    ├── axdriver_virtio feature "input" (*)
+    └── axdriver_virtio feature "net" (*)
+├── virtio-drivers feature "alloc"
+│   ├── virtio-drivers feature "default"
+│   │   └── axdriver_pci v0.1.4-preview.3
+│   │       └── axdriver_pci feature "default"
+│   │           └── axdriver v0.3.0-preview.2 (*)
+│   └── axdriver_virtio feature "alloc" (*)
+└── virtio-drivers feature "default" (*)
+
+Script done on 2026-08-12 16:22:30+08:00 [COMMAND_EXIT_CODE="0"]

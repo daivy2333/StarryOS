@@ -3,22 +3,29 @@
 #[cfg(feature = "alloc")]
 pub mod owning;
 
-use crate::hal::{BufferDirection, Dma, Hal, PhysAddr};
-use crate::transport::Transport;
-use crate::{align_up, nonnull_slice_from_raw_parts, pages, Error, Result, PAGE_SIZE};
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
-use bitflags::bitflags;
 #[cfg(test)]
 use core::cmp::min;
-use core::convert::TryInto;
-use core::hint::spin_loop;
-use core::mem::{size_of, take};
 #[cfg(test)]
 use core::ptr;
-use core::ptr::NonNull;
-use core::sync::atomic::{fence, AtomicU16, Ordering};
+use core::{
+    convert::TryInto,
+    hint::spin_loop,
+    mem::{size_of, take},
+    ptr::NonNull,
+    sync::atomic::{AtomicU16, Ordering, fence},
+};
+
+use bitflags::bitflags;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+
+use crate::{
+    Error, PAGE_SIZE, Result, align_up,
+    hal::{BufferDirection, Dma, Hal, PhysAddr},
+    nonnull_slice_from_raw_parts, pages,
+    transport::Transport,
+};
 
 /// The mechanism for bulk data transport on virtio devices.
 ///
@@ -1030,18 +1037,19 @@ pub(crate) fn fake_read_write_queue<const QUEUE_SIZE: usize>(
 
 #[cfg(test)]
 mod tests {
+    use core::ptr::NonNull;
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::{
         device::common::Feature,
         hal::fake::FakeHal,
         transport::{
-            fake::{FakeTransport, QueueStatus, State},
-            mmio::{MmioTransport, VirtIOHeader, MODERN_VERSION},
             DeviceType,
+            fake::{FakeTransport, QueueStatus, State},
+            mmio::{MODERN_VERSION, MmioTransport, VirtIOHeader},
         },
     };
-    use core::ptr::NonNull;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn queue_too_big() {
@@ -1379,20 +1387,12 @@ mod tests {
         queue.suppress_dev_notify();
 
         // Device completes both buffers.
-        state
-            .lock()
-            .unwrap()
-            .write_to_queue::<4>(0, &[0xAA; 4]);
-        state
-            .lock()
-            .unwrap()
-            .write_to_queue::<4>(0, &[0xBB; 4]);
+        state.lock().unwrap().write_to_queue::<4>(0, &[0xAA; 4]);
+        state.lock().unwrap().write_to_queue::<4>(0, &[0xBB; 4]);
 
         // Pop the first one while still suppressed.
         unsafe {
-            queue
-                .pop_used(token0, &[], &mut [&mut [0; 4]])
-                .unwrap();
+            queue.pop_used(token0, &[], &mut [&mut [0; 4]]).unwrap();
         }
 
         // used_event must still be last_used_idx(1) - 1 == 0, not re-armed
@@ -1459,10 +1459,7 @@ mod tests {
         assert_eq!(token, 0);
 
         queue.suppress_dev_notify();
-        state
-            .lock()
-            .unwrap()
-            .write_to_queue::<4>(0, &[0xCC; 4]);
+        state.lock().unwrap().write_to_queue::<4>(0, &[0xCC; 4]);
 
         // The completion arrived while suppressed, before the arm.
         let pending = queue.arm_dev_notify_and_check();
@@ -1493,10 +1490,7 @@ mod tests {
         );
 
         let token = unsafe { queue.add(&[], &mut [&mut [0; 4]]) }.unwrap();
-        state
-            .lock()
-            .unwrap()
-            .write_to_queue::<4>(0, &[0xDD; 4]);
+        state.lock().unwrap().write_to_queue::<4>(0, &[0xDD; 4]);
         let pending = queue.arm_dev_notify_and_check();
         assert!(pending);
         assert_eq!(
@@ -1525,7 +1519,9 @@ mod tests {
 
         // Simulate a queue that has already advanced close to the wrap point.
         unsafe {
-            (*queue.used.as_ptr()).idx.store(u16::MAX, Ordering::Release);
+            (*queue.used.as_ptr())
+                .idx
+                .store(u16::MAX, Ordering::Release);
         }
         queue.last_used_idx = u16::MAX;
 

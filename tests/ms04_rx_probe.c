@@ -135,6 +135,15 @@ static int stable_deadline_expired(uint64_t start, uint64_t now)
     return now < start || now - start >= MS04_STABLE_TIMEOUT_MS;
 }
 
+static int stable_snapshot_ready(const struct ms04_snapshot *previous,
+                                 const struct ms04_snapshot *current,
+                                 uint64_t start,
+                                 uint64_t now)
+{
+    return !stable_deadline_expired(start, now) &&
+           snapshot_progress_equal(previous, current);
+}
+
 static int snapshot_active(const struct ms04_snapshot *snapshot)
 {
     return snapshot->rx_lifecycle == 2 && snapshot->rx_owner == 1;
@@ -144,15 +153,29 @@ static int common_delta_valid(const struct ms04_snapshot *post,
                               const struct ms04_snapshot *delta)
 {
     return snapshot_active(post) &&
+           post->fault == 0 &&
+           post->restore_violation == 0 &&
+           post->irq_enabled_entry == 0 &&
            delta->fault == 0 &&
            delta->restore_violation == 0 &&
            delta->irq_enabled_entry == 0;
+}
+
+static int irq_delta_quiet(const struct ms04_snapshot *delta)
+{
+    return delta->total == 0 && delta->used_ring == 0 &&
+           delta->config_change == 0 && delta->combined == 0 &&
+           delta->unknown == 0 && delta->spurious == 0 &&
+           delta->ack_count == 0 && delta->uart_irq_count == 0 &&
+           delta->isr_publish == 0 && delta->isr_wake == 0;
 }
 
 static int validate_idle(const struct ms04_snapshot *post,
                          const struct ms04_snapshot *delta)
 {
     return common_delta_valid(post, delta) &&
+           irq_delta_quiet(delta) &&
+           delta->software_nudge == 0 &&
            delta->reaped == 0 && delta->refilled == 0 &&
            delta->delivered == 0 && delta->non_ip_consumed == 0 &&
            delta->budget_exhausted == 0 && delta->self_yield == 0 &&
@@ -164,11 +187,13 @@ static int validate_nudge(const struct ms04_snapshot *post,
                           const struct ms04_snapshot *delta)
 {
     return common_delta_valid(post, delta) &&
+           irq_delta_quiet(delta) &&
            delta->software_nudge == 1 &&
-           delta->isr_publish == 0 && delta->isr_wake == 0 &&
            delta->task_poll == 1 && delta->empty_check == 1 &&
            delta->reaped == 0 && delta->refilled == 0 &&
-           delta->budget_exhausted == 0 && delta->self_yield == 0;
+           delta->delivered == 0 && delta->non_ip_consumed == 0 &&
+           delta->budget_exhausted == 0 && delta->self_yield == 0 &&
+           delta->router_full_wait == 0 && delta->space_wake == 0;
 }
 
 static int validate_burst(const struct ms04_snapshot *post,
@@ -213,12 +238,13 @@ static int read_stable_snapshot(struct ms04_snapshot *snapshot)
     for (;;) {
         usleep(20000);
         if (read_snapshot(&current) != 0) return -1;
-        if (snapshot_progress_equal(&previous, &current)) {
+        if (monotonic_ms(&now) != 0) return -1;
+        if (stable_snapshot_ready(&previous, &current, start, now)) {
             *snapshot = current;
             return 0;
         }
+        if (stable_deadline_expired(start, now)) break;
         previous = current;
-        if (monotonic_ms(&now) != 0 || stable_deadline_expired(start, now)) break;
     }
     return -1;
 }
@@ -383,8 +409,10 @@ static int run_burst(void)
     reported = 1;
 out:
     close(fd);
-    if (result != 0 && !reported)
-        printf("MS04 FAIL mode=burst reason=protocol received=%u\n", received);
+    if (result != 0 && !reported) {
+        printf("MS04 DIAGNOSTIC mode=burst received=%u\n", received);
+        return fail_mode("burst", "protocol");
+    }
     return result;
 }
 

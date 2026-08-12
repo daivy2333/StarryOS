@@ -363,28 +363,93 @@ smoltcp warnings. This iteration introduced no remaining Rust warning.
 
 ## Plan Review
 
-- Status: pending
+- Status: follow-up-required
 
 **Review Result**
 
-Pending.
+follow-up-required
 
 **Findings**
 
-Pending.
+Iteration 007 的 fault once-only 修复、coherent lifecycle/error pair、四态 IRQ witness、
+固定 V1/独立 V2、software nudge 和协议工具主体可以保留。独立复验的 axnet 109 tests、
+host 64 tests、MS16 host suite、kernel/axnet fmt、D1 target build、references/change strict
+validation 与 staged/unstaged diff checks 均通过。Persisted Evidence 模式为 none，未创建
+Evidence 目录符合计划。
+
+1. **PASS — telemetry、IRQ 与 snapshot ABI 闭合。** 三个 active fault source 的完整
+   Future tests 分别得到一次 fault 和原 stage/code；missing Service、单次 lifecycle load、
+   packed error pair、enabled-entry/restore 分离、raw record 与 registration-failure mutation
+   guards 均有见证。V1 command 只写 64 bytes，V2 独立写 224 bytes；canary、offset 和
+   MS03/MS16/MS04 consumer inventory 通过。
+2. **IMPORTANT — probe 只检查安全 counter delta，会掩盖 PRE 前的 IRQ 安全失败。**
+   `common_delta_valid` 只要求本窗口 `fault/restore_violation/irq_enabled_entry` delta 为零，
+   不要求 POST 绝对值为零。若 IRQ-enabled entry 或 false→true restore violation 在 PRE
+   前已经发生，四个模式仍可能 PASS，违反 D9 和 runtime Gate 的“同次启动安全计数为零”。
+3. **IMPORTANT — idle/nudge 的负向判定不完整。** `validate_idle` 不检查 ISR publish/wake
+   或 software-nudge；`validate_nudge` 不检查 delivered、non-IP、Router-full、space-wake
+   等额外进度。现有 6 个 C tests 只用 `task_poll=2` 使 idle 失败，并只给 nudge 注入
+   `isr_publish=1`，无法证明其他不允许的字段会被拒绝。
+4. **IMPORTANT — stable deadline 可以被过期的相等读数绕过。** `read_stable_snapshot`
+   在第二次读取后先判断 progress 相等并返回成功，之后才检查 deadline。若 sleep、ioctl
+   或调度延迟跨过 1000 ms，但两次值恰好相等，过期 snapshot 会被接受。现有 deadline
+   helper test 没有覆盖“equal 且 expired”的决策优先级。
+5. **IMPORTANT — 原计划的输出与 loopback 见证只部分实现。** 已识别 mode 的成功路径
+   输出 PRE/POST/DELTA/terminal marker；读取失败、inactive 和 protocol failure 只输出
+   FAIL，Act Response 的“all execution paths”表述过宽。原计划要求 `--self-test` 使用
+   host loopback，当前因 sandbox EPERM 改成纯内存 seam；该偏差已诚实记录，但没有一个
+   可在 sandbox 外原样复跑的有界 real-loopback self-test 入口。下一轮保留纯协议测试，
+   另加真实 loopback 入口，并明确只有实际取得的数据才允许输出。
+6. **PLAN-INVALID — T7 的全 manifest/workspace fmt Gate 会制造无关 vendor churn。**
+   `cargo fmt` 对三个本地化依赖和根 workspace 分别失败；axdriver-net 至少触及未修改的
+   fxmac/ixgbe，axdriver-virtio 触及 blk/gpu/input/socket，virtio-drivers 与根命令会重排
+   大量 block/sound/socket/PCI/smoltcp 源码。kernel 和 axnet manifest fmt 单独通过。
+   T7 已改为定向格式 change-owned adapter/queue 文件，并用 dependency tests、source
+   audit 和 full diff Review 覆盖 vendor snapshot，禁止批量格式化无关源码。
+7. **BASELINE-CHANGED — D1 compile debt 已消失。** 原 `lichee-d1-kbench` 命令在当前
+   HEAD 完整退出 0，生成 478,672-byte ELF 与 159,936-byte bin；本轮只把这条新鲜结果
+   用于关闭长期未完成的 T3.1。T7.2 仍需再次运行并把当次产物写入 Evidence。
+8. **MINOR — Act Response 使用非标准状态。** `implemented-with-env-deferred-check` 不在
+   `pending/reported/blocked` 状态集合中。内容、环境交接和工作树足以按 reported 结果
+   审查；旧 Act Response 保持不可改，本 Review 记录该流程偏差。
 
 **Deviation Classification**
 
-Pending.
+- `ACT-DEVIATION`：probe 没有拒绝 PRE 前已存在的安全失败，idle/nudge negative matrix
+  不完整，stable deadline 判定顺序不符合批准 contract。
+- `ACT-DEVIATION`：host loopback self-test 被纯内存 seam 替代，且 Act Response 对所有
+  failure path 的固定输出作了过宽声明；环境原因成立，但仍需可复跑入口。
+- `PLAN-INVALID`：全 manifest/workspace fmt 会批量改写未修改的本地化依赖和 smoltcp，
+  不符合 Surgical Changes，已收紧为 change-owned format Gate。
+- `BASELINE-CHANGED`：D1 七个历史编译错误在当前 HEAD 不再复现。
+- `NEW-EVIDENCE`：发现 post-absolute safety、idle/nudge mutation 和 equal-after-deadline
+  缺口；发现完整 fmt Gate 的实际影响面。
 
 **Evidence**
 
-Pending.
+2026-08-12 独立复验：
+
+| Command / inspection | Result |
+|---|---|
+| `make host-test` | PASS，exit 0：6 early-console + 8 memtrack + 26 MS03 + 12 MS04 + 6 probe decisions + stimulus self-test |
+| `make network-benchmark-test` | PASS，exit 0：26 protocol + 20 platform + 21 tools + 9 integration |
+| axnet 16-thread full suite | PASS，109/109，exit 0；仅 11 个既有 smoltcp warnings |
+| D1 `lichee-d1-kbench` build | PASS，exit 0；ELF 478,672 bytes，bin 159,936 bytes |
+| kernel/axnet manifest fmt | PASS，exit 0 |
+| axdriver-net/axdriver-virtio/virtio-drivers/root full fmt | FAIL，exit 1；均为跨未修改 vendor 源码的大范围 rustfmt diff，不是环境失败 |
+| `openspec validate references --strict` | PASS，exit 0 |
+| `git diff --cached --check`; `git diff --check` | PASS，exit 0 |
+| `ms04_rx_probe.c` source review | 复现 absolute safety、idle/nudge matrix 与 deadline ordering 缺口 |
+| stimulus/Act Response review | 纯内存 self-test PASS；真实 loopback 仅有 EPERM 叙述，无独立复跑 mode |
 
 **Follow-up Decision**
 
-Pending.
+创建 iteration 008，把上述 probe/loopback 修复并入原定 T7 自动 Gate，不再单独拆轮。
+先用 C decision mutations 和有界 loopback mode 关闭 Review findings，再执行所有自动
+unit/check/build/source/spec/full-diff Gate，创建 change-local automatic Evidence，并把
+仍按 R44 归类的 static probe/real-loopback 环境项交给 iteration 009。QEMU、rootfs、
+guest shell 和 runtime Evidence 不进入 iteration 008。
 
 **Next Iteration**
 
-Pending.
+`iterations/008-probe-decision-closures-and-automatic-gates.md`，等待 Gate 2 批准。
