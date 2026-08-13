@@ -63,7 +63,7 @@ MS05 MUST 在现有 caller-driven `Service` 与唯一 queue service 之间为每
 
 ### Requirement: TX descriptor ownership、completion 与 buffer 守恒
 
-唯一 queue service MUST 按 `slot-queued → buffer-prepared → device-owned → completed → reclaimed` 状态推进每个 TX packet。只有成功加入 hardware available ring 后才能进入 `device-owned`；只有从 used ring 回收匹配 token 并使 buffer 可复用后才能达到 C4 `reclaimed`。每个 token、buffer 和 ticket MUST 同时属于且只属于一个状态。正常 queue/buffer exhaustion MUST 可恢复；oversize、submit error 和 reclaim error MUST NOT 使 driver 的长期可用 TX buffer 数量静默缩小。
+唯一 queue service MUST 按 `slot-queued → buffer-prepared → device-owned → completed → reclaimed` 状态推进每个 TX packet。只有成功加入 hardware available ring 后才能进入 `device-owned`；只有从 used ring 回收匹配 token 并使 buffer 可复用后才能达到 C4 `reclaimed`。每个 token、buffer 和 ticket MUST 同时属于且只属于一个状态。正常 queue/buffer exhaustion MUST 可恢复；oversize、submit error 和 reclaim error MUST NOT 使 driver 的长期可用 TX buffer 数量静默缩小。transport 接受 buffer 前的 submit error MUST 把 buffer 恢复到可分配集合；接受后才发现的 token/ledger invariant MUST 由 driver 保留该 buffer、返回稳定 fatal 并停止后续 submit，不得 panic、释放 device-owned buffer或谎报为可恢复 Full。
 
 #### Scenario: 成功提交和完成 TX
 

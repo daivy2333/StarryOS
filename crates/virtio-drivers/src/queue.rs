@@ -1362,6 +1362,58 @@ mod tests {
         );
     }
 
+    /// Table-driven check of the wrapping avail-event kick formula: a kick is
+    /// sent exactly when the newly-added window crosses the device's
+    /// `avail_event` boundary, i.e. `(new - event - 1) < (new - old)` in `u16`
+    /// wrapping arithmetic.
+    #[test]
+    fn event_idx_kick_window_matrix() {
+        let mut config_space = ();
+        let state = Arc::new(Mutex::new(State {
+            queues: vec![QueueStatus::default()],
+            ..Default::default()
+        }));
+        let mut transport = FakeTransport {
+            device_type: DeviceType::Block,
+            max_queue_size: 4,
+            device_features: Feature::RING_EVENT_IDX.bits(),
+            config_space: NonNull::from(&mut config_space),
+            state,
+        };
+        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, true).unwrap();
+
+        // (old_idx, new_idx, avail_event) -> expected kick, hand-computed from
+        // the spec's wrapping notification formula.
+        let cases: &[(u16, u16, u16, bool)] = &[
+            (7, 7, 0, false),         // no new descriptors added
+            (5, 10, 3, false),        // event behind the window: already passed
+            (5, 10, 7, true),         // event inside the window: crossed
+            (5, 7, 7, false),         // equal boundary, not yet crossed (new == event)
+            (5, 8, 7, true),          // equal boundary crossed (new == event + 1)
+            (65535, 3, 65535, true),  // wrapping window crossed
+            (3, 3, 65535, false),     // wrapping, no new descriptors
+            (65530, 4, 65520, false), // wrapping, event outside the window
+        ];
+        for &(old, new, event, expected) in cases {
+            queue.avail_idx = new;
+            queue.notify_old_idx.store(old, Ordering::Relaxed);
+            unsafe {
+                (*queue.used.as_ptr())
+                    .avail_event
+                    .store(event, Ordering::Release);
+            }
+            assert_eq!(
+                queue.should_notify(),
+                expected,
+                "old={old}, new={new}, avail_event={event}"
+            );
+            assert!(
+                !queue.should_notify(),
+                "no re-kick for the same window old={old}, new={new}"
+            );
+        }
+    }
+
     /// Event-idx suppression writes `used_event = last_used_idx - 1`; the
     /// used ring flag stays untouched.
     #[test]

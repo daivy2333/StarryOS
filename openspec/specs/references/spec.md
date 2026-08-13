@@ -141,5 +141,6 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R49 --> | `.claude/runbooks/network-benchmark-platform-qualification.md` | 网卡基准资格扫描 Runbook — 环境/treatment/test 分轴、C1/C6 口径、user-net 已验证路径、TAP 手工命令、多流/payload/profile/pacing 矩阵、可观测性、Evidence 和基础设施缺口分类 |
 | <!-- R50 --> | `.claude/runbooks/git-stash-bisect.md` | Git Stash 二分排查 Runbook — 大改动构建失败时用 stash 分块隔离判定"改动是否引入失败"；含 cargo clean 防缓存污染、基线/二分/用户交叉验证、untracked 文件与恢复完整性与回滚 |
 | <!-- R51 --> | `.claude/runbooks/ms04-qemu-async-rx-core-evidence.md` | MS04 QEMU 异步 RX 核心证据采集 Runbook — 唯一 queue task、quiet/nudge、96 包有界 burst、descriptor 守恒、budget/yield、证据边界与失败处理 |
+| <!-- R52 --> | `.claude/runbooks/virtio-real-adapter-test-fixture.md` | 真实 adapter 测试 fixture Runbook — 为 virtio-drivers 依赖 crate 编写驱动真实 `VirtIoNetDev` 的测试：本地 TestHal/fake Transport + used-ring 设备模拟、依赖 crate 中 `cfg(test)` seam 不可见时的访问器/seam 处理、post-accept invariant 与 QueueFull 的驱动边界 |
 
 <!-- arc: cleanup-uart-documentation-system --> 全部历史 R 条目已归档至 archive carrier（见上方已归档条目）。

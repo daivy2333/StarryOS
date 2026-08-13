@@ -1,31 +1,22 @@
-use alloc::vec;
 use core::task::Waker;
 
 use axdriver::prelude::DevError;
 use axpoll::PollSet;
-use smoltcp::{
-    storage::{PacketBuffer, PacketMetadata},
-    time::Instant,
-    wire::IpAddress,
-};
+use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
 use crate::{
-    consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::{Device, RxStep},
+    consts::SOCKET_BUFFER_SIZE,
+    device::{Device, RxStep, TxOutcome, TxPreflight, fixed_queue::FixedFrameQueue},
 };
 
 pub struct LoopbackDevice {
-    buffer: PacketBuffer<'static, ()>,
+    buffer: FixedFrameQueue<SOCKET_BUFFER_SIZE>,
     poll: PollSet,
 }
 impl LoopbackDevice {
     pub fn new() -> Self {
-        let buffer = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
-            vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
-        );
         Self {
-            buffer,
+            buffer: FixedFrameQueue::new(),
             poll: PollSet::new(),
         }
     }
@@ -37,31 +28,45 @@ impl Device for LoopbackDevice {
     }
 
     fn recv(&mut self, buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
-        let Some((_, rx_buf)) = self.buffer.dequeue().ok() else {
+        let Some(rx_buf) = self.buffer.peek() else {
             return RxStep::Empty;
         };
         match buffer.enqueue(rx_buf.len(), ()) {
             Ok(dst) => {
                 dst.copy_from_slice(rx_buf);
+                let _ = self.buffer.pop();
                 RxStep::Delivered
             }
             Err(_) => RxStep::Fault(DevError::BadState),
         }
     }
 
-    fn send(&mut self, next_hop: IpAddress, packet: &[u8], _timestamp: Instant) -> bool {
-        match self.buffer.enqueue(packet.len(), ()) {
-            Ok(tx_buf) => {
-                tx_buf.copy_from_slice(packet);
+    fn preflight_send(
+        &mut self,
+        _next_hop: IpAddress,
+        packet: &[u8],
+        _timestamp: Instant,
+    ) -> TxPreflight {
+        match self.buffer.preflight(packet.len()) {
+            Ok(()) => TxPreflight::Ready,
+            Err(_) => TxPreflight::Full,
+        }
+    }
+
+    fn send(&mut self, next_hop: IpAddress, packet: &[u8], _timestamp: Instant) -> TxOutcome {
+        match self.buffer.enqueue(packet, (), None) {
+            Ok(()) => {
                 self.poll.wake();
-                true
+                TxOutcome::Accepted {
+                    rx_became_ready: true,
+                }
             }
             Err(_) => {
                 warn!(
                     "Loopback device buffer is full, dropping packet to {}",
                     next_hop
                 );
-                false
+                TxOutcome::Full
             }
         }
     }

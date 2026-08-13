@@ -922,7 +922,7 @@ mod tests {
         rx_error_stage, software_nudge_impl, start_with,
     };
     use crate::{
-        device::{Device, LoopbackDevice, RxStep},
+        device::{Device, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
         router::{Router, RxOutcome, RxOwnerView},
         service::Service,
     };
@@ -965,8 +965,17 @@ mod tests {
             RxStep::Empty
         }
 
-        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-            false
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted { rx_became_ready: false }
         }
 
         fn register_waker(&self, _waker: &Waker) {}
@@ -1458,8 +1467,17 @@ mod tests {
             self.steps.lock().pop_front().unwrap_or(RxStep::Empty)
         }
 
-        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-            false
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted { rx_became_ready: false }
         }
 
         fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {

@@ -13,6 +13,9 @@
 #![no_std]
 #![cfg_attr(doc, feature(doc_cfg))]
 
+#[cfg(test)]
+extern crate std;
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -109,7 +112,7 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
     use virtio_drivers::device::socket::SocketError::*;
     use virtio_drivers::Error::*;
     match e {
-        QueueFull => DevError::Again,
+        QueueFull => DevError::BadState,
         NotReady => DevError::Again,
         WrongToken => DevError::BadState,
         AlreadyUsed => DevError::AlreadyExists,

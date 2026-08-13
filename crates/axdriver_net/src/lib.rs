@@ -78,9 +78,19 @@ impl TxCookie {
 pub trait NetTxQueue {
     /// Submits one prepared buffer with its owner cookie.
     ///
-    /// On every error, including [`DevError::Again`], the driver has already
-    /// recovered `tx_buf` into its allocatable buffer set. The caller therefore
-    /// retains ownership of its logical slot, but must not reuse the pointer.
+    /// On `Ok(())` the driver owns `tx_buf` and it stays device-owned until the
+    /// matching cookie is returned by [`Self::reclaim_tx`].
+    ///
+    /// On a recoverable pre-accept error (including [`DevError::Again`]), the
+    /// transport never borrowed the buffer: the driver has already returned it
+    /// to its allocatable set. The caller keeps its logical slot but must not
+    /// reuse the pointer.
+    ///
+    /// On a stable fatal error (a post-accept ownership invariant, e.g. an
+    /// out-of-range or already-occupied token), the driver retains the buffer
+    /// in a driver-owned fault state, stops all further TX operations and
+    /// returns the same error afterwards. The caller must not reuse the
+    /// pointer and must not treat the slot as recoverable.
     fn submit_tx(&mut self, tx_buf: NetBufPtr, cookie: TxCookie) -> DevResult;
 
     /// Reclaims at most one completed submission.

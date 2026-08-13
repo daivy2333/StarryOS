@@ -93,8 +93,11 @@ cookie 只标识上层 ticket，不是 VirtIO descriptor token；VirtIO adapter 
 接口的 ownership 规则固定为：
 
 - submit 成功后 driver/device 拥有 buffer；对应 frame slot 才能 commit dequeue。
-- submit 返回 `Again` 或其他错误时，driver 必须已把准备中的 buffer 恢复到可分配集合，
-  queue service 仍拥有 slot 队首。
+- submit 在 transport 接受前返回 `Again` 或其他错误时，driver 必须已把准备中的 buffer 恢复
+  到可分配集合，queue service 仍拥有 slot 队首。若 transport 已接受 buffer 后才发现 token
+  range、slot collision 或 ledger mismatch，driver 必须把新 buffer 保留在不可复用的内部
+  fault owner 中、记录稳定 fatal 并停止后续 submit；此路径不得 panic，也不得谎报 buffer 已
+  恢复。queue service 保留逻辑 slot 并进入 fault，不再重试该 packet。
 - reclaim 只有在匹配 token 完成、同一 buffer 已回到可用集合后才返回 cookie。
 - `NoMemory` 只描述不可恢复的初始化分配失败；运行期 queue/buffer exhaustion 使用
   `Again`。oversize 是稳定 policy/error，不是压力。
@@ -114,8 +117,10 @@ slot 和上层服务绑定到 transport。单步 reclaim 同时给 fixed budget 
 **Impact**
 
 `axdriver_net`、VirtIO adapter、fake drivers 和 enum-dispatch implementor 都要编译迁移。
-第一轮必须先用 compile tests 和 ownership model tests 固定错误后的 buffer 守恒，再允许
-axnet 使用新接口。
+VirtIO adapter 的 legacy submit 与 queue submit 必须使用带 owner tag 的同一 ledger，避免
+一条路径覆盖另一条路径。第一轮必须先用真实 adapter fixture 和 ownership model tests 固定
+错误后的 buffer 守恒，再允许 axnet 使用新接口。`QueueFull → Again` 是 net TX pressure
+语义；共享错误转换函数的 vsock 等其他调用者不得在没有独立 requirement 和测试时改变。
 
 **Alternatives**
 
@@ -134,6 +139,11 @@ axnet 使用新接口。
 `14 + 1500 = 1514` bytes、实际长度和最少 metadata。TX slot metadata 包含 acceptance
 ticket，RX slot 不包含 transport 状态。
 
+backing storage 必须在 heap 上直接构造并由 `Box` 或等价固定所有权容器持有，禁止在内核
+栈上先物化约 194 KiB 的双向数组再移动进 `EthernetDevice`。初始化期允许固定次数分配；完成
+初始化后不得扩容或按 packet 分配。ARP pending 与 loopback 若需要精确、无副作用的容量
+preflight，复用同一 fixed-frame storage 机制，但使用各自既有逻辑容量。
+
 queue 以 head/tail/occupancy 管理，每次 enqueue 先检查完整长度和空 slot，再复制整 frame
 并一次 commit；dequeue 先 peek，consumer 成功后再 commit。初始化后不扩容、不分配 packet
 buffer。oversize 返回稳定 `Dropped(FrameTooLarge)` 或 RX drop/fault policy，不能占用半个
@@ -142,6 +152,11 @@ slot。
 slot 和 raw driver 继续受现有 `Service` mutex 保护。锁提供 packet metadata 与 ticket
 状态的同步；occupancy/high-water/drop telemetry 是纯观测，可使用 Relaxed atomic。任何
 软件事件都在状态 commit 后发布，guard 不跨 `Pending` 或 yield。
+
+本结构在 stack-handoff iteration 中先以 dormant slot mode 完成 host tests，产品默认仍走
+现有同步 polling TX/RX。只有 D4 的双向 activation preflight 成功后，后续 queue-service
+iteration 才能一次性启用 RX/TX slot mode；不得直接读取 MS04 的 RX-only `Active` 并提前
+切换 TX。
 
 **Reason**
 
@@ -173,16 +188,28 @@ metadata。数据面在 driver DMA buffer 与 slot 间各有一次显式 copy；
 Router 改为 peek→plan/preflight→commit：
 
 1. 先解析队首和路由，得到一个或多个目标设备。
-2. 在同一个 `Service` guard 内对所有目标执行无副作用 capacity preflight。
+2. 在同一个 `Service` guard 内对所有目标执行 packet-side-effect-free capacity preflight。
+   preflight 可以回收已完成的同步 TX buffer，但不得发送 frame、占用 slot/pending entry、
+   更新 neighbor、增加 drop counter 或消费 Router packet。
 3. 任一目标 Full 时不调用任何 send、不 dequeue，并停止本轮 dispatch。
 4. 所有目标 ready 后逐一 commit；全部 Accepted 或明确 Dropped 后才 dequeue。
 5. preflight 后若仍出现不可能的 Full、ownership error 或中途 fatal，分类为 invariant
    fault，停止数据面并移除该 Router 队首，防止后续重试复制已经交付给先前目标的 packet。
 
+Device contract 分开表达 `TxPreflight::{Ready, Full, Dropped(reason), Fault(error)}` 与
+`TxOutcome::{Accepted { rx_became_ready }, Full, Dropped(reason), Fault(error)}`。稳定 drop
+reason 至少区分 malformed IP、missing route、route-source mismatch、unsupported address
+family 和 frame too large。Router 对每个逻辑 delivery disposition 只增加一次 reason counter；
+preflight 为 Ready 后 commit 返回任何非 Accepted 结果都属于 invariant drift。
+
 该两阶段规则覆盖 IPv4 broadcast、IPv6 multicast 和 loopback+Ethernet fanout。因为
 queue task 与 stack side 使用同一个 mutex，preflight 和 commit 之间不存在 slot
 consumer 或另一个 producer，capacity 结论在正常路径上稳定。无路由、明确不支持的网络
 协议、malformed packet 和 frame oversize 使用固定 `TxDropReason`；普通 Full 不计 drop。
+
+`smoltcp::PacketBuffer::is_full()` 只反映 metadata ring，不能证明下一个可变长度 packet 有
+连续 payload window。Loopback 与 ARP pending 因而不能用 `is_full()` 充当 exact preflight；
+它们迁移到 fixed-frame queue 后，preflight 才能对给定长度返回稳定 Ready/Full。
 
 ARP 路径按一次最多生成一个 L2 frame 的事务拆分：
 
@@ -228,6 +255,11 @@ downcast raw driver，也不保存第二个 NIC handle。
 执行 preflight suppress；注册 task 与 event；最后一次原子状态转换将两条 queue 的 owner
 同时切为 `Active`。在该转换前，普通 Router RX 与同步 TX fallback 仍是唯一 owner；转换后
 它们只能访问 slots。不存在公开的 RX-active/TX-polling 半状态。
+
+stack-handoff iteration 只准备并测试 dormant slot mode，不执行上述转换。当前 MS04
+`RX_LIFECYCLE::Active` 只代表 RX descriptor owner，不能作为启用 TX slots 的条件。双向
+lifecycle iteration 必须在同一个 `Service` guard 内完成 queue preflight、local slot-mode
+切换与 lifecycle publication；任一步失败时保持 polling fallback，不能留下半激活设备。
 
 激活后的 queue fatal 进入 `Faulted` 并保留双向 ownership，唤醒 flush/stack progress
 waiter，停止无界 retry；不回退到 10ms descriptor polling。`Unavailable` 只允许在 owner

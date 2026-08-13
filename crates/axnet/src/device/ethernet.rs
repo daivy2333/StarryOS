@@ -6,18 +6,29 @@ use axdriver_net::NetQueueControl;
 use axtask::future::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
-    storage::{PacketBuffer, PacketMetadata},
+    storage::PacketBuffer,
     time::{Duration, Instant},
     wire::{
         ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-        EthernetRepr, IpAddress, Ipv4Cidr,
+        EthernetRepr, IpAddress, Ipv4Address, Ipv4Cidr,
     },
 };
 
 use crate::{
-    consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{Device, RxStep},
+    consts::ETHERNET_MAX_PENDING_PACKETS,
+    device::{
+        Device, RxStep, TxDropReason, TxOutcome, TxPreflight,
+        fixed_queue::{FixedFrameQueue, MAX_FRAME_SIZE, TicketTracker},
+    },
 };
+
+fn tx_outcome_from_err(err: DevError) -> TxOutcome {
+    match err {
+        DevError::Again => TxOutcome::Full,
+        DevError::InvalidParam => TxOutcome::Dropped(TxDropReason::FrameTooLarge),
+        err => TxOutcome::Fault(err),
+    }
+}
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
 
@@ -26,34 +37,63 @@ struct Neighbor {
     expires_at: Instant,
 }
 
+/// How the device submits complete frames to the hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxMode {
+    /// Synchronous recycle→alloc→transmit against the raw driver.
+    Polling,
+    /// Emit into the fixed dormant TX slot storage (host-test seam only).
+    /// The product cutover to this mode is owned by Task 3.1.
+    #[allow(dead_code)]
+    DormantSlots,
+}
+
 pub struct EthernetDevice {
     name: String,
     inner: AxNetDevice,
     neighbors: HashMap<IpAddress, Option<Neighbor>>,
     ip: Ipv4Cidr,
 
-    pending_packets: PacketBuffer<'static, IpAddress>,
+    pending_packets: FixedFrameQueue<ETHERNET_MAX_PENDING_PACKETS, IpAddress>,
+
+    /// Fixed RX slot storage (Task 2.1). Consumed only in dormant mode.
+    #[allow(dead_code)]
+    rx_slots: FixedFrameQueue<64>,
+    /// Fixed TX slot storage (Task 2.1). Consumed only in dormant mode.
+    tx_slots: FixedFrameQueue<64>,
+    /// Checked monotonic tickets for accepted dormant TX frames.
+    tx_tickets: TicketTracker,
+    tx_mode: TxMode,
 }
 impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
 
     pub fn new(name: String, inner: AxNetDevice, ip: Ipv4Cidr) -> Self {
-        let pending_packets = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
-            vec![
-                0u8;
-                (STANDARD_MTU + EthernetFrame::<&[u8]>::header_len())
-                    * ETHERNET_MAX_PENDING_PACKETS
-            ],
-        );
         Self {
             name,
             inner,
             neighbors: HashMap::new(),
             ip,
-
-            pending_packets,
+            pending_packets: FixedFrameQueue::new_with(IpAddress::Ipv4(Ipv4Address::UNSPECIFIED)),
+            rx_slots: FixedFrameQueue::new(),
+            tx_slots: FixedFrameQueue::new(),
+            tx_tickets: TicketTracker::new(),
+            tx_mode: TxMode::Polling,
         }
+    }
+
+    /// Borrows the dormant slot storage for host tests. Product builds never
+    /// touch the slots.
+    #[cfg(test)]
+    pub(super) fn slots_for_test(&self) -> (&FixedFrameQueue<64>, &FixedFrameQueue<64>) {
+        (&self.rx_slots, &self.tx_slots)
+    }
+
+    /// Activates dormant slot mode for host tests. Product activation is
+    /// owned by Task 3.1.
+    #[cfg(test)]
+    pub(super) fn set_dormant_slots_for_test(&mut self) {
+        self.tx_mode = TxMode::DormantSlots;
     }
 
     #[inline]
@@ -61,43 +101,101 @@ impl EthernetDevice {
         EthernetAddress(self.inner.mac_address().0)
     }
 
-    fn send_to<F>(
-        inner: &mut AxNetDevice,
+    /// Emits and submits one complete Ethernet frame.
+    ///
+    /// In polling mode this recycles, allocates and transmits synchronously.
+    /// In dormant mode it writes the frame into a fixed TX slot and returns a
+    /// checked ticket. The caller must treat every non-`Accepted` result as
+    /// "frame not submitted" and must not advance any packet/neighbor state.
+    fn emit_frame<F>(
+        &mut self,
         dst: EthernetAddress,
         size: usize,
         f: F,
         proto: EthernetProtocol,
-    ) where
+    ) -> TxOutcome
+    where
         F: FnOnce(&mut [u8]),
     {
-        if let Err(err) = inner.recycle_tx_buffers() {
-            warn!("recycle_tx_buffers failed: {:?}", err);
-            return;
+        match self.tx_mode {
+            TxMode::Polling => self.emit_frame_polling(dst, size, f, proto),
+            TxMode::DormantSlots => self.emit_frame_dormant(dst, size, f, proto),
         }
+    }
 
+    fn emit_frame_polling<F>(
+        &mut self,
+        dst: EthernetAddress,
+        size: usize,
+        f: F,
+        proto: EthernetProtocol,
+    ) -> TxOutcome
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        let outcome = (|| -> DevResult {
+            self.inner.recycle_tx_buffers()?;
+            let repr = EthernetRepr {
+                src_addr: EthernetAddress(self.inner.mac_address().0),
+                dst_addr: dst,
+                ethertype: proto,
+            };
+            let mut tx_buf = self.inner.alloc_tx_buffer(repr.buffer_len() + size)?;
+            let mut frame = EthernetFrame::new_unchecked(tx_buf.packet_mut());
+            repr.emit(&mut frame);
+            f(frame.payload_mut());
+            trace!(
+                "SEND {} bytes: {:02X?}",
+                tx_buf.packet_len(),
+                tx_buf.packet()
+            );
+            self.inner.transmit(tx_buf)
+        })();
+        match outcome {
+            Ok(()) => TxOutcome::Accepted {
+                rx_became_ready: false,
+            },
+            Err(err) => tx_outcome_from_err(err),
+        }
+    }
+
+    fn emit_frame_dormant<F>(
+        &mut self,
+        dst: EthernetAddress,
+        size: usize,
+        f: F,
+        proto: EthernetProtocol,
+    ) -> TxOutcome
+    where
+        F: FnOnce(&mut [u8]),
+    {
         let repr = EthernetRepr {
-            src_addr: EthernetAddress(inner.mac_address().0),
+            src_addr: self.hardware_address(),
             dst_addr: dst,
             ethertype: proto,
         };
-
-        let mut tx_buf = match inner.alloc_tx_buffer(repr.buffer_len() + size) {
-            Ok(buf) => buf,
-            Err(err) => {
-                warn!("alloc_tx_buffer failed: {:?}", err);
-                return;
-            }
+        let frame_len = repr.buffer_len() + size;
+        if self.tx_slots.preflight(frame_len).is_err() {
+            return TxOutcome::Full;
+        }
+        let ticket = match self.tx_tickets.alloc() {
+            Ok(ticket) => ticket,
+            Err(_) => return TxOutcome::Full,
         };
-        let mut frame = EthernetFrame::new_unchecked(tx_buf.packet_mut());
+        let mut frame_bytes = vec![0u8; frame_len];
+        let mut frame = EthernetFrame::new_unchecked(&mut frame_bytes);
         repr.emit(&mut frame);
         f(frame.payload_mut());
-        trace!(
-            "SEND {} bytes: {:02X?}",
-            tx_buf.packet_len(),
-            tx_buf.packet()
-        );
-        if let Err(err) = inner.transmit(tx_buf) {
-            warn!("transmit failed: {:?}", err);
+        match self.tx_slots.enqueue(&frame_bytes, (), Some(ticket)) {
+            Ok(()) => TxOutcome::Accepted {
+                rx_became_ready: false,
+            },
+            Err(_) => {
+                // Preflight promised room; a failed enqueue is invariant
+                // drift, so release the ticket and report a stable fault.
+                let _ = self.tx_tickets.release(ticket);
+                TxOutcome::Fault(DevError::BadState)
+            }
         }
     }
 
@@ -136,10 +234,10 @@ impl EthernetDevice {
         }
     }
 
-    fn request_arp(&mut self, target_ip: IpAddress) {
+    fn request_arp(&mut self, target_ip: IpAddress) -> TxOutcome {
         let IpAddress::Ipv4(target_ipv4) = target_ip else {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
-            return;
+            return TxOutcome::Dropped(TxDropReason::UnsupportedAddress);
         };
         debug!("Requesting ARP for {}", target_ipv4);
 
@@ -151,15 +249,17 @@ impl EthernetDevice {
             target_protocol_addr: target_ipv4,
         };
 
-        Self::send_to(
-            &mut self.inner,
+        let outcome = self.emit_frame(
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
             EthernetProtocol::Arp,
         );
-
-        self.neighbors.insert(target_ip, None);
+        // Only a submitted request records the pending (None) neighbor.
+        if matches!(outcome, TxOutcome::Accepted { .. }) {
+            self.neighbors.insert(target_ip, None);
+        }
+        outcome
     }
 
     fn process_arp(&mut self, payload: &[u8], now: Instant) {
@@ -200,14 +300,20 @@ impl EthernetDevice {
             }
 
             debug!("ARP: {} -> {}", source_protocol_addr, source_hardware_addr);
-            self.neighbors.insert(
-                IpAddress::Ipv4(source_protocol_addr),
-                Some(Neighbor {
-                    hardware_address: source_hardware_addr,
-                    expires_at: now + Self::NEIGHBOR_TTL,
-                }),
-            );
 
+            // A reply carries no TX obligation: record the neighbor directly.
+            if let ArpOperation::Reply = operation {
+                self.neighbors.insert(
+                    IpAddress::Ipv4(source_protocol_addr),
+                    Some(Neighbor {
+                        hardware_address: source_hardware_addr,
+                        expires_at: now + Self::NEIGHBOR_TTL,
+                    }),
+                );
+            }
+
+            // An ARP request owes a reply; only an accepted reply resolves the
+            // neighbor (transactional: a Full reply must not update state).
             if let ArpOperation::Request = operation {
                 let response = ArpRepr::EthernetIpv4 {
                     operation: ArpOperation::Reply,
@@ -217,44 +323,85 @@ impl EthernetDevice {
                     target_protocol_addr: source_protocol_addr,
                 };
 
-                Self::send_to(
-                    &mut self.inner,
+                let reply = self.emit_frame(
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
                     EthernetProtocol::Arp,
                 );
+                if !matches!(reply, TxOutcome::Accepted { .. }) {
+                    warn!("ARP reply not accepted: {reply:?}");
+                    return;
+                }
+                self.neighbors.insert(
+                    IpAddress::Ipv4(source_protocol_addr),
+                    Some(Neighbor {
+                        hardware_address: source_hardware_addr,
+                        expires_at: now + Self::NEIGHBOR_TTL,
+                    }),
+                );
             }
 
-            if self
-                .pending_packets
-                .peek()
-                .is_ok_and(|it| it.0 == &IpAddress::Ipv4(source_protocol_addr))
-            {
-                while let Ok((&next_hop, buf)) = self.pending_packets.peek() {
-                    // TODO: optimize logic such that one long-pending ARP
-                    // request does not block all other packets
-
-                    let Some(Some(neighbor)) = self.neighbors.get(&next_hop) else {
-                        break;
-                    };
-                    if neighbor.expires_at <= now {
-                        // Neighbor is expired, we need to request ARP again
-                        self.request_arp(next_hop);
-                        break;
-                    }
-
-                    Self::send_to(
-                        &mut self.inner,
-                        neighbor.hardware_address,
-                        buf.len(),
-                        |b| b.copy_from_slice(buf),
-                        EthernetProtocol::Ipv4,
-                    );
-                    let _ = self.pending_packets.dequeue();
+            // Flush pending packets to the now-resolved neighbor. Each flush
+            // only dequeues after the frame was accepted.
+            loop {
+                let Some((next_hop, buf)) = self.pending_packets.peek_meta() else {
+                    break;
+                };
+                if next_hop != IpAddress::Ipv4(source_protocol_addr) {
+                    break;
                 }
+                let Some(Some(neighbor)) = self.neighbors.get(&next_hop) else {
+                    break;
+                };
+                if neighbor.expires_at <= now {
+                    // Neighbor is expired, we need to request ARP again.
+                    let outcome = self.request_arp(next_hop);
+                    if !matches!(outcome, TxOutcome::Accepted { .. }) {
+                        warn!("expired-neighbor ARP request not accepted: {outcome:?}");
+                    }
+                    break;
+                }
+
+                let payload = buf.to_vec();
+                let flush = self.emit_frame(
+                    neighbor.hardware_address,
+                    payload.len(),
+                    |b| b.copy_from_slice(&payload),
+                    EthernetProtocol::Ipv4,
+                );
+                if !matches!(flush, TxOutcome::Accepted { .. }) {
+                    warn!("pending flush not accepted: {flush:?}");
+                    break;
+                }
+                let _ = self.pending_packets.pop();
             }
         }
+    }
+
+    fn preflight_ready_tx(&mut self) -> TxPreflight {
+        match self.inner.recycle_tx_buffers() {
+            Ok(()) if self.inner.can_transmit() => TxPreflight::Ready,
+            Ok(()) => TxPreflight::Full,
+            Err(err) => TxPreflight::Fault(err),
+        }
+    }
+
+    fn preflight_unknown_neighbor(
+        &mut self,
+        _next_hop: IpAddress,
+        timestamp: Instant,
+    ) -> TxPreflight {
+        // ARP request transmit capacity plus pending storage capacity.
+        let tx = self.preflight_ready_tx();
+        if !matches!(tx, TxPreflight::Ready) {
+            return tx;
+        }
+        if self.pending_packets.is_full() {
+            return TxPreflight::Full;
+        }
+        let _ = timestamp;
+        TxPreflight::Ready
     }
 }
 
@@ -284,51 +431,85 @@ impl Device for EthernetDevice {
         }
     }
 
-    fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool {
+    fn preflight_send(
+        &mut self,
+        next_hop: IpAddress,
+        packet: &[u8],
+        timestamp: Instant,
+    ) -> TxPreflight {
+        if packet.len() > MAX_FRAME_SIZE {
+            return TxPreflight::Drop(TxDropReason::FrameTooLarge);
+        }
+        let is_broadcast =
+            next_hop.is_broadcast() || self.ip.broadcast().map(IpAddress::Ipv4) == Some(next_hop);
+        if !is_broadcast {
+            match self.neighbors.get(&next_hop) {
+                // IPv6 always requires ARP, which this device cannot serve.
+                None if matches!(next_hop, IpAddress::Ipv6(_)) => {
+                    return TxPreflight::Drop(TxDropReason::UnsupportedAddress);
+                }
+                None => return self.preflight_unknown_neighbor(next_hop, timestamp),
+                Some(None) => return self.preflight_unknown_neighbor(next_hop, timestamp),
+                Some(Some(neighbor)) if neighbor.expires_at <= timestamp => {
+                    return self.preflight_unknown_neighbor(next_hop, timestamp);
+                }
+                _ => {}
+            }
+        }
+        self.preflight_ready_tx()
+    }
+
+    fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> TxOutcome {
+        if packet.len() > MAX_FRAME_SIZE {
+            return TxOutcome::Dropped(TxDropReason::FrameTooLarge);
+        }
         if next_hop.is_broadcast() || self.ip.broadcast().map(IpAddress::Ipv4) == Some(next_hop) {
-            Self::send_to(
-                &mut self.inner,
+            return self.emit_frame(
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
                 EthernetProtocol::Ipv4,
             );
-            return false;
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
             Some(Some(neighbor)) => {
                 if neighbor.expires_at > timestamp {
-                    Self::send_to(
-                        &mut self.inner,
+                    return self.emit_frame(
                         neighbor.hardware_address,
                         packet.len(),
                         |buf| buf.copy_from_slice(packet),
                         EthernetProtocol::Ipv4,
                     );
-                    return false;
                 } else {
                     true
                 }
             }
-            // Request already sent
+            // Request already sent (pending wait) or unknown: re-request only
+            // when the request was not already accepted.
             Some(None) => false,
             None => true,
         };
-        // Only send ARP request if we haven't already requested it
+        // Only send ARP request if we haven't already requested it.
         if need_request {
-            self.request_arp(next_hop);
+            match self.request_arp(next_hop) {
+                TxOutcome::Accepted { .. } => {}
+                outcome => return outcome,
+            }
         }
         if self.pending_packets.is_full() {
             warn!("Pending packets buffer is full, dropping packet");
-            return false;
+            return TxOutcome::Full;
         }
-        let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) else {
-            warn!("Failed to enqueue packet in pending packets buffer");
-            return false;
-        };
-        dst_buffer.copy_from_slice(packet);
-        false
+        match self.pending_packets.enqueue(packet, next_hop, None) {
+            Ok(()) => TxOutcome::Accepted {
+                rx_became_ready: false,
+            },
+            Err(_) => {
+                warn!("Failed to enqueue packet in pending packets buffer");
+                TxOutcome::Full
+            }
+        }
     }
 
     fn requires_polling(&self) -> bool {

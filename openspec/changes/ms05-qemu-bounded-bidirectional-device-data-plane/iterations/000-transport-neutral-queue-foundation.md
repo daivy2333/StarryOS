@@ -481,28 +481,75 @@ Working tree diff against `3e181464fc76b562a5c4e7e8dd7bb27313fa8a11`; no commit 
 
 ## Plan Review
 
-- Status: pending
+- Status: reported
 
 **Review Result**
 
-Pending.
+follow-up-required。Tasks 1.1-1.3 的接口骨架和主要 GREEN 回归成立，但 Iteration 000 尚未
+形成可供 packet-slot 层依赖的稳定 TX ownership baseline。Review 修复必须先于原计划
+Iteration 001 执行。
 
 **Findings**
 
-Pending.
+1. **Important — post-submit ownership invariant 以 panic 终止。**
+   `install_tx_submission()` 在 `transmit_begin()` 已把 buffer 交给 transport 后才用
+   `assert!` 检查 token range 与 occupied slot；`submit_tx()` 因而可能 panic，既不返回计划
+   要求的稳定 fatal error，也无法履行 `NetTxQueue::submit_tx()` 文档中“每个 error 都已恢复
+   buffer”的承诺。对应测试还把 panic 当作预期成功。该 contract 必须区分 pre-submit
+   recoverable error 与 post-submit fatal ownership，并保持唯一 owner。
+2. **Important — legacy TX path 未纳入同一 ledger。**
+   `NetDriverOps::transmit()` 仍直接覆盖 `tx_buffers[token]`，未检查 range、旧 buffer 或
+   `tx_cookies`；`recycle_tx_buffers()` 又在边界检查前直接索引 token，并在
+   `transmit_complete()` 前取走 buffer。token 冲突、越界或 completion error 可导致 panic、
+   覆盖 owner，或让 buffer 从实际 `free_tx_bufs` 消失。双向 owner 尚未切换前，legacy path
+   仍是当前产品路径，不能把这些问题延期到 slots。
+3. **Important — 正常 buffer exhaustion 仍返回 `NoMemory`。**
+   `alloc_tx_buffer()` 对运行期 `free_tx_bufs` 为空返回 `DevError::NoMemory`，与 R2/R3 和本轮
+   invariant 固定的 `Again` 语义冲突。该结果会让上层把可恢复压力误判为不可恢复分配失败。
+4. **Important — `QueueFull` 映射扩大到未审查的 vsock。**
+   公共 `as_dev_err()` 从 `QueueFull → BadState` 改为 `Again`，而该函数也被
+   `VirtIoSocketDev` 使用。MS05 只批准 net TX pressure 行为；当前没有 vsock requirement、
+   RED/GREEN 或兼容性证据支持这项跨设备行为变化。应把映射限制在 net 边界，或先补足覆盖
+   其他调用者的设计与测试。
+5. **Important — Task 1.2/1.3 的测试见证不满足计划。**
+   axdriver_virtio 的 4 个新测试只调用 `recover_submit_error()`、`install_tx_submission()` 和
+   `take_tx_completion()` helper，没有驱动真实 `VirtIoNetDev::submit_tx/reclaim_tx` 状态迁移，
+   也未覆盖重复 `2 × QS` oversize/QueueFull/submit error、实际 readiness、completion error
+   ledger 或 legacy/queue path 冲突。EVENT_IDX 只新增一个 wrap/repeated-decision 用例，计划
+   要求的 window outside/inside/equal/no-new/wrap 矩阵没有形成明确见证。
+
+Minor：Act Response 声明 change-owned Rust 定向 rustfmt 全部退出 0，但 Review 对列出的五个
+修改文件运行同类 `rustfmt --check --config skip_children=true` 时，`axdriver_virtio/src/lib.rs`
+仍因该 vendor snapshot 的既有排序规则返回 1。该差异不属于产品失败；后继轮次应准确记录
+检查粒度，避免把未通过的整文件检查写成 PASS。
 
 **Deviation Classification**
 
-None.
+- Findings 1-3、5：`ACT-DEVIATION`。计划已明确 stable fatal、错误后 buffer 守恒、运行期
+  `Again`、真实 adapter witness 与完整 EVENT_IDX 矩阵，实现和测试未满足。
+- Finding 4：`PLAN-OMISSION`。Plan 指定修改共享 `as_dev_err()`，但未调查或约束其 vsock
+  调用者，Act 也未补充跨设备验证。
+- 用户确认 `make LOG=info build` 不作为本次 Review 问题，并说明当前 `make run` 正常；这不
+  改变上述 source/contract findings，也不构成独立 runtime Evidence。
 
 **Evidence**
 
-Pending.
+- Source：`crates/axdriver_virtio/src/net.rs:93-127,246-273,298-357,361-446`；
+  `crates/axdriver_virtio/src/lib.rs:107-134`；
+  `crates/virtio-drivers/src/queue.rs:406-424,1292-1363`；
+  `crates/axdriver_virtio/src/socket.rs:61-118`。
+- Fresh PASS：axdriver_net 7 tests、axdriver_virtio 4 tests、virtio-drivers 35 tests、axnet 109
+  tests、kernel QEMU check、strict OpenSpec validation、scoped diff check，均 exit 0。
+- Optional checks：fxmac 与 ixgbe 均 exit 101，最早失败为只读 Cargo registry 无法解包
+  `fxmac_rs` / `core_detect`；保持 `ENV-BLOCKED`，不计产品失败或 PASS。
+- Evidence mode 为 `none`；不存在 Evidence 目录符合 Iteration 000 计划。
 
 **Follow-up Decision**
 
-Pending.
+新增 Task 1.4，并将其作为独立 Iteration 001。它只修复 TX contract、adapter ledger、错误
+映射和测试见证；原 Fixed Slots and Typed Stack Handoff 顺延到 Iteration 002，后续轮次依次
+顺延。这样 packet-slot 层只依赖经过真实 adapter tests 验证的稳定底层接口。
 
 **Next Iteration**
 
-Pending; planned candidate is Iteration 001 after Review confirms the foundation is stable.
+`iterations/001-tx-contract-stabilization.md`

@@ -11,7 +11,7 @@ use smoltcp::{
 
 use crate::{
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::{Device, RxStep},
+    device::{Device, RxStep, TxDropReason, TxOutcome, TxPreflight},
 };
 
 #[derive(Debug)]
@@ -92,6 +92,11 @@ pub struct Router {
     tx_buffer: PacketBuffer,
     pub(crate) devices: Vec<Box<dyn Device>>,
     pub(crate) table: RouteTable,
+    /// Stable TX fault: once set, dispatch stops forwarding until recovery
+    /// (recovery is outside Iteration 003).
+    tx_fault: Option<DevError>,
+    /// Per-reason drop counters; each logical packet increments exactly one.
+    tx_drop_counts: [u64; TxDropReason::COUNT],
 }
 impl Router {
     pub fn new() -> Self {
@@ -108,6 +113,8 @@ impl Router {
             tx_buffer,
             devices: Vec::new(),
             table: RouteTable::new(),
+            tx_fault: None,
+            tx_drop_counts: [0; TxDropReason::COUNT],
         }
     }
 
@@ -201,53 +208,183 @@ impl Router {
         while self.rx_buffer.enqueue(1, ()).is_ok() {}
     }
 
+    /// Enqueues an IP packet into the TX buffer for dispatch tests.
+    #[cfg(test)]
+    pub(crate) fn enqueue_tx_for_test(&mut self, packet: &[u8]) -> bool {
+        match self.tx_buffer.enqueue(packet.len(), ()) {
+            Ok(buf) => {
+                buf.copy_from_slice(packet);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Returns whether packets remain in the TX buffer.
+    #[cfg(test)]
+    pub(crate) fn tx_pending_for_test(&self) -> bool {
+        !self.tx_buffer.is_empty()
+    }
+
+    /// Counts a logical drop once. `reason` maps to a fixed counter slot.
+    fn count_drop(&mut self, reason: TxDropReason) {
+        self.tx_drop_counts[reason.index()] += 1;
+    }
+
+    /// Returns how many logical packets were dropped with `reason`.
+    ///
+    /// Consumed by Iteration 005 V3 telemetry and host tests.
+    #[allow(dead_code)]
+    pub(crate) fn drop_count(&self, reason: TxDropReason) -> u64 {
+        self.tx_drop_counts[reason.index()]
+    }
+
+    /// Returns whether dispatch entered a stable TX fault.
+    #[allow(dead_code)]
+    pub(crate) fn tx_faulted(&self) -> bool {
+        self.tx_fault.is_some()
+    }
+
+    /// Returns the stable TX fault category name, if dispatch entered one.
+    #[allow(dead_code)]
+    pub(crate) fn tx_fault_kind(&self) -> Option<&'static str> {
+        match self.tx_fault {
+            Some(DevError::BadState) => Some("BadState"),
+            Some(DevError::Again) => Some("Again"),
+            Some(DevError::Io) => Some("Io"),
+            Some(DevError::NoMemory) => Some("NoMemory"),
+            Some(DevError::Unsupported) => Some("Unsupported"),
+            Some(DevError::AlreadyExists) => Some("AlreadyExists"),
+            Some(DevError::InvalidParam) => Some("InvalidParam"),
+            Some(DevError::ResourceBusy) => Some("ResourceBusy"),
+            None => None,
+        }
+    }
+
+    /// Plans the unique delivery targets for the packet at the TX head.
+    ///
+    /// Returns `Ok(targets)` where each entry is `(device index, next hop)`,
+    /// or a stable drop reason when the packet cannot be delivered. Parsing
+    /// and route lookup happen before any device is touched.
+    fn plan_packet(&self, packet: &[u8]) -> Result<Vec<(usize, IpAddress)>, TxDropReason> {
+        match IpVersion::of_packet(packet) {
+            Ok(IpVersion::Ipv4) => {
+                let ipv4 = smoltcp::wire::Ipv4Packet::new_checked(packet)
+                    .map_err(|_| TxDropReason::MalformedIp)?;
+                let dst = IpAddress::Ipv4(ipv4.dst_addr());
+                if ipv4.dst_addr().is_broadcast() {
+                    let targets = self
+                        .devices
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, _)| (idx, dst))
+                        .collect();
+                    return Ok(targets);
+                }
+                let rule = self.table.lookup(&dst).ok_or(TxDropReason::NoRoute)?;
+                if rule.src != IpAddress::Ipv4(ipv4.src_addr()) {
+                    return Err(TxDropReason::RouteSourceMismatch);
+                }
+                let next_hop = rule.via.unwrap_or(dst);
+                Ok(vec![(rule.dev, next_hop)])
+            }
+            Ok(IpVersion::Ipv6) => {
+                let ipv6 = smoltcp::wire::Ipv6Packet::new_checked(packet)
+                    .map_err(|_| TxDropReason::MalformedIp)?;
+                let dst = IpAddress::Ipv6(ipv6.dst_addr());
+                if ipv6.dst_addr().is_multicast() {
+                    let targets = self
+                        .devices
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, _)| (idx, dst))
+                        .collect();
+                    return Ok(targets);
+                }
+                let rule = self.table.lookup(&dst).ok_or(TxDropReason::NoRoute)?;
+                if rule.src != IpAddress::Ipv6(ipv6.src_addr()) {
+                    return Err(TxDropReason::RouteSourceMismatch);
+                }
+                let next_hop = rule.via.unwrap_or(dst);
+                Ok(vec![(rule.dev, next_hop)])
+            }
+            Err(_) => Err(TxDropReason::MalformedIp),
+        }
+    }
+
+    /// Forwards the TX queue head with peek → all-target preflight → commit.
+    ///
+    /// Returns whether the caller should poll again (loopback RX became
+    /// ready). Any target `Full` keeps the head and stops this round with no
+    /// commit. A preflight `Drop` counts once and dequeues. A preflight
+    /// `Fault`, or a commit that violates the Ready promise, enters the
+    /// stable Router TX fault and stops all forwarding.
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {
         let mut poll_next = false;
-        while let Ok(((), packet)) = self.tx_buffer.dequeue() {
-            match IpVersion::of_packet(packet).expect("got invalid IP packet") {
-                IpVersion::Ipv4 => {
-                    let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
-                        .expect("got invalid IPv4 packet");
-                    let dst_addr = IpAddress::Ipv4(packet.dst_addr());
-                    if packet.dst_addr().is_broadcast() {
-                        let buf = packet.into_inner();
-                        for dev in &mut self.devices {
-                            poll_next |= dev.send(dst_addr, buf, timestamp);
-                        }
-                    } else {
-                        let Some(rule) = self.table.lookup(&dst_addr) else {
-                            warn!("No route found for destination: {}", dst_addr);
-                            continue;
-                        };
-                        assert_eq!(rule.src, IpAddress::Ipv4(packet.src_addr()));
-
-                        let next_hop = rule.via.unwrap_or(dst_addr);
-                        let dev = &mut self.devices[rule.dev];
-                        poll_next |= dev.send(next_hop, packet.into_inner(), timestamp);
-                    }
+        if self.tx_fault.is_some() {
+            return false;
+        }
+        while let Ok(((), packet)) = self.tx_buffer.peek() {
+            // Copy the head out of the TX buffer so planning, preflight and
+            // commit can borrow `self` independently of the peek borrow.
+            let packet = packet.to_vec();
+            let targets = match self.plan_packet(&packet) {
+                Ok(targets) => targets,
+                Err(reason) => {
+                    self.count_drop(reason);
+                    let _ = self.tx_buffer.dequeue();
+                    continue;
                 }
-                IpVersion::Ipv6 => {
-                    let packet = smoltcp::wire::Ipv6Packet::new_checked(packet)
-                        .expect("got invalid IPv6 packet");
-                    let dst_addr = IpAddress::Ipv6(packet.dst_addr());
-                    if packet.dst_addr().is_multicast() {
-                        let buf = packet.into_inner();
-                        for dev in &mut self.devices {
-                            poll_next |= dev.send(dst_addr, buf, timestamp);
-                        }
-                    } else {
-                        let Some(rule) = self.table.lookup(&dst_addr) else {
-                            warn!("No route found for destination: {}", dst_addr);
-                            continue;
-                        };
-                        assert_eq!(rule.src, IpAddress::Ipv6(packet.src_addr()));
+            };
 
-                        let next_hop = rule.via.unwrap_or(dst_addr);
-                        let dev = &mut self.devices[rule.dev];
-                        poll_next |= dev.send(next_hop, packet.into_inner(), timestamp);
+            // All-target preflight under one lock scope.
+            let mut preflight = TxPreflight::Ready;
+            for &(dev_idx, next_hop) in &targets {
+                let dev = &mut self.devices[dev_idx];
+                match dev.preflight_send(next_hop, &packet, timestamp) {
+                    TxPreflight::Ready => {}
+                    other => {
+                        preflight = other;
+                        break;
                     }
                 }
             }
+            match preflight {
+                TxPreflight::Ready => {}
+                // Keep the head; retry when the device frees capacity.
+                TxPreflight::Full => break,
+                TxPreflight::Drop(reason) => {
+                    self.count_drop(reason);
+                    let _ = self.tx_buffer.dequeue();
+                    continue;
+                }
+                TxPreflight::Fault(err) => {
+                    self.tx_fault = Some(err);
+                    return poll_next;
+                }
+            }
+
+            // Commit every planned target; the head is dequeued exactly once
+            // only after every target accepted.
+            for &(dev_idx, next_hop) in &targets {
+                let dev = &mut self.devices[dev_idx];
+                match dev.send(next_hop, &packet, timestamp) {
+                    TxOutcome::Accepted { rx_became_ready } => {
+                        poll_next |= rx_became_ready;
+                    }
+                    // A non-Accepted commit after preflight Ready is an
+                    // invariant violation: enter the stable fault.
+                    outcome => {
+                        let err = match outcome {
+                            TxOutcome::Fault(err) => err,
+                            _ => DevError::BadState,
+                        };
+                        self.tx_fault = Some(err);
+                        return poll_next;
+                    }
+                }
+            }
+            let _ = self.tx_buffer.dequeue();
         }
         poll_next
     }
