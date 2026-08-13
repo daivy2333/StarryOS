@@ -109,7 +109,7 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
     use virtio_drivers::device::socket::SocketError::*;
     use virtio_drivers::Error::*;
     match e {
-        QueueFull => DevError::BadState,
+        QueueFull => DevError::Again,
         NotReady => DevError::Again,
         WrongToken => DevError::BadState,
         AlreadyUsed => DevError::AlreadyExists,

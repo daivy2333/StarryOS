@@ -62,6 +62,8 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     desc_shadow: [Descriptor; SIZE],
     /// Our trusted copy of `avail.idx`.
     avail_idx: u16,
+    /// Start of the availability window considered by the last kick decision.
+    notify_old_idx: AtomicU16,
     last_used_idx: u16,
     /// Whether the `VIRTIO_F_EVENT_IDX` feature has been negotiated.
     event_idx: bool,
@@ -142,6 +144,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             free_head: 0,
             desc_shadow,
             avail_idx: 0,
+            notify_old_idx: AtomicU16::new(0),
             last_used_idx: 0,
             event_idx,
             suppressed: false,
@@ -405,16 +408,19 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     ///
     /// This will be false if the device has supressed notifications.
     pub fn should_notify(&self) -> bool {
-        if self.event_idx {
+        let new_idx = self.avail_idx;
+        let old_idx = self.notify_old_idx.swap(new_idx, Ordering::Relaxed);
+        let should_notify = if self.event_idx {
             // Safe because self.used points to a valid, aligned, initialised, dereferenceable, readable
             // instance of UsedRing.
             let avail_event = unsafe { (*self.used.as_ptr()).avail_event.load(Ordering::Acquire) };
-            self.avail_idx >= avail_event.wrapping_add(1)
+            new_idx.wrapping_sub(avail_event).wrapping_sub(1) < new_idx.wrapping_sub(old_idx)
         } else {
             // Safe because self.used points to a valid, aligned, initialised, dereferenceable, readable
             // instance of UsedRing.
             unsafe { (*self.used.as_ptr()).flags.load(Ordering::Acquire) & 0x0001 == 0 }
-        }
+        };
+        should_notify
     }
 
     /// Copies the descriptor at the given index from `desc_shadow` to `desc`, so it can be seen by
@@ -1324,6 +1330,36 @@ mod tests {
 
         // Check that the transport should be notified again now.
         assert_eq!(queue.should_notify(), true);
+    }
+
+    #[test]
+    fn event_idx_kick_uses_each_old_new_window_once_across_wrap() {
+        let mut config_space = ();
+        let state = Arc::new(Mutex::new(State {
+            queues: vec![QueueStatus::default()],
+            ..Default::default()
+        }));
+        let mut transport = FakeTransport {
+            device_type: DeviceType::Block,
+            max_queue_size: 4,
+            device_features: Feature::RING_EVENT_IDX.bits(),
+            config_space: NonNull::from(&mut config_space),
+            state,
+        };
+        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, true).unwrap();
+        queue.avail_idx = u16::MAX;
+        queue.notify_old_idx.store(u16::MAX, Ordering::Relaxed);
+        unsafe {
+            (*queue.used.as_ptr())
+                .avail_event
+                .store(u16::MAX, Ordering::Release);
+        }
+        unsafe { queue.add(&[&[42]], &mut []) }.unwrap();
+        assert!(queue.should_notify());
+        assert!(
+            !queue.should_notify(),
+            "the same avail window must not kick twice"
+        );
     }
 
     /// Event-idx suppression writes `used_event = last_used_idx - 1`; the

@@ -21,6 +21,72 @@ pub use self::net_buf::{NetBuf, NetBufBox, NetBufPool, NetBufPtr};
 /// The ethernet address of the NIC (MAC address).
 pub struct EthernetAddress(pub [u8; 6]);
 
+/// A composable, transport-neutral set of network queue directions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NetQueueDirection(u8);
+
+impl NetQueueDirection {
+    /// No queue direction.
+    pub const NONE: Self = Self(0);
+    /// Receive queue.
+    pub const RX: Self = Self(1 << 0);
+    /// Transmit queue.
+    pub const TX: Self = Self(1 << 1);
+    /// Receive and transmit queues.
+    pub const BOTH: Self = Self(Self::RX.0 | Self::TX.0);
+
+    /// Returns whether all directions in `other` are present.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for NetQueueDirection {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for NetQueueDirection {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// Opaque identity supplied by the queue owner and returned on TX completion.
+///
+/// This value identifies an owner-side slot; it is deliberately unrelated to
+/// a transport descriptor, ring index, or device token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxCookie(u64);
+
+impl TxCookie {
+    /// Creates a cookie from an owner-side identity.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the owner-side identity.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Single-step, transport-neutral TX submission and completion reclaim.
+pub trait NetTxQueue {
+    /// Submits one prepared buffer with its owner cookie.
+    ///
+    /// On every error, including [`DevError::Again`], the driver has already
+    /// recovered `tx_buf` into its allocatable buffer set. The caller therefore
+    /// retains ownership of its logical slot, but must not reuse the pointer.
+    fn submit_tx(&mut self, tx_buf: NetBufPtr, cookie: TxCookie) -> DevResult;
+
+    /// Reclaims at most one completed submission.
+    fn reclaim_tx(&mut self) -> DevResult<Option<TxCookie>>;
+}
+
 /// Transport-neutral control of an NIC's RX queue notification and completion
 /// visibility.
 ///
@@ -32,6 +98,52 @@ pub struct EthernetAddress(pub [u8; 6]);
 /// The notification-control methods must be atomic at the call level: an error
 /// must never leave the queue in a half-suppressed / half-armed state.
 pub trait NetQueueControl {
+    /// Reports which requested directions currently have visible completions.
+    ///
+    /// RX-only legacy implementations return [`DevError::Unsupported`] when TX
+    /// is requested; bidirectional drivers should override this method.
+    fn completion_pending(&self, directions: NetQueueDirection) -> DevResult<NetQueueDirection> {
+        if directions.contains(NetQueueDirection::TX) {
+            return Err(DevError::Unsupported);
+        }
+        Ok(
+            if directions.contains(NetQueueDirection::RX) && self.has_rx_completion() {
+                NetQueueDirection::RX
+            } else {
+                NetQueueDirection::NONE
+            },
+        )
+    }
+
+    /// Suppresses used-buffer notifications for the requested directions.
+    fn suppress_notify(&mut self, directions: NetQueueDirection) -> DevResult {
+        if directions.contains(NetQueueDirection::TX) {
+            return Err(DevError::Unsupported);
+        }
+        if directions.contains(NetQueueDirection::RX) {
+            self.suppress_rx_notify()?;
+        }
+        Ok(())
+    }
+
+    /// Arms the requested directions and returns directions still pending after
+    /// the transport's required memory barrier.
+    fn arm_notify_and_check(
+        &mut self,
+        directions: NetQueueDirection,
+    ) -> DevResult<NetQueueDirection> {
+        if directions.contains(NetQueueDirection::TX) {
+            return Err(DevError::Unsupported);
+        }
+        Ok(
+            if directions.contains(NetQueueDirection::RX) && self.arm_rx_notify_and_check()? {
+                NetQueueDirection::RX
+            } else {
+                NetQueueDirection::NONE
+            },
+        )
+    }
+
     /// Returns whether at least one RX completion is currently visible to the
     /// driver.
     fn has_rx_completion(&self) -> bool;
@@ -67,6 +179,11 @@ pub trait NetDriverOps: BaseDriverOps {
         None
     }
 
+    /// Returns single-step TX queue operations when supported by the driver.
+    fn tx_queue(&mut self) -> Option<&mut dyn NetTxQueue> {
+        None
+    }
+
     /// Gives back the `rx_buf` to the receive queue for later receiving.
     ///
     /// `rx_buf` should be the same as the one returned by
@@ -98,6 +215,8 @@ pub trait NetDriverOps: BaseDriverOps {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     struct DummyNet;
@@ -284,5 +403,126 @@ mod tests {
         let control = dev.queue_control().unwrap();
         control.suppress_rx_notify().unwrap();
         assert!(control.suppress_rx_notify().is_err());
+    }
+
+    #[test]
+    fn direction_mask_and_cookie_are_transport_neutral() {
+        let both = NetQueueDirection::RX | NetQueueDirection::TX;
+        assert!(both.contains(NetQueueDirection::RX));
+        assert!(both.contains(NetQueueDirection::TX));
+        assert_eq!(TxCookie::new(7).value(), 7);
+    }
+
+    #[derive(Default)]
+    struct DwmacQueueModel {
+        pending: NetQueueDirection,
+        suppressed: NetQueueDirection,
+        inflight: Vec<(TxCookie, NetBufBox)>,
+        fail_submit: bool,
+    }
+
+    impl NetQueueControl for DwmacQueueModel {
+        fn completion_pending(
+            &self,
+            directions: NetQueueDirection,
+        ) -> DevResult<NetQueueDirection> {
+            let mut pending = NetQueueDirection::NONE;
+            if directions.contains(NetQueueDirection::RX)
+                && self.pending.contains(NetQueueDirection::RX)
+            {
+                pending |= NetQueueDirection::RX;
+            }
+            if directions.contains(NetQueueDirection::TX)
+                && self.pending.contains(NetQueueDirection::TX)
+            {
+                pending |= NetQueueDirection::TX;
+            }
+            Ok(pending)
+        }
+
+        fn suppress_notify(&mut self, directions: NetQueueDirection) -> DevResult {
+            self.suppressed |= directions;
+            Ok(())
+        }
+
+        fn arm_notify_and_check(
+            &mut self,
+            directions: NetQueueDirection,
+        ) -> DevResult<NetQueueDirection> {
+            if directions.contains(NetQueueDirection::RX) {
+                self.suppressed = NetQueueDirection(self.suppressed.0 & !NetQueueDirection::RX.0);
+            }
+            if directions.contains(NetQueueDirection::TX) {
+                self.suppressed = NetQueueDirection(self.suppressed.0 & !NetQueueDirection::TX.0);
+            }
+            self.completion_pending(directions)
+        }
+
+        fn has_rx_completion(&self) -> bool {
+            self.pending.contains(NetQueueDirection::RX)
+        }
+
+        fn suppress_rx_notify(&mut self) -> DevResult {
+            self.suppress_notify(NetQueueDirection::RX)
+        }
+
+        fn arm_rx_notify_and_check(&mut self) -> DevResult<bool> {
+            Ok(self
+                .arm_notify_and_check(NetQueueDirection::RX)?
+                .contains(NetQueueDirection::RX))
+        }
+    }
+
+    impl NetTxQueue for DwmacQueueModel {
+        fn submit_tx(&mut self, tx_buf: NetBufPtr, cookie: TxCookie) -> DevResult {
+            // SAFETY: the test pointer was produced by `NetBuf::into_buf_ptr`
+            // and this call assumes its ownership exactly once.
+            let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
+            if self.fail_submit {
+                drop(tx_buf);
+                return Err(DevError::Again);
+            }
+            self.inflight.push((cookie, tx_buf));
+            Ok(())
+        }
+
+        fn reclaim_tx(&mut self) -> DevResult<Option<TxCookie>> {
+            let Some((cookie, buffer)) = self.inflight.pop() else {
+                return Ok(None);
+            };
+            drop(buffer);
+            Ok(Some(cookie))
+        }
+    }
+
+    #[test]
+    fn dwmac_model_controls_rx_and_tx_without_transport_tokens() {
+        let mut model = DwmacQueueModel {
+            pending: NetQueueDirection::BOTH,
+            ..Default::default()
+        };
+        model.suppress_notify(NetQueueDirection::BOTH).unwrap();
+        assert_eq!(
+            model.arm_notify_and_check(NetQueueDirection::BOTH).unwrap(),
+            NetQueueDirection::BOTH
+        );
+    }
+
+    #[test]
+    fn dwmac_model_round_trips_cookie_and_recovers_submit_error_buffer() {
+        let pool = NetBufPool::new(1, 1526).unwrap();
+        let buffer = pool.alloc_boxed().unwrap().into_buf_ptr();
+        let mut model = DwmacQueueModel::default();
+        model.submit_tx(buffer, TxCookie::new(23)).unwrap();
+        assert_eq!(model.reclaim_tx().unwrap(), Some(TxCookie::new(23)));
+        assert!(pool.alloc_boxed().is_some());
+
+        let buffer = pool.alloc_boxed().unwrap().into_buf_ptr();
+        model.fail_submit = true;
+        assert!(matches!(
+            model.submit_tx(buffer, TxCookie::new(24)),
+            Err(DevError::Again)
+        ));
+        assert!(pool.alloc_boxed().is_some());
     }
 }

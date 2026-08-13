@@ -97,6 +97,21 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
         self.recv_queue.arm_dev_notify_and_check()
     }
 
+    /// Whether the transmit queue currently has a completed buffer.
+    pub fn poll_tx_completion(&self) -> bool {
+        self.send_queue.can_pop()
+    }
+
+    /// Suppresses transmit-queue used-buffer notifications.
+    pub fn suppress_tx_notify(&mut self) {
+        self.send_queue.suppress_dev_notify();
+    }
+
+    /// Rearms transmit-queue notifications and checks for a raced completion.
+    pub fn arm_tx_notify_and_check(&mut self) -> bool {
+        self.send_queue.arm_dev_notify_and_check()
+    }
+
     /// Get MAC address.
     pub fn mac_address(&self) -> EthernetAddress {
         self.mac
@@ -104,7 +119,7 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
 
     /// Whether can send packet.
     pub fn can_send(&self) -> bool {
-        self.send_queue.available_desc() >= 2
+        self.send_queue.available_desc() >= 1
     }
 
     /// Whether the length of the receive buffer is valid.
