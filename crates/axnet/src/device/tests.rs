@@ -2,9 +2,10 @@
 //! `axdriver/dyn`; product builds keep the static VirtIO device model).
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use axdriver::prelude::*;
-use axdriver_net::{NetBuf, NetBufPool, NetQueueControl, NetQueueDirection};
+use axdriver_net::{NetBuf, NetBufPool, NetQueueControl, NetQueueDirection, NetTxQueue, TxCookie};
 use axerrno::{AxError, AxResult};
 use memory_addr::{PhysAddr, VirtAddr};
 use smoltcp::{
@@ -18,9 +19,11 @@ use smoltcp::{
 use spin::Mutex;
 
 use crate::{
-    async_rx::SERIAL,
+    async_rx::{QUEUE_EVENT, RX_TELEMETRY, SERIAL},
     consts::STANDARD_MTU,
-    device::{Device, EthernetDevice, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
+    device::{
+        Device, EthernetDevice, LoopbackDevice, RxStep, TxOutcome, TxPreflight, TxReclaimStep,
+    },
     router::{Router, Rule, RxOwnerView},
     service::Service,
 };
@@ -59,6 +62,12 @@ struct FakeStats {
     /// Raw TX capacity reported by `can_transmit`; defaults to true (the
     /// non-default `Mutex<bool>` is seeded in the constructor).
     tx_capacity: Mutex<bool>,
+    /// Legacy `recycle_tx_buffers()` invocations (polling preflight path).
+    recycle_tx_calls: Mutex<usize>,
+    /// `can_transmit()` invocations (polling preflight path).
+    can_transmit_calls: Mutex<usize>,
+    /// Scripted TX completion cookies, consumed in order by `reclaim_tx`.
+    reclaim_cookies: Mutex<VecDeque<u64>>,
 }
 
 impl FakeStats {
@@ -74,6 +83,7 @@ struct FakeNic {
     pool: Arc<NetBufPool>,
     stats: Arc<FakeStats>,
     control: Option<FakeQueueControl>,
+    tx_queue: Option<FakeTxQueue>,
 }
 
 #[derive(Default)]
@@ -167,12 +177,37 @@ impl BaseDriverOps for FakeNic {
     }
 }
 
+/// Scripted single-step TX queue (Task 3.2/3.4): records submits, replays
+/// scripted reclaim cookies and submit outcomes from [`FakeStats`].
+struct FakeTxQueue {
+    stats: Arc<FakeStats>,
+}
+
+impl NetTxQueue for FakeTxQueue {
+    fn submit_tx(&mut self, tx_buf: NetBufPtr, _cookie: TxCookie) -> DevResult {
+        // SAFETY: the pointer came from `into_buf_ptr`; restoring the Box
+        // returns the buffer to the pool exactly once.
+        drop(unsafe { NetBuf::from_buf_ptr(tx_buf) });
+        Ok(())
+    }
+
+    fn reclaim_tx(&mut self) -> DevResult<Option<TxCookie>> {
+        Ok(self
+            .stats
+            .reclaim_cookies
+            .lock()
+            .pop_front()
+            .map(TxCookie::new))
+    }
+}
+
 impl NetDriverOps for FakeNic {
     fn mac_address(&self) -> axdriver_net::EthernetAddress {
         axdriver_net::EthernetAddress(TEST_MAC.0)
     }
 
     fn can_transmit(&self) -> bool {
+        *self.stats.can_transmit_calls.lock() += 1;
         *self.stats.tx_capacity.lock()
     }
 
@@ -200,6 +235,7 @@ impl NetDriverOps for FakeNic {
     }
 
     fn recycle_tx_buffers(&mut self) -> DevResult {
+        *self.stats.recycle_tx_calls.lock() += 1;
         Ok(())
     }
 
@@ -248,6 +284,12 @@ impl NetDriverOps for FakeNic {
             .as_mut()
             .map(|control| control as &mut dyn NetQueueControl)
     }
+
+    fn tx_queue(&mut self) -> Option<&mut dyn NetTxQueue> {
+        self.tx_queue
+            .as_mut()
+            .map(|queue| queue as &mut dyn NetTxQueue)
+    }
 }
 
 fn make_ethernet_with_control(
@@ -263,9 +305,25 @@ fn make_ethernet_with_control(
         pool,
         stats: stats.clone(),
         control,
+        tx_queue: None,
     };
     let dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
     (dev, stats, control_stats)
+}
+
+fn make_ethernet_with_tx_queue() -> (EthernetDevice, Arc<FakeStats>) {
+    let pool = NetBufPool::new(8, 2048).expect("pool alloc");
+    let stats = Arc::new(FakeStats::new());
+    let nic = FakeNic {
+        pool,
+        stats: stats.clone(),
+        control: None,
+        tx_queue: Some(FakeTxQueue {
+            stats: stats.clone(),
+        }),
+    };
+    let dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
+    (dev, stats)
 }
 
 fn make_ethernet() -> (EthernetDevice, Arc<FakeStats>) {
@@ -965,6 +1023,7 @@ fn activate_target_switches_ethernet_to_slot_mode() {
         pool,
         stats: stats.clone(),
         control: Some(control),
+        tx_queue: None,
     };
     let dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
     let mut router = Router::new();
@@ -2101,10 +2160,11 @@ fn dormant_rx_arp_reply_full_retains_exact_frame_and_retries_once() {
     }
 
     let mut rx = rx_buffer(8);
-    // First recv: the reply is deferred (TX slots full); the RX head must
-    // retain the exact frame bytes.
+    // First recv: the reply is deferred (TX slots full); the device returns
+    // the distinct `Blocked` step so the Router stops its RX loop for this
+    // device, and the RX head retains the exact frame bytes.
     let step = dev.recv(&mut rx, Instant::from_millis_const(0));
-    assert!(matches!(step, RxStep::Consumed));
+    assert!(matches!(step, RxStep::Blocked));
     {
         let (rx, _) = dev.slots_for_test();
         assert_eq!(rx.len(), 1, "deferred reply must keep the RX head");
@@ -2115,7 +2175,6 @@ fn dormant_rx_arp_reply_full_retains_exact_frame_and_retries_once() {
     // RX head is released.
     let (_, tx) = dev.slots_for_test();
     assert_eq!(tx.len(), 64);
-    drop(tx);
     assert!(dev.pop_tx_slot_for_test());
     let step = dev.recv(&mut rx, Instant::from_millis_const(0));
     assert!(matches!(step, RxStep::Consumed));
@@ -2128,4 +2187,299 @@ fn dormant_rx_arp_reply_full_retains_exact_frame_and_retries_once() {
             "exactly one reply committed into the freed slot"
         );
     }
+}
+
+// --- Task 3.4: slot-mode raw owner and ticket ledger ---
+
+#[test]
+fn dormant_slots_preflight_broadcast_never_touches_raw_tx() {
+    let (mut dev, stats) = make_ethernet();
+    dev.set_dormant_slots_for_test();
+    let pre = dev.preflight_send(
+        IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+        &[1u8; 10],
+        Instant::from_millis_const(0),
+    );
+    assert!(
+        matches!(pre, TxPreflight::Ready),
+        "an empty TX slot must preflight Ready, got {pre:?}"
+    );
+    assert_eq!(
+        *stats.recycle_tx_calls.lock(),
+        0,
+        "slot-mode preflight must not recycle raw TX completions"
+    );
+    assert_eq!(
+        *stats.can_transmit_calls.lock(),
+        0,
+        "slot-mode preflight must not query raw TX capacity"
+    );
+}
+
+#[test]
+fn dormant_slots_preflight_resolved_neighbor_never_touches_raw_tx() {
+    let (mut dev, stats) = make_ethernet();
+    dev.set_dormant_slots_for_test();
+    // Resolve a neighbor through the dormant RX path so the preflight takes
+    // the direct send branch.
+    let _ = dev.send(
+        IpAddress::Ipv4(PEER_IP),
+        &IPV4_PAYLOAD,
+        Instant::from_millis_const(0),
+    );
+    assert!(dev.push_rx_frame_for_test(&arp_reply_frame()));
+    let mut rx = rx_buffer(8);
+    let _ = dev.recv(&mut rx, Instant::from_millis_const(0));
+    // Reset the counters: the resolution path above may legitimately touch
+    // nothing raw in slot mode, but the preflight assertion must be isolated.
+    *stats.recycle_tx_calls.lock() = 0;
+    *stats.can_transmit_calls.lock() = 0;
+    let pre = dev.preflight_send(
+        IpAddress::Ipv4(PEER_IP),
+        &[1u8; 10],
+        Instant::from_millis_const(0),
+    );
+    assert!(matches!(pre, TxPreflight::Ready));
+    assert_eq!(*stats.recycle_tx_calls.lock(), 0);
+    assert_eq!(*stats.can_transmit_calls.lock(), 0);
+}
+
+#[test]
+fn dormant_slots_preflight_unknown_neighbor_never_touches_raw_tx() {
+    let (mut dev, stats) = make_ethernet();
+    dev.set_dormant_slots_for_test();
+    let pre = dev.preflight_send(
+        IpAddress::Ipv4(Ipv4Address::new(10, 0, 2, 99)),
+        &[1u8; 10],
+        Instant::from_millis_const(0),
+    );
+    assert!(
+        matches!(pre, TxPreflight::Ready),
+        "unknown-neighbor preflight must be Ready with slot room, got {pre:?}"
+    );
+    assert_eq!(*stats.recycle_tx_calls.lock(), 0);
+    assert_eq!(*stats.can_transmit_calls.lock(), 0);
+}
+
+#[test]
+fn reclaim_unknown_cookie_faults_instead_of_reclaimed() {
+    let (mut dev, stats) = make_ethernet_with_tx_queue();
+    // Script a completion cookie that was never allocated to any live ticket.
+    stats.reclaim_cookies.lock().push_back(42);
+    let step = dev.tx_reclaim_one();
+    assert!(
+        matches!(step, TxReclaimStep::Fault(DevError::BadState)),
+        "an unknown reclaim cookie must be an ownership fault, got {step:?}"
+    );
+}
+
+#[test]
+fn reclaim_duplicate_cookie_faults_after_release() {
+    let (mut dev, stats) = make_ethernet_with_tx_queue();
+    dev.set_dormant_slots_for_test();
+    // One dormant send allocates ticket 0 in a TX slot.
+    let outcome = dev.send(
+        IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+        &[1u8; 10],
+        Instant::from_millis_const(0),
+    );
+    assert!(matches!(outcome, TxOutcome::Accepted { .. }));
+    // The first reclaim releases the matching live ticket.
+    stats.reclaim_cookies.lock().push_back(0);
+    assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
+    // The same cookie is now stale: a duplicate must fault, not re-reclaim.
+    stats.reclaim_cookies.lock().push_back(0);
+    let step = dev.tx_reclaim_one();
+    assert!(
+        matches!(step, TxReclaimStep::Fault(DevError::BadState)),
+        "a duplicate reclaim cookie must be an ownership fault, got {step:?}"
+    );
+}
+
+#[test]
+fn reclaim_valid_cookie_still_releases_matching_ticket() {
+    let (mut dev, stats) = make_ethernet_with_tx_queue();
+    dev.set_dormant_slots_for_test();
+    // Two dormant sends allocate tickets 0 and 1.
+    for _ in 0..2 {
+        let outcome = dev.send(
+            IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+            &[1u8; 10],
+            Instant::from_millis_const(0),
+        );
+        assert!(matches!(outcome, TxOutcome::Accepted { .. }));
+    }
+    // Reclaiming ticket 1 releases exactly that live ticket.
+    stats.reclaim_cookies.lock().push_back(1);
+    assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
+    // Ticket 0 is still live and reclaimable.
+    stats.reclaim_cookies.lock().push_back(0);
+    assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
+}
+
+// --- Task 3.5: stack TX enqueue wakes the queue owner ---
+
+#[derive(Default)]
+struct CountWake(Arc<AtomicUsize>);
+
+impl alloc::task::Wake for CountWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn counting_waker(count: Arc<AtomicUsize>) -> core::task::Waker {
+    core::task::Waker::from(Arc::new(CountWake(count)))
+}
+
+#[test]
+fn service_poll_publishes_queue_event_after_tx_enqueue() {
+    // Task 3.5 (Finding 2): a stack TX dispatch that enqueues the first
+    // frame into the dormant TX slot must publish a queue-owner event, so a
+    // sleeping queue task submits it without waiting for a hardware
+    // completion.
+    let _serial = SERIAL.lock();
+    let (mut dev, _stats) = make_ethernet();
+    dev.activate_slot_mode().unwrap();
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    router.add_rule(Rule::new(
+        Ipv4Cidr::new(Ipv4Address::new(10, 0, 2, 0), 24).into(),
+        None,
+        eth,
+        Ipv4Address::new(SRC_IPV4[0], SRC_IPV4[1], SRC_IPV4[2], SRC_IPV4[3]).into(),
+    ));
+    let mut service = Service::new(router, Some(eth));
+    {
+        let router = service.router_for_test();
+        assert!(router.enqueue_tx_for_test(&ipv4_packet(SRC_IPV4, DST_IPV4)));
+    }
+
+    let count = Arc::new(AtomicUsize::new(0));
+    QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
+
+    let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+
+    // The first stack TX enqueue woke the queue owner exactly once.
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn service_poll_deferred_arp_attempts_once_and_stops_round() {
+    // Task 3.6 (Finding 3): a TX-full ARP request entering the real
+    // Router/Service loop must be attempted once, retain the exact RX bytes,
+    // end the round immediately, and not grow the consumed/delivered deltas.
+    // Task 3.7: the round calls the production `Service::poll`, which touches
+    // the shared `QUEUE_EVENT`/`RX_TELEMETRY`; serialize against sibling
+    // tests so a parallel `wake_if_space` cannot clear their waiting bit.
+    let _serial = SERIAL.lock();
+    let (mut dev, _) = make_ethernet();
+    dev.set_dormant_slots_for_test();
+    // Fill all 64 TX slots so the owed ARP reply cannot be submitted.
+    let mut accepted = 0;
+    loop {
+        let outcome = dev.send(
+            IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+            &[1u8; 10],
+            Instant::from_millis_const(0),
+        );
+        if matches!(outcome, TxOutcome::Accepted { .. }) {
+            accepted += 1;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(accepted, 64);
+    let frame = arp_request_frame();
+    assert!(dev.push_rx_frame_for_test(&frame));
+
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    let mut service = Service::new(router, Some(eth));
+    let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+
+    // The deferred ARP request was attempted exactly once; the RX head is
+    // retained and no consumed/delivered delta was produced.
+    let router = service.router_for_test();
+    assert_eq!(router.devices[eth].recv_dormant_calls_for_test(), 1);
+    assert_eq!(router.take_rx_consumed_delta(), 0);
+    assert_eq!(router.take_rx_delivered_delta(), 0);
+    assert_eq!(router.devices[eth].rx_slot_len_for_test(), 1);
+    assert_eq!(
+        router.devices[eth].rx_slot_peek_for_test(),
+        Some(&frame[..]),
+        "bytes must be exact"
+    );
+}
+
+#[test]
+fn service_poll_deferred_arp_retries_once_after_tx_space() {
+    // Task 3.6 (Finding 3): after a TX slot frees, the next Service poll
+    // commits exactly one ARP reply, parses once, and pops the RX head.
+    // Task 3.7: the round calls the production `Service::poll` and reads the
+    // `RX_TELEMETRY.non_ip_consumed` delta; serialize against sibling tests
+    // so a parallel Service poll cannot perturb the delta.
+    let _serial = SERIAL.lock();
+    let (mut dev, _) = make_ethernet();
+    dev.set_dormant_slots_for_test();
+    let mut accepted = 0;
+    loop {
+        let outcome = dev.send(
+            IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+            &[1u8; 10],
+            Instant::from_millis_const(0),
+        );
+        if matches!(outcome, TxOutcome::Accepted { .. }) {
+            accepted += 1;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(accepted, 64);
+    assert!(dev.push_rx_frame_for_test(&arp_request_frame()));
+
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    let mut service = Service::new(router, Some(eth));
+    let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+    let attempts_before = service.router_for_test().devices[eth].recv_dormant_calls_for_test();
+
+    // Free one TX slot and release the space event; the retry commits the
+    // reply exactly once and pops the RX head.
+    let consumed_before = RX_TELEMETRY.non_ip_consumed.load(Ordering::Relaxed);
+    assert!(service.router_for_test().devices[eth].pop_tx_slot_for_test());
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+
+    let router = service.router_for_test();
+    // The retry round ran two bounded recv calls: one that processed and
+    // committed the ARP reply, then an Empty probe that ends the loop. The
+    // deferred head was never reprocessed in a single poll.
+    assert_eq!(
+        router.devices[eth].recv_dormant_calls_for_test(),
+        attempts_before + 2
+    );
+    // The RX head was consumed once (the reply was accepted and popped).
+    // `Service::poll` folds the delta into the global telemetry.
+    assert_eq!(
+        RX_TELEMETRY.non_ip_consumed.load(Ordering::Relaxed) - consumed_before,
+        1
+    );
+    assert_eq!(
+        router.devices[eth].rx_slot_len_for_test(),
+        0,
+        "retry must release the RX head"
+    );
+    assert_eq!(
+        router.devices[eth].tx_slot_len_for_test(),
+        64,
+        "exactly one reply committed into the freed slot"
+    );
 }

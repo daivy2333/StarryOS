@@ -1,5 +1,8 @@
 use alloc::string::String;
-use core::task::Waker;
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Waker,
+};
 
 use axdriver::prelude::*;
 use axdriver_net::{NetQueueControl, TxCookie};
@@ -87,6 +90,9 @@ pub struct EthernetDevice {
     /// Checked monotonic tickets for accepted dormant TX frames.
     tx_tickets: TicketTracker,
     tx_mode: TxMode,
+    /// Host-test witness for deferred RX retry counting (Task 3.6).
+    #[cfg(test)]
+    recv_dormant_calls: AtomicUsize,
 }
 impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
@@ -102,6 +108,8 @@ impl EthernetDevice {
             tx_slots: FixedFrameQueue::new(),
             tx_tickets: TicketTracker::new(),
             tx_mode: TxMode::Polling,
+            #[cfg(test)]
+            recv_dormant_calls: AtomicUsize::new(0),
         }
     }
 
@@ -492,10 +500,24 @@ impl EthernetDevice {
     }
 
     fn preflight_ready_tx(&mut self) -> TxPreflight {
-        match self.inner.recycle_tx_buffers() {
-            Ok(()) if self.inner.can_transmit() => TxPreflight::Ready,
-            Ok(()) => TxPreflight::Full,
-            Err(err) => TxPreflight::Fault(err),
+        match self.tx_mode {
+            // The polling stack owns the raw TX path: recycle completed
+            // buffers and report the driver's transmit capacity.
+            TxMode::Polling => match self.inner.recycle_tx_buffers() {
+                Ok(()) if self.inner.can_transmit() => TxPreflight::Ready,
+                Ok(()) => TxPreflight::Full,
+                Err(err) => TxPreflight::Fault(err),
+            },
+            // In slot mode the stack never touches the raw queue: the queue
+            // task alone owns raw TX completions. Readiness depends only on
+            // fixed TX slot capacity and checked ticket headroom.
+            TxMode::DormantSlots => {
+                if self.tx_slots.is_full() || !self.tx_tickets.can_alloc() {
+                    TxPreflight::Full
+                } else {
+                    TxPreflight::Ready
+                }
+            }
         }
     }
 
@@ -556,6 +578,8 @@ impl EthernetDevice {
     /// `handle_frame` completes transactionally. A deferred ARP reply keeps
     /// the exact frame bytes at the head for a later retry.
     fn recv_dormant(&mut self, buffer: &mut PacketBuffer<()>, timestamp: Instant) -> RxStep {
+        #[cfg(test)]
+        self.recv_dormant_calls.fetch_add(1, Ordering::Relaxed);
         // Copy the head frame out of the slot so `handle_frame` can mutate
         // `self` (it may emit an ARP reply into the TX slots). The copy is a
         // fixed-size stack buffer, never a heap allocation.
@@ -576,8 +600,10 @@ impl EthernetDevice {
                 RxStep::Delivered
             }
             // The owed reply could not be submitted: retain the exact frame
-            // bytes at the head so the next recv retries it once.
-            Ok(FrameStep::Deferred) => RxStep::Consumed,
+            // bytes at the head and report the distinct `Blocked` step so the
+            // Router stops its RX loop for this device (Task 3.6). A later
+            // poll retries the reply exactly once when TX capacity frees.
+            Ok(FrameStep::Deferred) => RxStep::Blocked,
             Err(err) => RxStep::Fault(err),
         }
     }
@@ -753,9 +779,14 @@ impl Device for EthernetDevice {
         };
         match tx_queue.reclaim_tx() {
             Ok(Some(cookie)) => {
-                // The completed submission releases its live ticket.
-                let _ = self.tx_tickets.release(cookie.value());
-                TxReclaimStep::Reclaimed
+                // The completion cookie must match exactly one live ticket.
+                // An unknown or duplicate cookie is an ownership invariant
+                // violation: report a stable fault instead of a success.
+                if self.tx_tickets.release(cookie.value()) {
+                    TxReclaimStep::Reclaimed
+                } else {
+                    TxReclaimStep::Fault(DevError::BadState)
+                }
             }
             Ok(None) => TxReclaimStep::Empty,
             Err(err) => TxReclaimStep::Fault(err),
@@ -778,5 +809,30 @@ impl Device for EthernetDevice {
         if let Some(irq) = self.inner.irq_num() {
             register_irq_waker(irq, waker);
         }
+    }
+
+    #[cfg(test)]
+    fn recv_dormant_calls_for_test(&self) -> usize {
+        self.recv_dormant_calls.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn rx_slot_len_for_test(&self) -> usize {
+        self.rx_slots.len()
+    }
+
+    #[cfg(test)]
+    fn rx_slot_peek_for_test(&self) -> Option<&[u8]> {
+        self.rx_slots.peek()
+    }
+
+    #[cfg(test)]
+    fn pop_tx_slot_for_test(&mut self) -> bool {
+        self.tx_slots.pop().is_some()
+    }
+
+    #[cfg(test)]
+    fn tx_slot_len_for_test(&self) -> usize {
+        self.tx_slots.len()
     }
 }

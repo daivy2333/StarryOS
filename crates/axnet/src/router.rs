@@ -139,6 +139,11 @@ impl Router {
                     RxStep::Delivered => {
                         self.rx_delivered_delta += 1;
                     }
+                    // A deferred TX obligation (e.g. a full-TX ARP reply)
+                    // retains the device's RX head; stop this device's loop so
+                    // the same frame is not reprocessed in this poll. A later
+                    // poll retries once TX capacity frees (Task 3.6).
+                    RxStep::Blocked => break,
                     RxStep::Empty => break,
                     RxStep::Fault(err) => {
                         warn!("receive failed: {err}");
@@ -160,11 +165,6 @@ impl Router {
     /// last call.
     pub(crate) fn take_rx_consumed_delta(&mut self) -> u64 {
         core::mem::take(&mut self.rx_consumed_delta)
-    }
-
-    /// Whether the Router RX buffer has room for at least one packet.
-    pub fn rx_buffer_has_space(&self) -> bool {
-        !self.rx_buffer.is_full()
     }
 
     /// Suppresses used-buffer notifications for BOTH directions on device

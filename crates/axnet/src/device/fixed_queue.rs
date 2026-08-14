@@ -284,6 +284,13 @@ impl TicketTracker {
         Ok(ticket)
     }
 
+    /// Side-effect-free preflight for the next allocation (Task 3.4 slot-mode
+    /// preflight: readiness depends on live-set room and counter headroom, and
+    /// must never mutate the tracker).
+    pub(crate) fn can_alloc(&self) -> bool {
+        self.live_len < MAX_LIVE_TICKETS && self.next != u64::MAX
+    }
+
     /// Releases a ticket; returns whether it was live.
     pub(crate) fn release(&mut self, ticket: u64) -> bool {
         let Some(slot) = self.live.iter().position(|entry| *entry == Some(ticket)) else {

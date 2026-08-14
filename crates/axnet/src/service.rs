@@ -105,16 +105,26 @@ impl Service {
             }
         }
         LISTEN_TABLE.reconcile(sockets);
-        // Waking the queue task is a release of either resource it may be
-        // blocked on: Router buffer space (RX handoff) or RX-slot space
-        // (slot-mode RX copy). The waiting bit is shared.
-        let space = self.router.rx_buffer_has_space() || self.rx_slot_has_space_target();
+        // Waking the queue task is a release of the resource it is blocked
+        // on. The waiting bit is published only for a full RX slot (Task 3.2
+        // slot-mode copy); Router-buffer space is drained by the stack itself
+        // and must never clear it (Task 3.5 Finding 6).
+        let space = self.rx_slot_has_space_target();
         if QUEUE_EVENT.wake_if_space(space) {
             RX_TELEMETRY
                 .space_wake
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
-        self.router.dispatch(timestamp) || changed
+        // Task 3.5 (Finding 2): a stack TX dispatch that fills an empty TX
+        // slot must publish a queue-owner event. A sleeping queue task has no
+        // hardware completion to wait on for the first frame, so without this
+        // event the frame would sit in the slot forever.
+        let tx_pending_before = self.tx_slot_pending_target();
+        let dispatched = self.router.dispatch(timestamp) || changed;
+        if !tx_pending_before && self.tx_slot_pending_target() {
+            QUEUE_EVENT.publish_queue_work();
+        }
+        dispatched
     }
 
     /// Whether the target's fixed RX slots have room for at least one frame.
@@ -211,11 +221,6 @@ impl Service {
             QUEUE_EVENT.publish_waiting();
             SpaceDecision::Waiting
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fill_rx_buffer_for_test(&mut self) {
-        self.router.fill_rx_buffer_for_test();
     }
 
     #[cfg(test)]

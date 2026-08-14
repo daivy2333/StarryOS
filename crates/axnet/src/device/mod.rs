@@ -28,6 +28,11 @@ pub enum RxStep {
     Consumed,
     /// One IP packet was delivered to the Router RX buffer.
     Delivered,
+    /// A TX obligation owed by the current RX head was deferred because the
+    /// device has no TX capacity. The exact head bytes are retained for a
+    /// later retry, and the current RX loop must stop for this device so the
+    /// same frame is not reprocessed in the same Service poll (Task 3.6).
+    Blocked,
     /// A device or queue fault; the error carries the category.
     Fault(DevError),
 }
@@ -220,4 +225,36 @@ pub trait Device: Send + Sync {
     }
 
     fn register_waker(&self, waker: &Waker);
+
+    /// Host-test observer: number of `recv` attempts through the dormant slot
+    /// path (Task 3.6 retry-count witness). Devices without slot storage
+    /// report zero.
+    #[cfg(test)]
+    fn recv_dormant_calls_for_test(&self) -> usize {
+        0
+    }
+
+    /// Host-test observer: occupied length of the fixed RX slot storage.
+    #[cfg(test)]
+    fn rx_slot_len_for_test(&self) -> usize {
+        0
+    }
+
+    /// Host-test observer: bytes at the fixed RX slot head, if any.
+    #[cfg(test)]
+    fn rx_slot_peek_for_test(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Host-test observer: pops one fixed TX slot to free capacity.
+    #[cfg(test)]
+    fn pop_tx_slot_for_test(&mut self) -> bool {
+        false
+    }
+
+    /// Host-test observer: occupied length of the fixed TX slot storage.
+    #[cfg(test)]
+    fn tx_slot_len_for_test(&self) -> usize {
+        0
+    }
 }
