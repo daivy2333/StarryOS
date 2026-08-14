@@ -297,8 +297,9 @@ mod virtio_irq_guard {
             .find("write_volatile")
             .ok_or("handler does not write the device ACK register")?;
         let publish_pos = handler
-            .find("publish_rx_event")
-            .ok_or("handler does not publish used-ring RX events")?;
+            .find("publish_queue_event")
+            .or_else(|| handler.find("publish_rx_event"))
+            .ok_or("handler does not publish used-ring queue events")?;
         let restore_pos = handler
             .find("restore_violation")
             .ok_or("handler does not observe restore violations")?;

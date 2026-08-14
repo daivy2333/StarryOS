@@ -1,12 +1,14 @@
 use core::task::Waker;
 
-use axdriver::prelude::DevError;
+use axdriver::prelude::{DevError, DevResult};
 use axdriver_net::NetQueueControl;
 use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
 mod ethernet;
 pub(crate) mod fixed_queue;
 mod loopback;
+#[cfg(test)]
+mod test_alloc;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "vsock")]
@@ -27,6 +29,44 @@ pub enum RxStep {
     /// One IP packet was delivered to the Router RX buffer.
     Delivered,
     /// A device or queue fault; the error carries the category.
+    Fault(DevError),
+}
+
+/// Outcome of one raw→RX-slot copy by the queue task (Task 3.2).
+#[derive(Debug)]
+pub enum RxCopyStep {
+    /// No raw completion was available.
+    Empty,
+    /// One frame was copied into the fixed RX slot.
+    Copied,
+    /// The RX slot storage is full; nothing was reaped.
+    Full,
+    /// A raw receive/recycle fault.
+    Fault(DevError),
+}
+
+/// Outcome of one TX-slot→raw submit by the queue task (Task 3.2).
+#[derive(Debug)]
+pub enum TxSubmitStep {
+    /// No TX slot frame was pending.
+    Empty,
+    /// One slot frame was submitted to the driver; its slot was popped and
+    /// its ticket stays live until the completion is reclaimed.
+    Submitted,
+    /// The driver is full (`Again`); the slot frame is retained.
+    Full,
+    /// A raw fault; the slot frame is retained.
+    Fault(DevError),
+}
+
+/// Outcome of one TX completion reclaim by the queue task (Task 3.2).
+#[derive(Debug)]
+pub enum TxReclaimStep {
+    /// No completion was pending.
+    Empty,
+    /// One completion was reclaimed and its live ticket released.
+    Reclaimed,
+    /// A raw fault.
     Fault(DevError),
 }
 
@@ -123,6 +163,60 @@ pub trait Device: Send + Sync {
     /// underlying driver supports explicit notification control.
     fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
         None
+    }
+
+    /// Switches both raw directions to the fixed slot data path.
+    ///
+    /// Only the queue task calls this during activation, under the Service
+    /// guard, and only after BOTH-direction notification suppression
+    /// succeeded. After a successful call the device accepts stack TX into
+    /// TX slots and serves stack RX from RX slots; raw driver access becomes
+    /// the queue task's alone. Devices without slot storage (e.g. loopback)
+    /// return `Ok(())` as a no-op.
+    fn activate_slot_mode(&mut self) -> DevResult {
+        Ok(())
+    }
+
+    /// Advances the raw→RX-slot copy by at most one frame (queue task only).
+    ///
+    /// Reaps at most one raw completion, copies it into the fixed RX slot and
+    /// refills the driver buffer. Returns [`RxCopyStep::Full`] without
+    /// reaping when the RX slot storage is full, so a full slot never drops a
+    /// completion. Devices without slot storage return `Full` as a no-op.
+    fn rx_copy_one(&mut self) -> RxCopyStep {
+        RxCopyStep::Full
+    }
+
+    /// Advances the TX-slot→raw submit by at most one frame (queue task
+    /// only). A `Full` or `Fault` result retains the slot frame.
+    fn tx_submit_one(&mut self) -> TxSubmitStep {
+        TxSubmitStep::Full
+    }
+
+    /// Advances the TX completion reclaim by at most one completion (queue
+    /// task only); a reclaimed completion releases its live ticket.
+    fn tx_reclaim_one(&mut self) -> TxReclaimStep {
+        TxReclaimStep::Fault(DevError::Unsupported)
+    }
+
+    /// Whether the fixed RX slot storage currently has room for at least one
+    /// complete frame.
+    ///
+    /// Consulted by the stack after draining RX slots to decide whether the
+    /// waiting queue task can resume its RX copy stage. Devices without slot
+    /// storage always report space.
+    fn rx_slot_has_space(&self) -> bool {
+        true
+    }
+
+    /// Whether the fixed TX slot storage currently holds at least one frame
+    /// waiting to be submitted.
+    ///
+    /// Consulted by the stack after TX dispatch to decide whether the queue
+    /// task should be woken to submit. Devices without slot storage always
+    /// report no pending frames.
+    fn tx_slot_pending(&self) -> bool {
+        false
     }
 
     fn register_waker(&self, waker: &Waker);

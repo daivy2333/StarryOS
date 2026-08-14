@@ -1,10 +1,12 @@
 use alloc::boxed::Box;
 use core::{
     pin::Pin,
+    sync::atomic::Ordering,
     task::{Context, Waker},
 };
 
 use axdriver::prelude::{DevError, DevResult};
+use axdriver_net::NetQueueDirection;
 use axhal::time::{NANOS_PER_MICROS, TimeValue, wall_time_nanos};
 use axtask::future::sleep_until;
 use smoltcp::{
@@ -15,8 +17,9 @@ use smoltcp::{
 
 use crate::{
     LISTEN_TABLE, SOCKET_SET,
-    async_rx::{RX_NOTIFY, RX_TELEMETRY, SpaceDecision},
-    router::{Router, RxOutcome, RxOwnerView},
+    async_rx::{QUEUE_EVENT, RX_TELEMETRY, SpaceDecision},
+    device::{RxCopyStep, TxReclaimStep, TxSubmitStep},
+    router::{Router, RxOwnerView},
 };
 
 const POLLING_FALLBACK: Duration = Duration::from_millis(10);
@@ -73,6 +76,15 @@ impl Service {
         let mut changed = false;
 
         self.router.poll(owner, self.target_dev, timestamp);
+        // MS05 Task 3.2: frames are delivered/consumed by the stack RX path
+        // (slot mode drains the fixed slots); the queue task only copies
+        // raw→slot, so the delivered/non-IP counters come from here.
+        RX_TELEMETRY
+            .delivered
+            .fetch_add(self.router.take_rx_delivered_delta(), Ordering::Relaxed);
+        RX_TELEMETRY
+            .non_ip_consumed
+            .fetch_add(self.router.take_rx_consumed_delta(), Ordering::Relaxed);
         self.iface.poll_maintenance(timestamp);
         LISTEN_TABLE.reconcile(sockets);
         loop {
@@ -93,7 +105,11 @@ impl Service {
             }
         }
         LISTEN_TABLE.reconcile(sockets);
-        if RX_NOTIFY.wake_if_space(self.router.rx_buffer_has_space()) {
+        // Waking the queue task is a release of either resource it may be
+        // blocked on: Router buffer space (RX handoff) or RX-slot space
+        // (slot-mode RX copy). The waiting bit is shared.
+        let space = self.router.rx_buffer_has_space() || self.rx_slot_has_space_target();
+        if QUEUE_EVENT.wake_if_space(space) {
             RX_TELEMETRY
                 .space_wake
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -101,54 +117,98 @@ impl Service {
         self.router.dispatch(timestamp) || changed
     }
 
-    /// RX-only one-step for the stored target device.
+    /// Whether the target's fixed RX slots have room for at least one frame.
     ///
-    /// Uses only the saved target index and generates the timestamp from the
-    /// current time internally, so the caller never passes a raw device index,
-    /// never obtains a second NIC handle and never copies the `now()`
-    /// conversion. A missing target maps to `Fault(BadState)`.
-    pub(crate) fn rx_one_step_target(&mut self) -> RxOutcome {
-        let Some(dev) = self.target_dev else {
-            return RxOutcome::Fault(DevError::BadState);
-        };
-        self.router.rx_one_step(dev, now())
+    /// The stack consults this after draining RX slots so it can wake the
+    /// queue task whose RX copy stage was blocked on a full slot. A missing
+    /// target reports space (the queue task is not running then).
+    pub(crate) fn rx_slot_has_space_target(&self) -> bool {
+        match self.target_dev {
+            Some(dev) => self.router.rx_slot_has_space(dev),
+            None => true,
+        }
+    }
+
+    /// Whether the target's fixed TX slots hold a pending frame.
+    ///
+    /// The stack consults this after TX dispatch so it can wake the queue
+    /// task to submit. A missing target reports no pending frames.
+    pub(crate) fn tx_slot_pending_target(&self) -> bool {
+        match self.target_dev {
+            Some(dev) => self.router.tx_slot_pending(dev),
+            None => false,
+        }
     }
 
     fn target_index(&self) -> DevResult<usize> {
         self.target_dev.ok_or(DevError::BadState)
     }
 
-    /// Activation-time preflight on the stored target: queue control must
-    /// exist and accept suppression; no completion is reaped.
-    pub(crate) fn rx_preflight_target(&mut self) -> DevResult {
-        self.router.rx_control_preflight(self.target_index()?)
-    }
-
-    /// Suppresses RX notifications on the stored target device.
-    pub(crate) fn rx_suppress_target(&mut self) -> DevResult {
-        self.router.rx_control_suppress(self.target_index()?)
-    }
-
-    /// Rearms RX notifications on the stored target and reports whether a
-    /// completion is still pending after the transport barrier.
-    pub(crate) fn rx_arm_and_check_target(&mut self) -> DevResult<bool> {
-        self.router.rx_control_arm_and_check(self.target_index()?)
-    }
-
-    /// Returns whether the stored target currently sees an RX completion.
-    pub(crate) fn rx_completion_visible_target(&mut self) -> DevResult<bool> {
-        self.router.rx_control_has_completion(self.target_index()?)
-    }
-
-    /// Full-space recheck, callable only while holding the Service guard.
+    /// All-or-nothing bidirectional activation of the stored target (Task
+    /// 3.1).
     ///
-    /// Returns `Retry` when space is already available; otherwise publishes
-    /// the waiting bit (Release) and returns `Waiting`.
-    pub(crate) fn rx_space_recheck_or_wait(&self) -> SpaceDecision {
-        if self.router.rx_buffer_has_space() {
+    /// Under the single Service guard: validates the target, suppresses BOTH
+    /// directions and switches the device to the slot data path. Any failure
+    /// leaves the device in polling mode (both raw directions still polling
+    /// owned); success means async owns both directions from here on. The
+    /// caller publishes the `Active` lifecycle only after this returns `Ok`.
+    pub(crate) fn activate_target(&mut self) -> DevResult {
+        let dev = self.target_index()?;
+        self.router.control_suppress_both(dev)?;
+        self.router.activate_slot_mode(dev)
+    }
+
+    /// Rearms BOTH directions on the stored target and reports which
+    /// directions still have a pending completion.
+    pub(crate) fn arm_and_check_both_target(&mut self) -> DevResult<NetQueueDirection> {
+        self.router.control_arm_and_check_both(self.target_index()?)
+    }
+
+    /// Returns which directions currently have visible completions on the
+    /// stored target.
+    pub(crate) fn completion_pending_both_target(&mut self) -> DevResult<NetQueueDirection> {
+        self.router
+            .control_completion_pending_both(self.target_index()?)
+    }
+
+    /// Advances the raw→RX-slot copy on the stored target by at most one
+    /// frame (Task 3.2 queue service).
+    pub(crate) fn rx_copy_one_target(&mut self) -> RxCopyStep {
+        let Some(dev) = self.target_dev else {
+            return RxCopyStep::Fault(DevError::BadState);
+        };
+        self.router.rx_copy_one(dev)
+    }
+
+    /// Advances the TX-slot→raw submit on the stored target by at most one
+    /// frame (Task 3.2 queue service).
+    pub(crate) fn tx_submit_one_target(&mut self) -> TxSubmitStep {
+        let Some(dev) = self.target_dev else {
+            return TxSubmitStep::Fault(DevError::BadState);
+        };
+        self.router.tx_submit_one(dev)
+    }
+
+    /// Advances the TX completion reclaim on the stored target by at most
+    /// one completion (Task 3.2 queue service).
+    pub(crate) fn tx_reclaim_one_target(&mut self) -> TxReclaimStep {
+        let Some(dev) = self.target_dev else {
+            return TxReclaimStep::Fault(DevError::BadState);
+        };
+        self.router.tx_reclaim_one(dev)
+    }
+
+    /// RX-slot-space recheck, callable only while holding the Service guard.
+    ///
+    /// The queue task's RX copy stage stops without reaping when the fixed
+    /// RX slots are full; the stack drains those slots, then this method
+    /// decides whether the task may retry now (`Retry`) or must sleep on the
+    /// waiting bit (`Waiting`).
+    pub(crate) fn rx_slot_space_recheck_or_wait(&self) -> SpaceDecision {
+        if self.rx_slot_has_space_target() {
             SpaceDecision::Retry
         } else {
-            RX_NOTIFY.publish_waiting();
+            QUEUE_EVENT.publish_waiting();
             SpaceDecision::Waiting
         }
     }
@@ -156,6 +216,11 @@ impl Service {
     #[cfg(test)]
     pub(crate) fn fill_rx_buffer_for_test(&mut self) {
         self.router.fill_rx_buffer_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn router_for_test(&mut self) -> &mut Router {
+        &mut self.router
     }
 
     pub fn get_source_address(&self, dst_addr: &IpAddress) -> IpAddress {
@@ -203,6 +268,16 @@ impl Service {
             }
         }
 
+        // The active NIC's socket waker registers as the stack-progress role
+        // (Task 3.3): RX-slot-ready, TX-slot-space and fatal events then wake
+        // the caller so smoltcp re-evaluates readiness. It is a hint, never
+        // exact fd readiness, and it never overwrites the queue-owner waker.
+        if let Some(dev) = self.target_dev {
+            if mask & (1 << dev) != 0 && !self.router.devices[dev].requires_polling() {
+                QUEUE_EVENT.register_stack(waker);
+            }
+        }
+
         for (i, device) in self.router.devices.iter().enumerate() {
             if mask & (1 << i) != 0 {
                 device.register_waker(waker);
@@ -223,7 +298,7 @@ mod tests {
 
     use super::{Service, any_masked_device_requires_polling, select_wake_deadline};
     use crate::{
-        async_rx::{RX_NOTIFY, SERIAL},
+        async_rx::{QUEUE_EVENT, SERIAL},
         device::LoopbackDevice,
         router::{Router, RxOwnerView},
     };
@@ -325,8 +400,8 @@ mod tests {
         let mut service = Service::new(router, None);
 
         let count = Arc::new(AtomicUsize::new(0));
-        RX_NOTIFY.register(&counting_waker(count.clone()));
-        RX_NOTIFY.publish_waiting();
+        QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
+        QUEUE_EVENT.publish_waiting();
 
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
         service.poll(RxOwnerView::PollingOwned, &mut sockets);

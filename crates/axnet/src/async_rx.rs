@@ -16,32 +16,44 @@ use core::{
 };
 
 use axdriver::prelude::{DevError, DevResult};
+use axdriver_net::NetQueueDirection;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::{
-    router::{RxOutcome, RxOwnerView},
+    device::{RxCopyStep, TxReclaimStep, TxSubmitStep},
+    router::RxOwnerView,
     service::Service,
 };
 
-/// Single-waiter queue notification state shared by the future RX queue task
-/// and [`crate::service::Service`].
+/// Dual-role queue notification state shared by the future queue task and
+/// [`crate::service::Service`] (Task 3.1).
 ///
-/// The queue side registers its waker without taking the `SERVICE` lock, then
-/// publishes the waiting bit (Release) inside the Service lock only after a
-/// serialized recheck confirms the Router RX buffer is still full.
-/// `Service::poll` clears the bit (AcqRel) and wakes the task exactly once,
-/// after ingress has freed Router buffer space. No `Relaxed` ordering is used
-/// because the waiting bit participates in control flow.
-pub(crate) struct RxNotify {
-    waker: AtomicWaker,
+/// Two `AtomicWaker`s share one wrapping generation:
+///
+/// - The queue-owner role is the long-lived queue task. It registers without
+///   taking the `SERVICE` lock, then publishes the waiting bit (Release)
+///   inside the Service lock only after a serialized recheck confirms the
+///   Router RX buffer is still full. `Service::poll` clears the bit (AcqRel)
+///   and wakes the task exactly once.
+/// - The stack-progress role is the socket/stack side. It is woken by slot
+///   RX-ready, TX-slot space and fatal events so smoltcp re-evaluates
+///   readiness. It is a hint, never an exact fd-readiness claim.
+///
+/// The two roles never overwrite each other's waker: they are distinct
+/// `AtomicWaker` instances over one shared generation. `Acquire`/`Release`
+/// order only the control state; counters are `Relaxed`.
+pub(crate) struct QueueEvent {
+    queue_waker: AtomicWaker,
+    stack_waker: AtomicWaker,
     waiting: AtomicBool,
     generation: AtomicU64,
 }
 
-impl RxNotify {
+impl QueueEvent {
     pub(crate) const fn new() -> Self {
         Self {
-            waker: AtomicWaker::new(),
+            queue_waker: AtomicWaker::new(),
+            stack_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(0),
         }
@@ -50,15 +62,22 @@ impl RxNotify {
     #[cfg(test)]
     fn with_generation(generation: u64) -> Self {
         Self {
-            waker: AtomicWaker::new(),
+            queue_waker: AtomicWaker::new(),
+            stack_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(generation),
         }
     }
 
-    /// Registers the sole queue-task waker. Callable without the Service lock.
-    pub(crate) fn register(&self, waker: &Waker) {
-        self.waker.register(waker);
+    /// Registers the queue-owner task waker. Callable without the Service
+    /// lock.
+    pub(crate) fn register_queue(&self, waker: &Waker) {
+        self.queue_waker.register(waker);
+    }
+
+    /// Registers the stack-progress waker. Callable without the Service lock.
+    pub(crate) fn register_stack(&self, waker: &Waker) {
+        self.stack_waker.register(waker);
     }
 
     /// Publishes the waiting bit. Only called inside the Service guard after a
@@ -67,22 +86,31 @@ impl RxNotify {
         self.waiting.store(true, Ordering::Release);
     }
 
-    /// Clears the waiting bit (AcqRel) and wakes the registered task exactly
-    /// once when Router space is available.
+    /// Clears the waiting bit (AcqRel) and wakes the queue task exactly once
+    /// when Router space is available. Never wakes the stack role.
     pub(crate) fn wake_if_space(&self, has_space: bool) -> bool {
         if has_space && self.waiting.swap(false, Ordering::AcqRel) {
-            self.waker.wake();
+            self.queue_waker.wake();
             true
         } else {
             false
         }
     }
 
-    /// Publishes a queue event: wrapping Release increment of the generation,
-    /// then wakes the sole waiter. Called by the future ISR path.
+    /// Publishes a queue event: wrapping Release increment of the shared
+    /// generation, then wakes both roles. Called by the ISR path.
     pub(crate) fn publish_event(&self) {
         self.generation.fetch_add(1, Ordering::Release);
-        self.waker.wake();
+        self.queue_waker.wake();
+        self.stack_waker.wake();
+    }
+
+    /// Publishes a stack-progress hint: bumps the shared generation so the
+    /// queue wait protocol observes the change, and wakes only the stack role.
+    /// Called after slot RX-ready, TX-slot space or a fatal event.
+    pub(crate) fn publish_progress(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+        self.stack_waker.wake();
     }
 
     /// Acquire snapshot of the event generation.
@@ -90,18 +118,20 @@ impl RxNotify {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Empty-queue wait protocol: Acquire generation, register the waker, run
-    /// the arm/recheck observation, then Acquire the generation again. A
-    /// pending observation or a generation change yields `Retry`; only a
-    /// quiescent arm with an unchanged generation yields `Sleep`. A failed
-    /// arm is a queue-control fatal and yields `Fault` with the error.
+    /// Empty-queue wait protocol: Acquire generation, register the queue
+    /// waker, run the arm/recheck observation, then Acquire the generation
+    /// again. A pending observation or a generation change yields `Retry`;
+    /// only a quiescent arm with an unchanged generation yields `Sleep`. A
+    /// failed arm is a queue-control fatal and yields `Fault` with the error.
+    /// A stack-role publish between the two Acquire loads is observed as a
+    /// generation change and forces a retry.
     pub(crate) fn wait_decision(
         &self,
         waker: &Waker,
         arm: impl FnOnce() -> DevResult<ArmObservation>,
     ) -> WaitDecision {
         let before = self.generation();
-        self.register(waker);
+        self.register_queue(waker);
         let observation = arm();
         let after = self.generation();
         match observation {
@@ -141,51 +171,15 @@ pub(crate) enum WaitDecision {
 /// Maximum completions serviced per queue-task round.
 pub(crate) const RX_BUDGET: usize = 32;
 
-/// Scheduling decision after one RX one-step outcome.
-#[derive(Debug)]
-pub(crate) enum RxDecision {
-    /// Reap the next completion in this round.
-    Continue,
-    /// Empty queue or clean budget stop: run the register/arm/recheck wait
-    /// protocol.
-    RegisterRecheck,
-    /// Router full: hand off to the Service-guard space recheck.
-    WaitSpace,
-    /// Budget exhausted with backlog present: self-wake and yield once.
-    SelfWakeYield,
-    /// Terminal for the decision layer; carries the queue/device error.
-    Fault(DevError),
-}
+/// Maximum TX completions reclaimed per round (Task 3.2, D6).
+pub(crate) const RECLAIM_BUDGET: usize = 32;
 
-/// Pure per-step budget/scheduling decision.
-///
-/// `processed` counts completions already serviced this round including the
-/// current one; `backlog` reports hardware completions still pending, never
-/// probed by a 33rd reap. Exactly `RX_BUDGET` completions with backlog
-/// self-wakes and yields; without backlog it stops cleanly. `Full` waits for
-/// Router space instead of reaping; `Fault` is terminal.
-pub(crate) fn decide_after_step(processed: usize, backlog: bool, outcome: RxOutcome) -> RxDecision {
-    match outcome {
-        RxOutcome::Consumed | RxOutcome::Delivered => {
-            if processed >= RX_BUDGET {
-                if backlog {
-                    RxDecision::SelfWakeYield
-                } else {
-                    RxDecision::RegisterRecheck
-                }
-            } else {
-                RxDecision::Continue
-            }
-        }
-        RxOutcome::Empty => RxDecision::RegisterRecheck,
-        RxOutcome::Full => RxDecision::WaitSpace,
-        RxOutcome::Fault(err) => RxDecision::Fault(err),
-    }
-}
+/// Maximum TX slot frames submitted per round (Task 3.2, D6).
+pub(crate) const SUBMIT_BUDGET: usize = 32;
 
 /// The one queue notification state. There is exactly one task waiter; Router
 /// space wakes and future queue events share this waker.
-pub(crate) static RX_NOTIFY: RxNotify = RxNotify::new();
+pub(crate) static QUEUE_EVENT: QueueEvent = QueueEvent::new();
 
 /// The one RX task lifecycle. Loaded by [`poll_interfaces`](crate::poll_interfaces)
 /// to map the RX consumption right each round.
@@ -272,6 +266,14 @@ pub(crate) struct RxTelemetry {
     /// A single atomic publication prevents snapshots from combining the
     /// stage from one fault with the code from another.
     pub last_error: AtomicU64,
+    /// TX completions reclaimed by the queue task (Task 3.2).
+    pub tx_reclaimed: AtomicU64,
+    /// TX slot frames submitted to the driver by the queue task.
+    pub tx_submitted: AtomicU64,
+    /// TX submit rounds stopped on `Again` (slot frame retained).
+    pub tx_again: AtomicU64,
+    /// RX copy stages stopped because the fixed RX slot storage was full.
+    pub rx_slot_full: AtomicU64,
 }
 
 impl RxTelemetry {
@@ -292,6 +294,10 @@ impl RxTelemetry {
             empty_check: AtomicU64::new(0),
             fault: AtomicU64::new(0),
             last_error: AtomicU64::new(pack_last_error(rx_error_stage::NONE, 0)),
+            tx_reclaimed: AtomicU64::new(0),
+            tx_submitted: AtomicU64::new(0),
+            tx_again: AtomicU64::new(0),
+            rx_slot_full: AtomicU64::new(0),
         }
     }
 
@@ -418,26 +424,34 @@ pub fn rx_snapshot() -> RxSnapshot {
     rx_snapshot_impl(&RX_LIFECYCLE, &RX_TELEMETRY)
 }
 
-/// ISR-safe fixed RX event publisher.
+/// ISR-safe queue event publisher (Task 3.3).
 ///
-/// The kernel handler calls this *after* device ACK and telemetry. It updates
-/// the publish/wake-call counters, then performs the existing Release
-/// generation increment and the sole `AtomicWaker` wake. It never touches the
-/// Service, queue-control, descriptors or smoltcp.
-pub fn publish_rx_event() {
+/// The kernel handler calls this *after* device ACK and telemetry for any
+/// used-ring cause. The used ring is direction-ambiguous: the ISR cannot tell
+/// RX from TX completions, so this publishes one generic queue event that
+/// wakes both the queue-owner role (the task queries both directions under
+/// the Service) and the stack-progress role (socket waiters re-evaluate
+/// readiness). It never touches the Service, queue-control, descriptors or
+/// smoltcp, and a config-only / unknown-only / zero cause never publishes.
+pub fn publish_queue_event() {
     RX_TELEMETRY.isr_publish.fetch_add(1, Ordering::Relaxed);
     RX_TELEMETRY.isr_wake.fetch_add(1, Ordering::Relaxed);
-    RX_NOTIFY.publish_event();
+    QUEUE_EVENT.publish_event();
 }
 
-fn software_nudge_impl(notify: &RxNotify, telemetry: &RxTelemetry) {
+/// Backwards-compatible alias for the ISR event publisher.
+pub fn publish_rx_event() {
+    publish_queue_event();
+}
+
+fn software_nudge_impl(notify: &QueueEvent, telemetry: &RxTelemetry) {
     telemetry.software_nudge.fetch_add(1, Ordering::Relaxed);
-    notify.waker.wake();
+    notify.queue_waker.wake();
 }
 
 /// Wake the unique RX task without publishing a hardware event.
 pub fn software_nudge() {
-    software_nudge_impl(&RX_NOTIFY, &RX_TELEMETRY);
+    software_nudge_impl(&QUEUE_EVENT, &RX_TELEMETRY);
 }
 
 /// Fixed name of the single async RX queue task.
@@ -514,17 +528,18 @@ impl ServiceAccess {
 pub(crate) struct RxRxFuture {
     service: ServiceAccess,
     lifecycle: &'static RxLifecycle,
-    notify: &'static RxNotify,
+    notify: &'static QueueEvent,
     telemetry: &'static RxTelemetry,
 }
 
 /// Outcome of one RX servicing round before releasing the guard.
 enum RoundOutcome {
-    /// A self-wake plus Pending is required (budget backlog).
+    /// A self-wake plus Pending is required (visible backlog remains).
     SelfWakeYield,
     /// Run the empty-queue register/arm/recheck protocol.
     RegisterRecheck,
-    /// Wait for Router space (full), possibly retrying.
+    /// Wait for a resource release (slot space or Router space), possibly
+    /// retrying.
     WaitSpace(SpaceDecision),
     /// Terminal queue/device fault.
     Fault(DevError),
@@ -533,79 +548,147 @@ enum RoundOutcome {
 impl RxRxFuture {
     /// Polls the Service under the lock until a scheduling point, then
     /// returns the next action. The guard never crosses a Pending/Ready.
+    ///
+    /// Task 3.2: one round runs three independent, fixed-order stages with
+    /// their own budgets — TX reclaim ≤32, RX copy/refill ≤32, TX submit
+    /// ≤32. Exhausting one stage never skips a later stage. After the
+    /// stages, a visible backlog self-wakes/yields once; no work sleeps via
+    /// the register/arm/recheck protocol.
     fn service_round(&self, service: &mut Service) -> RoundOutcome {
-        if let Err(err) = service.rx_suppress_target() {
-            self.telemetry.record_fault(rx_error_stage::SUPPRESS, &err);
-            return RoundOutcome::Fault(err);
-        }
-        let mut processed = 0usize;
+        // Stage 1: TX completion reclaim (≤32). Releasing a completion
+        // frees a driver buffer and its live ticket.
+        let mut reclaimed = 0usize;
         loop {
-            processed += 1;
-            let outcome = service.rx_one_step_target();
-            match &outcome {
-                RxOutcome::Consumed => {
-                    self.telemetry.reaped.fetch_add(1, Ordering::Relaxed);
-                    self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
-                    self.telemetry
-                        .non_ip_consumed
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                RxOutcome::Delivered => {
-                    self.telemetry.reaped.fetch_add(1, Ordering::Relaxed);
-                    self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
-                    self.telemetry.delivered.fetch_add(1, Ordering::Relaxed);
-                }
-                RxOutcome::Fault(err) => {
-                    self.telemetry
-                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
-                }
-                _ => {}
-            }
-            let backlog = match outcome {
-                RxOutcome::Consumed | RxOutcome::Delivered if processed >= RX_BUDGET => {
-                    match service.rx_completion_visible_target() {
-                        Ok(backlog) => backlog,
-                        Err(err) => {
-                            self.telemetry
-                                .record_fault(rx_error_stage::COMPLETION_QUERY, &err);
-                            return RoundOutcome::Fault(err);
-                        }
-                    }
-                }
-                _ => false,
-            };
-            match decide_after_step(processed, backlog, outcome) {
-                RxDecision::Continue => continue,
-                RxDecision::SelfWakeYield => {
-                    self.telemetry
-                        .budget_exhausted
-                        .fetch_add(1, Ordering::Relaxed);
-                    self.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
-                    return RoundOutcome::SelfWakeYield;
-                }
-                RxDecision::RegisterRecheck => {
-                    self.telemetry.empty_check.fetch_add(1, Ordering::Relaxed);
-                    return RoundOutcome::RegisterRecheck;
-                }
-                RxDecision::WaitSpace => {
-                    let decision = service.rx_space_recheck_or_wait();
-                    if decision == SpaceDecision::Waiting {
+            match service.tx_reclaim_one_target() {
+                TxReclaimStep::Reclaimed => {
+                    reclaimed += 1;
+                    self.telemetry.tx_reclaimed.fetch_add(1, Ordering::Relaxed);
+                    if reclaimed >= RECLAIM_BUDGET {
                         self.telemetry
-                            .router_full_wait
+                            .budget_exhausted
                             .fetch_add(1, Ordering::Relaxed);
+                        break;
                     }
-                    return RoundOutcome::WaitSpace(decision);
                 }
-                // The Fault outcome was already recorded with the
-                // RECEIVE_RECYCLE stage above; just hand the error up.
-                RxDecision::Fault(err) => return RoundOutcome::Fault(err),
+                TxReclaimStep::Empty => break,
+                TxReclaimStep::Fault(err) => {
+                    self.telemetry
+                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                    return RoundOutcome::Fault(err);
+                }
             }
+        }
+
+        // Stage 2: RX copy/refill (≤32). A full slot never reaps a used
+        // descriptor, so no frame is dropped; the stage stops and the round
+        // continues with TX submit.
+        let mut copied = 0usize;
+        let mut rx_full = false;
+        loop {
+            match service.rx_copy_one_target() {
+                RxCopyStep::Copied => {
+                    copied += 1;
+                    self.telemetry.reaped.fetch_add(1, Ordering::Relaxed);
+                    self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
+                    // A new frame in the RX slot is stack-progress: wake the
+                    // socket role so smoltcp re-evaluates readiness (T3.3).
+                    self.notify.publish_progress();
+                    if copied >= RX_BUDGET {
+                        self.telemetry
+                            .budget_exhausted
+                            .fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                RxCopyStep::Empty => break,
+                RxCopyStep::Full => {
+                    rx_full = true;
+                    self.telemetry.rx_slot_full.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+                RxCopyStep::Fault(err) => {
+                    self.telemetry
+                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                    return RoundOutcome::Fault(err);
+                }
+            }
+        }
+
+        // Stage 3: TX slot submit (≤32). A successful submit pops the slot
+        // and keeps its ticket live; `Again` retains the slot frame and
+        // stops this stage.
+        let mut submitted = 0usize;
+        let mut submit_full = false;
+        loop {
+            match service.tx_submit_one_target() {
+                TxSubmitStep::Submitted => {
+                    submitted += 1;
+                    self.telemetry.tx_submitted.fetch_add(1, Ordering::Relaxed);
+                    // A freed TX slot is stack-progress: wake the socket
+                    // role so blocked senders re-check write readiness (T3.3).
+                    self.notify.publish_progress();
+                    if submitted >= SUBMIT_BUDGET {
+                        self.telemetry
+                            .budget_exhausted
+                            .fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                TxSubmitStep::Empty => break,
+                TxSubmitStep::Full => {
+                    submit_full = true;
+                    self.telemetry.tx_again.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+                TxSubmitStep::Fault(err) => {
+                    self.telemetry
+                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                    return RoundOutcome::Fault(err);
+                }
+            }
+        }
+
+        // Round-end scheduling decision. Any visible completion or pending
+        // slot work self-wakes/yields once so the round re-runs promptly;
+        // a full RX slot waits for the stack to drain it; nothing visible
+        // runs the register/arm/recheck protocol and sleeps.
+        let pending = match service.completion_pending_both_target() {
+            Ok(pending) => pending,
+            Err(err) => {
+                self.telemetry
+                    .record_fault(rx_error_stage::COMPLETION_QUERY, &err);
+                return RoundOutcome::Fault(err);
+            }
+        };
+        let tx_pending = service.tx_slot_pending_target();
+        if rx_full {
+            let decision = service.rx_slot_space_recheck_or_wait();
+            if decision == SpaceDecision::Waiting {
+                self.telemetry
+                    .router_full_wait
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            RoundOutcome::WaitSpace(decision)
+        } else if pending.contains(NetQueueDirection::RX)
+            || pending.contains(NetQueueDirection::TX)
+            || tx_pending
+            || submit_full
+        {
+            self.telemetry
+                .budget_exhausted
+                .fetch_add(1, Ordering::Relaxed);
+            self.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
+            RoundOutcome::SelfWakeYield
+        } else {
+            self.telemetry.empty_check.fetch_add(1, Ordering::Relaxed);
+            RoundOutcome::RegisterRecheck
         }
     }
 
-    /// First poll: acquire the Service, preflight/suppress, publish
-    /// Active (or Unavailable) under the guard, then hand off to the active
-    /// servicing loop.
+    /// First poll: acquire the Service, run the all-or-nothing bidirectional
+    /// activation (suppress BOTH + slot-mode switch), publish Active (or
+    /// Unavailable) under the guard, then hand off to the active servicing
+    /// loop.
     fn poll_first(&self, cx: &mut Context<'_>) -> Poll<()> {
         if !self.service.is_available() {
             // Missing Service cannot be preflighted: Unavailable keeps the
@@ -616,10 +699,10 @@ impl RxRxFuture {
             return Poll::Ready(());
         }
         let Some(mut service) = self.service.try_lock() else {
-            self.notify.register(cx.waker());
+            self.notify.register_queue(cx.waker());
             return Poll::Pending;
         };
-        let preflight = service.rx_preflight_target();
+        let preflight = service.activate_target();
         if let Err(err) = &preflight {
             self.telemetry
                 .record_last_error(rx_error_stage::PREFLIGHT, err);
@@ -648,7 +731,7 @@ impl RxRxFuture {
     /// Active poll: register the sole waker outside the Service lock, then
     /// service at most RX_BUDGET completions under the guard.
     fn poll_active(&self, cx: &mut Context<'_>) -> Poll<()> {
-        self.notify.register(cx.waker());
+        self.notify.register_queue(cx.waker());
         let Some(mut service) = self.service.try_lock() else {
             return Poll::Pending;
         };
@@ -687,15 +770,15 @@ impl RxRxFuture {
         }
     }
 
-    /// Empty-queue wait: acquire generation, register, arm/recheck under the
-    /// Service lock, then observe the generation again.
+    /// Empty-queue wait: acquire generation, register, arm/recheck BOTH
+    /// directions under the Service lock, then observe the generation again.
     fn poll_register_recheck(&self, cx: &mut Context<'_>) -> Poll<()> {
         let decision = self.notify.wait_decision(cx.waker(), || {
             let Some(mut service) = self.service.try_lock() else {
                 return Err(DevError::BadState);
             };
-            service.rx_arm_and_check_target().map(|pending| {
-                if pending {
+            service.arm_and_check_both_target().map(|pending| {
+                if pending != NetQueueDirection::NONE {
                     ArmObservation::Pending
                 } else {
                     ArmObservation::Quiescent
@@ -741,7 +824,7 @@ fn spawn_rx_task() {
             axtask::future::block_on(RxRxFuture {
                 service: ServiceAccess::Global,
                 lifecycle: &RX_LIFECYCLE,
-                notify: &RX_NOTIFY,
+                notify: &QUEUE_EVENT,
                 telemetry: &RX_TELEMETRY,
             })
         },
@@ -898,7 +981,7 @@ impl RxLifecycle {
     }
 }
 
-/// Serializes tests that touch the shared [`RX_NOTIFY`] static.
+/// Serializes tests that touch the shared [`QUEUE_EVENT`] static.
 #[cfg(test)]
 pub(crate) static SERIAL: spin::Mutex<()> = spin::Mutex::new(());
 
@@ -912,18 +995,21 @@ mod tests {
     };
 
     use axdriver::prelude::{DevError, DevResult};
-    use axdriver_net::NetQueueControl;
+    use axdriver_net::{NetQueueControl, NetQueueDirection};
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
     use super::{
-        ArmObservation, RX_BUDGET, RX_LIFECYCLE, RX_NOTIFY, RX_TELEMETRY, RxDecision, RxLifecycle,
-        RxNotify, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL, ServiceAccess, SpaceDecision,
-        StartError, TransitionError, WaitDecision, decide_after_step, rx_error_code,
+        ArmObservation, QUEUE_EVENT, QueueEvent, RECLAIM_BUDGET, RX_BUDGET, RX_LIFECYCLE,
+        RX_TELEMETRY, RxLifecycle, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL, SUBMIT_BUDGET,
+        ServiceAccess, SpaceDecision, StartError, TransitionError, WaitDecision, rx_error_code,
         rx_error_stage, software_nudge_impl, start_with,
     };
     use crate::{
-        device::{Device, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
-        router::{Router, RxOutcome, RxOwnerView},
+        device::{
+            Device, LoopbackDevice, RxCopyStep, RxStep, TxOutcome, TxPreflight, TxReclaimStep,
+            TxSubmitStep,
+        },
+        router::{Router, RxOwnerView},
         service::Service,
     };
 
@@ -975,7 +1061,9 @@ mod tests {
         }
 
         fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
-            TxOutcome::Accepted { rx_became_ready: false }
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
         }
 
         fn register_waker(&self, _waker: &Waker) {}
@@ -983,9 +1071,9 @@ mod tests {
 
     #[test]
     fn notify_full_waiting_then_space_wakes_once() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
-        notify.register(&counting_waker(count.clone()));
+        notify.register_queue(&counting_waker(count.clone()));
         notify.publish_waiting();
         assert!(notify.wake_if_space(true));
         assert_eq!(count.load(Ordering::Relaxed), 1);
@@ -995,9 +1083,9 @@ mod tests {
 
     #[test]
     fn notify_still_full_does_not_wake() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
-        notify.register(&counting_waker(count.clone()));
+        notify.register_queue(&counting_waker(count.clone()));
         notify.publish_waiting();
         assert!(!notify.wake_if_space(false));
         assert_eq!(count.load(Ordering::Relaxed), 0);
@@ -1005,18 +1093,18 @@ mod tests {
 
     #[test]
     fn notify_not_waiting_does_not_wake() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
-        notify.register(&counting_waker(count.clone()));
+        notify.register_queue(&counting_waker(count.clone()));
         assert!(!notify.wake_if_space(true));
         assert_eq!(count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn notify_second_publish_after_clear_wakes_again() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
-        notify.register(&counting_waker(count.clone()));
+        notify.register_queue(&counting_waker(count.clone()));
         notify.publish_waiting();
         assert!(notify.wake_if_space(true));
         notify.publish_waiting();
@@ -1025,58 +1113,133 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 
+    // ---- T3.1: dual-role QueueEvent and bidirectional activation ----
+
     #[test]
-    fn sibling_caller_reaches_target_one_step_and_register_seam() {
-        // Touches the production `RX_NOTIFY` static: share the serial guard so
-        // a sibling registration cannot overwrite another test's waker.
-        let _serial = SERIAL.lock();
-        let mut router = Router::new();
-        router.add_device(Box::new(LoopbackDevice::new()));
-        let mut service = Service::new(router, Some(0));
+    fn event_queue_and_stack_wakers_are_independent() {
+        let event = super::QueueEvent::new();
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.register_stack(&counting_waker(stack_count.clone()));
 
-        let outcome = service.rx_one_step_target();
-        assert!(matches!(outcome, RxOutcome::Empty));
+        // A queue event wakes both roles.
+        event.publish_event();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
 
-        let count = Arc::new(AtomicUsize::new(0));
-        RX_NOTIFY.register(&counting_waker(count.clone()));
-        assert_eq!(count.load(Ordering::Relaxed), 0);
+        // A stack-progress hint wakes only the stack role.
+        event.publish_progress();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_count.load(Ordering::Relaxed), 2);
     }
 
     #[test]
-    fn one_step_missing_target_maps_to_bad_state() {
+    fn event_queue_register_does_not_overwrite_stack_waker() {
+        let event = super::QueueEvent::new();
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        event.register_stack(&counting_waker(stack_count.clone()));
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.publish_event();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn event_stack_register_does_not_overwrite_queue_waker() {
+        let event = super::QueueEvent::new();
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.register_stack(&counting_waker(stack_count.clone()));
+        event.publish_progress();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 0);
+        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn event_generation_wraps_and_wakes_both() {
+        let event = super::QueueEvent::with_generation(u64::MAX);
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.register_stack(&counting_waker(stack_count.clone()));
+        event.publish_event();
+        assert_eq!(event.generation(), 0);
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn event_space_wait_wakes_only_queue_role() {
+        let event = super::QueueEvent::new();
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.register_stack(&counting_waker(stack_count.clone()));
+        event.publish_waiting();
+        assert!(event.wake_if_space(true));
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn event_dual_role_wait_decision_retries_on_any_generation_change() {
+        let event = super::QueueEvent::new();
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        let before = event.generation();
+        let decision = event.wait_decision(&counting_waker(queue_count.clone()), || {
+            event.register_stack(&counting_waker(stack_count.clone()));
+            event.publish_progress();
+            Ok(ArmObservation::Quiescent)
+        });
+        // The queue wait observes the stack-role generation change and retries.
+        assert!(matches!(decision, WaitDecision::Retry));
+        assert_eq!(before, event.generation() - 1);
+    }
+
+    #[test]
+    fn rx_copy_missing_target_maps_to_bad_state() {
         let router = Router::new();
         let mut service = Service::new(router, None);
 
-        let outcome = service.rx_one_step_target();
-        assert!(matches!(outcome, RxOutcome::Fault(DevError::BadState)));
+        let step = service.rx_copy_one_target();
+        assert!(matches!(step, RxCopyStep::Fault(DevError::BadState)));
     }
 
     #[test]
-    fn one_step_full_router_buffer_does_not_touch_device() {
-        let recv_calls = Arc::new(AtomicUsize::new(0));
-        let mut router = Router::new();
-        router.add_device(Box::new(CountingDevice::new(recv_calls.clone())));
-        router.fill_rx_buffer_for_test();
-        let mut service = Service::new(router, Some(0));
+    fn tx_submit_missing_target_maps_to_bad_state() {
+        let router = Router::new();
+        let mut service = Service::new(router, None);
 
-        let outcome = service.rx_one_step_target();
-        assert!(matches!(outcome, RxOutcome::Full));
-        assert_eq!(recv_calls.load(Ordering::Relaxed), 0);
+        let step = service.tx_submit_one_target();
+        assert!(matches!(step, TxSubmitStep::Fault(DevError::BadState)));
+    }
+
+    #[test]
+    fn tx_reclaim_missing_target_maps_to_bad_state() {
+        let router = Router::new();
+        let mut service = Service::new(router, None);
+
+        let step = service.tx_reclaim_one_target();
+        assert!(matches!(step, TxReclaimStep::Fault(DevError::BadState)));
     }
 
     #[test]
     fn space_freed_before_waiting_rechecks_to_retry_without_publish() {
         let _serial = SERIAL.lock();
         let count = Arc::new(AtomicUsize::new(0));
-        RX_NOTIFY.register(&counting_waker(count.clone()));
+        QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
 
         let router = Router::new();
         let service = Service::new(router, None);
 
-        let decision = service.rx_space_recheck_or_wait();
+        let decision = service.rx_slot_space_recheck_or_wait();
         assert!(matches!(decision, SpaceDecision::Retry));
         // Retry must not have published waiting: a later space wake is a no-op.
-        assert!(!RX_NOTIFY.wake_if_space(true));
+        assert!(!QUEUE_EVENT.wake_if_space(true));
         assert_eq!(count.load(Ordering::Relaxed), 0);
     }
 
@@ -1084,20 +1247,21 @@ mod tests {
     fn still_full_publishes_waiting_then_space_wakes_once() {
         let _serial = SERIAL.lock();
         let count = Arc::new(AtomicUsize::new(0));
-        RX_NOTIFY.register(&counting_waker(count.clone()));
+        QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
 
-        let mut router = Router::new();
-        router.add_device(Box::new(LoopbackDevice::new()));
-        router.fill_rx_buffer_for_test();
-        let service = Service::new(router, Some(0));
+        let (mutex, _, control) = leaked_service(vec![RxStep::Consumed], true);
+        // The fixed RX slots are full: the slot-space recheck must publish
+        // the waiting bit.
+        control.rx_slot_full.store(true, Ordering::Relaxed);
+        let service = mutex.lock();
 
-        let decision = service.rx_space_recheck_or_wait();
+        let decision = service.rx_slot_space_recheck_or_wait();
         assert!(matches!(decision, SpaceDecision::Waiting));
 
         // Space freed after waiting: exactly one wake.
-        assert!(RX_NOTIFY.wake_if_space(true));
+        assert!(QUEUE_EVENT.wake_if_space(true));
         assert_eq!(count.load(Ordering::Relaxed), 1);
-        assert!(!RX_NOTIFY.wake_if_space(true));
+        assert!(!QUEUE_EVENT.wake_if_space(true));
         assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 
@@ -1225,9 +1389,9 @@ mod tests {
 
     #[test]
     fn publish_event_increments_generation_and_wakes() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
-        notify.register(&counting_waker(count.clone()));
+        notify.register_queue(&counting_waker(count.clone()));
 
         let before = notify.generation();
         notify.publish_event();
@@ -1241,10 +1405,10 @@ mod tests {
 
     #[test]
     fn software_nudge_wakes_without_publishing_hardware_event() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let telemetry = RxTelemetry::new();
         let count = Arc::new(AtomicUsize::new(0));
-        notify.register(&counting_waker(count.clone()));
+        notify.register_queue(&counting_waker(count.clone()));
         let generation_before = notify.generation();
 
         software_nudge_impl(&notify, &telemetry);
@@ -1258,14 +1422,14 @@ mod tests {
 
     #[test]
     fn publish_event_generation_wraps() {
-        let notify = RxNotify::with_generation(u64::MAX);
+        let notify = QueueEvent::with_generation(u64::MAX);
         notify.publish_event();
         assert_eq!(notify.generation(), 0);
     }
 
     #[test]
     fn event_before_register_is_caught_by_arm_recheck() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
         notify.publish_event();
 
@@ -1278,7 +1442,7 @@ mod tests {
 
     #[test]
     fn event_during_register_window_retries() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
 
         let decision = notify.wait_decision(&counting_waker(count.clone()), || {
@@ -1290,7 +1454,7 @@ mod tests {
 
     #[test]
     fn event_after_arm_wakes_sleep_decision() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
 
         let decision = notify.wait_decision(&counting_waker(count.clone()), || {
@@ -1304,7 +1468,7 @@ mod tests {
 
     #[test]
     fn pending_found_by_arm_recheck_retries_without_event() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
 
         let decision = notify.wait_decision(&counting_waker(count.clone()), || {
@@ -1316,7 +1480,7 @@ mod tests {
 
     #[test]
     fn quiescent_arm_without_event_sleeps() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
 
         let decision = notify.wait_decision(&counting_waker(count.clone()), || {
@@ -1328,85 +1492,12 @@ mod tests {
 
     #[test]
     fn arm_error_maps_to_fault_with_error_category() {
-        let notify = RxNotify::new();
+        let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
 
         let decision = notify.wait_decision(&counting_waker(count.clone()), || Err(DevError::Io));
         assert!(matches!(decision, WaitDecision::Fault(DevError::Io)));
         assert_eq!(count.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn budget_below_limit_continues_on_progress() {
-        for (processed, outcome) in [
-            (1, RxOutcome::Consumed),
-            (1, RxOutcome::Delivered),
-            (RX_BUDGET - 1, RxOutcome::Consumed),
-            (RX_BUDGET - 1, RxOutcome::Delivered),
-        ] {
-            assert!(matches!(
-                decide_after_step(processed, true, outcome),
-                RxDecision::Continue
-            ));
-        }
-    }
-
-    #[test]
-    fn budget_exact_with_backlog_self_wakes_and_yields() {
-        // The literal 32 keeps the RX_BUDGET mutation witness sensitive.
-        for outcome in [RxOutcome::Consumed, RxOutcome::Delivered] {
-            assert!(matches!(
-                decide_after_step(32, true, outcome),
-                RxDecision::SelfWakeYield
-            ));
-        }
-    }
-
-    #[test]
-    fn budget_exact_without_backlog_goes_register_recheck() {
-        // The literal 32 keeps the RX_BUDGET mutation witness sensitive.
-        for outcome in [RxOutcome::Consumed, RxOutcome::Delivered] {
-            assert!(matches!(
-                decide_after_step(32, false, outcome),
-                RxDecision::RegisterRecheck
-            ));
-        }
-    }
-
-    #[test]
-    fn empty_goes_register_recheck_at_any_count() {
-        assert!(matches!(
-            decide_after_step(1, false, RxOutcome::Empty),
-            RxDecision::RegisterRecheck
-        ));
-        assert!(matches!(
-            decide_after_step(RX_BUDGET, true, RxOutcome::Empty),
-            RxDecision::RegisterRecheck
-        ));
-    }
-
-    #[test]
-    fn full_goes_wait_space_without_reaping() {
-        assert!(matches!(
-            decide_after_step(1, false, RxOutcome::Full),
-            RxDecision::WaitSpace
-        ));
-        assert!(matches!(
-            decide_after_step(RX_BUDGET, true, RxOutcome::Full),
-            RxDecision::WaitSpace
-        ));
-    }
-
-    #[test]
-    fn fault_is_terminal_for_the_decision_layer() {
-        assert!(matches!(
-            decide_after_step(1, false, RxOutcome::Fault(DevError::BadState)),
-            RxDecision::Fault(DevError::BadState)
-        ));
-        assert!(matches!(
-            decide_after_step(RX_BUDGET, true, RxOutcome::Fault(DevError::Io)),
-            RxDecision::Fault(DevError::Io)
-        ));
     }
 
     // ---- T5.2b: unique named task, owner handoff and budget wiring ----
@@ -1421,6 +1512,8 @@ mod tests {
         suppress_error: AtomicBool,
         arm_error: AtomicBool,
         missing_after_first_control_call: AtomicBool,
+        rx_slot_full: AtomicBool,
+        tx_slot_pending: AtomicBool,
     }
 
     struct ScriptedControl {
@@ -1447,13 +1540,69 @@ mod tests {
             }
             Ok(self.stats.completion_visible.load(Ordering::Relaxed))
         }
+
+        fn suppress_notify(&mut self, directions: NetQueueDirection) -> DevResult {
+            if directions.contains(NetQueueDirection::RX) {
+                self.suppress_rx_notify()?;
+            }
+            if directions.contains(NetQueueDirection::TX) {
+                self.stats.suppress_calls.fetch_add(1, Ordering::Relaxed);
+                if self.stats.suppress_error.load(Ordering::Relaxed) {
+                    return Err(DevError::Io);
+                }
+            }
+            Ok(())
+        }
+
+        fn arm_notify_and_check(
+            &mut self,
+            directions: NetQueueDirection,
+        ) -> DevResult<NetQueueDirection> {
+            let mut pending = NetQueueDirection::NONE;
+            if directions.contains(NetQueueDirection::RX) && self.arm_rx_notify_and_check()? {
+                pending |= NetQueueDirection::RX;
+            }
+            if directions.contains(NetQueueDirection::TX) {
+                self.stats.arm_calls.fetch_add(1, Ordering::Relaxed);
+                if self.stats.arm_error.load(Ordering::Relaxed) {
+                    return Err(DevError::Io);
+                }
+                if self.stats.completion_visible.load(Ordering::Relaxed) {
+                    pending |= NetQueueDirection::TX;
+                }
+            }
+            Ok(pending)
+        }
+
+        fn completion_pending(
+            &self,
+            directions: NetQueueDirection,
+        ) -> DevResult<NetQueueDirection> {
+            let mut pending = NetQueueDirection::NONE;
+            if directions.contains(NetQueueDirection::RX)
+                && self.stats.completion_visible.load(Ordering::Relaxed)
+            {
+                pending |= NetQueueDirection::RX;
+            }
+            if directions.contains(NetQueueDirection::TX)
+                && self.stats.completion_visible.load(Ordering::Relaxed)
+            {
+                pending |= NetQueueDirection::TX;
+            }
+            Ok(pending)
+        }
     }
 
-    /// A fake NIC whose `recv` replays scripted outcomes and whose optional
-    /// queue control records calls and honors injected errors.
+    /// A fake NIC whose three queue-service stages replay scripted outcomes
+    /// and whose optional queue control records calls and honors injected
+    /// errors (Task 3.2 fake driver/slot matrix).
     struct ScriptedDevice {
         steps: spin::Mutex<VecDeque<RxStep>>,
-        recv_calls: Arc<AtomicUsize>,
+        tx_submit_steps: spin::Mutex<VecDeque<TxSubmitStep>>,
+        tx_reclaim_steps: spin::Mutex<VecDeque<TxReclaimStep>>,
+        copy_calls: Arc<AtomicUsize>,
+        submit_calls: Arc<AtomicUsize>,
+        stats: Arc<ScriptedControlStats>,
         control: Option<ScriptedControl>,
     }
 
@@ -1463,7 +1612,7 @@ mod tests {
         }
 
         fn recv(&mut self, _buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
-            self.recv_calls.fetch_add(1, Ordering::Relaxed);
+            self.copy_calls.fetch_add(1, Ordering::Relaxed);
             self.steps.lock().pop_front().unwrap_or(RxStep::Empty)
         }
 
@@ -1477,7 +1626,44 @@ mod tests {
         }
 
         fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
-            TxOutcome::Accepted { rx_became_ready: false }
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn rx_copy_one(&mut self) -> RxCopyStep {
+            if self.stats.rx_slot_full.load(Ordering::Relaxed) {
+                return RxCopyStep::Full;
+            }
+            self.copy_calls.fetch_add(1, Ordering::Relaxed);
+            match self.steps.lock().pop_front().unwrap_or(RxStep::Empty) {
+                RxStep::Consumed | RxStep::Delivered => RxCopyStep::Copied,
+                RxStep::Empty => RxCopyStep::Empty,
+                RxStep::Fault(err) => RxCopyStep::Fault(err),
+            }
+        }
+
+        fn tx_submit_one(&mut self) -> TxSubmitStep {
+            self.submit_calls.fetch_add(1, Ordering::Relaxed);
+            self.tx_submit_steps
+                .lock()
+                .pop_front()
+                .unwrap_or(TxSubmitStep::Empty)
+        }
+
+        fn tx_reclaim_one(&mut self) -> TxReclaimStep {
+            self.tx_reclaim_steps
+                .lock()
+                .pop_front()
+                .unwrap_or(TxReclaimStep::Empty)
+        }
+
+        fn rx_slot_has_space(&self) -> bool {
+            !self.stats.rx_slot_full.load(Ordering::Relaxed)
+        }
+
+        fn tx_slot_pending(&self) -> bool {
+            self.stats.tx_slot_pending.load(Ordering::Relaxed)
         }
 
         fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
@@ -1510,28 +1696,45 @@ mod tests {
         Arc<AtomicUsize>,
         Arc<ScriptedControlStats>,
     ) {
-        let recv_calls = Arc::new(AtomicUsize::new(0));
+        leaked_service_tx(steps, vec![], vec![], with_control)
+    }
+
+    fn leaked_service_tx(
+        steps: Vec<RxStep>,
+        tx_submit_steps: Vec<TxSubmitStep>,
+        tx_reclaim_steps: Vec<TxReclaimStep>,
+        with_control: bool,
+    ) -> (
+        &'static spin::Mutex<Service>,
+        Arc<AtomicUsize>,
+        Arc<ScriptedControlStats>,
+    ) {
+        let copy_calls = Arc::new(AtomicUsize::new(0));
         let stats = Arc::new(ScriptedControlStats::default());
         let control = with_control.then(|| ScriptedControl {
             stats: stats.clone(),
         });
         let device = ScriptedDevice {
             steps: spin::Mutex::new(steps.into()),
-            recv_calls: recv_calls.clone(),
+            tx_submit_steps: spin::Mutex::new(tx_submit_steps.into()),
+            tx_reclaim_steps: spin::Mutex::new(tx_reclaim_steps.into()),
+            copy_calls: copy_calls.clone(),
+            submit_calls: Arc::new(AtomicUsize::new(0)),
+            stats: stats.clone(),
             control,
         };
         let mut router = Router::new();
         let idx = router.add_device(Box::new(device));
         let service = Service::new(router, Some(idx));
         let mutex: &'static spin::Mutex<Service> = Box::leak(Box::new(spin::Mutex::new(service)));
-        (mutex, recv_calls, stats)
+        (mutex, copy_calls, stats)
     }
 
     /// Builds an injected Future: local leaked lifecycle/notify/telemetry,
     /// spin service mutex, lifecycle already driven to `Spawned`.
     fn leaked_future(
         service_mutex: &'static spin::Mutex<Service>,
-        notify: &'static RxNotify,
+        notify: &'static QueueEvent,
     ) -> (&'static RxLifecycle, RxRxFuture) {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
@@ -1590,7 +1793,7 @@ mod tests {
         // with Unavailable, keeping the polling owner.
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
-        let notify: &'static RxNotify = Box::leak(Box::new(RxNotify::new()));
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
         let mut fut = RxRxFuture {
             service: ServiceAccess::Global,
@@ -1611,7 +1814,7 @@ mod tests {
     fn future_missing_target_publishes_unavailable() {
         let service = Service::new(Router::new(), None);
         let mutex: &'static spin::Mutex<Service> = Box::leak(Box::new(spin::Mutex::new(service)));
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -1624,7 +1827,7 @@ mod tests {
     #[test]
     fn future_missing_control_publishes_unavailable() {
         let (mutex, recv_calls, _) = leaked_service(vec![], false);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -1639,7 +1842,7 @@ mod tests {
     fn future_preflight_suppress_failure_publishes_unavailable() {
         let (mutex, recv_calls, control) = leaked_service(vec![], true);
         control.suppress_error.store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -1652,62 +1855,86 @@ mod tests {
 
     #[test]
     fn future_first_poll_activates_and_waits_on_empty() {
-        let (mutex, recv_calls, control) = leaked_service(vec![RxStep::Empty], true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (mutex, copy_calls, control) = leaked_service(vec![RxStep::Empty], true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
-        assert_eq!(recv_calls.load(Ordering::Relaxed), 1);
-        // Quiescent arm without event: sleep without self-wake.
+        // The RX copy stage probes once and stops on Empty.
+        assert_eq!(copy_calls.load(Ordering::Relaxed), 1);
+        // Quiescent BOTH-direction arm without event: sleep without self-wake.
         assert_eq!(count.load(Ordering::Relaxed), 0);
-        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 2);
         assert!(mutex.try_lock().is_some());
     }
 
     #[test]
     fn future_services_one_completion_then_registers() {
-        let (mutex, recv_calls, _) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (mutex, copy_calls, control) =
+            leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
-        assert_eq!(recv_calls.load(Ordering::Relaxed), 2);
+        // One RX copy then an Empty probe, then BOTH-direction register.
+        assert_eq!(copy_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 2);
         assert!(mutex.try_lock().is_some());
     }
 
     #[test]
+    fn future_rx_copy_publishes_stack_progress() {
+        // Task 3.3: a successful RX copy fills the fixed RX slot, which is
+        // stack-progress — the socket role must be woken so smoltcp
+        // re-evaluates readiness. The queue-owner waker is untouched.
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (mutex, ..) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
+        let (_, mut fut) = leaked_future(mutex, notify);
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        let stack_count = Arc::new(AtomicUsize::new(0));
+        notify.register_queue(&counting_waker(queue_count.clone()));
+        notify.register_stack(&counting_waker(stack_count.clone()));
+        let _ = poll_once(&mut fut, Arc::new(AtomicUsize::new(0)));
+        // The RX copy published a stack-progress hint; the queue role was
+        // not woken by it (the task itself drives the next round).
+        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+        assert_eq!(queue_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn future_31_completions_then_empty_registers_once() {
-        // Exactly 31 progress steps then an Empty on the 32nd observation:
-        // the future performs exactly RX_BUDGET (32) receive calls, arms once,
-        // self-wakes zero times and releases the Service guard. The literal 31
-        // keeps the RX_BUDGET boundary mutation witness sensitive.
+        // Exactly 31 RX copies then an Empty on the 32nd observation: the
+        // future performs exactly RX_BUDGET (32) copy probes, arms BOTH
+        // directions once, self-wakes zero times and releases the Service
+        // guard. The literal 31 keeps the RX_BUDGET boundary witness
+        // sensitive.
         let steps: Vec<RxStep> = (0..31)
             .map(|_| RxStep::Consumed)
             .chain([RxStep::Empty])
             .collect();
-        let (mutex, recv_calls, control) = leaked_service(steps, true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (mutex, copy_calls, control) = leaked_service(steps, true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
-        assert_eq!(recv_calls.load(Ordering::Relaxed), 32);
+        assert_eq!(copy_calls.load(Ordering::Relaxed), 32);
         assert_eq!(count.load(Ordering::Relaxed), 0);
-        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 2);
         assert!(mutex.try_lock().is_some());
     }
 
     #[test]
     fn future_budget_exhausted_with_backlog_self_wakes_and_yields() {
         let steps: Vec<RxStep> = (0..=RX_BUDGET).map(|_| RxStep::Consumed).collect();
-        let (mutex, recv_calls, control) = leaked_service(steps, true);
+        let (mutex, copy_calls, control) = leaked_service(steps, true);
         control.completion_visible.store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
-        // Exactly RX_BUDGET reaps; the 33rd is never probed by another reap.
-        assert_eq!(recv_calls.load(Ordering::Relaxed), RX_BUDGET);
-        // Self-wake for block_on yield, no extra spurious wake.
+        // Exactly RX_BUDGET copies; the 33rd is never probed by another copy.
+        assert_eq!(copy_calls.load(Ordering::Relaxed), RX_BUDGET);
+        // Visible completion: self-wake for block_on yield, no spurious wake.
         assert_eq!(count.load(Ordering::Relaxed), 1);
         // SelfWakeYield keeps the queue suppressed: no rearm happened.
         assert_eq!(control.arm_calls.load(Ordering::Relaxed), 0);
@@ -1717,13 +1944,15 @@ mod tests {
     #[test]
     fn future_budget_exhausted_without_backlog_stops_cleanly() {
         let steps: Vec<RxStep> = (0..RX_BUDGET).map(|_| RxStep::Consumed).collect();
-        let (mutex, recv_calls, _) = leaked_service(steps, true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (mutex, copy_calls, control) = leaked_service(steps, true);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
-        assert_eq!(recv_calls.load(Ordering::Relaxed), RX_BUDGET);
+        assert_eq!(copy_calls.load(Ordering::Relaxed), RX_BUDGET);
         assert_eq!(count.load(Ordering::Relaxed), 0);
+        // Clean budget stop without backlog: BOTH-direction register/arm.
+        assert_eq!(control.arm_calls.load(Ordering::Relaxed), 2);
         assert!(mutex.try_lock().is_some());
     }
 
@@ -1731,7 +1960,7 @@ mod tests {
     fn future_arm_pending_retries_with_self_wake() {
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.completion_visible.store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
@@ -1743,7 +1972,7 @@ mod tests {
     fn future_arm_error_faults_and_keeps_async_owner() {
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.arm_error.store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -1756,27 +1985,73 @@ mod tests {
     }
 
     #[test]
-    fn future_router_full_waits_then_service_poll_wakes() {
-        // The wait/space handoff shares the production `RX_NOTIFY` with
+    fn future_rx_slot_full_waits_then_service_poll_wakes() {
+        // The wait/space handoff shares the production `QUEUE_EVENT` with
         // `Service::poll`: serialize against sibling tests.
         let _serial = SERIAL.lock();
-        let (mutex, recv_calls, _) = leaked_service(vec![RxStep::Consumed], true);
-        {
-            let mut guard = mutex.lock();
-            guard.fill_rx_buffer_for_test();
-        }
-        let (lifecycle, mut fut) = leaked_future(mutex, &RX_NOTIFY);
+        let (mutex, copy_calls, control) = leaked_service(vec![RxStep::Consumed], true);
+        // The fixed RX slots are full: the copy stage stops without reaping.
+        control.rx_slot_full.store(true, Ordering::Relaxed);
+        let (lifecycle, mut fut) = leaked_future(mutex, &QUEUE_EVENT);
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
-        assert_eq!(recv_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(copy_calls.load(Ordering::Relaxed), 0);
         assert_eq!(count.load(Ordering::Relaxed), 0);
         assert!(mutex.try_lock().is_some());
 
-        // Ordinary Service::poll frees Router space and wakes the waiter once.
+        // Stack polling drains the RX slots and wakes the waiter once.
+        control.rx_slot_full.store(false, Ordering::Relaxed);
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
-        mutex.lock().poll(RxOwnerView::PollingOwned, &mut sockets);
+        mutex.lock().poll(RxOwnerView::AsyncOwned, &mut sockets);
         assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn round_reclaim_exhausted_still_runs_rx_and_submit() {
+        // Task 3.2: exhausting one stage never skips a later stage. Here the
+        // TX reclaim stage is busy for its whole budget while RX copy and TX
+        // submit each make progress; the round still visits both later
+        // stages.
+        let reclaim_steps: Vec<_> = (0..RECLAIM_BUDGET)
+            .map(|_| TxReclaimStep::Reclaimed)
+            .collect();
+        let rx_steps: Vec<_> = (0..RX_BUDGET - 1).map(|_| RxStep::Consumed).collect();
+        let submit_steps: Vec<_> = (0..SUBMIT_BUDGET - 1)
+            .map(|_| TxSubmitStep::Submitted)
+            .collect();
+        let (mutex, copy_calls, control) =
+            leaked_service_tx(rx_steps, submit_steps, reclaim_steps, true);
+        control.completion_visible.store(true, Ordering::Relaxed);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        // Even though the reclaim stage consumed its full budget, RX copy and
+        // TX submit both advanced (independent budgets). The RX stage ran 31
+        // copies plus the Empty probe that ends the stage (32 calls).
+        assert_eq!(copy_calls.load(Ordering::Relaxed), RX_BUDGET);
+        // Visible TX completion keeps the round self-waking once.
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert!(mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn round_tx_again_retains_slot_and_self_wakes() {
+        // Task 3.2: a `Full` (Again) TX submit retains the slot frame and
+        // stops only the submit stage; the visible TX backlog self-wakes the
+        // round once instead of sleeping.
+        let (mutex, copy_calls, control) =
+            leaked_service_tx(vec![RxStep::Empty], vec![TxSubmitStep::Full], vec![], true);
+        control.tx_slot_pending.store(true, Ordering::Relaxed);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        // RX copy ran (Empty probe) and the submit stage hit `Full`.
+        assert_eq!(copy_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert!(mutex.try_lock().is_some());
     }
 
     // ---- T6.1b: monotonic telemetry deltas ----
@@ -1784,7 +2059,7 @@ mod tests {
     #[test]
     fn telemetry_empty_round_increments_empty_check_once() {
         let (mutex, ..) = leaked_service(vec![RxStep::Empty], true);
-        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(fut.telemetry.task_poll.load(Ordering::Relaxed), 1);
@@ -1794,27 +2069,31 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_consumed_increments_reap_refill_and_non_ip() {
+    fn telemetry_consumed_increments_reap_and_refill() {
         let (mutex, ..) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
-        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(fut.telemetry.reaped.load(Ordering::Relaxed), 1);
         assert_eq!(fut.telemetry.refilled.load(Ordering::Relaxed), 1);
+        // MS05 Task 3.2: the queue task only copies raw→slot; delivered and
+        // non-IP counters are produced by the stack RX path, not the task.
         assert_eq!(fut.telemetry.delivered.load(Ordering::Relaxed), 0);
-        assert_eq!(fut.telemetry.non_ip_consumed.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.telemetry.non_ip_consumed.load(Ordering::Relaxed), 0);
         assert_eq!(fut.telemetry.empty_check.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn telemetry_delivered_increments_delivered_counter() {
+    fn telemetry_rx_copy_increments_reap_and_refill() {
         let (mutex, ..) = leaked_service(vec![RxStep::Delivered, RxStep::Empty], true);
-        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(fut.telemetry.reaped.load(Ordering::Relaxed), 1);
         assert_eq!(fut.telemetry.refilled.load(Ordering::Relaxed), 1);
-        assert_eq!(fut.telemetry.delivered.load(Ordering::Relaxed), 1);
+        // Delivered is a stack-path counter in MS05 (the task does not parse
+        // the frame).
+        assert_eq!(fut.telemetry.delivered.load(Ordering::Relaxed), 0);
         assert_eq!(fut.telemetry.non_ip_consumed.load(Ordering::Relaxed), 0);
     }
 
@@ -1823,10 +2102,12 @@ mod tests {
         let steps: Vec<RxStep> = (0..=RX_BUDGET).map(|_| RxStep::Consumed).collect();
         let (mutex, _, control) = leaked_service(steps, true);
         control.completion_visible.store(true, Ordering::Relaxed);
-        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(fut.telemetry.budget_exhausted.load(Ordering::Relaxed), 1);
+        // The RX stage exhausts its budget once and the round-end backlog
+        // decision records the second exhaustion (Task 3.2 stage budgets).
+        assert_eq!(fut.telemetry.budget_exhausted.load(Ordering::Relaxed), 2);
         assert_eq!(fut.telemetry.self_yield.load(Ordering::Relaxed), 1);
         assert_eq!(
             fut.telemetry.reaped.load(Ordering::Relaxed),
@@ -1835,25 +2116,28 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_router_full_increments_wait_and_space_wake() {
-        // The wait/space handoff shares the production `RX_NOTIFY` with
+    fn telemetry_rx_slot_full_waits_then_service_poll_wakes() {
+        // The wait/space handoff shares the production `QUEUE_EVENT` with
         // `Service::poll` and the space-wake counter is recorded on the
         // production `RX_TELEMETRY` global: serialize against sibling tests.
         let _serial = SERIAL.lock();
-        let (mutex, ..) = leaked_service(vec![RxStep::Consumed], true);
-        {
-            let mut guard = mutex.lock();
-            guard.fill_rx_buffer_for_test();
-        }
-        let (_, mut fut) = leaked_future(mutex, &RX_NOTIFY);
+        let (mutex, .., control) = leaked_service(vec![RxStep::Consumed], true);
+        // Fill the target's fixed RX slots so the copy stage stops on `Full`
+        // instead of reaping.
+        control.rx_slot_full.store(true, Ordering::Relaxed);
+        let (_, mut fut) = leaked_future(mutex, &QUEUE_EVENT);
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(fut.telemetry.rx_slot_full.load(Ordering::Relaxed), 1);
         assert_eq!(fut.telemetry.router_full_wait.load(Ordering::Relaxed), 1);
         assert_eq!(fut.telemetry.space_wake.load(Ordering::Relaxed), 0);
 
         let space_wake_before = RX_TELEMETRY.space_wake.load(Ordering::Relaxed);
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
-        mutex.lock().poll(RxOwnerView::PollingOwned, &mut sockets);
+        // Stack polling drains the RX slots; the released slot space wakes
+        // the waiting queue task.
+        control.rx_slot_full.store(false, Ordering::Relaxed);
+        mutex.lock().poll(RxOwnerView::AsyncOwned, &mut sockets);
         assert_eq!(
             RX_TELEMETRY.space_wake.load(Ordering::Relaxed) - space_wake_before,
             1
@@ -1865,7 +2149,7 @@ mod tests {
     fn telemetry_preflight_failure_records_last_error_without_fault() {
         let (mutex, _, control) = leaked_service(vec![], true);
         control.suppress_error.store(true, Ordering::Relaxed);
-        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -1882,7 +2166,7 @@ mod tests {
     fn telemetry_active_arm_fault_records_fault_and_stage() {
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.arm_error.store(true, Ordering::Relaxed);
-        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -1896,49 +2180,32 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_active_suppress_fault_records_exactly_once() {
-        let (mutex, _, control) = leaked_service(vec![], true);
-        control.suppress_error.store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
-        lifecycle.preflight(true).unwrap();
-        let count = Arc::new(AtomicUsize::new(0));
-
-        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
-        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
-        assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            fut.telemetry.last_error(),
-            (rx_error_stage::SUPPRESS, rx_error_code(&DevError::Io))
-        );
-    }
-
-    #[test]
-    fn telemetry_active_completion_query_fault_records_exactly_once() {
+    fn telemetry_active_arm_fault_records_exactly_once() {
         let steps: Vec<RxStep> = (0..RX_BUDGET).map(|_| RxStep::Consumed).collect();
         let (mutex, _, control) = leaked_service(steps, true);
         control
             .missing_after_first_control_call
             .store(true, Ordering::Relaxed);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         lifecycle.preflight(true).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
 
+        // The control survives the first round-end pending query, then
+        // disappears before the register/arm recheck: the BOTH-direction arm
+        // faults with the ARM stage.
         assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 1);
         assert_eq!(
             fut.telemetry.last_error(),
-            (
-                rx_error_stage::COMPLETION_QUERY,
-                rx_error_code(&DevError::Unsupported),
-            )
+            (rx_error_stage::ARM, rx_error_code(&DevError::Unsupported))
         );
     }
 
     #[test]
     fn telemetry_active_receive_fault_records_exactly_once() {
         let (mutex, ..) = leaked_service(vec![RxStep::Fault(DevError::Io)], true);
-        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         lifecycle.preflight(true).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
 
@@ -1962,7 +2229,7 @@ mod tests {
         let mut fut = RxRxFuture {
             service: ServiceAccess::Global,
             lifecycle,
-            notify: Box::leak(Box::new(RxNotify::new())),
+            notify: Box::leak(Box::new(QueueEvent::new())),
             telemetry,
         };
         let count = Arc::new(AtomicUsize::new(0));
@@ -2032,7 +2299,7 @@ mod tests {
         // transition must fail; the failure is recorded as LIFECYCLE-stage
         // with the observed state code, and never increments the fault counter.
         let (mutex, ..) = leaked_service(vec![], true);
-        let (lifecycle, fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         lifecycle.preflight(true).unwrap();
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
 
@@ -2052,7 +2319,7 @@ mod tests {
         // The fatal transition requires Active; from Spawned it must fail and
         // be recorded as LIFECYCLE-stage without changing the state.
         let (mutex, ..) = leaked_service(vec![], true);
-        let (lifecycle, fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (lifecycle, fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
 
         fut.transition_fatal();
@@ -2071,13 +2338,15 @@ mod tests {
     fn telemetry_snapshot_mirrors_lifecycle_and_counters() {
         let (mutex, _, control) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
         control.completion_visible.store(true, Ordering::Relaxed);
-        let (_lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(RxNotify::new())));
+        let (_lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         let snap = super::rx_snapshot_impl(fut.lifecycle, fut.telemetry);
         assert_eq!(snap.lifecycle, RxTaskLifecycle::Active.code() as u64);
         assert_eq!(snap.owner, 1);
         assert_eq!(snap.reaped, 1);
-        assert_eq!(snap.empty_check, 1);
+        // A visible completion yields (self-wake), not an empty recheck.
+        assert_eq!(snap.empty_check, 0);
+        assert_eq!(snap.self_yield, 1);
     }
 }

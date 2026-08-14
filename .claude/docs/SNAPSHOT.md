@@ -1,8 +1,8 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-12
-> Revision: `8f5b5228747dc817a5a9de7a3461dccdf06e0c24`
+> Updated: 2026-08-14
+> Revision: `5d1a22689ed37d657c0ae39251a2e01980b50ec3`
 > Branch: `net-k3`
 > Worktree: modified
 
@@ -46,7 +46,7 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `8f5b5228747dc817a5a9de7a3461dccdf06e0c24`。
+- 当前 revision 为 `5d1a22689ed37d657c0ae39251a2e01980b50ec3`。
 - 工作树包含尚未提交的修改。
 
 ## 权威入口

@@ -118,6 +118,7 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R43 --> `.claude/analysis/_archive/starryos-network-knowledge-gaps.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 分组；当前 Plan 读取 tasks、R23、R25 和 R41 |
 | <!-- R46 --> `.claude/analysis/starryos-device-specific-irq-waker-architecture.md` | StarryOS 设备专属 IRQ 与任务唤醒分析：UART 全局 hook 冲突、PLIC 设备 handler、设备私有 waker、MS03/MS04 分批边界和 Gate 2 未确认项 |
 | <!-- R47 --> `.claude/analysis/starryos-virtio-mmio-network-benchmark-baseline.md` | MS16 统一网卡基线设计：QEMU/TAP 轮询 B0、跨轮询/异步/真板 workload、C1-C6 完成语义、吞吐/延迟/指令/CPU/复制/IRQ 指标、Evidence Schema、BDD/Gate 和 MS04 A/B 比较资格 |
+| <!-- R53 --> `.claude/analysis/sdmmc-async-driver-external-reference.md` | xianxw/Final-NO-SDMMC 固定 commit 的异步 SDMMC 参考：W1C cause 保留、阶段化超时与终态验证、单请求 DMA fail-stop、同步/异步共用完成谓词，以及 MS07/MS10/MS11/MS13 的迁移边界；不扩张 MS05 |
 
 **已归档**：UART 阶段全部分析文档。完整归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`（48 文件，含 analysis、docs、meta-specs、runbooks、specs）、q17: `openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/`、旧 ARC: `openspec/changes/archive/2026-07-25-arc-202607251326/`。
 

@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 最后更新: 2026-08-12 | 分支: net-k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
+> 任务状态最后同步: 2026-08-14 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
 
 ---
 
@@ -19,8 +19,8 @@
 | <!-- T04 --> T04 | MMIO IRQ 事实 | 解析设备地址、PLIC IRQ、claim/ack/rearm；只增加计数器 | 注入 RX/TX 事件时 IRQ 可重复增长；错误 IRQ 不触碰异步队列 | T03 | ✅ 完成 |
 | <!-- T05 --> T05 | IRQ 唤醒原语 | 建立 `NetQueueControl`、AtomicWaker 和 register-recheck；ISR 不搬包 | event-before-register、register-during-event、spurious IRQ 无 lost wakeup | T04 | ✅ 完成（MS04） |
 | <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ✅ 完成（MS04 核心 Gate；兼容性重复项按用户授权豁免） |
-| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ⏳ 待 MS05 Plan |
-| <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ⏳ 等待 T07 |
+| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | 🔄 MS05 进行中 |
+| <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | 🔄 MS05 进行中 |
 | <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ⏳ 等待 T08 |
 | <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ⏳ 等待 T09 |
 | <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 等待 T10 |
@@ -49,6 +49,7 @@
 - K26：以 packet buffer 和 DMA descriptor 为单位，不复制 UART 字节 ring。
 - M37/M38/D21 只保留为 VF2 平台知识，不应用到未确认的目标板；T13 必须重新取得 bootloader、IRQ 和 clock/reset 事实。
 - M39：跨 hart ordering 按同步角色说明；QEMU 单 hart 不能作为 SMP 证据。
+- R53：W1C/clear-on-read cause 保留只补充 register-recheck，不替代 descriptor/cookie completion ledger；单请求 DMA fail-stop 只作为恢复语义的安全下限，不扩张 MS05。
 - I06 只在 T13-T24 的触发条件满足时评估。
 - I13-I16 未承诺，不得混入 T01-T25。
 
@@ -137,7 +138,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS05：QEMU 有界双向设备数据面
 
-- Status: planned
+- Status: active
 - Outcome: RX/TX 通过有界 packet slot 形成可背压、可回收的双向设备数据面。
 - Rationale: T07 的 TX completion 与 T08 的 slot/backpressure 共同形成完整的设备侧双向基线。
 - Dependencies: MS04
@@ -148,7 +149,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: completion 不等于 peer delivery，flush 不永久 Pending，背压与实际容量一致。
 - Diagnostic boundary: 失败限制在 TX ownership、slot handoff、回收或背压传播。
 - Split signals: RX 与 TX slot 策略出现无法共享的验证或生命周期边界。
-- Related changes: None
+- Related changes: `ms05-qemu-bounded-bidirectional-device-data-plane`（活跃；12/20 tasks；Iteration 004 Act Response 已报告，Plan Review 待完成）。
 
 ### MS06：应用可见的异步网络栈
 
@@ -168,15 +169,15 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 ### MS07：QEMU 单 hart 恢复语义
 
 - Status: planned
-- Outcome: reset、取消、超时和 link flap 下的异步对象生命周期封闭。
-- Rationale: 恢复语义必须在 SMP 放大竞态前先形成可故障注入的稳定基线。
+- Outcome: reset、分层取消、阶段化超时和 link flap 下的异步对象生命周期封闭，迟到 completion 不跨 owner epoch 生效。
+- Rationale: 恢复语义必须在 SMP 放大竞态前先形成可故障注入的稳定基线；R53 的单请求 DMA fail-stop 只提供无法安全收敛时的下限，不替代 NIC 多 packet ownership 设计。
 - Dependencies: MS06
-- Scope: T11；generation、stale completion、cancel、timeout、link flap 和 queue stall。
-- Non-goals: 跨 hart 同步、真板 reset 和性能优化。
-- Workload: 生命周期状态机、错误传播、故障注入和资源回收。
-- Stable baseline: reset 前后对象不混用，等待者得到稳定完成或错误。
-- Verification boundary: 无 UAF、重复回收、永久 Pending 或静默丢包。
-- Diagnostic boundary: 失败限制在 generation、completion、取消或 reset 状态转换。
+- Scope: T11；区分 waiter cancellation、pre-submit 撤销和 device-owned quiesce；generation 绑定 reset epoch 与 descriptor/cookie owner ledger；submit、completion、reclaim、quiesce、reset 分阶段 timeout；link flap 和 queue stall。
+- Non-goals: 跨 hart 同步、真板 DMA 停止证明、自动 polling fallback 和性能优化。
+- Workload: 生命周期状态机、epoch/owner ledger、阶段化 deadline 与错误传播、quiesce/reset fail-stop、故障注入和资源保留/回收。
+- Stable baseline: reset 前后对象不混用；取消等待不改变 packet ownership；无法安全 quiesce 时保持 faulted owner、拒绝新提交且不提前释放 backing。
+- Verification boundary: 在 waiter、pre-submit、device-owned、各 timeout stage 和 reset failure 注入下，无 UAF、重复回收、永久 Pending、静默丢包或 stale completion 误归属；结论限定于单 hart QEMU/VirtIO 模型。
+- Diagnostic boundary: 失败限制在取消层级、epoch/descriptor/cookie 归属、具体 timeout stage、quiesce 或 reset 状态转换。
 - Split signals: link 管理与设备 reset 形成两个可独立验收且可独立延期的控制面成果。
 - Related changes: None
 
@@ -213,15 +214,15 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 ### MS10：目标板可诊断设备中断基线
 
 - Status: planned
-- Outcome: 目标 MAC 中断经板级中断控制器 claim/dispatch、handler、device status 和 EOI 可重复投递。
+- Outcome: 目标 MAC 中断经板级中断控制器 claim/dispatch、handler、device status 和 EOI 可重复投递；破坏性 cause 在 ack 前可保留和审计。
 - Rationale: 真板中断控制器和设备触发模式是独立高风险故障域，不能由 QEMU 证据替代。
 - Dependencies: MS09
-- Scope: T16；目标 MAC IRQ 路由、CPU/hart 初始化、cause、ack 和 EOI。
+- Scope: T16；目标 MAC IRQ 路由、CPU/hart 初始化、cause、ack 和 EOI；当目标寄存器事实证明 cause 为 W1C/clear-on-read 时，在 ack 前保存并按本次 IRQ 累积 cause。
 - Non-goals: DMA 收发、异步 queue task 和多 hart 流量。
-- Workload: 板级中断路由、设备中断状态、重复触发和风暴诊断。
-- Stable baseline: IRQ claim 与设备 status 对齐，EOI 后可再次触发。
-- Verification boundary: 无中断风暴，CPU/hart 初始化和目标触发模式可区分。
-- Diagnostic boundary: 失败限制在板级中断控制器、设备触发模式或 ack/EOI 顺序。
+- Workload: 板级中断路由、寄存器 cause 语义、ack 前状态保留、组合/重复触发和风暴诊断。
+- Stable baseline: IRQ claim 与设备 status 对齐；破坏性 cause 在清除后仍可追溯；EOI 后可再次触发。
+- Verification boundary: 组合 cause 不因 ack 丢失，无中断风暴，CPU/hart 初始化和目标触发模式可区分；cause snapshot 不作为 descriptor completion 结论。
+- Diagnostic boundary: 失败限制在板级中断控制器、cause 寄存器语义、设备触发模式或 snapshot/ack/EOI 顺序。
 - Split signals: 目标控制器暴露多个必须独立验收的中断路径。
 - Related changes: None
 
@@ -231,12 +232,12 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Outcome: 在明确 DMA/cache ownership 的前提下完成目标控制器轮询 RX/TX 和协议包收发。
 - Rationale: T17 只有通过 T18-T19 的 descriptor 移动和真实包才能验证其 DMA/cache 契约。
 - Dependencies: MS10
-- Scope: T17-T19；DMA 地址转换、cache/barrier、descriptor/queue ownership、最小 RX/TX 和抓包。
+- Scope: T17-T19；DMA 地址转换、cache/barrier、descriptor/queue ownership、最小 RX/TX、抓包，以及 submit/doorbell、DMA terminal、reclaim 的分阶段诊断。
 - Non-goals: 异步 wake、reset、SMP、offload 和零拷贝优化。
-- Workload: DMA 抽象、目标硬件队列、轮询收发、错误路径和协议验证；DWMAC 代码仅在控制器兼容时进入审计和移植候选。
-- Stable baseline: CPU 与设备观察同一硬件队列状态，ARP/ICMP/UDP/TCP 与抓包一致。
-- Verification boundary: RX/TX 回收不重复，坏帧、ring full 和 timeout 有明确结果。
-- Diagnostic boundary: 失败限制在 DMA 地址、cache/barrier、目标硬件队列或轮询数据面。
+- Workload: DMA 抽象、目标硬件队列、轮询收发、阶段化 timeout、controller/descriptor/buffer 终态验证、错误路径和协议验证；DWMAC 代码仅在控制器兼容时进入审计和移植候选。
+- Stable baseline: CPU 与设备观察同一硬件队列状态；完成判定同时闭合 controller、descriptor 和 buffer ownership；ARP/ICMP/UDP/TCP 与抓包一致。
+- Verification boundary: RX/TX 回收不重复，坏帧、ring full 和 timeout 均标明失败阶段与 owner；不照搬 SDMMC timeout 数值或阶段。
+- Diagnostic boundary: 失败限制在 DMA 地址、cache/barrier、目标硬件队列、具体 submit/terminal/reclaim stage 或轮询数据面。
 - Split signals: RX 或 TX 暴露独立硬件阻塞，且另一方向已形成可复用稳定基线。
 - Related changes: None
 
@@ -258,15 +259,15 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 ### MS13：目标板单 CPU/hart 恢复语义
 
 - Status: planned
-- Outcome: 真板 link flap 和设备 reset 下保持 generation 与资源回收正确。
-- Rationale: 先将 QEMU 恢复契约迁移到真板，再引入多 hart 和长稳压力。
+- Outcome: 真板 link flap 和设备 reset 下保持 epoch、DMA quiesce 与资源回收正确；无法确认 DMA 停止时不释放 backing。
+- Rationale: 先将 QEMU 恢复契约迁移到真板并取得物理 DMA/cache 证据，再引入多 hart 和长稳压力。
 - Dependencies: MS12
-- Scope: T22；link flap、设备 reset、stale completion 和等待者错误传播。
+- Scope: T22；link flap、设备 reset、stale completion、等待者错误传播、bus mastering/DMA 停止证明，以及 reset failure 下的 backing retention。
 - Non-goals: 多 hart、长时间 soak 和性能优化。
-- Workload: 真板故障注入、设备控制面、DMA quiesce 和生命周期证据。
-- Stable baseline: reset 前后对象不混用，设备和软件 ownership 可重新建立。
-- Verification boundary: 无重复回收、永久 Pending、静默丢包或 reset 后 DMA 越界。
-- Diagnostic boundary: 失败限制在真板 reset、DMA quiesce、generation 或 link 状态。
+- Workload: 真板故障注入、设备控制面、DMA quiesce/stop 见证、reset epoch、stale completion 丢弃、backing 保留和生命周期证据。
+- Stable baseline: reset 前后对象不混用；确认 DMA 停止后才释放或复用资源；无法确认时保持 faulted owner、保留 backing 并拒绝新提交。
+- Verification boundary: 真板 fault injection 下无重复回收、永久 Pending、静默丢包、stale completion 误归属或 reset 后 DMA 越界；单纯寄存器读回和 QEMU reset 不计 DMA 停止证明。
+- Diagnostic boundary: 失败限制在真板 link 状态、reset epoch、DMA quiesce/stop、backing retention 或 owner 重建。
 - Split signals: link 恢复与完整设备 reset 出现不可共享的生命周期和验证边界。
 - Related changes: None
 
@@ -316,4 +317,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前无活跃 change。MS01-MS04 与 MS16 已归档；下一里程碑为 MS05，尚未建立获批 change。
+当前唯一活跃 change 为 `ms05-qemu-bounded-bidirectional-device-data-plane`，对应 MS05，已完成 12/20 tasks。当前 Iteration 004 的 Act Response 已报告，Plan Review 待完成；本轮 Persisted Evidence 模式为 `none`。剩余任务为 4.1-4.3、5.1-5.2 与 6.1-6.3，下一步应先完成 Iteration 004 Review，再决定后续 iteration，不得提前归档或声明 MS05 完成。

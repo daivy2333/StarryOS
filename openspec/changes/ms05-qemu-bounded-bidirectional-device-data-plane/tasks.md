@@ -35,15 +35,21 @@
 
 - [x] 2.3 在 `crates/axnet/src/device/ethernet.rs` 重写 Ethernet frame 生成、ARP request/reply 和 pending flush，使 polling fallback 使用同一 typed outcome，dormant slot mode 可在 host tests 中启用，但产品 activation 留给 Task 3.1。WHY 是当前所有 alloc/transmit/ARP Full 都是 warning-only，pending packet 还会在 send 失败后 dequeue；而当前 MS04 `RX_LIFECYCLE::Active` 只代表 RX owner，若据此提前切 TX slots，尚无 TX queue service 消费，会造成停发。HOW 是先写 unknown-neighbor 双资源 preflight、ARP-request TX Full 保留 RX frame、ARP-reply TX Full 不更新 neighbor或消费 RX、pending head Full、expired neighbor retry、oversize/drop、fatal、dormant mode 与 polling fallback parity 的 RED tests，再按 D3 每次最多提交一个派生 L2 frame并只在 Accepted 后更新/dequeue；EXPECTED 是 ARP pending 容量耗尽为可恢复 Full，reply/pending 不重复，默认产品路径继续同步发送，slot mode 本轮只由 host test seam 启用且不直接碰 descriptor。运行 axnet full lib tests；若一次 ARP 处理必须部分提交多个 frame且无可持久化进度、test seam进入产品 API，或同步 fallback 与未来双向 owner无法明确区分，停止返回 Plan。
 
-- [ ] 2.4 关闭 Iteration 003 Review 的 bounded handoff 与 invariant-fault 缺口，并把修复作为双向 activation 的前置条件。WHY 是当前 `Router::dispatch` 为每个 packet 分配 packet/target `Vec`，dormant frame emission 与 ARP pending flush 也按 packet 分配；Ready 后 commit 漂移会进入 stable fault 却保留可能已部分交付的 Router 队首；Ethernet 以 1514-byte L2 上界检查 L3 payload，导致 1501..1514-byte payload 在 commit 才漂移；dormant seam 只切 TX，未见证 BDD 要求的 RX-slot ARP Full 保留，且 `Some(None)` 仍错误要求硬件 TX capacity。HOW 是先加 allocation counter/source RED、两目标 fanout 首目标 Accepted 后次目标漂移、1500/1501 L3 boundary、dormant RX ARP request retry、已请求 neighbor pending-only preflight 和 fresh rustfmt RED，再通过借用分离或固定控制 metadata 消除 packet/target/flush 临时分配，按 D3 在 commit drift 时移除 Router 队首并保留 stable fault，为 RX/TX slot 提供 queue service 所需的 frame/ticket peek→commit seam，修正 MTU 与 pending-only preflight。EXPECTED 是初始化后 Router/slot/ARP handoff 不按 packet 分配，fault 后不存在 Router/device 双重所有权，1501-byte IPv4 payload稳定 `Dropped(FrameTooLarge)`，dormant RX Full 保留原 frame且 retry 只提交一次，所有本轮 Rust 文件通过 rustfmt；不得以预分配但可扩容的 `Vec`、重试部分 fanout、消费 Full RX frame或测试专用产品 API 绕过。运行 axnet device/router/full tests、allocation/source guards、rustfmt、driver regressions、kernel QEMU check、strict validation 和 diff check；若无分配 Router fanout 需要动态目标集合、commit drift 无法在不增加持久化 delivery bitmap 的条件下恢复唯一所有权，或 RX slot 无法与 Task 3.2 copier共用同一 commit seam，停止返回 Plan。
+- [x] 2.4 关闭 Iteration 003 Review 的 bounded handoff 与 invariant-fault 缺口，并把修复作为双向 activation 的前置条件。WHY 是当前 `Router::dispatch` 为每个 packet 分配 packet/target `Vec`，dormant frame emission 与 ARP pending flush 也按 packet 分配；Ready 后 commit 漂移会进入 stable fault 却保留可能已部分交付的 Router 队首；Ethernet 以 1514-byte L2 上界检查 L3 payload，导致 1501..1514-byte payload 在 commit 才漂移；dormant seam 只切 TX，未见证 BDD 要求的 RX-slot ARP Full 保留，且 `Some(None)` 仍错误要求硬件 TX capacity。HOW 是先加 allocation counter/source RED、两目标 fanout 首目标 Accepted 后次目标漂移、1500/1501 L3 boundary、dormant RX ARP request retry、已请求 neighbor pending-only preflight 和 fresh rustfmt RED，再通过借用分离或固定控制 metadata 消除 packet/target/flush 临时分配，按 D3 在 commit drift 时移除 Router 队首并保留 stable fault，为 RX/TX slot 提供 queue service 所需的 frame/ticket peek→commit seam，修正 MTU 与 pending-only preflight。EXPECTED 是初始化后 Router/slot/ARP handoff 不按 packet 分配，fault 后不存在 Router/device 双重所有权，1501-byte IPv4 payload稳定 `Dropped(FrameTooLarge)`，dormant RX Full 保留原 frame且 retry 只提交一次，所有本轮 Rust 文件通过 rustfmt；不得以预分配但可扩容的 `Vec`、重试部分 fanout、消费 Full RX frame或测试专用产品 API 绕过。运行 axnet device/router/full tests、allocation/source guards、rustfmt、driver regressions、kernel QEMU check、strict validation 和 diff check；若无分配 Router fanout 需要动态目标集合、commit drift 无法在不增加持久化 delivery bitmap 的条件下恢复唯一所有权，或 RX slot 无法与 Task 3.2 copier共用同一 commit seam，停止返回 Plan。
 
 ## 3. Bidirectional Queue Service and Ownership Cutover
 
-- [ ] 3.1 在 `crates/axnet/src/async_rx.rs`、`service.rs` 和 `lib.rs` 将 RX-only lifecycle/notify 演进为双向 data-plane lifecycle 与一个 generation、queue-owner/stack-progress 两个 waker role 的通用 event。WHY 是共享 IRQ、slot producer/consumer 和 socket caller 都需要一致 ordering，但不能互相覆盖 waker；HOW 是保留 V2 lifecycle 数值，先扩展 deterministic interleaving RED tests覆盖 event-before-register、during-register、另一方向 arm 后到达、slot full→space、generation wrap、spurious 和 duplicate start，再实施全有或全无 `Polling→Spawned→Active` preflight；EXPECTED 是 Active/Faulted 都保持双向 AsyncOwned，Unavailable 只发生在切换前，waker 不覆盖且无工作只产生一次 bounded check。运行 axnet async/service tests、100×并发竞态重复和 UART AtomicWaker tests；若 owner 切换需要公开半激活状态、第二 NIC handle 或 guard 跨 await，停止返回 Plan。
+- [x] 3.1 在 `crates/axnet/src/async_rx.rs`、`service.rs` 和 `lib.rs` 将 RX-only lifecycle/notify 演进为双向 data-plane lifecycle 与一个 generation、queue-owner/stack-progress 两个 waker role 的通用 event。WHY 是共享 IRQ、slot producer/consumer 和 socket caller 都需要一致 ordering，但不能互相覆盖 waker；HOW 是保留 V2 lifecycle 数值，先扩展 deterministic interleaving RED tests覆盖 event-before-register、during-register、另一方向 arm 后到达、slot full→space、generation wrap、spurious 和 duplicate start，再实施全有或全无 `Polling→Spawned→Active` preflight；EXPECTED 是 Active/Faulted 都保持双向 AsyncOwned，Unavailable 只发生在切换前，waker 不覆盖且无工作只产生一次 bounded check。运行 axnet async/service tests、100×并发竞态重复和 UART AtomicWaker tests；若 owner 切换需要公开半激活状态、第二 NIC handle 或 guard 跨 await，停止返回 Plan。
 
-- [ ] 3.2 在 `crates/axnet/src/service.rs`、`router.rs`、`device/ethernet.rs` 和 evolved queue future 中实现每轮 reclaim 32→RX 32→submit 32 的双向 service。WHY 是 queue task 必须成为 raw driver 与 slots 间唯一 copier，同时保证持续双向负载公平；HOW 是以 fake driver/slots 为 RED 模型，分别覆盖各阶段 31/32/33、earlier-stage exhausted 仍运行 later stage、TX Again 保留 slot、RX Full 不 reap、recycle/submit/reclaim fatal、bidirectional multi-round growth 和 no-work nudge，再让每阶段独立计数并在任一 backlog 后 self-wake/yield；EXPECTED 是 raw descriptor/token/`NetBufPtr` 不跨 `Pending`，RX frame 同轮 refill，TX 成功 submit 后才 dequeue，三方向都有稳定进度。运行 axnet full tests 和 driver integration checks；若一次 poll 无法给后续阶段预算、任何 raw owner 在返回 Pending 时不唯一或只能依赖 10ms fallback，停止返回 Plan。
+- [x] 3.2 在 `crates/axnet/src/service.rs`、`router.rs`、`device/ethernet.rs` 和 evolved queue future 中实现每轮 reclaim 32→RX 32→submit 32 的双向 service。WHY 是 queue task 必须成为 raw driver 与 slots 间唯一 copier，同时保证持续双向负载公平；HOW 是以 fake driver/slots 为 RED 模型，分别覆盖各阶段 31/32/33、earlier-stage exhausted 仍运行 later stage、TX Again 保留 slot、RX Full 不 reap、recycle/submit/reclaim fatal、bidirectional multi-round growth 和 no-work nudge，再让每阶段独立计数并在任一 backlog 后 self-wake/yield；EXPECTED 是 raw descriptor/token/`NetBufPtr` 不跨 `Pending`，RX frame 同轮 refill，TX 成功 submit 后才 dequeue，三方向都有稳定进度。运行 axnet full tests 和 driver integration checks；若一次 poll 无法给后续阶段预算、任何 raw owner 在返回 Pending 时不唯一或只能依赖 10ms fallback，停止返回 Plan。
 
-- [ ] 3.3 在 `kernel/src/drivers/virtio_net_irq.rs`、`virtio_net_irq_logic.rs`、axnet exports 与结构化 host harness 中把 used-ring ISR publish 改为通用 queue event，并将 Active NIC 的 socket waker 注册接到 stack-progress role。WHY 是 ISR 不能判断 RX/TX，也不能让 socket future 覆盖 queue task waker；HOW 是先用 source/logic RED tests约束 ISR 只做 cause/ack/snapshot/counter/wake、不取 `Service` 锁或 descriptor，再保持 config/unknown/zero cause 规则并增加 RX-slot-ready、TX-slot-space、fatal 对 stack caller 的 progress hint；EXPECTED 是 queue task 由通用 event 唤醒，smoltcp 仍决定真实 readiness，MS03 cause/ACK/PLIC 与 MS04 critical-section guards 全部 GREEN。运行 `make host-test` 的可执行部分、kernel QEMU check、UART tests和 axnet tests；若 ISR 必须读取 queue state、stack hint 被当作精确 fd readiness 或旧 V1/V2 字段发生变化，停止返回 Plan。
+- [x] 3.3 在 `kernel/src/drivers/virtio_net_irq.rs`、`virtio_net_irq_logic.rs`、axnet exports 与结构化 host harness 中把 used-ring ISR publish 改为通用 queue event，并将 Active NIC 的 socket waker 注册接到 stack-progress role。WHY 是 ISR 不能判断 RX/TX，也不能让 socket future 覆盖 queue task waker；HOW 是先用 source/logic RED tests约束 ISR 只做 cause/ack/snapshot/counter/wake、不取 `Service` 锁或 descriptor，再保持 config/unknown/zero cause 规则并增加 RX-slot-ready、TX-slot-space、fatal 对 stack caller 的 progress hint；EXPECTED 是 queue task 由通用 event 唤醒，smoltcp 仍决定真实 readiness，MS03 cause/ACK/PLIC 与 MS04 critical-section guards 全部 GREEN。运行 `make host-test` 的可执行部分、kernel QEMU check、UART tests和 axnet tests；若 ISR 必须读取 queue state、stack hint 被当作精确 fd readiness 或旧 V1/V2 字段发生变化，停止返回 Plan。
+
+- [ ] 3.4 关闭 Iteration 004 Review 发现的 slot-mode raw-owner 与 ticket ledger 缺口。WHY 是 `EthernetDevice::preflight_ready_tx()` 在 `DormantSlots` 中仍调用 legacy `recycle_tx_buffers()`/`can_transmit()`，stack 会越过 slots 触碰 queue-owned TX completion；`tx_reclaim_one()` 又忽略 live ticket 删除失败，无法把 unknown/duplicate cookie 升级为 ownership fault。HOW 是先用真实 Device/adapter RED tests证明 Active stack preflight 不调用任何 raw TX/recycle/capacity 入口、polling preflight 行为不变、slot/ticket capacity 精确决定 Ready/Full、未知或重复 reclaim cookie 保留 fault owner并返回稳定 `BadState`，再按 mode 分离 preflight 并验证每个 reclaimed cookie 恰好删除一个 live ticket；EXPECTED 是 Active 后 raw RX/TX 只由 queue task访问，stack 只读写 frame slots，driver cookie 与 live ticket 一一对应，任何 mismatch 不被计作成功 reclaim。运行 axnet device/service/full tests、axdriver_net、axdriver_virtio、virtio-drivers和 source owner guards；若 slot-mode preflight 必须回收 raw completion、或 driver 已返回 cookie却无法证明其 ticket 唯一归属，停止返回 Plan，不得以 legacy recycle、忽略 `release(false)` 或 warning 继续。
+
+- [ ] 3.5 关闭 Iteration 004 Review 发现的 queue event、等待与三阶段调度活性缺口。WHY 是 stack enqueue TX 后没有 queue-owner event，software nudge 不推进 generation，fatal 不唤醒 stack-progress；`TxSubmitStep::Full` 和 pending TX slot 当前无条件 self-wake，会在 descriptor/buffer 尚未释放时 busy loop，而 RX slot Full 又优先覆盖仍可推进的 TX backlog；旧 Router-space `OR` 还会在 RX slot 仍满时伪造 space wake。HOW 是先写 stack enqueue-before/after-register、nudge-before-register、fatal 两角色、TX Again 无 completion 睡眠、completion/event 后恢复、RX Full+TX 33 持续推进、每阶段 exhaustion 精确一次、真正 RX-slot full→space 单次唤醒的 deterministic RED tests，再让每个软件事件在状态 commit 后以 Release 推进共享 generation并只唤醒所需 role，区分“预算后仍可推进”与“资源 Full 等外部 completion”，在 Pending 前重查 completion、RX capacity、TX backlog与 generation；EXPECTED 是新 TX slot 不丢唤醒，Again 不 busy loop，RX Full 不饿死 TX，fatal 唤醒 stack waiter，spurious/nudge 无工作只做一个有界检查，budget/self-yield telemetry 与实际边界一致。重复 async/service 竞态 tests 100×并运行 UART AtomicWaker、host harness和 kernel QEMU check；若等待正确性需要 10 ms raw polling fallback、一个 waker 同时承担两个 role、或任何 guard 跨 `Pending`，停止返回 Plan。
+
+- [ ] 3.6 关闭 Iteration 004 Review 发现的 dormant RX transaction 与测试见证缺口。WHY 是 `recv_dormant()` 在 ARP reply 因 TX slot Full 而保留 RX head 时仍返回 `RxStep::Consumed`，`Router::poll()` 会在同一 while 循环立即读取同一 frame，形成无界重试并长期持有 `Service` guard；现有测试只直接调用两次 `Device::recv()`，没有经过真实 Router/Service 循环。HOW 是先加 Service/Router RED test，令一个满 TX slot 下的 ARP request 经 `poll()` 只尝试一次、保留精确 RX bytes、立即结束本轮且不增长 consumed/delivered，释放一个 TX slot并发布事件后第二轮只提交一次 reply并弹出 RX head；再为 Device→Router 返回语义增加明确的 deferred/blocked 边界或等价有界表达，并清理本轮新增的 unused import/dead test fixture/`drop(&ref)` warning。EXPECTED 是任何 deferred RX obligation 都不会在同一 poll busy loop，retry 只由容量变化触发，polling raw path原有 recycle语义不变，fresh axnet test输出只保留已知 change 外 warning。运行 axnet device/router/service/full tests、allocation guards、rustfmt和 diff check；若不增加持久化 partial-delivery状态就无法区分 Consumed 与 retained head，停止返回 Plan，不得用循环计数上限掩盖重复处理。
 
 ## 4. Ticketed Flush, V3 Telemetry, and Deterministic Controls
 
@@ -57,11 +63,11 @@
 
 - [ ] 5.1 在 `tests/ms05_data_plane_probe.c`、host decision harness、`scripts/ms05_data_plane_stimulus.py` 和 Makefile probe target 中实现 snapshot、TX-only、bidirectional、slot-full、descriptor-full、flush 与 bounded network protocol。WHY 是 R6/R14 要求 change-local、非歧义、可确定复现的 runtime witness；HOW 是先用 C decision mutations 和 Python self-tests构造缺 PRE、伪 Full、账本不闭合、deadline/equal boundary、重复 marker、错误 exit、malformed control 等 RED，再实现每个 mode 唯一 `MS05 PASS|FAIL mode=...`、固定 deadline、PRE/HELD/FULL/RELEASED/POST 和 host sequence validation；EXPECTED 是 probe 不能用普通 throughput 代替 Full，不能重置 counter，MS04 V2 probe/stimulus 原样回归。运行 strict C syntax、host harness、script self-tests和 static RISC-V payload build；任何 source/parser/mutation failure 都是产品 Gate，不能交给 QEMU。
 
-- [ ] 5.2 依次运行全部 driver/virtio/axnet/100×竞态/UART/host/probe tests、QEMU 与 D1 checks/build、fmt/source assertions、strict OpenSpec、specs-vs-code 和 full diff review，并在 `evidence/005-automatic-product-gates/` 保存环境、命令、原始输出、退出码、artifact size/hash、review 与 `ENV-BLOCKED` 清单。WHY 是手工 QEMU 前必须关闭所有自动产品和 ownership Gate；HOW 是只把原始日志明确定位的只读路径、禁网、`EPERM`、`SIGSYS` 或用户终端能力记为 `ENV-BLOCKED`，其余任一 compile/link/assert/source/validation/diff 失败立即停止；EXPECTED 是无 Missing、无未批准 Simplified、无未决设计项，Critical/Important finding 为零，fresh QEMU image与四组 guest payload 可追溯。不得清洗 raw log制造 whitespace PASS，也不得用历史 MS04 artifact替代当前产物。
+- [ ] 5.2 依次运行全部 driver/virtio/axnet/100×竞态/UART/host/probe tests、QEMU 与 D1 checks/build、fmt/source assertions、strict OpenSpec、specs-vs-code 和 full diff review，并在 `evidence/007-probe-and-automatic-product-gates/` 保存环境、命令、原始输出、退出码、artifact size/hash、review 与 `ENV-BLOCKED` 清单。WHY 是手工 QEMU 前必须关闭所有自动产品和 ownership Gate；HOW 是只把原始日志明确定位的只读路径、禁网、`EPERM`、`SIGSYS` 或用户终端能力记为 `ENV-BLOCKED`，其余任一 compile/link/assert/source/validation/diff 失败立即停止；EXPECTED 是无 Missing、无未批准 Simplified、无未决设计项，Critical/Important finding 为零，fresh QEMU image与四组 guest payload 可追溯。不得清洗 raw log制造 whitespace PASS，也不得用历史 MS04 artifact替代当前产物。
 
 ## 6. Independent Manual QEMU Runtime and Closeout
 
-- [ ] 6.1 仅在任务 5.2 全部产品 Gate 通过后，由用户在 R44 允许的普通终端中复跑 `evidence/005-automatic-product-gates/` 列出的原始 `ENV-BLOCKED` 命令，并把完整首次/最终输出、exit、环境差异、payload/image size 与 SHA-256 保存到 `evidence/006-manual-qemu-runtime/`。WHY 是当前 sandbox 已确认 `make host-test` UDP socket 创建 `EPERM`，但环境豁免不能掩盖产品失败；HOW 是逐项使用同一命令，不扩大权限后改用不同测试；EXPECTED 是所有项最终 PASS 或任务保持未完成，任何 Rust/C/link/assert 诊断都返回对应产品任务，不进入 QEMU。
+- [ ] 6.1 仅在任务 5.2 全部产品 Gate 通过后，由用户在 R44 允许的普通终端中复跑 `evidence/007-probe-and-automatic-product-gates/` 列出的原始 `ENV-BLOCKED` 命令，并把完整首次/最终输出、exit、环境差异、payload/image size 与 SHA-256 保存到 `evidence/008-independent-manual-qemu-runtime-and-closeout/`。WHY 是当前 sandbox 已确认 `make host-test` UDP socket 创建 `EPERM`，但环境豁免不能掩盖产品失败；HOW 是逐项使用同一命令，不扩大权限后改用不同测试；EXPECTED 是所有项最终 PASS 或任务保持未完成，任何 Rust/C/link/assert 诊断都返回对应产品任务，不进入 QEMU。
 
 - [ ] 6.2 用户按 R44 在单 hart、单 VirtIO-MMIO NIC QEMU 中运行 MS05 TX-only、bidirectional、slot Full→recovery、descriptor Full→recovery、flush C4、ARP、ICMP、UDP、TCP 5555、nonblocking 和 poll，并按 R51 重跑 MS04 snapshot/idle/nudge/burst；保存完整 serial、probe、host stimulus、commands、environment、exit、marker、revision 与 artifact hashes。WHY 是 model tests不能证明真实 VirtIO device-model IRQ/descriptor progression；HOW 是每个 mode 使用任务 5.1 的 fixed deadline和唯一 marker，检查 slot/ticket/buffer/descriptor账本、三个 budget/yield、fault/restore/IRQ-entry 为零，并保留 MS04 历史 waiver；EXPECTED 是所有本 change 必需 mode 分项 PASS，缺日志、中断、超时、partial telemetry 或单协议成功都不能提升为 PASS。结论必须限定于当前 QEMU 软件/设备模型，不外推 SMP、DWMAC、真板或性能。
 
@@ -114,28 +120,37 @@
 - Diagnostic boundary: 先定位 bounded handoff/Router fault/dormant RX closure，再定位 lifecycle/event、bounded service、ISR/stack progress wiring；不混入 flush ABI或 QEMU diagnostic控制。
 - Non-goals: 不声明 fd readiness、不运行 QEMU、不实现 reset/SMP。
 
-### Iteration 005: Ticketed Flush and V3 Diagnostics
+### Iteration 005: Bidirectional Cutover Correctness Closure
+
+- Tasks: 3.4, 3.5, 3.6
+- Depends on: Iteration 004
+- Stable baseline: Active stack 不触碰 raw queue，cookie/ticket ledger 对 mismatch fail-stop；TX slot、software nudge、fatal 与 slot-space 事件关闭 lost-wakeup，Again 等待不 busy loop；deferred ARP RX transaction 每轮至多尝试一次且按容量事件恢复。
+- Verification boundary: 真实 Device/Service/Router owner tests、deferred ARP 集成见证、31/32/33+Full 调度矩阵、两角色 event interleavings、100×竞态、driver regressions、UART/host harness、kernel QEMU check、rustfmt、strict validation和diff review全部通过；`make host-test` 的 UDP socket若仍被 sandbox以`EPERM`拒绝，只能按R44记录，不得写PASS。
+- Diagnostic boundary: 先定位 stack/raw owner与ticket ledger，再定位event generation/wake target和round-end调度，最后定位deferred RX transaction；不混入flush waiter、V3 ABI或QEMU control。
+- Non-goals: 不实现Tasks 4.1-4.3，不运行手工QEMU，不改变V1/V2 ABI、socket readiness、reset/SMP或真板路径。
+
+### Iteration 006: Ticketed Flush and V3 Diagnostics
 
 - Tasks: 4.1, 4.2, 4.3
-- Depends on: Iteration 004
+- Depends on: Iteration 005
 - Stable baseline: 乱序安全的 target C4 flush、V1/V2-compatible V3账本和 QEMU-only bounded pressure controls在 model/build Gate中闭合。
 - Verification boundary: flush/cancel/fatal tests、Rust/C ABI canary、lease controls、QEMU与D1 checks/build、MS04 V2 consumer回归全部退出 0。
 - Diagnostic boundary: 失败定位在 ticket tracker、waiter、snapshot映射或 test-control feature boundary；不涉及 guest/host runtime orchestration。
 - Non-goals: 不采集 runtime PASS，不推广 controls到真板。
 
-### Iteration 006: Probe and Automatic Product Gates
+### Iteration 007: Probe and Automatic Product Gates
 
 - Tasks: 5.1, 5.2
-- Depends on: Iteration 005
+- Depends on: Iteration 006
 - Stable baseline: 所有自动产品 Gate、probe parser/decision、fresh artifacts与 full diff review完成，手工边界只剩明确 `ENV-BLOCKED` 和 QEMU runtime。
 - Verification boundary: task 5.2 明列的全套命令全部 PASS或只有R44原始日志支持的环境阻塞；required Evidence完整、Critical/Important为零。
 - Diagnostic boundary: probe/harness失败与产品 test/build/review失败分别记录；任何无法归类的非零结果按产品失败处理并停止。
 - Non-goals: 不手工操作 QEMU console，不用历史日志补证。
 
-### Iteration 007: Independent Manual QEMU Runtime and Closeout Review
+### Iteration 008: Independent Manual QEMU Runtime and Closeout Review
 
 - Tasks: 6.1, 6.2, 6.3
-- Depends on: Iteration 006
+- Depends on: Iteration 007
 - Stable baseline: 当前产物的环境阻塞复跑、MS05全部runtime modes、R51回归、网络功能与最终 provenance/review形成 change-local证据。
 - Verification boundary: 所有 required marker、账本、raw logs、exit、hash、revision和最终review满足R6/R14；历史waiver保持原状态。
 - Diagnostic boundary: 环境复跑、每个QEMU mode、协议回归和最终Evidence审计分项判定，partial结果不能互相替代。
@@ -150,9 +165,10 @@
 | 002 | 无生产态测试后门的 TX 错误路径闭合 | real-adapter completion-fault tests | fixture/API/reclaim ledger | Balanced |
 | 003 | 不启用新 owner 的完整 stack handoff | axnet model/full tests | heap slot/Router/Ethernet/ARP/mode | Balanced |
 | 004 | 关闭 handoff 缺口后建立唯一双向 owner 与有界 copier | allocation/ownership + race/ISR/UART/kernel checks | handoff closure/lifecycle/event/service wiring | Balanced（用户批准合并修复；以 2.4 作为 activation 前置 Gate） |
-| 005 | flush、ABI 与确定性控制 | model/ABI/multi-platform build | tracker/snapshot/control | Balanced |
-| 006 | 可交给用户的 fresh runtime package | automatic full Gate+Evidence | probe/product/review | Balanced |
-| 007 | 独立 QEMU 运行与最终审计 | per-mode raw Evidence | environment/runtime/provenance | Balanced |
+| 005 | 恢复双向 cutover 的 owner、wake、liveness 与 deferred transaction 契约 | Device/Service/Router integration + event/race/driver/kernel checks | owner/ledger → event/scheduler → deferred RX | Balanced（Review修复是flush/V3前置，三个发现共享Active数据面安全与活性边界） |
+| 006 | flush、ABI 与确定性控制 | model/ABI/multi-platform build | tracker/snapshot/control | Balanced |
+| 007 | 可交给用户的 fresh runtime package | automatic full Gate+Evidence | probe/product/review | Balanced；required Evidence 路径与 iteration 007 同名 |
+| 008 | 独立 QEMU 运行与最终审计 | per-mode raw Evidence | environment/runtime/provenance | Balanced；required Evidence 路径与 iteration 008 同名 |
 
 所有任务只属于一个 iteration，依赖只指向同轮或更早轮次。首轮没有承载 axnet、kernel
 runtime 或 Evidence 工作；后续每轮都有前一轮可复用的稳定接口和独立停止边界。

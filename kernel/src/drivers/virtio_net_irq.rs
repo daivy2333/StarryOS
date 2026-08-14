@@ -3,17 +3,19 @@
 //! Initializes an IRQ 7 device handler for a single VirtIO-net MMIO
 //! device.  The handler only reads the raw interrupt status, classifies
 //! the cause, writes the MMIO ACK register for known bits, updates
-//! pure-logic telemetry counters, and — for used-ring causes — publishes an
-//! RX event through the fixed `axnet` entry.  It never touches descriptors,
-//! queues, the Service, smoltcp or waker internals.  The MS02 polling data
-//! path remains the sole descriptor owner until the async RX task activates.
+//! pure-logic telemetry counters, and — for used-ring causes — publishes a
+//! generic queue event through the fixed `axnet` entry (the used ring is
+//! direction-ambiguous; the queue task resolves RX/TX under the Service).
+//! It never touches descriptors, queues, the Service, smoltcp or waker
+//! internals.  The MS02 polling data path remains the sole descriptor
+//! owner until the async RX task activates.
 //!
 //! # Invariants
 //!
 //! - Exactly one `VirtIoNetDev`; `irq_num()` stays `None`.
 //! - Handler does not lock the Service or touch queue-control/descriptors.
 //! - MS02 10 ms polling fallback stays active until the lifecycle is Active.
-//! - RX events are published only after device ACK telemetry.
+//! - Queue events are published only after device ACK telemetry.
 //! - `AtomicWaker::wake()` must not re-enable IRQs before PLIC complete.
 
 use core::sync::atomic::Ordering;
@@ -82,11 +84,13 @@ fn net_irq_handler() {
         TELEMETRY.ack_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Publish used-ring RX events only after ACK telemetry.  config-only,
-    // unknown-only and zero never publish (D5).
+    // Publish used-ring queue events only after ACK telemetry. The used
+    // ring is direction-ambiguous, so the ISR publishes one generic event;
+    // the queue task resolves RX/TX under the shared lock (MS05 T3.3).
+    // config-only, unknown-only and zero never publish (D5).
     if virtio_net_irq_logic::should_publish_rx(status) {
         let before = axhal::asm::irqs_enabled();
-        axnet::publish_rx_event();
+        axnet::publish_queue_event();
         let after = axhal::asm::irqs_enabled();
         let irq_state = virtio_net_irq_logic::observe_irq_state(before, after);
         if irq_state.enabled_on_entry {

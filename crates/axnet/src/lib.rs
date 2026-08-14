@@ -57,7 +57,8 @@ use self::{
 };
 pub use self::{
     async_rx::{
-        RX_TASK_NAME, RxSnapshot, publish_rx_event, rx_snapshot, software_nudge, start_rx_task,
+        RX_TASK_NAME, RxSnapshot, publish_queue_event, publish_rx_event, rx_snapshot,
+        software_nudge, start_rx_task,
     },
     socket::*,
 };
@@ -149,9 +150,8 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 
 /// Poll all network interfaces for new events.
 ///
-/// The RX consumption right follows the global lifecycle: Spawned/Unavailable
-/// keep the polling owner, Active/Faulted skip the target NIC in ordinary
-/// polling (only the queue task reaps it then).
+/// The owner view is lifecycle telemetry; consumption is decided by each
+/// device's `recv` dispatch (slot mode after activation, polling before).
 pub fn poll_interfaces() {
     let owner = RX_LIFECYCLE.owner_view();
     while get_service().poll(owner, &mut SOCKET_SET.inner.lock()) {}

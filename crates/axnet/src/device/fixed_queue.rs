@@ -154,6 +154,44 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
         Ok(())
     }
 
+    /// Writes a frame directly into a reserved vacant slot and publishes it
+    /// atomically (Task 2.4/3.2 copier seam).
+    ///
+    /// `f` receives the full `MAX_FRAME_SIZE`-byte vacant region and must
+    /// return the number of bytes actually written, or `Err(())` to abort.
+    /// On abort or a too-large result, no occupancy, metadata, length or
+    /// ticket is published. The caller should preflight `size` first so the
+    /// region is only handed out when capacity exists.
+    pub(crate) fn fill<F>(
+        &mut self,
+        meta: Meta,
+        ticket: Option<u64>,
+        f: F,
+    ) -> Result<usize, QueueError>
+    where
+        F: FnOnce(&mut [u8]) -> Result<usize, ()>,
+    {
+        if self.is_full() {
+            return Err(QueueError::Full);
+        }
+        let slot = (self.head + self.len) % CAP;
+        let base = slot * MAX_FRAME_SIZE;
+        let region = &mut self.storage[base..base + MAX_FRAME_SIZE];
+        let len = f(region).map_err(|_| QueueError::TooLarge)?;
+        if len > MAX_FRAME_SIZE {
+            return Err(QueueError::TooLarge);
+        }
+        self.lengths[slot] = len as u16;
+        self.metas[slot] = meta;
+        self.tickets[slot] = ticket;
+        self.len += 1;
+        self.high_water = self.high_water.max(self.len);
+        if self.len == CAP {
+            self.full_events += 1;
+        }
+        Ok(len)
+    }
+
     /// Returns the oldest frame without mutating the queue.
     pub(crate) fn peek(&self) -> Option<&[u8]> {
         if self.is_empty() {
@@ -162,6 +200,21 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
         let slot = self.head;
         let base = slot * MAX_FRAME_SIZE;
         Some(&self.storage[base..base + self.lengths[slot] as usize])
+    }
+
+    /// Returns the oldest frame, its metadata and its optional ticket without
+    /// mutating the queue (Task 3.2 copier observation seam).
+    pub(crate) fn peek_full(&self) -> Option<(Meta, Option<u64>, &[u8])> {
+        if self.is_empty() {
+            return None;
+        }
+        let slot = self.head;
+        let base = slot * MAX_FRAME_SIZE;
+        Some((
+            self.metas[slot],
+            self.tickets[slot],
+            &self.storage[base..base + self.lengths[slot] as usize],
+        ))
     }
 
     /// Returns the oldest frame and its metadata without mutating the queue.
@@ -256,39 +309,11 @@ impl TicketTracker {
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
     use alloc::vec::Vec;
-    use core::{
-        alloc::{GlobalAlloc, Layout},
-        cell::Cell,
-        mem::size_of,
-    };
-    use std::{alloc::System, thread_local};
+    use core::mem::size_of;
 
     use super::*;
-
-    // Per-thread allocation counter. Tests run in parallel, so the counter
-    // must not leak allocations made by sibling test threads.
-    thread_local! {
-        static ALLOCS: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct CountingAlloc;
-    unsafe impl GlobalAlloc for CountingAlloc {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            ALLOCS.with(|c| c.set(c.get() + 1));
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(ptr, layout) }
-        }
-    }
-    #[global_allocator]
-    static ALLOCATOR: CountingAlloc = CountingAlloc;
-
-    fn alloc_count() -> usize {
-        ALLOCS.with(Cell::get)
-    }
+    use crate::device::test_alloc::alloc_count;
 
     fn full_frame(n: u8) -> Vec<u8> {
         vec![n; MAX_FRAME_SIZE]
@@ -370,6 +395,87 @@ mod tests {
         let probe = vec![3u8; 5];
         assert_eq!(q.enqueue(&probe, (), None), Err(QueueError::Full));
         assert_eq!(q.peek().unwrap(), &[1u8; 10]);
+    }
+
+    #[test]
+    fn fill_publishes_length_meta_and_ticket_after_success() {
+        let mut q = FixedFrameQueue::<4, u8>::new_with(0);
+        let len = q
+            .fill(9, Some(42), |region| {
+                region[..5].copy_from_slice(&[7; 5]);
+                Ok(5)
+            })
+            .unwrap();
+        assert_eq!(len, 5);
+        assert_eq!(q.len(), 1);
+        let (meta, ticket, bytes) = q.peek_full().unwrap();
+        assert_eq!(meta, 9);
+        assert_eq!(ticket, Some(42));
+        assert_eq!(bytes, &[7; 5]);
+    }
+
+    #[test]
+    fn fill_abort_publishes_nothing() {
+        let mut q = FixedFrameQueue::<2>::new();
+        assert_eq!(q.fill((), Some(1), |_| Err(())), Err(QueueError::TooLarge));
+        assert_eq!(q.len(), 0);
+        assert_eq!(q.peek(), None);
+    }
+
+    #[test]
+    fn fill_oversize_result_publishes_nothing() {
+        let mut q = FixedFrameQueue::<2>::new();
+        assert_eq!(
+            q.fill((), Some(1), |_| Ok(MAX_FRAME_SIZE + 1)),
+            Err(QueueError::TooLarge)
+        );
+        assert_eq!(q.len(), 0);
+        assert_eq!(q.peek(), None);
+    }
+
+    #[test]
+    fn fill_full_rejects_without_touching_head() {
+        let mut q = FixedFrameQueue::<2>::new();
+        q.enqueue(&[1u8; 3], (), None).unwrap();
+        q.enqueue(&[2u8; 3], (), None).unwrap();
+        assert_eq!(q.fill((), None, |_| Ok(1)), Err(QueueError::Full));
+        assert_eq!(q.len(), 2);
+        assert_eq!(q.peek().unwrap(), &[1u8; 3]);
+    }
+
+    #[test]
+    fn fill_writes_directly_into_vacant_slot_storage() {
+        let mut q = FixedFrameQueue::<2, u8>::new_with(0);
+        q.enqueue(&[1u8; 2], 1u8, None).unwrap();
+        // The vacant slot is the second region; a fill writes it in place.
+        q.fill(3u8, None, |region| {
+            region[..4].copy_from_slice(&[9; 4]);
+            Ok(4)
+        })
+        .unwrap();
+        assert_eq!(q.len(), 2);
+        assert_eq!(q.peek().unwrap(), &[1u8; 2]);
+        // First head is still the first frame after one pop.
+        let _ = q.pop();
+        let (_, _, second) = q.peek_full().unwrap();
+        assert_eq!(second, &[9; 4]);
+    }
+
+    #[test]
+    fn peek_full_reports_none_when_empty_and_preserves_order() {
+        let mut q = FixedFrameQueue::<3, u8>::new_with(0);
+        assert_eq!(q.peek_full(), None);
+        q.enqueue(&[1u8; 1], 1u8, Some(10u64)).unwrap();
+        q.enqueue(&[2u8; 1], 2u8, None).unwrap();
+        let (meta, ticket, bytes) = q.peek_full().unwrap();
+        assert_eq!(meta, 1u8);
+        assert_eq!(ticket, Some(10u64));
+        assert_eq!(bytes, &[1u8; 1]);
+        let _ = q.pop();
+        let (meta, ticket, bytes) = q.peek_full().unwrap();
+        assert_eq!(meta, 2u8);
+        assert_eq!(ticket, None);
+        assert_eq!(bytes, &[2u8; 1]);
     }
 
     #[test]
