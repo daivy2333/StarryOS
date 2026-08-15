@@ -6,7 +6,7 @@
 //! and fixed ISR/software event publication entry points.
 
 #[cfg(not(test))]
-use alloc::borrow::ToOwned;
+use alloc::{borrow::ToOwned, boxed::Box};
 use core::{
     future::Future,
     ops::{Deref, DerefMut},
@@ -20,7 +20,7 @@ use axdriver_net::NetQueueDirection;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::{
-    device::{RxCopyStep, TxReclaimStep, TxSubmitStep},
+    device::{RxCopyStep, TxReclaimStep, TxSubmitStep, fixed_queue::MAX_LIVE_TICKETS},
     router::RxOwnerView,
     service::Service,
 };
@@ -103,6 +103,7 @@ impl QueueEvent {
         self.generation.fetch_add(1, Ordering::Release);
         self.queue_waker.wake();
         self.stack_waker.wake();
+        RX_TELEMETRY.queue_wake.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Publishes a queue-owner work hint: bumps the shared generation
@@ -113,6 +114,7 @@ impl QueueEvent {
     pub(crate) fn publish_queue_work(&self) {
         self.generation.fetch_add(1, Ordering::Release);
         self.queue_waker.wake();
+        RX_TELEMETRY.queue_wake.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Publishes a stack-progress hint: bumps the shared generation so the
@@ -261,6 +263,16 @@ pub(crate) struct RxTelemetry {
     pub non_ip_consumed: AtomicU64,
     /// Budget exhausted rounds with a backlog present.
     pub budget_exhausted: AtomicU64,
+    /// TX reclaim stage budget exhaustion rounds.
+    pub reclaim_exhausted: AtomicU64,
+    /// RX copy stage budget exhaustion rounds.
+    pub rx_exhausted: AtomicU64,
+    /// TX submit stage budget exhaustion rounds.
+    pub submit_exhausted: AtomicU64,
+    /// Queue-owner wake publications (Task 4.2 V3 telemetry).
+    pub queue_wake: AtomicU64,
+    /// Illegal lifecycle transitions (Task 4.2 V3 telemetry).
+    pub lifecycle_fault: AtomicU64,
     /// Self-wakes issued for `block_on` yielding.
     pub self_yield: AtomicU64,
     /// Router-full waits published (Waiting).
@@ -284,6 +296,11 @@ pub(crate) struct RxTelemetry {
     pub tx_again: AtomicU64,
     /// RX copy stages stopped because the fixed RX slot storage was full.
     pub rx_slot_full: AtomicU64,
+    /// RW-2: terminal ownership-invariant faults (unknown/duplicate reclaim
+    /// cookie, or a ticket that cannot transition). Counts how many times the
+    /// device-side cookie→ticket ledger drifted, independent of the raw
+    /// completion and reclaim counters.
+    pub ownership_invariant: AtomicU64,
 }
 
 impl RxTelemetry {
@@ -298,6 +315,11 @@ impl RxTelemetry {
             delivered: AtomicU64::new(0),
             non_ip_consumed: AtomicU64::new(0),
             budget_exhausted: AtomicU64::new(0),
+            reclaim_exhausted: AtomicU64::new(0),
+            rx_exhausted: AtomicU64::new(0),
+            submit_exhausted: AtomicU64::new(0),
+            queue_wake: AtomicU64::new(0),
+            lifecycle_fault: AtomicU64::new(0),
             self_yield: AtomicU64::new(0),
             router_full_wait: AtomicU64::new(0),
             space_wake: AtomicU64::new(0),
@@ -308,6 +330,7 @@ impl RxTelemetry {
             tx_submitted: AtomicU64::new(0),
             tx_again: AtomicU64::new(0),
             rx_slot_full: AtomicU64::new(0),
+            ownership_invariant: AtomicU64::new(0),
         }
     }
 
@@ -434,6 +457,210 @@ pub fn rx_snapshot() -> RxSnapshot {
     rx_snapshot_impl(&RX_LIFECYCLE, &RX_TELEMETRY)
 }
 
+/// MS05 V3 snapshot: the MS04 `RxSnapshot` fields plus the slot/ticket/flush
+/// ledger appended by the kernel ioctl.
+///
+/// The appended fields are taken from the Service target device under its
+/// guard; a missing target reports zeros. The kernel maps these onto the
+/// append-only `IrqSnapshotV3` wire type; no field here replaces or reorders
+/// the V2 prefix.
+pub fn rx_snapshot_v3() -> RxSnapshotV3 {
+    let v2 = rx_snapshot();
+    let (ledger, tx_ledger, flush_target, flush_counters, drop_reasons) = match crate::SERVICE.get()
+    {
+        Some(service) => {
+            let mut guard = service.lock();
+            let ledger = guard.v3_slot_ledger();
+            // RW-2: the real driver buffer/descriptor ledger, not a
+            // synthesis from slot or ticket capacities.
+            let tx_ledger = guard.v3_tx_resource_ledger();
+            let target = guard.v3_flush_target();
+            let counters = guard.v3_flush_counters();
+            let drops = guard.v3_drop_reasons();
+            (ledger, tx_ledger, target, counters, drops)
+        }
+        None => (
+            crate::device::SlotLedger::default(),
+            None,
+            u64::MAX,
+            [0; 4],
+            [0; 5],
+        ),
+    };
+    let (
+        tx_buffer_available,
+        tx_buffer_inflight,
+        tx_descriptor_available,
+        tx_descriptor_inflight,
+        tx_completion,
+    ) = match tx_ledger {
+        Some(l) => (
+            l.buffer_available,
+            l.buffer_inflight,
+            l.descriptor_available,
+            l.descriptor_inflight,
+            l.completions_seen,
+        ),
+        // A driver without an observable ledger reports zeros; the snapshot
+        // never fabricates conservation numbers from ticket capacities.
+        None => (
+            0,
+            0,
+            0,
+            0,
+            RX_TELEMETRY.tx_reclaimed.load(Ordering::Relaxed),
+        ),
+    };
+    RxSnapshotV3 {
+        lifecycle: v2.lifecycle,
+        owner: v2.owner,
+        isr_publish: v2.isr_publish,
+        isr_wake: v2.isr_wake,
+        software_nudge: v2.software_nudge,
+        task_poll: v2.task_poll,
+        reaped: v2.reaped,
+        refilled: v2.refilled,
+        delivered: v2.delivered,
+        non_ip_consumed: v2.non_ip_consumed,
+        budget_exhausted: v2.budget_exhausted,
+        self_yield: v2.self_yield,
+        router_full_wait: v2.router_full_wait,
+        space_wake: v2.space_wake,
+        empty_check: v2.empty_check,
+        fault: v2.fault,
+        last_error_stage: v2.last_error_stage,
+        last_error_code: v2.last_error_code,
+        rx_slot_occupancy: ledger.rx_occupancy,
+        rx_slot_high_water: ledger.rx_high_water,
+        rx_slot_full: ledger.rx_full,
+        rx_slot_enqueue: ledger.rx_enqueue,
+        rx_slot_dequeue: ledger.rx_dequeue,
+        rx_slot_space_event: ledger.rx_space_event,
+        tx_slot_occupancy: ledger.tx_occupancy,
+        tx_slot_high_water: ledger.tx_high_water,
+        tx_slot_full: ledger.tx_full,
+        tx_slot_enqueue: ledger.tx_enqueue,
+        tx_slot_dequeue: ledger.tx_dequeue,
+        tx_slot_space_event: ledger.tx_space_event,
+        tx_submit: RX_TELEMETRY.tx_submitted.load(Ordering::Relaxed),
+        tx_again: RX_TELEMETRY.tx_again.load(Ordering::Relaxed),
+        // RW-2: completion is the transport-observed used-ring count, reclaim
+        // is the successful cookie→ticket reclaim; they are independent.
+        tx_completion,
+        tx_reclaim: RX_TELEMETRY.tx_reclaimed.load(Ordering::Relaxed),
+        tx_buffer_available,
+        tx_buffer_inflight,
+        tx_descriptor_available,
+        tx_descriptor_inflight,
+        reclaim_exhausted: RX_TELEMETRY.reclaim_exhausted.load(Ordering::Relaxed),
+        rx_exhausted: RX_TELEMETRY.rx_exhausted.load(Ordering::Relaxed),
+        submit_exhausted: RX_TELEMETRY.submit_exhausted.load(Ordering::Relaxed),
+        queue_generation: QUEUE_EVENT.generation(),
+        queue_wake: RX_TELEMETRY.queue_wake.load(Ordering::Relaxed),
+        last_accepted: ledger.last_accepted,
+        live: ledger.live,
+        queued: ledger.queued,
+        device_owned: ledger.device_owned,
+        flush_target,
+        flush_success: flush_counters[0],
+        flush_error: flush_counters[1],
+        flush_busy: flush_counters[2],
+        flush_cancel: flush_counters[3],
+        #[cfg(feature = "qemu-diagnostics")]
+        hold_mode: crate::diag::DIAGNOSTIC.hold_mode(),
+        #[cfg(feature = "qemu-diagnostics")]
+        lease_expiry: crate::diag::DIAGNOSTIC.lease_expiry(),
+        #[cfg(feature = "qemu-diagnostics")]
+        auto_release_failure: crate::diag::DIAGNOSTIC.auto_release_failure(),
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        hold_mode: 0,
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        lease_expiry: 0,
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        auto_release_failure: 0,
+        lifecycle_fault: RX_TELEMETRY.lifecycle_fault.load(Ordering::Relaxed),
+        ownership_invariant: RX_TELEMETRY.ownership_invariant.load(Ordering::Relaxed),
+        drop_malformed_ip: drop_reasons[0],
+        drop_no_route: drop_reasons[1],
+        drop_route_source_mismatch: drop_reasons[2],
+        drop_unsupported_address: drop_reasons[3],
+        drop_frame_too_large: drop_reasons[4],
+    }
+}
+
+/// MS05 V3 diagnostic snapshot source (Task 4.2).
+///
+/// The first 18 fields mirror [`RxSnapshot`]; the appended fields expose the
+/// fixed slot ledger, TX buffer/descriptor conservation, stage exhaustions,
+/// queue generation/wake, ticket and flush state, plus stable drop reasons.
+/// `repr(C)` and all-u64 so the kernel wire mapping stays trivially aligned.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RxSnapshotV3 {
+    pub lifecycle: u64,
+    pub owner: u64,
+    pub isr_publish: u64,
+    pub isr_wake: u64,
+    pub software_nudge: u64,
+    pub task_poll: u64,
+    pub reaped: u64,
+    pub refilled: u64,
+    pub delivered: u64,
+    pub non_ip_consumed: u64,
+    pub budget_exhausted: u64,
+    pub self_yield: u64,
+    pub router_full_wait: u64,
+    pub space_wake: u64,
+    pub empty_check: u64,
+    pub fault: u64,
+    pub last_error_stage: u64,
+    pub last_error_code: u64,
+    pub rx_slot_occupancy: u64,
+    pub rx_slot_high_water: u64,
+    pub rx_slot_full: u64,
+    pub rx_slot_enqueue: u64,
+    pub rx_slot_dequeue: u64,
+    pub rx_slot_space_event: u64,
+    pub tx_slot_occupancy: u64,
+    pub tx_slot_high_water: u64,
+    pub tx_slot_full: u64,
+    pub tx_slot_enqueue: u64,
+    pub tx_slot_dequeue: u64,
+    pub tx_slot_space_event: u64,
+    pub tx_submit: u64,
+    pub tx_again: u64,
+    pub tx_completion: u64,
+    pub tx_reclaim: u64,
+    pub tx_buffer_available: u64,
+    pub tx_buffer_inflight: u64,
+    pub tx_descriptor_available: u64,
+    pub tx_descriptor_inflight: u64,
+    pub reclaim_exhausted: u64,
+    pub rx_exhausted: u64,
+    pub submit_exhausted: u64,
+    pub queue_generation: u64,
+    pub queue_wake: u64,
+    pub last_accepted: u64,
+    pub live: u64,
+    pub queued: u64,
+    pub device_owned: u64,
+    pub flush_target: u64,
+    pub flush_success: u64,
+    pub flush_error: u64,
+    pub flush_busy: u64,
+    pub flush_cancel: u64,
+    pub hold_mode: u64,
+    pub lease_expiry: u64,
+    pub auto_release_failure: u64,
+    pub lifecycle_fault: u64,
+    pub ownership_invariant: u64,
+    pub drop_malformed_ip: u64,
+    pub drop_no_route: u64,
+    pub drop_route_source_mismatch: u64,
+    pub drop_unsupported_address: u64,
+    pub drop_frame_too_large: u64,
+}
+
 /// ISR-safe queue event publisher (Task 3.3).
 ///
 /// The kernel handler calls this *after* device ACK and telemetry for any
@@ -522,7 +749,7 @@ impl ServiceAccess {
         }
     }
 
-    fn try_lock(&self) -> Option<ServiceGuard<'_>> {
+    pub(crate) fn try_lock(&self) -> Option<ServiceGuard<'_>> {
         match self {
             Self::Global => crate::SERVICE.get().map(|m| ServiceGuard::Global(m.lock())),
             #[cfg(test)]
@@ -543,6 +770,21 @@ pub(crate) struct RxRxFuture {
     lifecycle: &'static RxLifecycle,
     notify: &'static QueueEvent,
     telemetry: &'static RxTelemetry,
+    /// RW-1: the QEMU diagnostic hold state this queue owner drives.
+    /// Production passes the global `&DIAGNOSTIC`; host tests inject their own
+    /// instance so a hold committed by one test can never leak into a parallel
+    /// sibling that services a round.
+    #[cfg(feature = "qemu-diagnostics")]
+    diag: &'static crate::diag::DiagnosticState,
+    /// RW-1: armed QEMU diagnostic lease deadline (wall nanos) the owner is
+    /// sleeping on. When it elapses the next round's `diag_hold_tick`
+    /// auto-releases the expired hold.
+    #[cfg(feature = "qemu-diagnostics")]
+    lease_deadline: Option<u64>,
+    /// RW-1: axtask timer that wakes the queue owner at `lease_deadline`.
+    /// Production only; host tests drive the fake clock and re-poll instead.
+    #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+    lease_timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
 /// Outcome of one RX servicing round before releasing the guard.
@@ -554,6 +796,12 @@ enum RoundOutcome {
     /// Wait for a resource release (slot space or Router space), possibly
     /// retrying.
     WaitSpace(SpaceDecision),
+    /// RW-1: sleep purely on the QEMU diagnostic lease deadline (wall nanos).
+    /// The held stage's completion must not drive the arm/recheck protocol
+    /// (it would retry forever); the only exits are the lease timer or an
+    /// explicit Release publishing queue work.
+    #[cfg(feature = "qemu-diagnostics")]
+    SleepUntil(u64),
     /// Terminal queue/device fault.
     Fault(DevError),
 }
@@ -568,26 +816,57 @@ impl RxRxFuture {
     /// stages, a visible backlog self-wakes/yields once; no work sleeps via
     /// the register/arm/recheck protocol.
     fn service_round(&self, service: &mut Service) -> RoundOutcome {
+        // QEMU diagnostic hold (D9): a hold pauses exactly one stage of the
+        // sole queue owner. The lease is advanced once per round; an expired
+        // lease auto-releases and counts a failure. The state is the future's
+        // own instance (`self.diag`), so a hold only ever gates this owner.
+        #[cfg(feature = "qemu-diagnostics")]
+        let hold = service.diag_hold_tick(self.diag);
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let hold = 0u64;
+
         // Stage 1: TX completion reclaim (≤32). Releasing a completion
         // frees a driver buffer and its live ticket.
         let mut reclaimed = 0usize;
-        loop {
-            match service.tx_reclaim_one_target() {
-                TxReclaimStep::Reclaimed => {
-                    reclaimed += 1;
-                    self.telemetry.tx_reclaimed.fetch_add(1, Ordering::Relaxed);
-                    if reclaimed >= RECLAIM_BUDGET {
-                        self.telemetry
-                            .budget_exhausted
-                            .fetch_add(1, Ordering::Relaxed);
-                        break;
+        #[cfg(feature = "qemu-diagnostics")]
+        let reclaim_held = hold == crate::diag::HOLD_RECLAIM;
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let reclaim_held = false;
+        if !reclaim_held {
+            loop {
+                match service.tx_reclaim_one_target() {
+                    TxReclaimStep::Reclaimed => {
+                        reclaimed += 1;
+                        self.telemetry.tx_reclaimed.fetch_add(1, Ordering::Relaxed);
+                        // D8: a reclaimed ticket may satisfy a pending C4 flush.
+                        service.flush_progress();
+                        if reclaimed >= RECLAIM_BUDGET {
+                            self.telemetry
+                                .budget_exhausted
+                                .fetch_add(1, Ordering::Relaxed);
+                            self.telemetry
+                                .reclaim_exhausted
+                                .fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
                     }
-                }
-                TxReclaimStep::Empty => break,
-                TxReclaimStep::Fault(err) => {
-                    self.telemetry
-                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
-                    return RoundOutcome::Fault(err);
+                    TxReclaimStep::Empty => break,
+                    TxReclaimStep::Fault(err) => {
+                        self.telemetry
+                            .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                        // RW-2: an ownership-invariant reclaim fault (unknown,
+                        // duplicate or still-Queued cookie) is a terminal
+                        // cookie→ticket ledger drift; count it independently
+                        // of raw completions and successful reclaims.
+                        if matches!(err, DevError::BadState) {
+                            self.telemetry
+                                .ownership_invariant
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        // D8: a terminal reclaim fault wakes the flush waiter.
+                        service.flush_fault(&err);
+                        return RoundOutcome::Fault(err);
+                    }
                 }
             }
         }
@@ -610,6 +889,7 @@ impl RxRxFuture {
                         self.telemetry
                             .budget_exhausted
                             .fetch_add(1, Ordering::Relaxed);
+                        self.telemetry.rx_exhausted.fetch_add(1, Ordering::Relaxed);
                         break;
                     }
                 }
@@ -622,6 +902,7 @@ impl RxRxFuture {
                 RxCopyStep::Fault(err) => {
                     self.telemetry
                         .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                    service.flush_fault(&err);
                     return RoundOutcome::Fault(err);
                 }
             }
@@ -632,36 +913,51 @@ impl RxRxFuture {
         // stops this stage.
         let mut submitted = 0usize;
         let mut submit_full = false;
-        loop {
-            match service.tx_submit_one_target() {
-                TxSubmitStep::Submitted => {
-                    submitted += 1;
-                    self.telemetry.tx_submitted.fetch_add(1, Ordering::Relaxed);
-                    // A freed TX slot is stack-progress: wake the socket
-                    // role so blocked senders re-check write readiness (T3.3).
-                    self.notify.publish_progress();
-                    if submitted >= SUBMIT_BUDGET {
-                        self.telemetry
-                            .budget_exhausted
-                            .fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "qemu-diagnostics")]
+        let submit_held = hold == crate::diag::HOLD_SUBMIT;
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let submit_held = false;
+        if !submit_held {
+            loop {
+                match service.tx_submit_one_target() {
+                    TxSubmitStep::Submitted => {
+                        submitted += 1;
+                        self.telemetry.tx_submitted.fetch_add(1, Ordering::Relaxed);
+                        // A freed TX slot is stack-progress: wake the socket
+                        // role so blocked senders re-check write readiness (T3.3).
+                        self.notify.publish_progress();
+                        if submitted >= SUBMIT_BUDGET {
+                            self.telemetry
+                                .budget_exhausted
+                                .fetch_add(1, Ordering::Relaxed);
+                            self.telemetry
+                                .submit_exhausted
+                                .fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    TxSubmitStep::Empty => break,
+                    TxSubmitStep::Full => {
+                        submit_full = true;
+                        self.telemetry.tx_again.fetch_add(1, Ordering::Relaxed);
                         break;
                     }
-                }
-                TxSubmitStep::Empty => break,
-                TxSubmitStep::Full => {
-                    submit_full = true;
-                    self.telemetry.tx_again.fetch_add(1, Ordering::Relaxed);
-                    break;
-                }
-                TxSubmitStep::Fault(err) => {
-                    self.telemetry
-                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
-                    return RoundOutcome::Fault(err);
+                    TxSubmitStep::Fault(err) => {
+                        self.telemetry
+                            .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
+                        service.flush_fault(&err);
+                        return RoundOutcome::Fault(err);
+                    }
                 }
             }
+        } else {
+            // A held submit stage behaves like `Again` for scheduling: the
+            // driver capacity is not advancing, so a TX backlog must not
+            // self-wake into a busy loop.
+            submit_full = true;
         }
 
-        // Round-end scheduling decision (Task 3.5).
+        // Round-end scheduling decision (Task 3.5 + RW-1).
         //
         // Self-wake only for backlog that can advance WITHOUT an external
         // resource: a visible completion, or a TX slot backlog that submit
@@ -669,31 +965,46 @@ impl RxRxFuture {
         // completion registers/arms/rechecks and sleeps; a completion event
         // resumes it. RX-slot Full waits for stack drain, but never before a
         // still-advanceable TX backlog.
+        //
+        // RW-1: a stage held by the QEMU diagnostic lease cannot advance.
+        // Its resource must not drive self-wake (busy loop) nor the
+        // arm/recheck protocol (it would retry forever on the held
+        // completion). A held stage can only resume via lease expiry or an
+        // explicit Release, so the round sleeps until the lease deadline.
+        #[cfg(feature = "qemu-diagnostics")]
+        let hold_active = hold != crate::diag::HOLD_NONE;
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let hold_active = false;
         let pending = match service.completion_pending_both_target() {
             Ok(pending) => pending,
             Err(err) => {
                 self.telemetry
                     .record_fault(rx_error_stage::COMPLETION_QUERY, &err);
+                service.flush_fault(&err);
                 return RoundOutcome::Fault(err);
             }
         };
         let tx_pending = service.tx_slot_pending_target();
-        if pending.contains(NetQueueDirection::RX) || pending.contains(NetQueueDirection::TX) {
+        // RW-1: a visible TX completion is consumed by the reclaim stage;
+        // under a reclaim hold it can never advance, so it must not
+        // self-wake. TX slots are consumed by submit; under a submit hold
+        // (`submit_full`) they cannot advance either.
+        let tx_completion_advanceable = pending.contains(NetQueueDirection::TX) && !reclaim_held;
+        let tx_slot_advanceable = tx_pending && !submit_full;
+        if pending.contains(NetQueueDirection::RX) || tx_completion_advanceable {
             // A visible completion can advance reclaim/RX/submit: retry.
             self.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
             RoundOutcome::SelfWakeYield
-        } else if tx_pending && !submit_full {
+        } else if tx_slot_advanceable {
             // More TX slots remain and submit was not blocked on `Again`:
             // the backlog advances next round without a completion.
             self.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
             RoundOutcome::SelfWakeYield
-        } else if submit_full {
-            // Submit hit `Again` with no visible completion: the driver is
-            // full. Arm/register/recheck and sleep; a completion resumes.
-            RoundOutcome::RegisterRecheck
         } else if rx_full {
             // Only RX is blocked on full slot space; nothing else can
-            // advance. Wait for the stack to drain the slots.
+            // advance. Wait for the stack to drain the slots. The lease
+            // deadline is additionally armed by the future when a hold is
+            // active, so an expired hold still auto-releases while waiting.
             let decision = service.rx_slot_space_recheck_or_wait();
             if decision == SpaceDecision::Waiting {
                 self.telemetry
@@ -701,6 +1012,26 @@ impl RxRxFuture {
                     .fetch_add(1, Ordering::Relaxed);
             }
             RoundOutcome::WaitSpace(decision)
+        } else if hold_active {
+            // RW-1: a hold lease is active and the held stage blocks the
+            // remaining work. Sleep until the lease deadline; never self-wake
+            // and never run the register/arm/recheck protocol on a held
+            // completion (it would retry forever). The deadline timer only
+            // wakes the owner; `diag_hold_tick` on the next round performs
+            // the release, failure counter and queue-work publication.
+            #[cfg(feature = "qemu-diagnostics")]
+            {
+                RoundOutcome::SleepUntil(self.diag.lease_expiry())
+            }
+            #[cfg(not(feature = "qemu-diagnostics"))]
+            {
+                let _ = hold;
+                RoundOutcome::RegisterRecheck
+            }
+        } else if submit_full {
+            // Submit hit `Again` with no visible completion: the driver is
+            // full. Arm/register/recheck and sleep; a completion resumes.
+            RoundOutcome::RegisterRecheck
         } else {
             self.telemetry.empty_check.fetch_add(1, Ordering::Relaxed);
             RoundOutcome::RegisterRecheck
@@ -711,7 +1042,7 @@ impl RxRxFuture {
     /// activation (suppress BOTH + slot-mode switch), publish Active (or
     /// Unavailable) under the guard, then hand off to the active servicing
     /// loop.
-    fn poll_first(&self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_first(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if !self.service.is_available() {
             // Missing Service cannot be preflighted: Unavailable keeps the
             // polling owner (D4), never panics and never pends forever.
@@ -738,7 +1069,6 @@ impl RxRxFuture {
             Poll::Ready(())
         }
     }
-
     /// Records the illegal-lifecycle transition as a LIFECYCLE-stage error.
     ///
     /// The payload is the observed lifecycle state code, which is stable and
@@ -747,12 +1077,15 @@ impl RxRxFuture {
         if let Err(TransitionError::Illegal(state)) = self.lifecycle.preflight(ok) {
             self.telemetry
                 .record_last_error_code(rx_error_stage::LIFECYCLE, state.code() as u64);
+            self.telemetry
+                .lifecycle_fault
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Active poll: register the sole waker outside the Service lock, then
     /// service at most RX_BUDGET completions under the guard.
-    fn poll_active(&self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_active(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.notify.register_queue(cx.waker());
         let Some(mut service) = self.service.try_lock() else {
             return Poll::Pending;
@@ -760,21 +1093,41 @@ impl RxRxFuture {
         match self.service_round(&mut service) {
             RoundOutcome::SelfWakeYield => {
                 drop(service);
+                // Not a lease sleep: cancel any stale deadline so an explicit
+                // Release invalidates the old timer (RW-1).
+                #[cfg(feature = "qemu-diagnostics")]
+                self.cancel_lease_deadline();
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
             RoundOutcome::WaitSpace(SpaceDecision::Retry) => {
                 drop(service);
+                #[cfg(feature = "qemu-diagnostics")]
+                self.cancel_lease_deadline();
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
             RoundOutcome::WaitSpace(SpaceDecision::Waiting) => {
                 drop(service);
+                // RW-1: while waiting for RX slot space the lease may also
+                // expire; arm the deadline so an expired hold still
+                // auto-releases without an external NIC event. A 0 deadline
+                // (no hold) cancels any stale one.
+                #[cfg(feature = "qemu-diagnostics")]
+                self.arm_lease_deadline(cx, self.diag.lease_expiry());
                 Poll::Pending
             }
             RoundOutcome::RegisterRecheck => {
                 drop(service);
+                #[cfg(feature = "qemu-diagnostics")]
+                self.cancel_lease_deadline();
                 self.poll_register_recheck(cx)
+            }
+            #[cfg(feature = "qemu-diagnostics")]
+            RoundOutcome::SleepUntil(deadline) => {
+                drop(service);
+                self.arm_lease_deadline(cx, deadline);
+                Poll::Pending
             }
             RoundOutcome::Fault(_err) => {
                 // Task 3.7: commit `Active -> Faulted` first, publish only on
@@ -783,6 +1136,85 @@ impl RxRxFuture {
                 drop(service);
                 Poll::Ready(())
             }
+        }
+    }
+
+    /// RW-1: cancels any armed lease deadline and its timer.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn cancel_lease_deadline(&mut self) {
+        self.lease_deadline = None;
+        self.cancel_lease_timer();
+    }
+
+    /// RW-1: arms (or cancels) the QEMU diagnostic lease deadline wake.
+    ///
+    /// The lease expiry is the only reason the owner must wake without an
+    /// external NIC event: an expired hold must auto-release so the paused
+    /// stage resumes. In production this registers an axtask timer that
+    /// wakes the queue waker at `deadline`; host tests drive the fake clock
+    /// instead. The timer only wakes the owner: the release, failure counter
+    /// and queue-work publication stay in [`Service::diag_hold_tick`].
+    ///
+    /// A `deadline` of 0 (no active hold) cancels any previously armed
+    /// deadline, so an explicit Release invalidates the old timer and a
+    /// stale timer can never release a newer lease.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn arm_lease_deadline(&mut self, cx: &mut Context<'_>, deadline: u64) {
+        if deadline == 0 || crate::diag::diag_now() >= deadline {
+            self.lease_deadline = None;
+            self.cancel_lease_timer();
+            return;
+        }
+        if self.lease_deadline == Some(deadline) {
+            return;
+        }
+        self.lease_deadline = Some(deadline);
+        self.arm_lease_timer(cx, deadline);
+    }
+
+    /// RW-1: drops any previously armed lease timer, cancelling it.
+    #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+    fn cancel_lease_timer(&mut self) {
+        self.lease_timer = None;
+    }
+
+    /// Host-test counterpart: there is no axtask timer to cancel.
+    #[cfg(all(feature = "qemu-diagnostics", test))]
+    fn cancel_lease_timer(&mut self) {}
+
+    /// RW-1: registers an axtask timer that wakes the owner at `deadline`.
+    #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+    fn arm_lease_timer(&mut self, cx: &mut Context<'_>, deadline: u64) {
+        use axhal::time::TimeValue;
+        use axtask::future::sleep_until;
+
+        // Drop any previous timer future, which cancels its registration.
+        self.lease_timer = None;
+        let mut timer = Box::pin(sleep_until(TimeValue::from_nanos(deadline)));
+        let mut timer_cx = Context::from_waker(cx.waker());
+        if timer.as_mut().poll(&mut timer_cx).is_ready() {
+            cx.waker().wake_by_ref();
+        } else {
+            self.lease_timer = Some(timer);
+        }
+    }
+
+    /// Host-test counterpart: the fake clock drives the wake instead.
+    #[cfg(all(feature = "qemu-diagnostics", test))]
+    fn arm_lease_timer(&mut self, _cx: &mut Context<'_>, _deadline: u64) {}
+
+    /// RW-1: if an armed lease deadline has elapsed, clear it and self-wake
+    /// so the round runs, whose `diag_hold_tick` auto-releases the expired
+    /// hold. The self-wake is observable by a counting waker in host tests.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn lease_deadline_elapsed(&mut self, cx: &mut Context<'_>) {
+        let Some(deadline) = self.lease_deadline else {
+            return;
+        };
+        if crate::diag::diag_now() >= deadline {
+            self.lease_deadline = None;
+            self.cancel_lease_timer();
+            cx.waker().wake_by_ref();
         }
     }
 
@@ -806,6 +1238,9 @@ impl RxRxFuture {
             Err(TransitionError::Illegal(state)) => {
                 self.telemetry
                     .record_last_error_code(rx_error_stage::LIFECYCLE, state.code() as u64);
+                self.telemetry
+                    .lifecycle_fault
+                    .fetch_add(1, Ordering::Relaxed);
                 false
             }
         }
@@ -813,7 +1248,7 @@ impl RxRxFuture {
 
     /// Empty-queue wait: acquire generation, register, arm/recheck BOTH
     /// directions under the Service lock, then observe the generation again.
-    fn poll_register_recheck(&self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_register_recheck(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         let decision = self.notify.wait_decision(cx.waker(), || {
             let Some(mut service) = self.service.try_lock() else {
                 return Err(DevError::BadState);
@@ -847,10 +1282,18 @@ impl Future for RxRxFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        self.telemetry.task_poll.fetch_add(1, Ordering::Relaxed);
-        match self.lifecycle.load() {
-            RxTaskLifecycle::Spawned => self.poll_first(cx),
-            RxTaskLifecycle::Active => self.poll_active(cx),
+        // `self` is Unpin: every field is either a `&'static` reference, a
+        // Copy access handle, or an owned `Pin<Box<..>>` timer that is Unpin.
+        let this = self.get_mut();
+        this.telemetry.task_poll.fetch_add(1, Ordering::Relaxed);
+        // RW-1: an elapsed lease deadline clears itself and self-wakes so the
+        // round below runs and `diag_hold_tick` auto-releases the expired
+        // hold. The wake is observable by a counting waker in host tests.
+        #[cfg(feature = "qemu-diagnostics")]
+        this.lease_deadline_elapsed(cx);
+        match this.lifecycle.load() {
+            RxTaskLifecycle::Spawned => this.poll_first(cx),
+            RxTaskLifecycle::Active => this.poll_active(cx),
             // Terminal/unavailable states: the task exits; polling keeps the
             // owner for Spawned/Unavailable.
             _ => Poll::Ready(()),
@@ -869,6 +1312,12 @@ fn spawn_rx_task() {
                 lifecycle: &RX_LIFECYCLE,
                 notify: &QUEUE_EVENT,
                 telemetry: &RX_TELEMETRY,
+                #[cfg(feature = "qemu-diagnostics")]
+                diag: &crate::diag::DIAGNOSTIC,
+                #[cfg(feature = "qemu-diagnostics")]
+                lease_deadline: None,
+                #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+                lease_timer: None,
             })
         },
         RX_TASK_NAME.to_owned(),
@@ -1551,6 +2000,10 @@ mod tests {
         arm_calls: AtomicUsize,
         control_calls: AtomicUsize,
         completion_visible: AtomicBool,
+        /// TX-only completion visibility (RW-1 busy-loop witness): when set,
+        /// only the TX direction reports a visible completion, independently
+        /// of `completion_visible`.
+        tx_completion_visible: AtomicBool,
         suppress_error: AtomicBool,
         arm_error: AtomicBool,
         missing_after_first_control_call: AtomicBool,
@@ -1609,7 +2062,9 @@ mod tests {
                 if self.stats.arm_error.load(Ordering::Relaxed) {
                     return Err(DevError::Io);
                 }
-                if self.stats.completion_visible.load(Ordering::Relaxed) {
+                if self.stats.completion_visible.load(Ordering::Relaxed)
+                    || self.stats.tx_completion_visible.load(Ordering::Relaxed)
+                {
                     pending |= NetQueueDirection::TX;
                 }
             }
@@ -1627,7 +2082,8 @@ mod tests {
                 pending |= NetQueueDirection::RX;
             }
             if directions.contains(NetQueueDirection::TX)
-                && self.stats.completion_visible.load(Ordering::Relaxed)
+                && (self.stats.completion_visible.load(Ordering::Relaxed)
+                    || self.stats.tx_completion_visible.load(Ordering::Relaxed))
             {
                 pending |= NetQueueDirection::TX;
             }
@@ -1711,6 +2167,10 @@ mod tests {
             self.stats.tx_slot_pending.load(Ordering::Relaxed)
         }
 
+        fn tx_submit_calls_for_test(&self) -> usize {
+            self.submit_calls.load(Ordering::Relaxed)
+        }
+
         fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
             let call = self
                 .control
@@ -1781,6 +2241,40 @@ mod tests {
         service_mutex: &'static spin::Mutex<Service>,
         notify: &'static QueueEvent,
     ) -> (&'static RxLifecycle, RxRxFuture) {
+        #[cfg(feature = "qemu-diagnostics")]
+        {
+            leaked_future_diag(service_mutex, notify, leaked_diag())
+        }
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        {
+            let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+            lifecycle.start().unwrap();
+            let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
+            let fut = RxRxFuture {
+                service: ServiceAccess::Injected(service_mutex),
+                lifecycle,
+                notify,
+                telemetry,
+            };
+            (lifecycle, fut)
+        }
+    }
+
+    /// A fresh per-test QEMU diagnostic state so a hold committed by one test
+    /// never leaks into a parallel sibling that services a round (RW-1).
+    #[cfg(feature = "qemu-diagnostics")]
+    fn leaked_diag() -> &'static crate::diag::DiagnosticState {
+        Box::leak(Box::new(crate::diag::DiagnosticState::new()))
+    }
+
+    /// Builds an injected Future over a caller-provided diagnostic state, so
+    /// the QEMU hold tests control exactly the instance the owner services.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn leaked_future_diag(
+        service_mutex: &'static spin::Mutex<Service>,
+        notify: &'static QueueEvent,
+        diag: &'static crate::diag::DiagnosticState,
+    ) -> (&'static RxLifecycle, RxRxFuture) {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
         let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
@@ -1789,6 +2283,10 @@ mod tests {
             lifecycle,
             notify,
             telemetry,
+            diag,
+            lease_deadline: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
         };
         (lifecycle, fut)
     }
@@ -1845,6 +2343,12 @@ mod tests {
             lifecycle,
             notify,
             telemetry,
+            #[cfg(feature = "qemu-diagnostics")]
+            diag: leaked_diag(),
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
         };
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
@@ -2254,6 +2758,76 @@ mod tests {
         );
     }
 
+    // ---- RW-2: ownership-invariant counting and real V3 ledger ----
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn reclaim_ownership_fault_increments_invariant_and_keeps_fault() {
+        // A reclaim of an unknown cookie is a terminal cookie→ticket drift.
+        // The queue round must count it once in `ownership_invariant` and
+        // enter Faulted; the V3 snapshot reports the same counter.
+        let _serial = SERIAL.lock();
+        let (mutex, _, _stats) = leaked_service_tx(
+            vec![RxStep::Empty],
+            vec![],
+            vec![TxReclaimStep::Fault(DevError::BadState)],
+            true,
+        );
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        let before = fut.telemetry.ownership_invariant.load(Ordering::Relaxed);
+        let fault_before = fut.telemetry.fault.load(Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, count.clone()),
+            Poll::Ready(())
+        ));
+        assert_eq!(
+            fut.telemetry.fault.load(Ordering::Relaxed),
+            fault_before + 1,
+            "reclaim fault must be recorded"
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(
+            fut.telemetry.ownership_invariant.load(Ordering::Relaxed),
+            before + 1,
+            "ownership drift must be counted exactly once"
+        );
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn successful_reclaim_never_counts_ownership_invariant() {
+        // A well-formed reclaim (matching ticket) is not an ownership drift:
+        // the counter must stay flat while `tx_reclaimed` grows.
+        let _serial = SERIAL.lock();
+        let (mutex, _, _stats) = leaked_service_tx(
+            vec![RxStep::Empty],
+            vec![],
+            vec![TxReclaimStep::Reclaimed],
+            true,
+        );
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        let before_inv = fut.telemetry.ownership_invariant.load(Ordering::Relaxed);
+        let before_reclaim = fut.telemetry.tx_reclaimed.load(Ordering::Relaxed);
+        // One round: reclaim succeeds, the round ends Pending.
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(
+            fut.telemetry.ownership_invariant.load(Ordering::Relaxed),
+            before_inv,
+            "a successful reclaim is not an ownership drift"
+        );
+        assert_eq!(
+            fut.telemetry.tx_reclaimed.load(Ordering::Relaxed),
+            before_reclaim + 1
+        );
+    }
+
     // ---- T6.1b: monotonic telemetry deltas ----
 
     #[test]
@@ -2431,6 +3005,12 @@ mod tests {
             lifecycle,
             notify: Box::leak(Box::new(QueueEvent::new())),
             telemetry,
+            #[cfg(feature = "qemu-diagnostics")]
+            diag: leaked_diag(),
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
         };
         let count = Arc::new(AtomicUsize::new(0));
 
@@ -2643,5 +3223,240 @@ mod tests {
         // A visible completion yields (self-wake), not an empty recheck.
         assert_eq!(snap.empty_check, 0);
         assert_eq!(snap.self_yield, 1);
+    }
+
+    // ── Task 4.3: QEMU diagnostic holds pause exactly one stage ─────────
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn hold_submit_pauses_submit_stage_but_not_reclaim_or_rx() {
+        // The QEMU diagnostic state is per-future; a hold only ever gates this
+        // owner, so parallel siblings servicing a round stay unaffected.
+        let diag = leaked_diag();
+        let t0 = crate::diag::diag_now();
+        let (mutex, _copy_calls, _stats) = leaked_service_tx(
+            vec![RxStep::Consumed, RxStep::Empty],
+            (0..4).map(|_| TxSubmitStep::Submitted).collect(),
+            vec![],
+            true,
+        );
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        // Commit a long-lived submit hold (well under the 2 s max lease).
+        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 1000, t0)
+            .unwrap();
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        // RX copy still ran (stage 2), TX submit was paused (stage 3).
+        {
+            let mut guard = mutex.lock();
+            let submits = guard.router_for_test().devices[0].tx_submit_calls_for_test();
+            assert_eq!(submits, 0);
+        }
+        assert!(mutex.try_lock().is_some());
+        // Release the hold; the sole owner resumes the paused stage.
+        diag.control(crate::diag::OP_RELEASE, 0, t0).unwrap();
+        diag.tick(u64::MAX);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        {
+            let mut guard = mutex.lock();
+            // Release resumes the paused stage: the queued submits drain.
+            let submits = guard.router_for_test().devices[0].tx_submit_calls_for_test();
+            assert!(submits >= 1);
+        }
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn hold_reclaim_pauses_reclaim_stage_and_again_still_backpressures() {
+        // The QEMU diagnostic state is per-future; a hold only ever gates this
+        // owner, so parallel siblings servicing a round stay unaffected.
+        let diag = leaked_diag();
+        let t0 = crate::diag::diag_now();
+        let (mutex, _, _stats) = leaked_service_tx(
+            vec![RxStep::Empty],
+            vec![TxSubmitStep::Full],
+            (0..4).map(|_| TxReclaimStep::Reclaimed).collect(),
+            true,
+        );
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        diag.control(crate::diag::OP_HOLD_TX_RECLAIM, 1000, t0)
+            .unwrap();
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        // The reclaim stage was paused but the round stays Active and the held
+        // submit `Again` backpressures without a busy loop or a fault.
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert!(mutex.try_lock().is_some());
+        // Release the hold; the per-future state never leaks anywhere.
+        diag.control(crate::diag::OP_RELEASE, 0, t0).unwrap();
+        diag.tick(u64::MAX);
+    }
+
+    // ── RW-1: lease deadline drives the owner wake (fake clock) ─────────
+
+    /// Advances the fake diagnostic clock for the RW-1 tests.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn fake_clock(nanos: u64) {
+        crate::diag::set_test_now(nanos);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn hold_submit_lease_deadline_wakes_and_auto_releases_exactly_once() {
+        let _serial = SERIAL.lock();
+        // Fake clock at T0: commit a 100 ms submit hold. Without an external
+        // event, the only way the owner can wake is the lease deadline.
+        let t0 = 1_000_000_000_000u64;
+        fake_clock(t0);
+        let diag = leaked_diag();
+        let (mutex, _copy_calls, _stats) = leaked_service_tx(
+            vec![RxStep::Empty],
+            (0..4).map(|_| TxSubmitStep::Submitted).collect(),
+            vec![],
+            true,
+        );
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
+            .unwrap();
+
+        // Poll before the deadline: the future sleeps with the deadline armed
+        // and must not self-wake or auto-release yet.
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(count.load(Ordering::Relaxed), 0, "no wake before deadline");
+        assert_eq!(diag.auto_release_failure(), 0);
+        assert!(mutex.try_lock().is_some());
+
+        // Just before the deadline: still sleeping, no wake, no auto-release.
+        fake_clock(t0 + 99 * crate::diag::NS_PER_MS);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(count.load(Ordering::Relaxed), 0, "no wake before deadline");
+        assert_eq!(diag.auto_release_failure(), 0);
+
+        // At the deadline the fake clock elapses: the future wakes exactly
+        // once and the next round auto-releases the expired hold exactly once.
+        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(count.load(Ordering::Relaxed), 1, "deadline wake fires once");
+        assert_eq!(diag.auto_release_failure(), 1);
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+        // The resumed submit stage drains the queued frames.
+        {
+            let mut guard = mutex.lock();
+            let submits = guard.router_for_test().devices[0].tx_submit_calls_for_test();
+            assert!(submits >= 1);
+        }
+        // A later poll must not auto-release a second time.
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.auto_release_failure(), 1);
+        assert!(mutex.try_lock().is_some());
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn held_reclaim_visible_tx_completion_does_not_busy_loop_before_deadline() {
+        let _serial = SERIAL.lock();
+        let t0 = 1_000_000_000_000u64;
+        fake_clock(t0);
+        let diag = leaked_diag();
+        // A TX completion is visible, but the reclaim stage is held: the
+        // completion can never advance, so the round must not self-wake into
+        // a busy loop before the lease deadline.
+        let (mutex, _copy_calls, control) = leaked_service_tx(
+            vec![RxStep::Empty],
+            vec![TxSubmitStep::Empty],
+            vec![TxReclaimStep::Reclaimed],
+            true,
+        );
+        control.tx_completion_visible.store(true, Ordering::Relaxed);
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        diag.control(crate::diag::OP_HOLD_TX_RECLAIM, 100, t0)
+            .unwrap();
+
+        // Poll many times before the deadline: no self-wake may ever fire.
+        for _ in 0..10 {
+            assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+            assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                0,
+                "held TX completion must not busy-loop self-wake"
+            );
+            assert_eq!(diag.auto_release_failure(), 0);
+            assert!(mutex.try_lock().is_some());
+        }
+
+        // At the deadline the hold auto-releases exactly once.
+        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.auto_release_failure(), 1);
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn explicit_release_invalidates_stale_deadline_and_new_lease_is_not_released() {
+        let _serial = SERIAL.lock();
+        let t0 = 1_000_000_000_000u64;
+        fake_clock(t0);
+        let diag = leaked_diag();
+        let (mutex, _copy_calls, _stats) = leaked_service_tx(
+            vec![RxStep::Empty],
+            (0..4).map(|_| TxSubmitStep::Submitted).collect(),
+            vec![],
+            true,
+        );
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        // Hold A with a 100 ms lease.
+        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
+            .unwrap();
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_SUBMIT);
+
+        // Explicit Release before the deadline: the stage resumes and the
+        // stale deadline must be invalidated.
+        diag.control(crate::diag::OP_RELEASE, 0, t0).unwrap();
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(diag.auto_release_failure(), 0);
+        {
+            let mut guard = mutex.lock();
+            let submits = guard.router_for_test().devices[0].tx_submit_calls_for_test();
+            assert!(submits >= 1, "release resumes the paused stage");
+        }
+
+        // A new hold B with a longer lease must not be released by the stale
+        // deadline from hold A.
+        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 200, t0)
+            .unwrap();
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_SUBMIT);
+
+        // Advance past hold A's old deadline: B must stay held.
+        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_SUBMIT);
+        assert_eq!(diag.auto_release_failure(), 0);
+
+        // Only B's own deadline releases it, exactly once.
+        fake_clock(t0 + 200 * crate::diag::NS_PER_MS);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(diag.auto_release_failure(), 1);
+        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+        assert!(mutex.try_lock().is_some());
     }
 }

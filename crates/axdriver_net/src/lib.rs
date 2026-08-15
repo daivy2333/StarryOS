@@ -74,6 +74,29 @@ impl TxCookie {
     }
 }
 
+/// Transport-neutral, read-only TX resource ledger (RW-2).
+///
+/// Reports how many TX buffers and descriptors the driver currently has
+/// available and in flight. `available + inflight` equals the driver's fixed
+/// capacity for each resource. A transport that cannot observe these counts
+/// through the queue interface returns `None` from
+/// [`NetTxQueue::tx_resource_ledger`]; callers must never synthesize the
+/// ledger from slot or ticket capacities.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxResourceLedger {
+    /// Buffers the driver can hand out right now.
+    pub buffer_available: u64,
+    /// Buffers owned by the device/queue (submitted, not yet reclaimed).
+    pub buffer_inflight: u64,
+    /// Free descriptors in the TX queue.
+    pub descriptor_available: u64,
+    /// Descriptors in use by the TX queue.
+    pub descriptor_inflight: u64,
+    /// TX completions the transport has exposed (used-ring observations),
+    /// independent of how many were later successfully reclaimed.
+    pub completions_seen: u64,
+}
+
 /// Single-step, transport-neutral TX submission and completion reclaim.
 pub trait NetTxQueue {
     /// Submits one prepared buffer with its owner cookie.
@@ -95,6 +118,13 @@ pub trait NetTxQueue {
 
     /// Reclaims at most one completed submission.
     fn reclaim_tx(&mut self) -> DevResult<Option<TxCookie>>;
+
+    /// Returns the driver's real TX resource ledger, when the transport can
+    /// observe it without leaking ring/token state. The default implementation
+    /// reports no ledger; drivers that can must override it (RW-2).
+    fn tx_resource_ledger(&self) -> Option<TxResourceLedger> {
+        None
+    }
 }
 
 /// Transport-neutral control of an NIC's RX queue notification and completion

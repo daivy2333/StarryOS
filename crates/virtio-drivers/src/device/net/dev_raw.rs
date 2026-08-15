@@ -122,6 +122,11 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
         self.send_queue.available_desc() >= 1
     }
 
+    /// Number of free descriptors in the send queue (RW-2 real ledger).
+    pub fn send_available_desc(&self) -> usize {
+        self.send_queue.available_desc()
+    }
+
     /// Whether the length of the receive buffer is valid.
     fn check_rx_buf_len(rx_buf: &[u8]) -> Result<()> {
         if rx_buf.len() < MIN_BUFFER_LEN {

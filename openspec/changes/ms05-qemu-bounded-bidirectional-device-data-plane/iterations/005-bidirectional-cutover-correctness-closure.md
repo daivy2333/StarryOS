@@ -481,4 +481,4 @@ Blocker Handoff为None，本次处理的是正常reported iteration中的Review�
 
 **Next Iteration**
 
-`iterations/006-fatal-publication-and-parallel-gate-closure.md`
+`iterations/006-fatal-publication-and-parallel-gate-closure/000-initial.md`

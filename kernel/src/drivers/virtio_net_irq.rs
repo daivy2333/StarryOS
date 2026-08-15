@@ -230,3 +230,134 @@ pub fn irq_snapshot_v2() -> virtio_net_irq_logic::IrqSnapshotV2 {
     s.last_error_code = rx.last_error_code;
     s
 }
+
+pub fn irq_snapshot_v3() -> virtio_net_irq_logic::IrqSnapshotV3 {
+    // The V3 wire type carries the full V2 prefix first; the axnet V3 source
+    // duplicates those fields, so map the prefix from the V2 function to keep
+    // one authority for the IRQ/telemetry half.
+    let v2 = irq_snapshot_v2();
+    let mut s = virtio_net_irq_logic::IrqSnapshotV3 {
+        total: v2.total,
+        used_ring: v2.used_ring,
+        config_change: v2.config_change,
+        combined: v2.combined,
+        unknown: v2.unknown,
+        spurious: v2.spurious,
+        ack_count: v2.ack_count,
+        uart_irq_count: v2.uart_irq_count,
+        restore_violation: v2.restore_violation,
+        irq_enabled_entry: v2.irq_enabled_entry,
+        rx_lifecycle: v2.rx_lifecycle,
+        rx_owner: v2.rx_owner,
+        isr_publish: v2.isr_publish,
+        isr_wake: v2.isr_wake,
+        software_nudge: v2.software_nudge,
+        task_poll: v2.task_poll,
+        reaped: v2.reaped,
+        refilled: v2.refilled,
+        delivered: v2.delivered,
+        non_ip_consumed: v2.non_ip_consumed,
+        budget_exhausted: v2.budget_exhausted,
+        self_yield: v2.self_yield,
+        router_full_wait: v2.router_full_wait,
+        space_wake: v2.space_wake,
+        empty_check: v2.empty_check,
+        fault: v2.fault,
+        last_error_stage: v2.last_error_stage,
+        last_error_code: v2.last_error_code,
+        rx_slot_occupancy: 0,
+        rx_slot_high_water: 0,
+        rx_slot_full: 0,
+        rx_slot_enqueue: 0,
+        rx_slot_dequeue: 0,
+        rx_slot_space_event: 0,
+        tx_slot_occupancy: 0,
+        tx_slot_high_water: 0,
+        tx_slot_full: 0,
+        tx_slot_enqueue: 0,
+        tx_slot_dequeue: 0,
+        tx_slot_space_event: 0,
+        tx_submit: 0,
+        tx_again: 0,
+        tx_completion: 0,
+        tx_reclaim: 0,
+        tx_buffer_available: 0,
+        tx_buffer_inflight: 0,
+        tx_descriptor_available: 0,
+        tx_descriptor_inflight: 0,
+        reclaim_exhausted: 0,
+        rx_exhausted: 0,
+        submit_exhausted: 0,
+        queue_generation: 0,
+        queue_wake: 0,
+        last_accepted: u64::MAX,
+        live: 0,
+        queued: 0,
+        device_owned: 0,
+        flush_target: u64::MAX,
+        flush_success: 0,
+        flush_error: 0,
+        flush_busy: 0,
+        flush_cancel: 0,
+        hold_mode: 0,
+        lease_expiry: 0,
+        auto_release_failure: 0,
+        lifecycle_fault: 0,
+        ownership_invariant: 0,
+        drop_malformed_ip: 0,
+        drop_no_route: 0,
+        drop_route_source_mismatch: 0,
+        drop_unsupported_address: 0,
+        drop_frame_too_large: 0,
+    };
+
+    // Map the append-only axnet V3 source under the Service guard. The V2
+    // prefix fields are identical by construction; only the appended fields
+    // are copied, so no V2 field is ever reordered or overwritten.
+    let v3 = axnet::rx_snapshot_v3();
+    s.rx_slot_occupancy = v3.rx_slot_occupancy;
+    s.rx_slot_high_water = v3.rx_slot_high_water;
+    s.rx_slot_full = v3.rx_slot_full;
+    s.rx_slot_enqueue = v3.rx_slot_enqueue;
+    s.rx_slot_dequeue = v3.rx_slot_dequeue;
+    s.rx_slot_space_event = v3.rx_slot_space_event;
+    s.tx_slot_occupancy = v3.tx_slot_occupancy;
+    s.tx_slot_high_water = v3.tx_slot_high_water;
+    s.tx_slot_full = v3.tx_slot_full;
+    s.tx_slot_enqueue = v3.tx_slot_enqueue;
+    s.tx_slot_dequeue = v3.tx_slot_dequeue;
+    s.tx_slot_space_event = v3.tx_slot_space_event;
+    s.tx_submit = v3.tx_submit;
+    s.tx_again = v3.tx_again;
+    s.tx_completion = v3.tx_completion;
+    s.tx_reclaim = v3.tx_reclaim;
+    s.tx_buffer_available = v3.tx_buffer_available;
+    s.tx_buffer_inflight = v3.tx_buffer_inflight;
+    s.tx_descriptor_available = v3.tx_descriptor_available;
+    s.tx_descriptor_inflight = v3.tx_descriptor_inflight;
+    s.reclaim_exhausted = v3.reclaim_exhausted;
+    s.rx_exhausted = v3.rx_exhausted;
+    s.submit_exhausted = v3.submit_exhausted;
+    s.queue_generation = v3.queue_generation;
+    s.queue_wake = v3.queue_wake;
+    s.last_accepted = v3.last_accepted;
+    s.live = v3.live;
+    s.queued = v3.queued;
+    s.device_owned = v3.device_owned;
+    s.flush_target = v3.flush_target;
+    s.flush_success = v3.flush_success;
+    s.flush_error = v3.flush_error;
+    s.flush_busy = v3.flush_busy;
+    s.flush_cancel = v3.flush_cancel;
+    s.hold_mode = v3.hold_mode;
+    s.lease_expiry = v3.lease_expiry;
+    s.auto_release_failure = v3.auto_release_failure;
+    s.lifecycle_fault = v3.lifecycle_fault;
+    s.ownership_invariant = v3.ownership_invariant;
+    s.drop_malformed_ip = v3.drop_malformed_ip;
+    s.drop_no_route = v3.drop_no_route;
+    s.drop_route_source_mismatch = v3.drop_route_source_mismatch;
+    s.drop_unsupported_address = v3.drop_unsupported_address;
+    s.drop_frame_too_large = v3.drop_frame_too_large;
+    s
+}

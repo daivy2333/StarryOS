@@ -20,6 +20,9 @@ extern crate alloc;
 mod async_rx;
 mod consts;
 mod device;
+#[cfg(feature = "qemu-diagnostics")]
+mod diag;
+mod flush;
 mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
@@ -57,8 +60,8 @@ use self::{
 };
 pub use self::{
     async_rx::{
-        RX_TASK_NAME, RxSnapshot, publish_queue_event, publish_rx_event, rx_snapshot,
-        software_nudge, start_rx_task,
+        RX_TASK_NAME, RxSnapshot, RxSnapshotV3, publish_queue_event, publish_rx_event, rx_snapshot,
+        rx_snapshot_v3, software_nudge, start_rx_task,
     },
     socket::*,
 };
@@ -155,4 +158,28 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 pub fn poll_interfaces() {
     let owner = RX_LIFECYCLE.owner_view();
     while get_service().poll(owner, &mut SOCKET_SET.inner.lock()) {}
+}
+
+/// Applies a QEMU-only bounded pressure control (D9).
+///
+/// `op` is `HoldTxSubmit=1`, `HoldTxReclaim=2` (lease 1..=2000 ms) or
+/// `Release=3` (lease 0). Committing a hold publishes queue work so the sole
+/// owner pauses the matching stage; `Release` and lease expiry resume it.
+#[cfg(feature = "qemu-diagnostics")]
+pub fn diagnostic_control(op: u64, lease_ms: u64) -> axdriver::prelude::DevResult {
+    use crate::async_rx::QUEUE_EVENT;
+    diag::DIAGNOSTIC.control(op, lease_ms, diag::diag_now())?;
+    // Wake the queue owner so a sleeping task observes the new hold/release.
+    QUEUE_EVENT.publish_queue_work();
+    Ok(())
+}
+
+/// Reserves the sole C4 flush waiter and returns its future (D8).
+///
+/// The kernel ioctl wraps this in a fixed deadline; dropping the future
+/// clears the waiter without changing packet ownership.
+#[cfg(feature = "qemu-diagnostics")]
+pub fn flush() -> axdriver::prelude::DevResult<flush::FlushFuture> {
+    use crate::async_rx::ServiceAccess;
+    flush::flush_new(ServiceAccess::Global)
 }

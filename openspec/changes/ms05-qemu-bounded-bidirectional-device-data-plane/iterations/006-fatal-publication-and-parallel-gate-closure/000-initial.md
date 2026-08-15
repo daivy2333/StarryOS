@@ -1,4 +1,4 @@
-# Iteration 006: Fatal Publication and Parallel Gate Closure
+# Iteration 006 / Cycle 000: Fatal Publication and Parallel Gate Closure
 
 ## Plan Context
 
@@ -311,28 +311,66 @@ None。Task 3.7 完成；Tasks 4.1-4.3（Iteration 007）、5.1-5.2（008）、6
 
 ## Plan Review
 
-- Status: pending
+- Status: reviewed
 
 **Review Result**
 
-Pending.
+accepted
 
 **Findings**
 
-Pending.
+None。独立代码审查确认两条 terminal fault 路径都只通过 `publish_fatal()` 进入
+`Active -> Faulted`：successful AcqRel CAS 先提交 lifecycle，随后才以 Release 推进 generation
+并唤醒 stack role。非法 transition 只记录 `LIFECYCLE` 诊断，不发布不存在的 terminal progress。
+
+共享测试状态审查确认所有直接操作生产态 `QUEUE_EVENT`、比较 `RX_TELEMETRY` delta，或通过
+`Service::poll()` 触发这些全局状态的相关测试都使用同一 `SERIAL` 边界。Iteration 005 Review
+中缺锁的两个 deferred ARP tests 已纳入该边界；默认并行全量套件的新鲜 100 次重复无失败。
+
+Act Response 的 Blocker Handoff 为 `None`，实际工作区没有需要恢复的 blocked 状态。本 Cycle
+的 Persisted Evidence 模式为 `none`，未创建 `evidence/006-*` 符合计划。
 
 **Deviation Classification**
 
-Pending.
+None。实现、测试隔离和验证结果与 Cycle Plan Context 一致；HEAD 仍为 `244803fb`，没有影响
+本 Cycle Acceptance 的 baseline change。
+
+**Acceptance Gaps**
+
+None。
+
+**Convergence**
+
+N/A（initial Cycle）。Iteration 005 Review 的两个 gap 均已关闭：fatal publication ordering
+由 wake-time observer 见证，默认并行测试污染由 100 次 full-suite 重复验证关闭。
 
 **Evidence**
 
-Pending.
+- `crates/axnet/src/async_rx.rs::RxRxFuture::{publish_fatal,transition_fatal,poll_active,poll_register_recheck}`：state-first、event-after，非法 transition 不 publish。
+- `fatal_service_round_wake_observes_faulted_lifecycle`、`fatal_arm_recheck_wake_observes_faulted_lifecycle`：wake callback 当场观察 `Faulted`。
+- `illegal_fatal_transition_publishes_no_progress` 与 `fatal_paths_commit_before_publish_in_source`：非法路径和唯一 publication seam 的行为/source guard。
+- `crates/axnet/src/device/tests.rs` 两个 deferred ARP `Service::poll` tests：均持有 `SERIAL`。
+- `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib fatal -- --nocapture`：7 passed，exit 0。
+- 同 manifest 的 `service_poll` filter：9 passed，exit 0；两组 filter 各重复 100 次，100/100 PASS。
+- 默认并行 `--lib --quiet` 重复 100 次：100/100 PASS。
+- `--lib -- --test-threads=1`：188 passed，exit 0；仅作对照。
+- targeted `rustfmt --check`、strict OpenSpec validation、scoped `git diff --check`：均 exit 0。
+- `cargo check --offline -p starry-kernel --features qemu`：exit 0。现有 axnet 2 warnings 与 change 外 smoltcp/virtio warnings 不阻塞本 Cycle Acceptance。
 
 **Follow-up Decision**
 
-Pending.
+Iteration 006 Acceptance 已满足。Iteration Plan 保持不变；按既有 Map 展开 Iteration 007 的
+initial Cycle，继续 Tasks 4.1-4.3。不要在本 Review 中同步全局 tasks、刷新 SNAPSHOT 或归档
+change。
+
+**Iteration Plan Update**
+
+None。
+
+**Next Cycle**
+
+None。
 
 **Next Iteration**
 
-Pending.
+`../007-ticketed-flush-and-v3-diagnostics/000-initial.md`

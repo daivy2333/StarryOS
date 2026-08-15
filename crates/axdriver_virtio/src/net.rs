@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use axdriver_net::{
     EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps, NetQueueControl,
-    NetQueueDirection, NetTxQueue, TxCookie,
+    NetQueueDirection, NetTxQueue, TxCookie, TxResourceLedger,
 };
 use virtio_drivers::{Hal, device::net::VirtIONetRaw as InnerDev, transport::Transport};
 
@@ -34,6 +34,10 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     /// with a stable [`DevError::BadState`] instead of panicking or reusing
     /// state.
     tx_fault: bool,
+    /// RW-2: TX completions the transport has exposed in the used ring,
+    /// whether or not the reclaim later succeeded. Lets V3 distinguish
+    /// "completion observed" from "completion successfully reclaimed".
+    tx_completions_seen: u64,
     buf_pool: Arc<NetBufPool>,
     inner: InnerDev<H, T, QS>,
     irq: Option<usize>,
@@ -71,6 +75,7 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             free_tx_bufs,
             tx_fault_buf: None,
             tx_fault: false,
+            tx_completions_seen: 0,
             buf_pool,
             irq,
             #[cfg(test)]
@@ -313,6 +318,9 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
             return Err(DevError::BadState);
         }
         while let Some(token) = self.inner.poll_transmit() {
+            // A used-ring completion was exposed regardless of reclaim outcome
+            // (RW-2 completion vs reclaim observation).
+            self.tx_completions_seen += 1;
             let slot = token as usize;
             if slot >= QS {
                 return Err(self.enter_tx_fault(None));
@@ -434,6 +442,10 @@ impl<H: Hal, T: Transport, const QS: usize> NetTxQueue for VirtIoNetDev<H, T, QS
         let Some(token) = self.inner.poll_transmit() else {
             return Ok(None);
         };
+        // The used ring exposed a completion: observe it before any reclaim
+        // outcome, so V3 can distinguish completion from successful reclaim
+        // (RW-2).
+        self.tx_completions_seen += 1;
         let slot = token as usize;
         if slot >= QS {
             return Err(self.enter_tx_fault(None));
@@ -453,6 +465,20 @@ impl<H: Hal, T: Transport, const QS: usize> NetTxQueue for VirtIoNetDev<H, T, QS
         };
         self.free_tx_bufs.push(tx_buf);
         Ok(Some(cookie))
+    }
+
+    fn tx_resource_ledger(&self) -> Option<TxResourceLedger> {
+        let buffer_available = self.free_tx_bufs.len() as u64;
+        let descriptor_available = self.inner.send_available_desc() as u64;
+        Some(TxResourceLedger {
+            buffer_available,
+            // Every TX buffer is either free or owned by a slot/queue entry.
+            buffer_inflight: QS as u64 - buffer_available,
+            descriptor_available,
+            // Every descriptor is either free or part of an in-flight entry.
+            descriptor_inflight: QS as u64 - descriptor_available,
+            completions_seen: self.tx_completions_seen,
+        })
     }
 }
 
@@ -732,6 +758,70 @@ mod tests {
         assert!(!dev.can_transmit());
         assert!(matches!(dev.alloc_tx_buffer(100), Err(DevError::BadState)));
         assert!(matches!(dev.recycle_tx_buffers(), Err(DevError::BadState)));
+    }
+
+    #[test]
+    fn tx_resource_ledger_reports_real_buffer_and_descriptor_counts() {
+        // RW-2: the ledger must come from the real driver state, not a
+        // synthesis from ticket/slot capacities. `available + inflight` is
+        // exactly the fixed queue size at every step.
+        let (mut dev, device) = test_dev();
+        let qs = QS as u64;
+
+        // Fresh driver: all buffers and descriptors are available.
+        let l0 = dev.tx_resource_ledger().unwrap();
+        assert_eq!(l0.buffer_available, qs);
+        assert_eq!(l0.buffer_inflight, 0);
+        assert_eq!(l0.descriptor_available, qs);
+        assert_eq!(l0.descriptor_inflight, 0);
+        assert_eq!(l0.buffer_available + l0.buffer_inflight, qs);
+        assert_eq!(l0.descriptor_available + l0.descriptor_inflight, qs);
+
+        // Submit one: one buffer and one descriptor move in-flight.
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::new(1)).unwrap();
+        let l1 = dev.tx_resource_ledger().unwrap();
+        assert_eq!(l1.buffer_available, qs - 1);
+        assert_eq!(l1.buffer_inflight, 1);
+        assert_eq!(l1.descriptor_available, qs - 1);
+        assert_eq!(l1.descriptor_inflight, 1);
+        assert_eq!(l1.buffer_available + l1.buffer_inflight, qs);
+
+        // Completion observed: the reclaim call observes the used ring before
+        // returning the cookie, so completions_seen grows on the same call.
+        device.complete_tx(0, 100);
+        assert_eq!(dev.reclaim_tx().unwrap(), Some(TxCookie::new(1)));
+        let l2 = dev.tx_resource_ledger().unwrap();
+        assert_eq!(l2.completions_seen, 1);
+        // Reclaim: buffer/descriptor return to available, completion count
+        // stays observed.
+        let l3 = dev.tx_resource_ledger().unwrap();
+        assert_eq!(l3.buffer_available, qs);
+        assert_eq!(l3.buffer_inflight, 0);
+        assert_eq!(l3.descriptor_available, qs);
+        assert_eq!(l3.descriptor_inflight, 0);
+        assert_eq!(l3.completions_seen, 1);
+    }
+
+    #[test]
+    fn tx_resource_ledger_counts_completion_even_when_reclaim_faults() {
+        // RW-2: a completion is observed in the used ring even when the
+        // reclaim later enters a stable fault; completion and reclaim are
+        // independent counters.
+        let (mut dev, device) = test_dev();
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::new(7)).unwrap();
+
+        device.complete_tx(0, 100);
+        dev.fail_next_tx_completion();
+        assert!(matches!(dev.reclaim_tx(), Err(DevError::BadState)));
+        let ledger = dev.tx_resource_ledger().unwrap();
+        assert_eq!(
+            ledger.completions_seen, 1,
+            "completion observed despite fault"
+        );
+        assert_eq!(ledger.buffer_inflight, 1, "faulted buffer stays owned");
+        assert_eq!(ledger.buffer_available + ledger.buffer_inflight, QS as u64);
     }
 
     #[test]

@@ -24,6 +24,7 @@ qemu = [
     "dep:axdriver",
     "dep:axfs",
     "dep:axnet",
+    "axnet/qemu-diagnostics",
     "axdriver/virtio-net",
     "axfeat/fs-ng-ext4",
     "axfeat/task-ext",

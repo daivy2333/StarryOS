@@ -188,6 +188,26 @@ UART 已验证经验 MUST 可迁移到 NIC：最小 ISR、register-recheck、显
 - **WHEN** 开发者发现 ProcessMode 类有未构造变体的枚举
 - **THEN** MUST 先确认变体在所有 cfg 组合下均无构造路径，再删除
 
+### Requirement: K42 — 并发测试污染：症状、定位与隔离
+
+`no_std`/内核 crate 的 host 单元测试引入新的生产态全局共享状态（静态 `AtomicXxx` 单例、fake clock 等）时，MUST 同时设计测试隔离边界。生产代码路径（如 queue future 的每轮调度）读取该全局状态时，任何并行测试写它都会污染兄弟测试。诊断特征是**单测单独跑全过、全量并行跑失败、失败集合不稳定**（每次运行失败测试不同）。修复 MUST 优先走"实例注入"（生产用全局引用、测试注入各自独立实例），其次才是共享隔离边界（SERIAL）。
+
+**证据**: `ms05-qemu-bounded-bidirectional-device-data-plane` iter 007 `001-rework.md` Act Response；`crates/axnet/src/async_rx.rs` 的 `RxRxFuture::diag` 注入、`diag.rs` 的 `TEST_NOW`
+**状态**: ✅ 已验证，2026-08-15
+
+- **症状判定**: ① 单独跑目标测试通过，`cargo test` 全量并行失败；② 连续多次全量运行失败集合变化（10→4→5→7 这类漂移）；③ 失败集中在"走同一生产调度函数"的测试。三者齐备基本可判定为共享状态污染而非确定性逻辑 bug。
+- **根因形态**: 测试 A 写入全局静态（如 `DIAGNOSTIC` 设置 hold、`set_test_now` 推大 fake clock），测试 B 并行运行时生产路径读到被污染值走不同分支。本项目具体案例：`service_round` 无条件调用 `diag_hold_tick` 读全局 `DIAGNOSTIC`，RW-1 测试设置的 hold 泄漏到 telemetry/round 测试。
+- **隔离两层级**: ① 加锁串行化（Task 3.7 的 `SERIAL` 边界）只解决"写方之间"互斥，不解决"写方 vs 不持锁读者"——RW-1 初版只给 hold 测试加 SERIAL，telemetry 测试仍并行被污染；② 根本修复是把状态从全局改为**实例注入**：`RxRxFuture` 持有 `diag: &'static DiagnosticState`，生产传 `&DIAGNOSTIC`，每个测试 `Box::leak` 独立实例，写读都作用在同一实例上，跨测试零共享。
+- **配套纪律**: ① 测试结束时必须释放全局状态（hold 用 `OP_RELEASE`+`tick(u64::MAX)`，fake clock 复位 `set_test_now(0)`），否则泄漏到后续测试；② 测试断言必须读与生产路径**同一实例**的 telemetry（`fut.telemetry` 而非全局 `RX_TELEMETRY`），本项目曾因此断言误读；③ 引入任何新全局共享状态时，先回答"哪些并行测试会通过生产路径读它"。
+
+#### Scenario: 全量并行测试出现不稳定失败
+
+- **WHEN** 新加测试后全量 `cargo test` 失败集合不稳定，单独跑各自通过
+- **THEN** MUST 先对比单独/全量结果确认并行污染
+- **AND** MUST 检查测试是否通过生产代码路径读取被其他测试写入的全局静态状态
+- **AND** MUST 优先将共享状态改为 per-test 实例注入，而非仅加串行锁
+- **AND** MUST 确保每个写全局状态的测试结束时复位状态
+
 ### Requirement: K31 - QEMU 终端与网络端口是独立通道
 
 QEMU 终端与 hostfwd MUST 视为独立通道。`make run` 的终端 I/O 走 NS16550 MMIO UART。`-nographic` 将虚拟串口接到宿主标准输入输出。`hostfwd` 只转发网络端口。

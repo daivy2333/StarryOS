@@ -62,6 +62,12 @@ pub(crate) struct FixedFrameQueue<const CAP: usize, Meta: Copy = ()> {
     high_water: usize,
     /// Number of times the queue transitioned into full.
     full_events: u64,
+    /// Successful enqueues/fills.
+    enqueue_events: u64,
+    /// Successful pops.
+    dequeue_events: u64,
+    /// Full→space transitions (pop while full).
+    space_events: u64,
 }
 
 impl<const CAP: usize, Meta: Copy + Default> FixedFrameQueue<CAP, Meta> {
@@ -87,6 +93,9 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
             len: 0,
             high_water: 0,
             full_events: 0,
+            enqueue_events: 0,
+            dequeue_events: 0,
+            space_events: 0,
         }
     }
 
@@ -120,6 +129,21 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
         self.full_events
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn enqueue_events(&self) -> u64 {
+        self.enqueue_events
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dequeue_events(&self) -> u64 {
+        self.dequeue_events
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn space_events(&self) -> u64 {
+        self.space_events
+    }
+
     /// Side-effect-free exact preflight for a frame of `size` bytes.
     pub(crate) fn preflight(&self, size: usize) -> Result<(), QueueError> {
         if size > MAX_FRAME_SIZE {
@@ -148,6 +172,7 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
         self.tickets[slot] = ticket;
         self.len += 1;
         self.high_water = self.high_water.max(self.len);
+        self.enqueue_events += 1;
         if self.len == CAP {
             self.full_events += 1;
         }
@@ -186,6 +211,7 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
         self.tickets[slot] = ticket;
         self.len += 1;
         self.high_water = self.high_water.max(self.len);
+        self.enqueue_events += 1;
         if self.len == CAP {
             self.full_events += 1;
         }
@@ -242,15 +268,29 @@ impl<const CAP: usize, Meta: Copy> FixedFrameQueue<CAP, Meta> {
         self.tickets[self.head] = None;
         self.head = (self.head + 1) % CAP;
         self.len -= 1;
+        self.dequeue_events += 1;
+        if was_full {
+            self.space_events += 1;
+        }
         Some(was_full)
     }
+}
+
+/// Lifecycle state of one live TX ticket (D8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TicketState {
+    /// The frame sits in the fixed TX slot; the driver has not accepted it.
+    Queued,
+    /// The driver accepted the frame; its completion is outstanding.
+    DeviceOwned,
 }
 
 /// A checked monotonic TX ticket allocator with a fixed live-ticket backing.
 pub(crate) struct TicketTracker {
     next: u64,
-    live: Box<[Option<u64>]>,
+    live: Box<[Option<(u64, TicketState)>]>,
     live_len: usize,
+    last_accepted: Option<u64>,
 }
 
 impl TicketTracker {
@@ -259,11 +299,12 @@ impl TicketTracker {
             next: 0,
             live: vec![None; MAX_LIVE_TICKETS].into_boxed_slice(),
             live_len: 0,
+            last_accepted: None,
         }
     }
 
-    /// Allocates the next ticket. Fails when the live backing is full or when
-    /// the counter cannot advance past `u64::MAX`.
+    /// Allocates the next ticket as `Queued`. Fails when the live backing is
+    /// full or when the counter cannot advance past `u64::MAX`.
     pub(crate) fn alloc(&mut self) -> Result<u64, TicketError> {
         if self.live_len == MAX_LIVE_TICKETS {
             return Err(TicketError::LiveFull);
@@ -279,8 +320,9 @@ impl TicketTracker {
             .iter_mut()
             .position(|entry| entry.is_none())
             .expect("live backing has a free slot");
-        self.live[slot] = Some(ticket);
+        self.live[slot] = Some((ticket, TicketState::Queued));
         self.live_len += 1;
+        self.last_accepted = Some(ticket);
         Ok(ticket)
     }
 
@@ -291,9 +333,75 @@ impl TicketTracker {
         self.live_len < MAX_LIVE_TICKETS && self.next != u64::MAX
     }
 
-    /// Releases a ticket; returns whether it was live.
-    pub(crate) fn release(&mut self, ticket: u64) -> bool {
-        let Some(slot) = self.live.iter().position(|entry| *entry == Some(ticket)) else {
+    /// Transitions one `Queued` ticket to `DeviceOwned` (D8). Returns `false`
+    /// for an unknown ticket or a second transition: both are owner drift.
+    pub(crate) fn mark_device_owned(&mut self, ticket: u64) -> bool {
+        let Some(slot) = self
+            .live
+            .iter()
+            .position(|entry| *entry == Some((ticket, TicketState::Queued)))
+        else {
+            return false;
+        };
+        self.live[slot] = Some((ticket, TicketState::DeviceOwned));
+        true
+    }
+
+    /// Removes a `Queued` ticket whose slot-fill aborted before submission.
+    pub(crate) fn release_queued(&mut self, ticket: u64) -> bool {
+        self.remove(ticket, Some(TicketState::Queued))
+    }
+
+    /// Removes a `DeviceOwned` ticket whose completion was reclaimed (C4).
+    /// A non-`DeviceOwned` or unknown cookie is owner drift, not a success.
+    pub(crate) fn release_device_owned(&mut self, ticket: u64) -> bool {
+        self.remove(ticket, Some(TicketState::DeviceOwned))
+    }
+
+    /// Whether any live ticket is at or before `target` (D8 flush predicate).
+    pub(crate) fn has_live_at_or_before(&self, target: u64) -> bool {
+        self.live
+            .iter()
+            .any(|entry| matches!(entry, Some((t, _)) if *t <= target))
+    }
+
+    /// D8 C4 flush completion: `None` (empty data plane) is always complete;
+    /// `Some(target)` completes once no live ticket `<= target` remains.
+    pub(crate) fn flush_done(&self, target: Option<u64>) -> bool {
+        match target {
+            None => true,
+            Some(target) => !self.has_live_at_or_before(target),
+        }
+    }
+
+    /// The most recently accepted ticket, used as the flush target source.
+    pub(crate) fn last_accepted(&self) -> Option<u64> {
+        self.last_accepted
+    }
+
+    /// Number of live tickets still waiting in TX slots (D8).
+    #[allow(dead_code)]
+    pub(crate) fn queued_len(&self) -> usize {
+        self.live
+            .iter()
+            .filter(|entry| matches!(entry, Some((_, TicketState::Queued))))
+            .count()
+    }
+
+    /// Number of live tickets submitted to the driver with outstanding
+    /// completions (D8).
+    #[allow(dead_code)]
+    pub(crate) fn device_owned_len(&self) -> usize {
+        self.live
+            .iter()
+            .filter(|entry| matches!(entry, Some((_, TicketState::DeviceOwned))))
+            .count()
+    }
+
+    fn remove(&mut self, ticket: u64, expected: Option<TicketState>) -> bool {
+        let Some(slot) = self.live.iter().position(|entry| {
+            matches!(entry, Some((t, state)) if *t == ticket && expected.is_none_or(|e| *state == e))
+        }) else {
             return false;
         };
         self.live[slot] = None;
@@ -305,7 +413,9 @@ impl TicketTracker {
     // telemetry; unused in the product polling path.
     #[allow(dead_code)]
     pub(crate) fn contains(&self, ticket: u64) -> bool {
-        self.live.iter().any(|entry| *entry == Some(ticket))
+        self.live
+            .iter()
+            .any(|entry| matches!(entry, Some((t, _)) if *t == ticket))
     }
 
     #[allow(dead_code)]
@@ -578,7 +688,7 @@ mod tests {
         let _ = q.pop();
         let _ = q.preflight(10);
         let ticket = tracker.alloc().unwrap();
-        tracker.release(ticket);
+        tracker.release_queued(ticket);
         assert_eq!(
             alloc_count(),
             frozen,
@@ -596,9 +706,9 @@ mod tests {
         assert!(tracker.contains(a));
         assert!(tracker.contains(b));
         assert_eq!(tracker.live_len(), 2);
-        assert!(tracker.release(a));
+        assert!(tracker.release_queued(a));
         assert!(!tracker.contains(a));
-        assert!(!tracker.release(a));
+        assert!(!tracker.release_queued(a));
         assert_eq!(tracker.live_len(), 1);
     }
 
@@ -611,7 +721,7 @@ mod tests {
         assert_eq!(tracker.live_len(), MAX_LIVE_TICKETS);
         assert_eq!(tracker.alloc(), Err(TicketError::LiveFull));
         // Releasing a ticket makes room again.
-        tracker.release(0);
+        tracker.release_queued(0);
         assert_eq!(tracker.alloc(), Ok(MAX_LIVE_TICKETS as u64));
     }
 
@@ -622,5 +732,142 @@ mod tests {
         assert_eq!(tracker.alloc(), Err(TicketError::CounterExhausted));
         // No ticket was consumed.
         assert_eq!(tracker.live_len(), 0);
+    }
+
+    // ---- Task 4.1: ticket lifecycle states and target-scoped C4 flush ----
+
+    #[test]
+    fn ticket_alloc_sets_queued_state_and_last_accepted() {
+        let mut tracker = TicketTracker::new();
+        assert_eq!(tracker.last_accepted(), None);
+        let a = tracker.alloc().unwrap();
+        assert_eq!(tracker.last_accepted(), Some(a));
+        assert_eq!(tracker.queued_len(), 1);
+        assert_eq!(tracker.device_owned_len(), 0);
+        let b = tracker.alloc().unwrap();
+        assert_eq!(tracker.last_accepted(), Some(b));
+        assert_eq!(tracker.queued_len(), 2);
+        assert_eq!(tracker.live_len(), 2);
+    }
+
+    #[test]
+    fn ticket_mark_device_owned_transitions_state_exactly_once() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap();
+        // A Queued ticket can be submitted to the driver exactly once.
+        assert!(tracker.mark_device_owned(a));
+        assert_eq!(tracker.queued_len(), 0);
+        assert_eq!(tracker.device_owned_len(), 1);
+        // A second transition is drift: never a silent success.
+        assert!(!tracker.mark_device_owned(a));
+        assert_eq!(tracker.device_owned_len(), 1);
+        // An unknown ticket cannot transition.
+        assert!(!tracker.mark_device_owned(99));
+    }
+
+    #[test]
+    fn reclaim_only_releases_device_owned_tickets() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap();
+        // The ticket is still Queued (never submitted): a completion cookie
+        // matching it is ownership drift, not a successful reclaim.
+        assert!(!tracker.release_device_owned(a));
+        assert_eq!(tracker.live_len(), 1);
+        tracker.mark_device_owned(a);
+        assert!(tracker.release_device_owned(a));
+        assert_eq!(tracker.live_len(), 0);
+        // A duplicate completion cookie is drift.
+        assert!(!tracker.release_device_owned(a));
+    }
+
+    #[test]
+    fn release_queued_ticket_cancels_pre_submit_abort() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap();
+        // The generic release backs the slot-fill abort path where a Queued
+        // ticket must be returned without a completion.
+        assert!(tracker.release_queued(a));
+        assert_eq!(tracker.live_len(), 0);
+        assert_eq!(tracker.last_accepted(), Some(a));
+        assert!(!tracker.release_queued(a));
+    }
+
+    #[test]
+    fn flush_done_empty_data_plane_succeeds_immediately() {
+        let tracker = TicketTracker::new();
+        assert!(tracker.flush_done(None));
+    }
+
+    #[test]
+    fn flush_done_queued_ticket_blocks_until_submit_and_reclaim() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap();
+        // A Queued ticket is still live: the flush target is not satisfied.
+        assert!(!tracker.flush_done(Some(a)));
+        // Submitting keeps the ticket live until the completion is reclaimed.
+        tracker.mark_device_owned(a);
+        assert!(!tracker.flush_done(Some(a)));
+        tracker.release_device_owned(a);
+        assert!(tracker.flush_done(Some(a)));
+    }
+
+    #[test]
+    fn flush_done_out_of_order_hole_blocks_until_all_target_tickets_reclaimed() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap(); // 0
+        let b = tracker.alloc().unwrap(); // 1
+        let c = tracker.alloc().unwrap(); // 2
+        for t in [a, b, c] {
+            tracker.mark_device_owned(t);
+        }
+        // Reclaim out of order: 2 then 0 leaves the hole at 1.
+        assert!(tracker.release_device_owned(c));
+        assert!(!tracker.flush_done(Some(c)));
+        assert!(tracker.release_device_owned(a));
+        assert!(!tracker.flush_done(Some(c)));
+        assert!(tracker.release_device_owned(b));
+        assert!(tracker.flush_done(Some(c)));
+    }
+
+    #[test]
+    fn flush_done_post_target_tickets_do_not_block() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap(); // 0
+        let b = tracker.alloc().unwrap(); // 1
+        tracker.mark_device_owned(a);
+        tracker.mark_device_owned(b);
+        // Flush target 0: ticket 1 accepted after the target is irrelevant.
+        assert!(!tracker.flush_done(Some(a)));
+        tracker.release_device_owned(a);
+        assert!(tracker.flush_done(Some(a)));
+        assert!(!tracker.flush_done(Some(b)));
+    }
+
+    #[test]
+    fn flush_done_never_mutates_live_set() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap();
+        let b = tracker.alloc().unwrap();
+        tracker.mark_device_owned(a);
+        assert!(!tracker.flush_done(Some(a)));
+        assert!(!tracker.flush_done(Some(b)));
+        assert_eq!(tracker.live_len(), 2);
+        assert_eq!(tracker.queued_len(), 1);
+        assert_eq!(tracker.device_owned_len(), 1);
+    }
+
+    #[test]
+    fn ticket_counter_exhaustion_keeps_flush_semantics() {
+        let mut tracker = TicketTracker::new();
+        let a = tracker.alloc().unwrap();
+        tracker.mark_device_owned(a);
+        tracker.next = u64::MAX;
+        // The allocator refuses to advance past u64::MAX: no ticket aliases
+        // the sentinel and flush completion still depends only on the live set.
+        assert_eq!(tracker.alloc(), Err(TicketError::CounterExhausted));
+        assert_eq!(tracker.last_accepted(), Some(a));
+        assert!(!tracker.flush_done(Some(a)));
+        tracker.release_device_owned(a);
+        assert!(tracker.flush_done(Some(a)));
     }
 }

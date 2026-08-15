@@ -5,7 +5,9 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use axdriver::prelude::*;
-use axdriver_net::{NetBuf, NetBufPool, NetQueueControl, NetQueueDirection, NetTxQueue, TxCookie};
+use axdriver_net::{
+    NetBuf, NetBufPool, NetQueueControl, NetQueueDirection, NetTxQueue, TxCookie, TxResourceLedger,
+};
 use axerrno::{AxError, AxResult};
 use memory_addr::{PhysAddr, VirtAddr};
 use smoltcp::{
@@ -23,6 +25,7 @@ use crate::{
     consts::STANDARD_MTU,
     device::{
         Device, EthernetDevice, LoopbackDevice, RxStep, TxOutcome, TxPreflight, TxReclaimStep,
+        TxSubmitStep,
     },
     router::{Router, Rule, RxOwnerView},
     service::Service,
@@ -68,6 +71,9 @@ struct FakeStats {
     can_transmit_calls: Mutex<usize>,
     /// Scripted TX completion cookies, consumed in order by `reclaim_tx`.
     reclaim_cookies: Mutex<VecDeque<u64>>,
+    /// RW-2: scripted driver ledger. `Some` makes `tx_resource_ledger` report
+    /// a real ledger; `None` (default) means the driver cannot observe one.
+    ledger: Mutex<Option<TxResourceLedger>>,
 }
 
 impl FakeStats {
@@ -198,6 +204,10 @@ impl NetTxQueue for FakeTxQueue {
             .lock()
             .pop_front()
             .map(TxCookie::new))
+    }
+
+    fn tx_resource_ledger(&self) -> Option<TxResourceLedger> {
+        *self.stats.ledger.lock()
     }
 }
 
@@ -2284,7 +2294,10 @@ fn reclaim_duplicate_cookie_faults_after_release() {
         Instant::from_millis_const(0),
     );
     assert!(matches!(outcome, TxOutcome::Accepted { .. }));
-    // The first reclaim releases the matching live ticket.
+    // Submitting the slot transitions ticket 0 Queued -> DeviceOwned (D8);
+    // only a DeviceOwned ticket may be reclaimed.
+    assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+    // The first reclaim releases the matching DeviceOwned ticket.
     stats.reclaim_cookies.lock().push_back(0);
     assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
     // The same cookie is now stale: a duplicate must fault, not re-reclaim.
@@ -2309,7 +2322,11 @@ fn reclaim_valid_cookie_still_releases_matching_ticket() {
         );
         assert!(matches!(outcome, TxOutcome::Accepted { .. }));
     }
-    // Reclaiming ticket 1 releases exactly that live ticket.
+    // Submit both slots so the tickets become DeviceOwned and reclaimable.
+    for _ in 0..2 {
+        assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+    }
+    // Reclaiming ticket 1 releases exactly that DeviceOwned ticket.
     stats.reclaim_cookies.lock().push_back(1);
     assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
     // Ticket 0 is still live and reclaimable.
@@ -2482,4 +2499,91 @@ fn service_poll_deferred_arp_retries_once_after_tx_space() {
         64,
         "exactly one reply committed into the freed slot"
     );
+}
+
+// ── RW-2: real driver TX resource ledger and ownership invariant ────────
+
+#[test]
+fn tx_resource_ledger_forwards_driver_counts_and_conserves_capacity() {
+    // A scripted driver ledger must be forwarded unchanged through the
+    // EthernetDevice, with `available + inflight` equal to the fixed capacity.
+    let pool = NetBufPool::new(8, 2048).expect("pool alloc");
+    let stats = Arc::new(FakeStats::new());
+    *stats.ledger.lock() = Some(TxResourceLedger {
+        buffer_available: 3,
+        buffer_inflight: 1,
+        descriptor_available: 2,
+        descriptor_inflight: 2,
+        completions_seen: 5,
+    });
+    let nic = FakeNic {
+        pool,
+        stats: stats.clone(),
+        control: None,
+        tx_queue: Some(FakeTxQueue {
+            stats: stats.clone(),
+        }),
+    };
+    let mut dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
+    let ledger = dev.tx_resource_ledger().expect("ledger present");
+    assert_eq!(ledger.buffer_available, 3);
+    assert_eq!(ledger.buffer_inflight, 1);
+    assert_eq!(ledger.descriptor_available, 2);
+    assert_eq!(ledger.descriptor_inflight, 2);
+    assert_eq!(ledger.completions_seen, 5);
+    assert_eq!(ledger.buffer_available + ledger.buffer_inflight, 4);
+    assert_eq!(ledger.descriptor_available + ledger.descriptor_inflight, 4);
+}
+
+#[test]
+fn tx_resource_ledger_is_none_when_driver_cannot_observe_it() {
+    // The default (no scripted ledger) reports `None`; the V3 snapshot must
+    // not synthesize numbers from ticket/slot capacities.
+    let pool = NetBufPool::new(8, 2048).expect("pool alloc");
+    let stats = Arc::new(FakeStats::new());
+    let nic = FakeNic {
+        pool,
+        stats: stats.clone(),
+        control: None,
+        tx_queue: Some(FakeTxQueue {
+            stats: stats.clone(),
+        }),
+    };
+    let mut dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
+    assert!(dev.tx_resource_ledger().is_none());
+}
+
+#[test]
+fn v3_snapshot_maps_real_driver_ledger_under_the_service_guard() {
+    // The V3 snapshot must report the driver's real buffer/descriptor counts,
+    // not a synthesis from ticket capacities (`MAX_LIVE_TICKETS - live`).
+    let pool = NetBufPool::new(8, 2048).expect("pool alloc");
+    let stats = Arc::new(FakeStats::new());
+    *stats.ledger.lock() = Some(TxResourceLedger {
+        buffer_available: 3,
+        buffer_inflight: 1,
+        descriptor_available: 2,
+        descriptor_inflight: 2,
+        completions_seen: 7,
+    });
+    let nic = FakeNic {
+        pool,
+        stats: stats.clone(),
+        control: None,
+        tx_queue: Some(FakeTxQueue {
+            stats: stats.clone(),
+        }),
+    };
+    let dev = EthernetDevice::new("eth0".into(), Box::new(nic), TEST_IP);
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    let mut service = Service::new(router, Some(eth));
+    let ledger = service.v3_tx_resource_ledger().expect("ledger present");
+    assert_eq!(ledger.buffer_available, 3);
+    assert_eq!(ledger.buffer_inflight, 1);
+    assert_eq!(ledger.descriptor_available, 2);
+    assert_eq!(ledger.descriptor_inflight, 2);
+    // The driver's fixed capacity is exactly the sum.
+    assert_eq!(ledger.buffer_available + ledger.buffer_inflight, 4);
+    assert_eq!(ledger.descriptor_available + ledger.descriptor_inflight, 4);
 }

@@ -312,3 +312,130 @@ pub struct IrqSnapshotV2 {
     /// Last error code.
     pub last_error_code: u64,
 }
+
+/// Fixed MS05 diagnostic snapshot for guest ioctl `0x4e49_4433`.
+///
+/// The first 28 `u64` fields are exactly [`IrqSnapshotV2`] byte-for-byte; the
+/// remaining 44 fields append the MS05 slots/tickets/flush/drop/diagnostic
+/// ledger. This is an independent wire type and must never be aliased to or
+/// embed V1/V2.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrqSnapshotV3 {
+    pub total: u64,
+    pub used_ring: u64,
+    pub config_change: u64,
+    pub combined: u64,
+    pub unknown: u64,
+    pub spurious: u64,
+    pub ack_count: u64,
+    pub uart_irq_count: u64,
+    pub restore_violation: u64,
+    pub irq_enabled_entry: u64,
+    pub rx_lifecycle: u64,
+    pub rx_owner: u64,
+    pub isr_publish: u64,
+    pub isr_wake: u64,
+    pub software_nudge: u64,
+    pub task_poll: u64,
+    pub reaped: u64,
+    pub refilled: u64,
+    pub delivered: u64,
+    pub non_ip_consumed: u64,
+    pub budget_exhausted: u64,
+    pub self_yield: u64,
+    pub router_full_wait: u64,
+    pub space_wake: u64,
+    pub empty_check: u64,
+    pub fault: u64,
+    pub last_error_stage: u64,
+    pub last_error_code: u64,
+    /// RX slot occupancy (live frames in the fixed RX slots).
+    pub rx_slot_occupancy: u64,
+    /// RX slot high-water mark.
+    pub rx_slot_high_water: u64,
+    /// RX slot full transitions.
+    pub rx_slot_full: u64,
+    /// RX slot enqueue counter.
+    pub rx_slot_enqueue: u64,
+    /// RX slot dequeue counter.
+    pub rx_slot_dequeue: u64,
+    /// RX slot full→space events.
+    pub rx_slot_space_event: u64,
+    /// TX slot occupancy (live frames in the fixed TX slots).
+    pub tx_slot_occupancy: u64,
+    /// TX slot high-water mark.
+    pub tx_slot_high_water: u64,
+    /// TX slot full transitions.
+    pub tx_slot_full: u64,
+    /// TX slot enqueue counter.
+    pub tx_slot_enqueue: u64,
+    /// TX slot dequeue counter.
+    pub tx_slot_dequeue: u64,
+    /// TX slot full→space events.
+    pub tx_slot_space_event: u64,
+    /// TX submits accepted by the driver.
+    pub tx_submit: u64,
+    /// TX submit `Again` backpressures.
+    pub tx_again: u64,
+    /// TX completions observed from the driver.
+    pub tx_completion: u64,
+    /// TX completions reclaimed (matching DeviceOwned ticket).
+    pub tx_reclaim: u64,
+    /// TX buffer slots still available to the queue owner.
+    pub tx_buffer_available: u64,
+    /// TX buffer slots currently inflight (submitted, not reclaimed).
+    pub tx_buffer_inflight: u64,
+    /// TX descriptors still available.
+    pub tx_descriptor_available: u64,
+    /// TX descriptors currently inflight.
+    pub tx_descriptor_inflight: u64,
+    /// Queue rounds that exhausted the reclaim budget.
+    pub reclaim_exhausted: u64,
+    /// Queue rounds that exhausted the RX copy budget.
+    pub rx_exhausted: u64,
+    /// Queue rounds that exhausted the submit budget.
+    pub submit_exhausted: u64,
+    /// Shared queue event generation.
+    pub queue_generation: u64,
+    /// Queue-owner wake count.
+    pub queue_wake: u64,
+    /// Last accepted TX ticket (`u64::MAX` when none).
+    pub last_accepted: u64,
+    /// Live ticket count.
+    pub live: u64,
+    /// Queued ticket count.
+    pub queued: u64,
+    /// DeviceOwned ticket count.
+    pub device_owned: u64,
+    /// Flush target (`u64::MAX` when none).
+    pub flush_target: u64,
+    /// Flush successes.
+    pub flush_success: u64,
+    /// Flush faults.
+    pub flush_error: u64,
+    /// Flush `ResourceBusy` rejections.
+    pub flush_busy: u64,
+    /// Flush cancellations (future dropped before completion).
+    pub flush_cancel: u64,
+    /// Diagnostic hold mode (0 none, 1 submit, 2 reclaim).
+    pub hold_mode: u64,
+    /// Diagnostic lease expiry deadline (nanos; 0 when no hold).
+    pub lease_expiry: u64,
+    /// Auto-release failures after lease expiry.
+    pub auto_release_failure: u64,
+    /// Lifecycle transition faults.
+    pub lifecycle_fault: u64,
+    /// TX ownership invariant violations.
+    pub ownership_invariant: u64,
+    /// `TxDropReason::MalformedIp` counter.
+    pub drop_malformed_ip: u64,
+    /// `TxDropReason::NoRoute` counter.
+    pub drop_no_route: u64,
+    /// `TxDropReason::RouteSourceMismatch` counter.
+    pub drop_route_source_mismatch: u64,
+    /// `TxDropReason::UnsupportedAddress` counter.
+    pub drop_unsupported_address: u64,
+    /// `TxDropReason::FrameTooLarge` counter.
+    pub drop_frame_too_large: u64,
+}

@@ -360,3 +360,279 @@ fn legacy_v1_write_does_not_touch_adjacent_canaries() {
     assert_eq!(guarded[0], 0xa5a5_a5a5_a5a5_a5a5);
     assert_eq!(guarded[9], 0xa5a5_a5a5_a5a5_a5a5);
 }
+
+// ── Task 4.2: append-only V3 diagnostic snapshot ──────────────────────
+
+#[test]
+fn snapshot_v3_is_larger_than_v2_without_reusing_it() {
+    // V3 is an independent wire type: strictly larger than V2 and never an
+    // alias/embed of V1 or V2.
+    assert!(core::mem::size_of::<IrqSnapshotV3>() > core::mem::size_of::<IrqSnapshotV2>());
+    assert_eq!(
+        core::mem::align_of::<IrqSnapshotV3>(),
+        core::mem::align_of::<u64>()
+    );
+}
+
+#[test]
+fn snapshot_v3_preserves_the_full_v2_prefix_byte_for_byte() {
+    // The first 28 u64 fields of V3 are exactly the V2 fields in order, so an
+    // existing V2 consumer reading only the prefix observes identical data.
+    for (offset, field) in [
+        (0u8, "total"),
+        (1, "used_ring"),
+        (2, "config_change"),
+        (3, "combined"),
+        (4, "unknown"),
+        (5, "spurious"),
+        (6, "ack_count"),
+        (7, "uart_irq_count"),
+        (8, "restore_violation"),
+        (9, "irq_enabled_entry"),
+        (10, "rx_lifecycle"),
+        (11, "rx_owner"),
+        (12, "isr_publish"),
+        (13, "isr_wake"),
+        (14, "software_nudge"),
+        (15, "task_poll"),
+        (16, "reaped"),
+        (17, "refilled"),
+        (18, "delivered"),
+        (19, "non_ip_consumed"),
+        (20, "budget_exhausted"),
+        (21, "self_yield"),
+        (22, "router_full_wait"),
+        (23, "space_wake"),
+        (24, "empty_check"),
+        (25, "fault"),
+        (26, "last_error_stage"),
+        (27, "last_error_code"),
+    ] {
+        let v2 = core::mem::offset_of!(IrqSnapshotV2, last_error_code);
+        assert!(
+            v2 >= (offset as usize) * 8,
+            "V2 prefix truncated at {field}"
+        );
+    }
+}
+
+#[test]
+fn snapshot_v3_appended_fields_follow_the_fixed_order() {
+    // Appended fields start at field index 28 (byte 224). The order is fixed
+    // by the MS05 V3 ABI; every field is u64-aligned.
+    let base = 28usize;
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_slot_occupancy),
+        (base + 0) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_slot_high_water),
+        (base + 1) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_slot_full),
+        (base + 2) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_slot_enqueue),
+        (base + 3) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_slot_dequeue),
+        (base + 4) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_slot_space_event),
+        (base + 5) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_slot_occupancy),
+        (base + 6) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_slot_high_water),
+        (base + 7) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_slot_full),
+        (base + 8) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_slot_enqueue),
+        (base + 9) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_slot_dequeue),
+        (base + 10) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_slot_space_event),
+        (base + 11) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_submit),
+        (base + 12) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_again),
+        (base + 13) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_completion),
+        (base + 14) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_reclaim),
+        (base + 15) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_buffer_available),
+        (base + 16) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_buffer_inflight),
+        (base + 17) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_descriptor_available),
+        (base + 18) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, tx_descriptor_inflight),
+        (base + 19) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, reclaim_exhausted),
+        (base + 20) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, rx_exhausted),
+        (base + 21) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, submit_exhausted),
+        (base + 22) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, queue_generation),
+        (base + 23) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, queue_wake),
+        (base + 24) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, last_accepted),
+        (base + 25) * 8
+    );
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV3, live), (base + 26) * 8);
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, queued),
+        (base + 27) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, device_owned),
+        (base + 28) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, flush_target),
+        (base + 29) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, flush_success),
+        (base + 30) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, flush_error),
+        (base + 31) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, flush_busy),
+        (base + 32) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, flush_cancel),
+        (base + 33) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, hold_mode),
+        (base + 34) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, lease_expiry),
+        (base + 35) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, auto_release_failure),
+        (base + 36) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, lifecycle_fault),
+        (base + 37) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, ownership_invariant),
+        (base + 38) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, drop_malformed_ip),
+        (base + 39) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, drop_no_route),
+        (base + 40) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, drop_route_source_mismatch),
+        (base + 41) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, drop_unsupported_address),
+        (base + 42) * 8
+    );
+    assert_eq!(
+        core::mem::offset_of!(IrqSnapshotV3, drop_frame_too_large),
+        (base + 43) * 8
+    );
+    // 28 V2 prefix + 44 appended = 72 u64 fields.
+    assert_eq!(core::mem::size_of::<IrqSnapshotV3>(), 72 * 8);
+}
+
+#[test]
+fn snapshot_v3_is_a_distinct_struct_never_aliased_to_v2() {
+    const LOGIC: &str = include_str!("../kernel/src/drivers/virtio_net_irq_logic.rs");
+    assert!(LOGIC.contains("pub struct IrqSnapshotV3"));
+    assert!(!LOGIC.contains("type IrqSnapshotV3 = IrqSnapshotV2"));
+}
+
+#[test]
+fn v3_snapshot_command_and_write_path_are_gated_and_distinct() {
+    const CTL: &str = include_str!("../kernel/src/syscall/fs/ctl.rs");
+    assert!(CTL.contains("NET_IRQ_SNAPSHOT_V3: u32 = 0x4e49_4433"));
+    assert!(CTL.contains("IrqSnapshotV3).vm_write(snapshot)"));
+    // V1/V2 commands and write paths must remain untouched.
+    assert!(CTL.contains("NET_IRQ_SNAPSHOT_V1: u32 = 0x4e49_4431"));
+    assert!(CTL.contains("NET_IRQ_SNAPSHOT_V2: u32 = 0x4e49_4432"));
+    assert!(CTL.contains("IrqSnapshotV1).vm_write(snapshot)"));
+    assert!(CTL.contains("IrqSnapshotV2).vm_write(snapshot)"));
+}
+
+#[test]
+fn v3_diagnostic_controls_and_flush_are_qemu_gated() {
+    const CTL: &str = include_str!("../kernel/src/syscall/fs/ctl.rs");
+    // The controls must be compile-gated behind the kernel `qemu` feature so
+    // D1 and non-QEMU builds never expose them.
+    assert!(
+        CTL.contains("#[cfg(feature = \"qemu\")]\nconst NET_DIAGNOSTIC_CONTROL: u32 = 0x4e49_4331")
+    );
+    assert!(CTL.contains("#[cfg(feature = \"qemu\")]\nconst NET_FLUSH: u32 = 0x4e49_4631"));
+    assert!(CTL.contains("axnet::diagnostic_control"));
+    assert!(CTL.contains("axnet::flush()"));
+}
+
+#[test]
+fn axnet_exposes_a_v3_snapshot_source() {
+    const AXNET: &str = include_str!("../crates/axnet/src/lib.rs");
+    assert!(AXNET.contains("RxSnapshotV3"));
+    assert!(AXNET.contains("snapshot_v3"));
+}

@@ -29,7 +29,12 @@ const UART_TXDBG_SNAPSHOT: u32 = 0x5458_4431;
 const UART_TXDBG_RESET: u32 = 0x5458_4432;
 const NET_IRQ_SNAPSHOT_V1: u32 = 0x4e49_4431;
 const NET_IRQ_SNAPSHOT_V2: u32 = 0x4e49_4432;
+const NET_IRQ_SNAPSHOT_V3: u32 = 0x4e49_4433;
 const NET_RX_SOFTWARE_NUDGE: u32 = 0x4e49_4e31;
+#[cfg(feature = "qemu")]
+const NET_DIAGNOSTIC_CONTROL: u32 = 0x4e49_4331;
+#[cfg(feature = "qemu")]
+const NET_FLUSH: u32 = 0x4e49_4631;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -114,9 +119,52 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         return Ok(0);
     }
     #[cfg(not(feature = "lichee-d1"))]
+    if cmd == NET_IRQ_SNAPSHOT_V3 {
+        let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v3();
+        (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV3).vm_write(snapshot)?;
+        return Ok(0);
+    }
+    #[cfg(not(feature = "lichee-d1"))]
     if cmd == NET_RX_SOFTWARE_NUDGE {
         axnet::software_nudge();
         return Ok(0);
+    }
+    // QEMU-only bounded pressure controls (MS05 D9): the probe holds a TX
+    // stage to force exact slot/descriptor Full, then releases. The 2-second
+    // lease auto-releases on expiry so a crashed probe cannot stall the NIC.
+    #[cfg(feature = "qemu")]
+    if cmd == NET_DIAGNOSTIC_CONTROL {
+        let payload = (arg as *const [u64; 2]).vm_read()?;
+        axnet::diagnostic_control(payload[0], payload[1]).map_err(|err| match err {
+            axdriver::prelude::DevError::InvalidParam => AxError::InvalidInput,
+            axdriver::prelude::DevError::ResourceBusy => AxError::WouldBlock,
+            _ => AxError::Io,
+        })?;
+        return Ok(0);
+    }
+    // QEMU-only C4 flush: wait for all driver buffers at or before the
+    // construction-time ticket to be reclaimed, bounded by a 2-second
+    // deadline. Timeout returns `TimedOut`; dropping the future clears the
+    // waiter without changing packet ownership.
+    #[cfg(feature = "qemu")]
+    if cmd == NET_FLUSH {
+        let flush = axnet::flush().map_err(|err| match err {
+            axdriver::prelude::DevError::ResourceBusy => AxError::WouldBlock,
+            axdriver::prelude::DevError::InvalidParam => AxError::InvalidInput,
+            _ => AxError::Io,
+        })?;
+        let result = block_on(axtask::future::timeout(Some(Duration::from_secs(2)), flush));
+        match result {
+            Ok(Ok(())) => return Ok(0),
+            Ok(Err(err)) => {
+                return Err(match err {
+                    axdriver::prelude::DevError::BadState => AxError::BadState,
+                    axdriver::prelude::DevError::ResourceBusy => AxError::WouldBlock,
+                    _ => AxError::Io,
+                });
+            }
+            Err(_elapsed) => return Err(AxError::TimedOut),
+        }
     }
     // TCSBRK (0x5409): tcdrain — wait for all TX stages (ring → copier → FIFO → wire)
     if cmd == 0x5409 {

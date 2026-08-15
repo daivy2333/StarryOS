@@ -28,6 +28,9 @@ repository = "https://github.com/arceos-org/arceos/tree/main/modules/axnet"
 
 [features]
 vsock = ["axdriver/vsock"]
+# QEMU-only bounded pressure controls (D9). Propagated exclusively from
+# `starry-kernel/qemu`; never enabled by default or in D1/real-board builds.
+qemu-diagnostics = []
 
 [lib]
 name = "axnet_ng"

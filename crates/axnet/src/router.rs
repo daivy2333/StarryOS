@@ -245,6 +245,33 @@ impl Router {
             .is_some_and(|device| device.tx_slot_pending())
     }
 
+    /// Most recently accepted TX ticket on device `dev` (D8 flush target).
+    pub fn tx_last_accepted(&self, dev: usize) -> Option<u64> {
+        self.devices
+            .get(dev)
+            .and_then(|device| device.tx_last_accepted())
+    }
+
+    /// Whether a C4 flush to `target` is complete on device `dev`.
+    pub fn tx_flush_done(&self, dev: usize, target: Option<u64>) -> bool {
+        self.devices
+            .get(dev)
+            .is_some_and(|device| device.tx_flush_done(target))
+    }
+
+    /// Slot/ticket ledger of device `dev` for the V3 diagnostic snapshot.
+    pub fn slot_ledger(&self, dev: usize) -> crate::device::SlotLedger {
+        self.devices
+            .get(dev)
+            .map(|device| device.slot_ledger())
+            .unwrap_or_default()
+    }
+
+    /// Real driver TX resource ledger of device `dev` (RW-2).
+    pub fn tx_resource_ledger(&mut self, dev: usize) -> Option<crate::device::TxResourceLedger> {
+        self.devices.get_mut(dev)?.tx_resource_ledger()
+    }
+
     #[cfg(test)]
     pub(crate) fn fill_rx_buffer_for_test(&mut self) {
         while self.rx_buffer.enqueue(1, ()).is_ok() {}

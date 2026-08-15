@@ -18,7 +18,8 @@ use smoltcp::{
 use crate::{
     LISTEN_TABLE, SOCKET_SET,
     async_rx::{QUEUE_EVENT, RX_TELEMETRY, SpaceDecision},
-    device::{RxCopyStep, TxReclaimStep, TxSubmitStep},
+    device::{RxCopyStep, TxDropReason, TxReclaimStep, TxSubmitStep},
+    flush::{FlushRecheck, FlushTicket, FlushWaiter, error_code, error_from_code},
     router::{Router, RxOwnerView},
 };
 
@@ -57,6 +58,22 @@ pub struct Service {
     router: Router,
     target_dev: Option<usize>,
     timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    flush_waiter: Option<FlushWaiter>,
+    flush_next_identity: u64,
+    /// RW-3: persisted terminal data-plane fault (error code). A submit/
+    /// reclaim fault is recorded even when no flush waiter exists, and is
+    /// never cleared by a waiter completing, so every flush constructed after
+    /// the fault returns the same stable error instead of hanging on a live
+    /// target whose owner has already stopped.
+    flush_terminal_fault: Option<u64>,
+    /// Flush successes (waiter completed with `Done`).
+    flush_success: u64,
+    /// Flush faults (waiter completed with a terminal error).
+    flush_error: u64,
+    /// Flush `ResourceBusy` rejections.
+    flush_busy: u64,
+    /// Flush cancellations (waiter dropped before completion).
+    flush_cancel: u64,
 }
 impl Service {
     pub fn new(mut router: Router, target_dev: Option<usize>) -> Self {
@@ -68,6 +85,13 @@ impl Service {
             router,
             target_dev,
             timeout: None,
+            flush_waiter: None,
+            flush_next_identity: 0,
+            flush_terminal_fault: None,
+            flush_success: 0,
+            flush_error: 0,
+            flush_busy: 0,
+            flush_cancel: 0,
         }
     }
 
@@ -223,9 +247,205 @@ impl Service {
         }
     }
 
+    // ── Target-scoped C4 flush (D8) ─────────────────────────────────────
+
+    /// Reserves the sole flush waiter, synchronously capturing the target as
+    /// the current `last_accepted` ticket. The caller must hold the Service
+    /// guard. A second concurrent flush is `ResourceBusy`; a persisted
+    /// terminal fault (RW-3) or an exhausted waiter identity also fails the
+    /// construction without consuming the waiter slot.
+    pub(crate) fn flush_begin(&mut self) -> Result<FlushTicket, DevError> {
+        // RW-3: a terminal data-plane fault is stable. A flush constructed
+        // after the fault must return the same error immediately, never wait
+        // on a live target whose owner has already stopped.
+        if let Some(code) = self.flush_terminal_fault {
+            self.flush_error += 1;
+            return Err(error_from_code(code));
+        }
+        if self.flush_waiter.is_some() {
+            self.flush_busy += 1;
+            return Err(DevError::ResourceBusy);
+        }
+        // RW-3: checked identity allocation. `u64::MAX` is the invalid
+        // sentinel (also used by V3 for empty optional tickets), so the
+        // counter must never wrap back to 0 and reuse an identity (ABA).
+        let identity = self.flush_next_identity;
+        if identity == u64::MAX {
+            self.flush_busy += 1;
+            return Err(DevError::ResourceBusy);
+        }
+        self.flush_next_identity += 1;
+        let target = match self.target_dev {
+            Some(dev) => self.router.tx_last_accepted(dev),
+            None => None,
+        };
+        self.flush_waiter = Some(FlushWaiter::new(identity, target));
+        Ok(FlushTicket { identity, target })
+    }
+
+    /// Registers the sole waker for a matching waiter identity, then rechecks.
+    /// Must be called under the Service guard (register-then-recheck closes
+    /// the lost-wakeup window against reclaim/fault publications).
+    pub(crate) fn flush_register(&mut self, identity: u64, waker: &Waker) {
+        if let Some(waiter) = &mut self.flush_waiter {
+            if waiter.identity() == identity {
+                waiter.register(waker);
+            }
+        }
+    }
+
+    /// Rechecks flush completion under the guard. A `Stale` result means the
+    /// waiter identity no longer owns the slot.
+    pub(crate) fn flush_recheck(&mut self, identity: u64, target: Option<u64>) -> FlushRecheck {
+        let Some(waiter) = &mut self.flush_waiter else {
+            return FlushRecheck::Stale;
+        };
+        if waiter.identity() != identity {
+            return FlushRecheck::Stale;
+        }
+        if let Some(code) = waiter.take_fault_code() {
+            let err = error_from_code(code);
+            self.flush_error += 1;
+            self.flush_waiter = None;
+            return FlushRecheck::Faulted(err);
+        }
+        let done = match self.target_dev {
+            Some(dev) => self.router.tx_flush_done(dev, target),
+            None => true,
+        };
+        if done {
+            self.flush_success += 1;
+            self.flush_waiter = None;
+            FlushRecheck::Done
+        } else {
+            FlushRecheck::Pending
+        }
+    }
+
+    /// Clears the waiter slot only when `identity` still owns it. Called by
+    /// the future's `Drop`; a waiter dropped before completion is a cancel.
+    pub(crate) fn flush_clear(&mut self, identity: u64) {
+        if self
+            .flush_waiter
+            .as_ref()
+            .is_some_and(|waiter| waiter.identity() == identity)
+        {
+            self.flush_cancel += 1;
+            self.flush_waiter = None;
+        }
+    }
+
+    /// Publishes flush progress after a successful reclaim: wakes the sole
+    /// waiter when its target is now satisfied. Caller holds the guard.
+    pub(crate) fn flush_progress(&mut self) {
+        let Some(waiter) = &self.flush_waiter else {
+            return;
+        };
+        let done = match self.target_dev {
+            Some(dev) => self.router.tx_flush_done(dev, waiter.target()),
+            None => true,
+        };
+        if done {
+            waiter.wake();
+        }
+    }
+
+    /// Records a terminal submit/reclaim fault and wakes the sole waiter.
+    ///
+    /// RW-3: the error is persisted in the Service so a flush constructed
+    /// after the fault (or after the current waiter consumes it) still
+    /// returns the same stable error. A fault without a waiter is not lost.
+    pub(crate) fn flush_fault(&mut self, err: &DevError) {
+        let code = error_code(err);
+        self.flush_terminal_fault = Some(code);
+        if let Some(waiter) = &mut self.flush_waiter {
+            waiter.set_fault(err);
+        }
+    }
+
+    /// Target-device slot/ticket ledger for the V3 diagnostic snapshot.
+    pub(crate) fn v3_slot_ledger(&self) -> crate::device::SlotLedger {
+        match self.target_dev {
+            Some(dev) => self.router.slot_ledger(dev),
+            None => crate::device::SlotLedger::default(),
+        }
+    }
+
+    /// Real driver TX resource ledger for the V3 diagnostic snapshot (RW-2).
+    ///
+    /// `None` when the target's driver cannot observe a transport-neutral
+    /// ledger; the V3 snapshot then reports zeros instead of synthesizing a
+    /// ledger from slot or ticket capacities.
+    pub(crate) fn v3_tx_resource_ledger(&mut self) -> Option<axdriver_net::TxResourceLedger> {
+        match self.target_dev {
+            Some(dev) => self.router.tx_resource_ledger(dev),
+            None => None,
+        }
+    }
+
+    /// Target-device flush target for the V3 diagnostic snapshot
+    /// (`u64::MAX` when no flush is in flight).
+    pub(crate) fn v3_flush_target(&self) -> u64 {
+        self.flush_waiter
+            .as_ref()
+            .and_then(|waiter| waiter.target())
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Flush lifecycle counters for the V3 diagnostic snapshot.
+    pub(crate) fn v3_flush_counters(&self) -> [u64; 4] {
+        [
+            self.flush_success,
+            self.flush_error,
+            self.flush_busy,
+            self.flush_cancel,
+        ]
+    }
+
+    /// Per-reason drop counters for the V3 diagnostic snapshot.
+    pub(crate) fn v3_drop_reasons(&self) -> [u64; 5] {
+        [
+            self.router.drop_count(TxDropReason::MalformedIp),
+            self.router.drop_count(TxDropReason::NoRoute),
+            self.router.drop_count(TxDropReason::RouteSourceMismatch),
+            self.router.drop_count(TxDropReason::UnsupportedAddress),
+            self.router.drop_count(TxDropReason::FrameTooLarge),
+        ]
+    }
+
+    /// Advances the QEMU diagnostic hold lease and returns the active hold
+    /// mode. The queue task calls this once per round (D9). The clock is the
+    /// injectable `diag::diag_now()` so host tests can drive the lease
+    /// deadline deterministically (RW-1). `diag` is the queue owner's own
+    /// diagnostic state (the production global, or a test-local instance).
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_hold_tick(&mut self, diag: &crate::diag::DiagnosticState) -> u64 {
+        let was_held = diag.hold_mode() != crate::diag::HOLD_NONE;
+        let mode = diag.tick(crate::diag::diag_now());
+        // An expiry auto-release must wake the queue task again so the
+        // previously-held stage resumes promptly.
+        if was_held && mode == crate::diag::HOLD_NONE {
+            QUEUE_EVENT.publish_queue_work();
+        }
+        mode
+    }
+
     #[cfg(test)]
     pub(crate) fn router_for_test(&mut self) -> &mut Router {
         &mut self.router
+    }
+
+    /// RW-3 test seam: force the waiter identity counter to a value so the
+    /// exhaustion boundary can be exercised without allocating 2^64 flushes.
+    #[cfg(test)]
+    pub(crate) fn set_flush_next_identity_for_test(&mut self, value: u64) {
+        self.flush_next_identity = value;
+    }
+
+    /// RW-3 test seam: observe the identity counter after exhaustion.
+    #[cfg(test)]
+    pub(crate) fn flush_next_identity_for_test(&self) -> u64 {
+        self.flush_next_identity
     }
 
     pub fn get_source_address(&self, dst_addr: &IpAddress) -> IpAddress {

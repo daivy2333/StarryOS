@@ -1,11 +1,10 @@
 use alloc::string::String;
-use core::{
-    sync::atomic::{AtomicUsize, Ordering},
-    task::Waker,
-};
+#[cfg(test)]
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task::Waker;
 
 use axdriver::prelude::*;
-use axdriver_net::{NetQueueControl, TxCookie};
+use axdriver_net::{NetQueueControl, TxCookie, TxResourceLedger};
 use axtask::future::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
@@ -20,8 +19,8 @@ use smoltcp::{
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{
-        Device, RxCopyStep, RxStep, TxDropReason, TxOutcome, TxPreflight, TxReclaimStep,
-        TxSubmitStep,
+        Device, RxCopyStep, RxStep, SlotLedger, TxDropReason, TxOutcome, TxPreflight,
+        TxReclaimStep, TxSubmitStep,
         fixed_queue::{FixedFrameQueue, MAX_FRAME_SIZE, TicketTracker},
     },
 };
@@ -240,8 +239,8 @@ impl EthernetDevice {
             },
             Err(_) => {
                 // Preflight promised room; a failed fill is invariant drift,
-                // so release the ticket and report a stable fault.
-                let _ = self.tx_tickets.release(ticket);
+                // so release the Queued ticket and report a stable fault.
+                let _ = self.tx_tickets.release_queued(ticket);
                 TxOutcome::Fault(DevError::BadState)
             }
         }
@@ -491,7 +490,7 @@ impl EthernetDevice {
                         rx_became_ready: false,
                     },
                     Err(_) => {
-                        let _ = tx_tickets.release(ticket);
+                        let _ = tx_tickets.release_queued(ticket);
                         TxOutcome::Fault(DevError::BadState)
                     }
                 }
@@ -760,9 +759,13 @@ impl Device for EthernetDevice {
             return TxSubmitStep::Fault(DevError::Unsupported);
         };
         match tx_queue.submit_tx(tx_buf, TxCookie::new(ticket)) {
-            // On submit the driver owns the buffer; the slot pops and the
-            // ticket stays live until the matching completion is reclaimed.
+            // On submit the driver owns the buffer; the ticket transitions
+            // Queued -> DeviceOwned before the slot pops, and stays live until
+            // the matching completion is reclaimed (D8).
             Ok(()) => {
+                if !self.tx_tickets.mark_device_owned(ticket) {
+                    return TxSubmitStep::Fault(DevError::BadState);
+                }
                 let _ = self.tx_slots.pop();
                 TxSubmitStep::Submitted
             }
@@ -779,10 +782,11 @@ impl Device for EthernetDevice {
         };
         match tx_queue.reclaim_tx() {
             Ok(Some(cookie)) => {
-                // The completion cookie must match exactly one live ticket.
-                // An unknown or duplicate cookie is an ownership invariant
-                // violation: report a stable fault instead of a success.
-                if self.tx_tickets.release(cookie.value()) {
+                // The completion cookie must match exactly one DeviceOwned
+                // ticket. An unknown, duplicate or still-Queued cookie is an
+                // ownership invariant violation: report a stable fault instead
+                // of a success.
+                if self.tx_tickets.release_device_owned(cookie.value()) {
                     TxReclaimStep::Reclaimed
                 } else {
                     TxReclaimStep::Fault(DevError::BadState)
@@ -799,6 +803,39 @@ impl Device for EthernetDevice {
 
     fn tx_slot_pending(&self) -> bool {
         !self.tx_slots.is_empty()
+    }
+
+    fn tx_last_accepted(&self) -> Option<u64> {
+        self.tx_tickets.last_accepted()
+    }
+
+    fn tx_flush_done(&self, target: Option<u64>) -> bool {
+        self.tx_tickets.flush_done(target)
+    }
+
+    fn slot_ledger(&self) -> SlotLedger {
+        SlotLedger {
+            rx_occupancy: self.rx_slots.len() as u64,
+            rx_high_water: self.rx_slots.high_water() as u64,
+            rx_full: self.rx_slots.full_events(),
+            rx_enqueue: self.rx_slots.enqueue_events(),
+            rx_dequeue: self.rx_slots.dequeue_events(),
+            rx_space_event: self.rx_slots.space_events(),
+            tx_occupancy: self.tx_slots.len() as u64,
+            tx_high_water: self.tx_slots.high_water() as u64,
+            tx_full: self.tx_slots.full_events(),
+            tx_enqueue: self.tx_slots.enqueue_events(),
+            tx_dequeue: self.tx_slots.dequeue_events(),
+            tx_space_event: self.tx_slots.space_events(),
+            live: self.tx_tickets.live_len() as u64,
+            queued: self.tx_tickets.queued_len() as u64,
+            device_owned: self.tx_tickets.device_owned_len() as u64,
+            last_accepted: self.tx_tickets.last_accepted().unwrap_or(u64::MAX),
+        }
+    }
+
+    fn tx_resource_ledger(&mut self) -> Option<TxResourceLedger> {
+        self.inner.tx_queue()?.tx_resource_ledger()
     }
 
     fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {

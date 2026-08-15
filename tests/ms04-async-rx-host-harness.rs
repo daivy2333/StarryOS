@@ -437,7 +437,9 @@ fn snapshot_command_consumer_inventory_is_versioned_and_bounded() {
 
     assert!(LOGIC.contains("pub struct IrqSnapshotV1"));
     assert!(LOGIC.contains("pub struct IrqSnapshotV2"));
+    assert!(LOGIC.contains("pub struct IrqSnapshotV3"));
     assert!(!LOGIC.contains("type IrqSnapshotV1 = IrqSnapshotV2"));
+    assert!(!LOGIC.contains("type IrqSnapshotV3 = IrqSnapshotV2"));
 
     assert!(MS03.contains("#define NET_IRQ_SNAPSHOT  0x4e494431"));
     assert!(MS03.contains("8 * sizeof(uint64_t)"));
@@ -451,6 +453,9 @@ fn snapshot_command_consumer_inventory_is_versioned_and_bounded() {
     assert!(MS04.contains("#define MS04_SOFTWARE_NUDGE 0x4e494e31"));
     assert!(MS04.contains("28 * sizeof(uint64_t)"));
     assert!(!MS04.contains("0x4e494431"));
+    // The MS04 V2 consumer is untouched by V3: it neither knows nor writes
+    // the V3 command.
+    assert!(!MS04.contains("0x4e494433"));
 }
 
 mod probe_terminal_guard {
@@ -487,6 +492,32 @@ fn probe_modes_have_one_central_terminal_marker_path() {
     if let Err(reason) = probe_terminal_guard::check_production() {
         panic!("MS04 probe terminal marker contract failed: {reason}");
     }
+}
+
+#[test]
+fn qemu_diagnostics_feature_propagates_only_from_kernel_qemu() {
+    // The QEMU-only pressure controls must be reachable only through
+    // `starry-kernel/qemu`; ordinary axnet and D1 builds exclude them.
+    const AXNET_TOML: &str = include_str!("../crates/axnet/Cargo.toml");
+    const KERNEL_TOML: &str = include_str!("../kernel/Cargo.toml");
+    const DIAG: &str = include_str!("../crates/axnet/src/diag.rs");
+    const LIB: &str = include_str!("../crates/axnet/src/lib.rs");
+
+    assert!(AXNET_TOML.contains("qemu-diagnostics = []"));
+    assert!(KERNEL_TOML.contains("axnet/qemu-diagnostics"));
+    // The kernel `qemu` feature list carries the propagation.
+    let qemu_list = KERNEL_TOML
+        .split("qemu = [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .expect("qemu feature list");
+    assert!(qemu_list.contains("axnet/qemu-diagnostics"));
+    assert!(qemu_list.contains("dep:axnet"));
+    // The controls live behind the feature gate in axnet.
+    assert!(DIAG.contains("#[cfg(test)]"));
+    assert!(LIB.contains("#[cfg(feature = \"qemu-diagnostics\")]"));
+    // The default axnet feature set must not enable diagnostics.
+    assert!(!AXNET_TOML.contains("default = [\"qemu-diagnostics\"]"));
 }
 
 #[test]

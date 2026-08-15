@@ -3,7 +3,6 @@ use core::task::Waker;
 use axdriver::prelude::{DevError, DevResult};
 use axdriver_net::NetQueueControl;
 use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
-
 mod ethernet;
 pub(crate) mod fixed_queue;
 mod loopback;
@@ -14,6 +13,7 @@ mod tests;
 #[cfg(feature = "vsock")]
 mod vsock;
 
+pub use axdriver_net::TxResourceLedger;
 pub use ethernet::*;
 pub use loopback::*;
 #[cfg(feature = "vsock")]
@@ -102,6 +102,47 @@ impl TxDropReason {
             TxDropReason::FrameTooLarge => 4,
         }
     }
+}
+
+/// Slot/ticket ledger observed for the V3 diagnostic snapshot (Task 4.2).
+///
+/// Occupancy, high-water, full/enqueue/dequeue/space counters for both fixed
+/// slot rings, plus the live ticket ledger. All fields are read-only
+/// observations; devices without slot storage report zeros.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlotLedger {
+    /// RX slot occupancy (live frames).
+    pub rx_occupancy: u64,
+    /// RX slot high-water mark.
+    pub rx_high_water: u64,
+    /// RX slot full transitions.
+    pub rx_full: u64,
+    /// RX slot successful enqueues.
+    pub rx_enqueue: u64,
+    /// RX slot successful dequeues.
+    pub rx_dequeue: u64,
+    /// RX slot full→space events.
+    pub rx_space_event: u64,
+    /// TX slot occupancy (live frames).
+    pub tx_occupancy: u64,
+    /// TX slot high-water mark.
+    pub tx_high_water: u64,
+    /// TX slot full transitions.
+    pub tx_full: u64,
+    /// TX slot successful enqueues.
+    pub tx_enqueue: u64,
+    /// TX slot successful dequeues.
+    pub tx_dequeue: u64,
+    /// TX slot full→space events.
+    pub tx_space_event: u64,
+    /// Live ticket count.
+    pub live: u64,
+    /// Queued ticket count.
+    pub queued: u64,
+    /// DeviceOwned ticket count.
+    pub device_owned: u64,
+    /// Most recently accepted ticket (`u64::MAX` when none).
+    pub last_accepted: u64,
 }
 
 /// Result of a side-effect-free TX capacity preflight.
@@ -224,6 +265,37 @@ pub trait Device: Send + Sync {
         false
     }
 
+    /// Most recently accepted TX ticket, used as the D8 flush target source.
+    ///
+    /// Devices without ticket tracking report `None` (empty data plane).
+    fn tx_last_accepted(&self) -> Option<u64> {
+        None
+    }
+
+    /// Whether a C4 flush to `target` is complete (no live ticket `<= target`).
+    ///
+    /// Devices without ticket tracking are always complete.
+    fn tx_flush_done(&self, target: Option<u64>) -> bool {
+        let _ = target;
+        true
+    }
+
+    /// Slot ledger for the V3 diagnostic snapshot (Task 4.2).
+    ///
+    /// Devices without fixed slot storage report all zeros.
+    fn slot_ledger(&self) -> SlotLedger {
+        SlotLedger::default()
+    }
+
+    /// Real driver TX resource ledger for the V3 diagnostic snapshot (RW-2).
+    ///
+    /// Devices whose driver cannot observe buffer/descriptor counts through
+    /// the transport-neutral queue interface report `None`; the V3 snapshot
+    /// must never synthesize a ledger from slot or ticket capacities.
+    fn tx_resource_ledger(&mut self) -> Option<TxResourceLedger> {
+        None
+    }
+
     fn register_waker(&self, waker: &Waker);
 
     /// Host-test observer: number of `recv` attempts through the dormant slot
@@ -255,6 +327,12 @@ pub trait Device: Send + Sync {
     /// Host-test observer: occupied length of the fixed TX slot storage.
     #[cfg(test)]
     fn tx_slot_len_for_test(&self) -> usize {
+        0
+    }
+
+    /// Host-test observer: number of `tx_submit_one` calls (Task 4.3 holds).
+    #[cfg(test)]
+    fn tx_submit_calls_for_test(&self) -> usize {
         0
     }
 }
