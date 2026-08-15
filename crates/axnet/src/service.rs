@@ -74,6 +74,18 @@ pub struct Service {
     flush_busy: u64,
     /// Flush cancellations (waiter dropped before completion).
     flush_cancel: u64,
+    /// Service-owned QEMU diagnostic lease (D9): the committed hold mode.
+    /// `HOLD_NONE` means no hold. Only the `qemu-diagnostics` feature build
+    /// carries this state; ordinary axnet and D1 expose no control entry.
+    #[cfg(feature = "qemu-diagnostics")]
+    diag_hold_mode: u64,
+    /// Service-owned lease expiry deadline in wall nanoseconds (0 = no hold).
+    #[cfg(feature = "qemu-diagnostics")]
+    diag_lease_expiry_nanos: u64,
+    /// Service-owned count of lease-expiry auto-releases (saturating,
+    /// monotonic telemetry; not a synchronization primitive).
+    #[cfg(feature = "qemu-diagnostics")]
+    diag_auto_release_failure: u64,
 }
 impl Service {
     pub fn new(mut router: Router, target_dev: Option<usize>) -> Self {
@@ -92,6 +104,12 @@ impl Service {
             flush_error: 0,
             flush_busy: 0,
             flush_cancel: 0,
+            #[cfg(feature = "qemu-diagnostics")]
+            diag_hold_mode: crate::diag::HOLD_NONE,
+            #[cfg(feature = "qemu-diagnostics")]
+            diag_lease_expiry_nanos: 0,
+            #[cfg(feature = "qemu-diagnostics")]
+            diag_auto_release_failure: 0,
         }
     }
 
@@ -413,21 +431,76 @@ impl Service {
         ]
     }
 
-    /// Advances the QEMU diagnostic hold lease and returns the active hold
-    /// mode. The queue task calls this once per round (D9). The clock is the
-    /// injectable `diag::diag_now()` so host tests can drive the lease
-    /// deadline deterministically (RW-1). `diag` is the queue owner's own
-    /// diagnostic state (the production global, or a test-local instance).
+    /// Advances the Service-owned QEMU diagnostic lease and returns the
+    /// active hold mode. The queue task calls this once per round under the
+    /// Service guard (D9). The clock is the injectable `diag::diag_now()` so
+    /// host tests drive the lease deadline deterministically.
+    ///
+    /// An expired lease is cleared and `auto_release_failure` saturating-
+    /// incremented exactly once; no lease generation exists, so no identity
+    /// can exhaust and no reachable Hold is ever permanent. The timer is
+    /// wake-only, so the queue task's own wake drives this round.
     #[cfg(feature = "qemu-diagnostics")]
-    pub(crate) fn diag_hold_tick(&mut self, diag: &crate::diag::DiagnosticState) -> u64 {
-        let was_held = diag.hold_mode() != crate::diag::HOLD_NONE;
-        let mode = diag.tick(crate::diag::diag_now());
-        // An expiry auto-release must wake the queue task again so the
-        // previously-held stage resumes promptly.
-        if was_held && mode == crate::diag::HOLD_NONE {
-            QUEUE_EVENT.publish_queue_work();
+    pub(crate) fn diag_hold_tick(&mut self) -> u64 {
+        if self.diag_hold_mode != crate::diag::HOLD_NONE
+            && self.diag_lease_expiry_nanos != 0
+            && crate::diag::diag_now() >= self.diag_lease_expiry_nanos
+        {
+            self.diag_hold_mode = crate::diag::HOLD_NONE;
+            self.diag_lease_expiry_nanos = 0;
+            self.diag_auto_release_failure = self.diag_auto_release_failure.saturating_add(1);
         }
-        mode
+        self.diag_hold_mode
+    }
+
+    /// Applies one QEMU diagnostic control under the Service guard (C2).
+    ///
+    /// Validates the command and the checked deadline before any mutation, so
+    /// an overflowing `now + lease_ms * NS_PER_MS` fails closed with
+    /// `InvalidParam` and leaves the committed lease untouched. The caller
+    /// publishes queue work exactly once after dropping the guard; Busy and
+    /// error paths publish none.
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_control(&mut self, op: u64, lease_ms: u64, now_nanos: u64) -> DevResult {
+        let (mode, expiry) = match op {
+            crate::diag::OP_HOLD_TX_SUBMIT | crate::diag::OP_HOLD_TX_RECLAIM
+                if (1..=crate::diag::MAX_LEASE_MS).contains(&lease_ms) =>
+            {
+                let mode = if op == crate::diag::OP_HOLD_TX_SUBMIT {
+                    crate::diag::HOLD_SUBMIT
+                } else {
+                    crate::diag::HOLD_RECLAIM
+                };
+                let nanos = lease_ms
+                    .checked_mul(crate::diag::NS_PER_MS)
+                    .ok_or(DevError::InvalidParam)?;
+                let expiry = now_nanos.checked_add(nanos).ok_or(DevError::InvalidParam)?;
+                (mode, expiry)
+            }
+            crate::diag::OP_RELEASE if lease_ms == 0 => (crate::diag::HOLD_NONE, 0),
+            _ => return Err(DevError::InvalidParam),
+        };
+        self.diag_hold_mode = mode;
+        self.diag_lease_expiry_nanos = expiry;
+        Ok(())
+    }
+
+    /// Committed diagnostic hold mode (C1/C5: one committed Service state).
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_hold_mode(&self) -> u64 {
+        self.diag_hold_mode
+    }
+
+    /// Committed lease expiry deadline in wall nanoseconds (0 = no hold).
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_lease_expiry(&self) -> u64 {
+        self.diag_lease_expiry_nanos
+    }
+
+    /// Committed auto-release failure counter (saturating, monotonic).
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_auto_release_failure(&self) -> u64 {
+        self.diag_auto_release_failure
     }
 
     #[cfg(test)]
@@ -632,5 +705,152 @@ mod tests {
         service.poll(RxOwnerView::PollingOwned, &mut sockets);
 
         assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    // ── Iteration 008: Service-owned QEMU diagnostic lease (C1-C6) ─────
+
+    #[cfg(feature = "qemu-diagnostics")]
+    mod diag {
+        use axdriver::prelude::DevError;
+
+        use super::*;
+        use crate::diag::{
+            HOLD_NONE, HOLD_RECLAIM, HOLD_SUBMIT, MAX_LEASE_MS, NS_PER_MS, OP_HOLD_TX_RECLAIM,
+            OP_HOLD_TX_SUBMIT, OP_RELEASE,
+        };
+
+        fn now() -> u64 {
+            1_000_000_000_000
+        }
+
+        /// Serialized Service + initialized fake clock: `diag_hold_tick`
+        /// reads the global `diag_now()`, so these tests must not share the
+        /// clock with a parallel sibling.
+        fn serialized_service() -> (spin::MutexGuard<'static, ()>, Service) {
+            let serial = crate::async_rx::SERIAL.lock();
+            crate::diag::set_test_now(now());
+            let mut router = Router::new();
+            router.add_device(Box::new(LoopbackDevice::new()));
+            (serial, Service::new(router, None))
+        }
+
+        #[test]
+        fn control_rejects_out_of_range_lease_and_bad_ops() {
+            let (_serial, mut s) = serialized_service();
+            assert!(matches!(
+                s.diag_control(OP_HOLD_TX_SUBMIT, 0, now()),
+                Err(DevError::InvalidParam)
+            ));
+            assert!(matches!(
+                s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS + 1, now()),
+                Err(DevError::InvalidParam)
+            ));
+            assert!(matches!(
+                s.diag_control(OP_RELEASE, 1, now()),
+                Err(DevError::InvalidParam)
+            ));
+            assert!(matches!(
+                s.diag_control(99, 10, now()),
+                Err(DevError::InvalidParam)
+            ));
+            assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+            assert_eq!(s.diag_lease_expiry(), 0);
+        }
+
+        #[test]
+        fn hold_submit_and_reclaim_set_modes_and_expiry() {
+            let (_serial, mut s) = serialized_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 100, now()).unwrap();
+            assert_eq!(s.diag_hold_mode(), HOLD_SUBMIT);
+            assert_eq!(s.diag_lease_expiry(), now() + 100 * NS_PER_MS);
+            assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now()).unwrap();
+            assert_eq!(s.diag_hold_mode(), HOLD_RECLAIM);
+            assert_eq!(s.diag_lease_expiry(), now() + NS_PER_MS);
+        }
+
+        #[test]
+        fn release_clears_hold_and_never_counts_failure() {
+            let (_serial, mut s) = serialized_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 2000, now()).unwrap();
+            s.diag_control(OP_RELEASE, 0, now()).unwrap();
+            assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+            assert_eq!(s.diag_lease_expiry(), 0);
+            assert_eq!(s.diag_auto_release_failure(), 0);
+            assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+        }
+
+        #[test]
+        fn expired_lease_auto_releases_and_counts_failure() {
+            let (_serial, mut s) = serialized_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 2, now()).unwrap();
+            crate::diag::set_test_now(now() + 2 * NS_PER_MS - 1);
+            assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
+            crate::diag::set_test_now(now() + 2 * NS_PER_MS);
+            assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+            assert_eq!(s.diag_auto_release_failure(), 1);
+            assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+            assert_eq!(s.diag_lease_expiry(), 0);
+            crate::diag::set_test_now(now() + 2 * NS_PER_MS + 1);
+            assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+            assert_eq!(s.diag_auto_release_failure(), 1);
+        }
+
+        #[test]
+        fn second_hold_after_expiry_reuses_the_state() {
+            let (_serial, mut s) = serialized_service();
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now()).unwrap();
+            crate::diag::set_test_now(now() + NS_PER_MS);
+            assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now() + NS_PER_MS)
+                .unwrap();
+            assert_eq!(s.diag_hold_mode(), HOLD_RECLAIM);
+            assert_eq!(s.diag_auto_release_failure(), 1);
+        }
+
+        #[test]
+        fn hold_does_not_mutate_owner_or_completion_state() {
+            let (_serial, mut s) = serialized_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 10, now()).unwrap();
+            assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
+            let _ = s.diag_hold_mode();
+            let _ = s.diag_lease_expiry();
+            let _ = s.diag_auto_release_failure();
+        }
+
+        #[test]
+        fn control_deadline_overflow_fails_closed_atomically() {
+            // C2: `now + lease_ms * NS_PER_MS` is a checked add; an
+            // overflowing deadline is rejected before any mutation and the
+            // committed no-hold state survives.
+            let (_serial, mut s) = serialized_service();
+            let far_future = u64::MAX - 10;
+            assert!(matches!(
+                s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS, far_future),
+                Err(DevError::InvalidParam)
+            ));
+            assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+            assert_eq!(s.diag_lease_expiry(), 0);
+            assert_eq!(s.diag_auto_release_failure(), 0);
+        }
+
+        #[test]
+        fn any_reachable_hold_is_releasable_or_expirable() {
+            // D9/C1: the Service lease carries no generation, so no identity
+            // can exhaust. Every reachable Hold is releasable explicitly or
+            // by expiry, even after many commit/release/expiry cycles.
+            let (_serial, mut s) = serialized_service();
+            for i in 0..200u64 {
+                s.diag_control(OP_HOLD_TX_SUBMIT, 2, now() + i).unwrap();
+                assert_eq!(s.diag_hold_mode(), HOLD_SUBMIT);
+                crate::diag::set_test_now(now() + i + 2 * NS_PER_MS);
+                assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+                assert_eq!(s.diag_auto_release_failure(), i + 1);
+                s.diag_control(OP_HOLD_TX_RECLAIM, 1, now() + i).unwrap();
+                s.diag_control(OP_RELEASE, 0, now() + i).unwrap();
+                assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+            }
+            assert_eq!(s.diag_auto_release_failure(), 200);
+        }
     }
 }

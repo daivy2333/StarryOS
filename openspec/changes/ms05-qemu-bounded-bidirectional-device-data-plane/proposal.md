@@ -114,3 +114,17 @@ MS04 已建立由 IRQ 唤醒的唯一 RX queue task，但 TX 仍由 caller-drive
 - Task contracts and iteration balance: PASS。17 个任务分配到 6 个依赖有序 iteration；每项包含 WHERE、WHY、HOW、EXPECTED、RED/GREEN、验证和停止条件，只展开 Iteration 000。
 - Traceability and verification: PASS。R1-R14 均映射到 design、task、iteration、code surface 和 test witness；没有 Missing 或未批准 Simplified。Iteration 000 的自动验证与 `Persisted Evidence: none` 已明确。
 - Approval record: 用户于 2026-08-12 审计 Gate 2 检查项、Iteration Plan、RTM 与 Iteration 000 后回复“批准”，正式批准 Execution Readiness。
+
+### Replan Approval
+
+- Iteration 007 Cycle 003 Review 于 2026-08-15 判定 `replan-required`：独立全局
+  atomic/version lease 无法同时提供 bounded access、真实 committed V3 tuple 与 terminal
+  generation lease liveness；同问题三次失败规则禁止创建 Cycle 004。
+- 重规划选择 Service-owned diagnostic lease、bounded Service `try_lock` 和 wake-only timer，
+  保留 V1/V2/V3 wire layout、唯一 queue owner、QEMU-only feature 与已接受的 flush/V3 ABI成果。
+- 用户于 2026-08-15 回复“同意重规划”，批准新增 Task 4.4 和逻辑 Iteration 008；原 probe
+  与 manual iterations 顺延为 009/010。该授权不接受 Cycle 003 的 diagnostic实现，也不授权
+  产品代码实施、runtime Evidence、全局文档维护或归档。
+- Replan Gate 2: PASS。当前 change 为 19/25 tasks；R15 已映射到 D9、Task 4.4、Iteration
+  008、Service/control/timer/V3 code surface 和 deterministic witnesses。现行路线为 000-010，
+  只展开 008；无 Missing、未批准 Simplified 或影响实施的未知项。

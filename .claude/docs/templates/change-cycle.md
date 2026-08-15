@@ -39,7 +39,7 @@
 
 **Current-State Evidence**
 
-<入口、目标符号、调用者、被调用者、动态边、状态、错误路径、测试入口及证据位置>
+<Plan 已确认且与实施直接相关的入口、目标符号、调用者、被调用者、动态边、状态、错误路径和测试入口；可引用 Explorer 来源，但不得要求 Act 回读才能执行>
 
 **Relevant Code**
 
@@ -51,7 +51,7 @@
 
 **Implementation Guidance**
 
-<建议顺序、必要技术细节和关键取舍>
+<建议顺序、必要技术细节和关键取舍；不重复 Task Contract>
 
 **Behavioral Change**
 
@@ -65,14 +65,24 @@
 
 **Task Contracts**
 
-对 initial Cycle 中的 task 或 rework Cycle 中的 repair item 记录：
+Task Contract 是 Act 的任务级执行依据。对每个 initial task 或 rework repair item 使用：
 
-- 依赖和执行顺序。
-- 当前行为和目标行为。
-- 必须修改与禁止修改的内容。
-- 测试位置、任务类型对应的 RED 或变更前 GREEN 见证，以及修改后 GREEN 条件。
-- 验证命令、通过条件和失败含义。
-- 计划失效时的停止条件。
+### <Task/Repair ID>: <可验证结果>
+
+- Requirement/Scenario: <映射>
+- Depends on: <依赖或 None>
+- Targets: <path::symbol，可多项>
+- Current behavior: <当前可观察行为>
+- Required behavior: <完成后可观察行为>
+- Required changes: <必须完成的行为、接口、状态或错误语义变化>
+- Preserve: <必须保持的约束>
+- Forbidden: <不得修改或扩大的范围>
+- Test witness: <位置、RED 或变更前 GREEN、命令和预期结果>
+- GREEN condition: <修改后通过条件>
+- Verification: <命令、通过条件和失败含义>
+- Stop when: <契约失效或需要返回 Plan 的实质条件>
+
+变量名、辅助函数拆分和等价局部控制流不写入契约，除非它们影响可观察行为或责任边界。
 
 **Invariants**
 
@@ -98,7 +108,7 @@
 | Design | PASS/BLOCKED/WAIVED | <行为和接口设计证据> |
 | Iteration Plan | PASS/BLOCKED/WAIVED | <逻辑 Iteration 的任务、依赖和平衡审计> |
 | Cycle Scope | PASS/BLOCKED/WAIVED | <initial 范围或 rework Acceptance gap 与 repair item> |
-| Task Contracts | PASS/BLOCKED/WAIVED | <任务可执行性证据> |
+| Task Contracts | PASS/BLOCKED/WAIVED | <只读当前 Cycle 即可建立测试见证并实施的证据> |
 | Traceability | PASS/BLOCKED/WAIVED | <RTM 证据> |
 | Verification | PASS/BLOCKED/WAIVED | <测试和通过条件> |
 
@@ -110,7 +120,7 @@
 
 **Risks and Notes**
 
-<条件性风险、未确认项、WAIVED 项和额外注意事项>
+<条件性风险、非实质未知项、WAIVED 项和额外注意事项；不得把需要 Act 决定契约语义的问题留在此处>
 
 ## Act Response
 

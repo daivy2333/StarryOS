@@ -163,15 +163,16 @@ pub fn poll_interfaces() {
 /// Applies a QEMU-only bounded pressure control (D9).
 ///
 /// `op` is `HoldTxSubmit=1`, `HoldTxReclaim=2` (lease 1..=2000 ms) or
-/// `Release=3` (lease 0). Committing a hold publishes queue work so the sole
-/// owner pauses the matching stage; `Release` and lease expiry resume it.
+/// `Release=3` (lease 0). The control acquires the Service with one
+/// genuinely nonblocking `try_lock`: while the Service is busy it returns
+/// `ResourceBusy` (mapped to `WouldBlock`) without changing state or
+/// publishing an event. On success it commits the lease under the guard,
+/// drops the guard, then publishes exactly one queue-work event so the sole
+/// owner pauses (or resumes) the matching stage.
 #[cfg(feature = "qemu-diagnostics")]
 pub fn diagnostic_control(op: u64, lease_ms: u64) -> axdriver::prelude::DevResult {
-    use crate::async_rx::QUEUE_EVENT;
-    diag::DIAGNOSTIC.control(op, lease_ms, diag::diag_now())?;
-    // Wake the queue owner so a sleeping task observes the new hold/release.
-    QUEUE_EVENT.publish_queue_work();
-    Ok(())
+    use crate::async_rx::{QUEUE_EVENT, ServiceAccess, diagnostic_control_shared};
+    diagnostic_control_shared(ServiceAccess::Global, &QUEUE_EVENT, op, lease_ms)
 }
 
 /// Reserves the sole C4 flush waiter and returns its future (D8).

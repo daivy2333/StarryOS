@@ -460,6 +460,27 @@ MS04 probe 继续只读 V2；新 MS05 probe 读 V3，R51 重跑仍使用原 V2 c
   counter，避免 probe 异常永久停网。
 - 内部 flush ioctl 在固定 deadline 内等待 D8 的 C4 future；它不能重置或伪造 counter。
 
+lease 是现有 `Service` 的普通内部状态，至少包含 mode、absolute expiry 和单调的
+auto-release failure counter；它不使用独立全局原子事务或 generation token。该选择使
+control、queue tick 与 V3 snapshot 都以同一个 Service guard 观察真实已提交状态，不存在
+odd generation、synthetic no-hold tuple、ABA 或 terminal generation 中永久 Hold。
+
+diagnostic ioctl 使用真正的 bounded `try_lock` 获取全局 Service：成功时在 guard 内校验并
+一次性提交 `{mode, expiry}`，用 `checked_add` 拒绝 deadline overflow，释放 guard 后才发布
+queue work；竞争失败立即返回 `ResourceBusy`（syscall 映射 `WouldBlock`），状态与 event 均
+不变，probe 只能在固定总 deadline 内有界重试。queue task 已持有 Service guard，因此 tick
+在同一 guard 内判断 expiry、清除 lease，并以 saturating counter 精确记录一次自动释放。
+
+lease timer 只保存 absolute deadline 并负责到期唤醒，不清除状态，也不以 generation 判断
+所有权。旧 timer 在 Hold 被 Release 或替换后到期，只促成一次有界 Service poll；poll 读取
+当前 lease，若新 lease 尚未到期则保持它并重臂其 deadline。显式 Release 同样先在 Service
+guard 内提交，再在解锁后发布 queue work。future 返回 `Pending` 前不持有 Service guard。
+
+V3 在既有 `rx_snapshot_v3()` Service guard 内把 lease tuple、auto-release counter 与 slots、
+tickets、driver ledger 一次复制；因此成功 snapshot 永远表示真实 committed Service state，
+不会因锁竞争伪造 RELEASED。Service 尚未初始化时沿用既有全零 snapshot 语义，该状态必须
+与运行期 contention 区分。V1/V2/V3 布局和 ioctl command 不变。
+
 controls 只在 axnet queue service 层暂停正常 owner 的某一阶段，不要求 VirtIO backend
 增加 raw ring test hook，不创建第二 owner、不直接编辑 slot/ring index、
 不伪造 completion。MS05 guest probe 仍通过正常 UDP/TCP/ARP 路径产生 traffic，并以 PRE、
@@ -469,8 +490,10 @@ tests 另行覆盖无法稳定由 QEMU 调度制造的交错与乱序。
 **Reason**
 
 QEMU device completion 太快，普通吞吐不能保证 slot 或 descriptor 精确达到 Full。暂停
-submit/reclaim 是在保持同一 owner 和真实 enqueue/reclaim 代码的前提下最小的确定性控制；
-lease 避免诊断工具失败改变后续系统状态。
+submit/reclaim 是在保持同一 owner 和真实 enqueue/reclaim 代码的前提下最小的确定性控制。
+`Service` 已经串行化 Router、flush 和设备账本，把 lease 放在相同 ownership boundary 可让
+控制、tick 与 V3 共享一个 committed-state 定义；wake-only timer 避免 stale timer 获得状态
+所有权，最长 lease 则避免诊断工具失败改变后续系统状态。
 
 **Impact**
 
@@ -483,6 +506,9 @@ controls 不编入 D1/真实板范围，不能作为硬件能力证据。
 - 仅发送大流量并等待偶然 Full：不可复现且普通成功不能证明内部背压，拒绝。
 - ioctl 直接写 ring index或伪造 telemetry：绕过真实 owner/descriptor 路径，拒绝。
 - 复用通用 `network_benchmark`：其 schema 不观察 slot、ticket 或 buffer conservation，拒绝。
+- 独立全局多原子 state + version/seqlock：bounded reader 无法在 contention 时同时保证真实
+  committed tuple，version exhaustion 还可能使 active Hold 永久不可释放，拒绝。
+- timer 携带 generation 并直接清理 lease：替换后的 stale timer 可能误清新 Hold，拒绝。
 
 ### D10. 分层 Gate，并把 QEMU 结论限制为软件与设备模型
 

@@ -316,35 +316,90 @@ None（本 Cycle 未创建 Git commit）。
 
 ## Plan Review
 
-- Status: pending
+- Status: reviewed
 
 **Review Result**
 
-Pending.
+rework-required
 
 **Findings**
 
-Pending.
+1. **Blocking / Important — lease state is not a coherent generation-bound transaction.**
+   `DiagnosticState::control()` publishes `hold_mode` with `Release` before storing
+   `lease_expiry_nanos` with `Relaxed`; `tick()` reads expiry before acquiring mode. The queue owner
+   can therefore observe a new hold with expiry `0`, choose `SleepUntil(0)`, cancel its timer and
+   sleep indefinitely. A second race remains when `tick()` reads an expired old lease, a new
+   Hold commits, and the old tick then stores `HOLD_NONE/0`, releasing the new lease. This violates
+   RW-1's explicit stale-generation and auto-release Acceptance. The sequential fake-clock test
+   does not exercise either interleaving.
+2. **Blocking / Important — the buffer ledger still masks conservation drift.**
+   `VirtIoNetDev::tx_resource_ledger()` reads `free_tx_bufs`, but derives
+   `buffer_inflight = QS - buffer_available` instead of counting actual buffer owners in
+   `tx_slots` and `tx_fault_buf`. The sum is therefore correct by construction even when a buffer
+   is lost, duplicated or held outside the declared owner set; an oversized free list can also
+   underflow the subtraction. RW-2 required a real conservation ledger and a mismatch witness,
+   not a complement that makes mismatch unobservable.
+3. **Blocking / Important — waiter identity exhaustion is not actually tested.**
+   `flush_waiter_identity_exhaustion_returns_stable_error_without_wrap` keeps the last-valid
+   future alive while making the second call. That call returns `ResourceBusy` because the waiter
+   slot is occupied, before `flush_begin()` reaches the `u64::MAX` exhaustion branch. The code path
+   appears checked, but RW-3's required witness is absent.
+4. **Blocking / Important — the Act verification record is not reproducible as written.**
+   From the recorded repository root, `cargo test -p axnet-ng`, `cargo test -p axdriver-net` and
+   the analogous driver commands exit 101 because these crates are excluded from the root
+   workspace; their real commands require `--manifest-path`. The changed-file rustfmt command
+   also exits 123 because rustfmt recursively checks pre-existing `fxmac.rs`/`ixgbe.rs` formatting,
+   while the Act Response reports exit 0. Correct manifest-path tests and a changed-file-only
+   rustfmt check pass, but the Cycle's Gate 5 record does not state those commands.
 
 **Deviation Classification**
 
-Pending.
+ACT-DEVIATION; NEW-EVIDENCE.
 
 **Acceptance Gaps**
 
-Pending.
+- RW-1 / Task 4.3: hold mode, expiry and lease generation are not published and expired atomically;
+  a stale expiry can cancel a newer lease or leave an active hold without a timer.
+- RW-2 / Tasks 4.2-4.3: buffer available/inflight fields do not independently describe actual
+  owners, so V3 cannot expose buffer conservation drift.
+- RW-3 / Task 4.1: the checked waiter-identity exhaustion branch lacks a direct RED/GREEN witness.
+- RW-4 / Tasks 4.1-4.3: the final verification commands and rustfmt exit status are not truthfully
+  reproducible from the recorded context.
 
 **Convergence**
 
-Pending.
+reduced. Cycle 001 added a deadline wake, transport-level ledger plumbing, stable flush faults and
+checked identity allocation, so all four Cycle 000 gaps narrowed. The remaining lease race and
+buffer-ledger derivation still block the same Iteration 007 Acceptance; no requirement, target or
+Iteration boundary changed.
 
 **Evidence**
 
-Pending.
+- Source review: `crates/axnet/src/diag.rs::{DiagnosticState::control,tick,lease_expiry}` and
+  `crates/axnet/src/async_rx.rs::{service_round,arm_lease_deadline,lease_deadline_elapsed}`.
+- Source review: `crates/axdriver_virtio/src/net.rs::tx_resource_ledger` and its two normal/fault
+  tests; no loss/duplicate conservation mismatch is constructed.
+- Source review: `crates/axnet/src/flush.rs::flush_waiter_identity_exhaustion_returns_stable_error_without_wrap`.
+- `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib`: 214 passed, exit 0.
+- Same command with `--features qemu-diagnostics`: 227 passed, exit 0.
+- Manifest-path axdriver_net, axdriver_virtio/net and virtio-drivers/alloc tests: 7, 13 and 36
+  passed, exit 0.
+- MS03/MS04 host harnesses: 33 and 16 passed, exit 0.
+- `cargo check --offline -p starry-kernel --features qemu`: exit 0.
+- `cargo check --offline -p starry-kernel --features lichee-d1`: exit 101 with the same 25
+  axfs/axtask feature errors; comparison only, not PASS.
+- Recorded root-workspace `cargo test -p axnet-ng` and `cargo test -p axdriver-net`: exit 101,
+  package not found.
+- Recursive staged-file rustfmt check: exit 123 on pre-existing `fxmac.rs`/`ixgbe.rs`; explicit
+  changed-file check with `--config skip_children=true`: exit 0.
+- `openspec validate ms05-qemu-bounded-bidirectional-device-data-plane --strict` and
+  `git diff --cached --check`: exit 0.
 
 **Follow-up Decision**
 
-Pending.
+Create Cycle 002 in Iteration 007. It is limited to making lease control generation-safe, exposing
+actual buffer owners, adding the missing exhaustion witness and recording exact reproducible Gate
+commands. Task 5.1 and runtime Evidence remain blocked.
 
 **Iteration Plan Update**
 
@@ -352,8 +407,8 @@ None.
 
 **Next Cycle**
 
-Pending.
+`002-rework.md`
 
 **Next Iteration**
 
-Pending.
+None（Iteration 007 未接受）。

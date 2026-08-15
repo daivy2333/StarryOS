@@ -472,10 +472,18 @@ impl<H: Hal, T: Transport, const QS: usize> NetTxQueue for VirtIoNetDev<H, T, QS
         let descriptor_available = self.inner.send_available_desc() as u64;
         Some(TxResourceLedger {
             buffer_available,
-            // Every TX buffer is either free or owned by a slot/queue entry.
-            buffer_inflight: QS as u64 - buffer_available,
+            // RW-6: buffer inflight counts the actual declared owners — every
+            // occupied slot plus any quarantined fault buffer — never the
+            // capacity complement. A lost, duplicated or externally-held
+            // buffer therefore surfaces as conservation drift instead of
+            // being normalized into a passing sum.
+            buffer_inflight: self
+                .tx_slots
+                .iter()
+                .filter(|slot| !matches!(slot, TxSlot::Free))
+                .count() as u64
+                + u64::from(self.tx_fault_buf.is_some()),
             descriptor_available,
-            // Every descriptor is either free or part of an in-flight entry.
             descriptor_inflight: QS as u64 - descriptor_available,
             completions_seen: self.tx_completions_seen,
         })
@@ -822,6 +830,75 @@ mod tests {
         );
         assert_eq!(ledger.buffer_inflight, 1, "faulted buffer stays owned");
         assert_eq!(ledger.buffer_available + ledger.buffer_inflight, QS as u64);
+    }
+
+    // ── RW-6: buffer owners are counted independently, drift is evidence ──
+
+    #[test]
+    fn tx_resource_ledger_exposes_oversized_free_list_drift() {
+        // RW-6: a free list holding more than the fixed capacity (a buffer
+        // duplicated into the owner set) must be visible as conservation
+        // drift, not normalized away by a complement. The complement would
+        // underflow here.
+        let (mut dev, _device) = test_dev();
+        // Push an extra buffer from an unrelated pool into the free list:
+        // QS + 1 free, 0 slot owners, no fault owner.
+        let spare_pool = NetBufPool::new(1, NET_BUF_LEN).unwrap();
+        let extra = spare_pool.alloc_boxed().expect("spare pool has a buffer");
+        dev.free_tx_bufs.push(extra);
+        let ledger = dev.tx_resource_ledger().unwrap();
+        assert_eq!(ledger.buffer_available, QS as u64 + 1);
+        assert_eq!(ledger.buffer_inflight, 0);
+        assert_ne!(
+            ledger.buffer_available + ledger.buffer_inflight,
+            QS as u64,
+            "oversized free list must surface as drift"
+        );
+    }
+
+    #[test]
+    fn tx_resource_ledger_exposes_lost_owner_drift() {
+        // RW-6: a slot owner dropped without returning to the free list is a
+        // lost buffer. The complement masks it (inflight = QS - available,
+        // sum always QS); independent owner counting must report the gap.
+        let (mut dev, _device) = test_dev();
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::new(1)).unwrap();
+        // Lose the slot owner: replace it with Free and drop the buffer
+        // without pushing it back into the free list.
+        let lost = core::mem::replace(&mut dev.tx_slots[0], TxSlot::Free);
+        drop(lost);
+        let ledger = dev.tx_resource_ledger().unwrap();
+        assert_eq!(ledger.buffer_available, QS as u64 - 1);
+        assert_eq!(ledger.buffer_inflight, 0, "no slot or fault owner remains");
+        assert_ne!(
+            ledger.buffer_available + ledger.buffer_inflight,
+            QS as u64,
+            "lost buffer must surface as drift"
+        );
+    }
+
+    #[test]
+    fn tx_resource_ledger_counts_quarantined_fault_owner() {
+        // RW-6: a buffer quarantined to tx_fault_buf is a real owner. It must
+        // appear in inflight alongside the surviving slot owner, so the two
+        // buffers never collide into a synthetic sum.
+        let (mut dev, _device) = test_dev();
+        let first = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(first, TxCookie::new(1)).unwrap();
+        let second = dev.alloc_tx_buffer(100).unwrap();
+        dev.forced_tx_token = Some(0);
+        assert!(matches!(
+            dev.submit_tx(second, TxCookie::new(2)),
+            Err(DevError::BadState)
+        ));
+        assert!(dev.tx_fault_buf.is_some());
+        let ledger = dev.tx_resource_ledger().unwrap();
+        assert_eq!(ledger.buffer_available, QS as u64 - 2);
+        assert_eq!(
+            ledger.buffer_inflight, 2,
+            "one slot owner + one fault owner"
+        );
     }
 
     #[test]

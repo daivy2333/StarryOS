@@ -173,6 +173,51 @@ MS05 MUST 分层定义 packet slot、socket byte-stream 和 datagram 语义。RX
 - **THEN** 纯 telemetry MAY 使用 Relaxed ordering
 - **AND** owner、event generation、ticket completion 或 flush 判定 MUST 使用与其同步角色一致的 ordering 或既有锁保护
 
+### Requirement: QEMU diagnostic lease 使用 Service-owned committed state
+
+只在 `qemu-diagnostics` feature 下，MS05 diagnostic hold lease MUST 由现有 queue `Service`
+拥有。control、expiry tick 和 V3 snapshot MUST 在同一 Service ownership boundary 下读写
+mode、expiry 和 auto-release counter；成功 V3 snapshot MUST 只包含真实 committed state。
+控制路径 MUST 使用有界 Service acquisition，最长 lease MUST 可由显式 Release 或到期 tick
+解除，timer MUST 只负责唤醒且 MUST NOT 拥有或直接清理 lease。V1/V2/V3 wire layout、设备
+queue owner 与普通/D1 build MUST 保持不变。
+
+#### Scenario: Control 成功提交后唤醒 owner
+
+- **WHEN** diagnostic ioctl 成功 try-lock Service 并提交 Hold 或 Release
+- **THEN** mode 与 checked absolute expiry MUST 在同一 guard 内一次提交，并在解锁后发布 queue event
+- **AND** overflow 或无效输入 MUST fail closed，且不得留下部分状态
+
+#### Scenario: Control 与 Service 竞争
+
+- **WHEN** diagnostic ioctl 无法立即取得 Service guard
+- **THEN** control MUST 返回 `ResourceBusy`/`WouldBlock`，不得改变 lease 或发布伪 queue event
+- **AND** probe MAY 只在固定总 deadline 内有界重试，不得 busy-spin 或无限阻塞
+
+#### Scenario: V3 与控制并发
+
+- **WHEN** V3 snapshot 与 Hold、Release 或 expiry tick 并发
+- **THEN** V3 MUST 在既有 Service guard 下返回一个真实 committed lease tuple 和同轮账本
+- **AND** contention MUST NOT 编码成无法区分的 synthetic no-hold tuple
+
+#### Scenario: Lease 到期自动释放
+
+- **WHEN** owner 在 Service guard 下观察到当前 Hold 的 deadline 已到
+- **THEN** tick MUST 清除当前 lease并以 monotonic saturating counter 精确记录一次自动释放
+- **AND** 实现 MUST NOT 存在令 active Hold 永久无法 Release 或 expiry 的 generation terminal state
+
+#### Scenario: 旧 timer 晚于 replacement lease 唤醒
+
+- **WHEN** Hold A 的 timer 已 armed，而 A 随后被 Release 或替换为未到期的 Hold B
+- **THEN** A 的 timer MAY 唤醒 owner，但 MUST NOT 直接清除 B
+- **AND** 下一次 Service poll MUST 保留 B 并重臂 B 的 deadline，不得依赖 generation identity
+
+#### Scenario: Service 尚未初始化
+
+- **WHEN** V3 snapshot 在全局 Service 安装前执行
+- **THEN** MAY 沿用既有全零 snapshot 语义
+- **AND** 该 pre-init 状态 MUST 与运行期 Service contention 分开处理
+
 ### Requirement: MS05 QEMU 验证与证据边界
 
 MS05 MUST 提供 change-local 的确定性 Full→恢复见证，而不得依赖现有通用 `network_benchmark` 推断内部背压。host/model tests MUST 覆盖所有权、Full、错误恢复、乱序 completion、flush 和 lost-wakeup；单 hart QEMU VirtIO-MMIO runtime MUST 覆盖 TX-only、双向、slot/queue Full→恢复、flush C4、descriptor 守恒和网络功能。受影响的 MS04 snapshot、idle、nudge、burst MUST 按 R51 重跑，既有 RX probe/schema 字段 MUST 保持可判定或提供明确的向后兼容版本。原始命令、环境、串口日志、probe 输出、退出码、revision 和完成 marker MUST 保存为 change-local Evidence。

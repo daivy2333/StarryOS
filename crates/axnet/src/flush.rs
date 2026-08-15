@@ -132,7 +132,7 @@ pub struct FlushFuture {
 /// `ResourceBusy` means a flush is already in flight; the caller must retry
 /// after the current one completes or is dropped.
 pub(crate) fn flush_new(service: ServiceAccess) -> Result<FlushFuture, DevError> {
-    let Some(mut guard) = service.try_lock() else {
+    let Some(mut guard) = service.lock() else {
         return Err(DevError::ResourceBusy);
     };
     let ticket = guard.flush_begin()?;
@@ -145,7 +145,7 @@ pub(crate) fn flush_new(service: ServiceAccess) -> Result<FlushFuture, DevError>
 
 impl FlushFuture {
     fn poll_impl(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), DevError>> {
-        let Some(mut service) = self.service.try_lock() else {
+        let Some(mut service) = self.service.lock() else {
             return Poll::Pending;
         };
         service.flush_register(self.identity, cx.waker());
@@ -176,7 +176,7 @@ impl Future for FlushFuture {
 
 impl Drop for FlushFuture {
     fn drop(&mut self) {
-        if let Some(mut service) = self.service.try_lock() {
+        if let Some(mut service) = self.service.lock() {
             service.flush_clear(self.identity);
         }
     }
@@ -552,27 +552,78 @@ mod tests {
     }
 
     #[test]
-    fn flush_waiter_identity_exhaustion_returns_stable_error_without_wrap() {
-        // RW-3: the waiter identity allocator must be checked. Exhaustion must
-        // fail the construction without reusing an identity (ABA), and must
-        // not consume the waiter slot.
-        let (service, _inner) = leaked_service();
+    fn flush_monotonic_stale_drop_and_identity_exhaustion_witness() {
+        // RW-11: the identity counter is set once near the boundary and never
+        // reset. An older future whose waiter registration becomes stale must
+        // not clear a newer monotonic waiter when dropped; the sentinel branch
+        // must be reached directly with a free slot, never via a reset.
+        let (service, inner) = leaked_service();
+        // A live packet ticket exists before any flush: ownership must survive
+        // the stale-Drop and exhaustion paths untouched.
+        let ticket = inner.tracker.lock().alloc().unwrap();
+        inner.queued.lock().push_back(ticket);
         {
             let mut guard = service.lock();
-            // Drive the identity counter to the last valid value.
-            guard.set_flush_next_identity_for_test(u64::MAX - 1);
+            guard.set_flush_next_identity_for_test(u64::MAX - 2);
         }
-        // The last valid identity is handed out once.
-        let _fut = flush_new(ServiceAccess::Injected(service)).unwrap();
-        // Exhaustion: `u64::MAX` is the invalid sentinel, so the next
-        // construction fails fast instead of wrapping back to 0.
+        // The older future takes the first monotonic identity (MAX-2).
+        let fut_old = flush_new(ServiceAccess::Injected(service)).unwrap();
+        // Make only its waiter registration stale through the existing
+        // test-visible clear operation while retaining the future.
+        {
+            let mut guard = service.lock();
+            assert_eq!(guard.flush_next_identity_for_test(), u64::MAX - 1);
+            guard.flush_clear(u64::MAX - 2);
+        }
+        // The next monotonic waiter (MAX-1) owns the slot.
+        let mut fut_new = flush_new(ServiceAccess::Injected(service)).unwrap();
+        assert_eq!(inner.tracker.lock().last_accepted(), Some(ticket));
+        // The newer waiter is installed and waiting on the live ticket.
+        {
+            let guard = service.lock();
+            assert_eq!(guard.v3_flush_target(), ticket);
+        }
+        assert!(matches!(poll_once(&mut fut_new), core::task::Poll::Pending));
+        // Dropping the older future must not clear the newer waiter: its Drop
+        // clears only its own (stale) identity.
+        drop(fut_old);
+        {
+            let guard = service.lock();
+            assert_eq!(
+                guard.v3_flush_target(),
+                ticket,
+                "newer waiter survives stale Drop"
+            );
+        }
+        assert!(matches!(poll_once(&mut fut_new), core::task::Poll::Pending));
+        // Release the newer waiter; the sole slot is free again and the
+        // counter is at the sentinel without wrap or reset.
+        drop(fut_new);
+        {
+            let guard = service.lock();
+            assert_eq!(guard.flush_next_identity_for_test(), u64::MAX);
+            assert_eq!(guard.v3_flush_target(), u64::MAX, "no waiter installed");
+        }
+        // With a free slot, the next construction hits the identity sentinel
+        // branch directly (occupied-slot rejection would also be ResourceBusy
+        // but leaves the counter below MAX and a waiter installed).
         let err = flush_new(ServiceAccess::Injected(service));
         assert!(matches!(err, Err(DevError::ResourceBusy)));
-        // No identity was reused: the counter stayed at the sentinel.
         {
-            let mut guard = service.lock();
-            assert_eq!(guard.flush_next_identity_for_test(), u64::MAX);
+            let guard = service.lock();
+            assert_eq!(
+                guard.flush_next_identity_for_test(),
+                u64::MAX,
+                "no wrap or reset"
+            );
+            assert_eq!(
+                guard.v3_flush_target(),
+                u64::MAX,
+                "no waiter consumed by rejection"
+            );
         }
+        // The live ticket was never released by any of the above.
+        assert!(!inner.tracker.lock().flush_done(Some(ticket)));
     }
 
     #[test]

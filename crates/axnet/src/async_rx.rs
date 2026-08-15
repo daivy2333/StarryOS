@@ -465,27 +465,40 @@ pub fn rx_snapshot() -> RxSnapshot {
 /// append-only `IrqSnapshotV3` wire type; no field here replaces or reorders
 /// the V2 prefix.
 pub fn rx_snapshot_v3() -> RxSnapshotV3 {
-    let v2 = rx_snapshot();
-    let (ledger, tx_ledger, flush_target, flush_counters, drop_reasons) = match crate::SERVICE.get()
-    {
-        Some(service) => {
-            let mut guard = service.lock();
-            let ledger = guard.v3_slot_ledger();
-            // RW-2: the real driver buffer/descriptor ledger, not a
-            // synthesis from slot or ticket capacities.
-            let tx_ledger = guard.v3_tx_resource_ledger();
-            let target = guard.v3_flush_target();
-            let counters = guard.v3_flush_counters();
-            let drops = guard.v3_drop_reasons();
-            (ledger, tx_ledger, target, counters, drops)
+    rx_snapshot_v3_from(rx_snapshot(), ServiceAccess::Global)
+}
+
+/// C5/T4.4-R2 shared V3 assembly seam: builds the V3 payload from a V2 base
+/// snapshot plus a Service access. The public entry and host tests with an
+/// injected Service execute this same path, so a regression to a synthetic
+/// or cross-state tuple is witnessed once. The lease tuple (mode, expiry,
+/// failure counter) is copied from the committed Service under the SAME
+/// guard as the ledger, so a control or tick between two observations can
+/// never form a synthetic or cross-generation tuple in the V3 payload. Only
+/// a missing (pre-init) Service uses the all-zero fallback.
+pub(crate) fn rx_snapshot_v3_from(base: RxSnapshot, service: ServiceAccess) -> RxSnapshotV3 {
+    let (
+        ledger,
+        tx_ledger,
+        flush_target,
+        flush_counters,
+        drop_reasons,
+        hold_mode,
+        lease_expiry,
+        auto_release_failure,
+    ) = match service {
+        ServiceAccess::Global => match crate::SERVICE.get() {
+            Some(mutex) => {
+                let mut guard = mutex.lock();
+                read_v3_ledger_and_lease(&mut guard)
+            }
+            None => default_v3_ledger_and_lease(),
+        },
+        #[cfg(test)]
+        ServiceAccess::Injected(mutex) => {
+            let mut guard = mutex.lock();
+            read_v3_ledger_and_lease(&mut guard)
         }
-        None => (
-            crate::device::SlotLedger::default(),
-            None,
-            u64::MAX,
-            [0; 4],
-            [0; 5],
-        ),
     };
     let (
         tx_buffer_available,
@@ -512,24 +525,24 @@ pub fn rx_snapshot_v3() -> RxSnapshotV3 {
         ),
     };
     RxSnapshotV3 {
-        lifecycle: v2.lifecycle,
-        owner: v2.owner,
-        isr_publish: v2.isr_publish,
-        isr_wake: v2.isr_wake,
-        software_nudge: v2.software_nudge,
-        task_poll: v2.task_poll,
-        reaped: v2.reaped,
-        refilled: v2.refilled,
-        delivered: v2.delivered,
-        non_ip_consumed: v2.non_ip_consumed,
-        budget_exhausted: v2.budget_exhausted,
-        self_yield: v2.self_yield,
-        router_full_wait: v2.router_full_wait,
-        space_wake: v2.space_wake,
-        empty_check: v2.empty_check,
-        fault: v2.fault,
-        last_error_stage: v2.last_error_stage,
-        last_error_code: v2.last_error_code,
+        lifecycle: base.lifecycle,
+        owner: base.owner,
+        isr_publish: base.isr_publish,
+        isr_wake: base.isr_wake,
+        software_nudge: base.software_nudge,
+        task_poll: base.task_poll,
+        reaped: base.reaped,
+        refilled: base.refilled,
+        delivered: base.delivered,
+        non_ip_consumed: base.non_ip_consumed,
+        budget_exhausted: base.budget_exhausted,
+        self_yield: base.self_yield,
+        router_full_wait: base.router_full_wait,
+        space_wake: base.space_wake,
+        empty_check: base.empty_check,
+        fault: base.fault,
+        last_error_stage: base.last_error_stage,
+        last_error_code: base.last_error_code,
         rx_slot_occupancy: ledger.rx_occupancy,
         rx_slot_high_water: ledger.rx_high_water,
         rx_slot_full: ledger.rx_full,
@@ -566,18 +579,9 @@ pub fn rx_snapshot_v3() -> RxSnapshotV3 {
         flush_error: flush_counters[1],
         flush_busy: flush_counters[2],
         flush_cancel: flush_counters[3],
-        #[cfg(feature = "qemu-diagnostics")]
-        hold_mode: crate::diag::DIAGNOSTIC.hold_mode(),
-        #[cfg(feature = "qemu-diagnostics")]
-        lease_expiry: crate::diag::DIAGNOSTIC.lease_expiry(),
-        #[cfg(feature = "qemu-diagnostics")]
-        auto_release_failure: crate::diag::DIAGNOSTIC.auto_release_failure(),
-        #[cfg(not(feature = "qemu-diagnostics"))]
-        hold_mode: 0,
-        #[cfg(not(feature = "qemu-diagnostics"))]
-        lease_expiry: 0,
-        #[cfg(not(feature = "qemu-diagnostics"))]
-        auto_release_failure: 0,
+        hold_mode,
+        lease_expiry,
+        auto_release_failure,
         lifecycle_fault: RX_TELEMETRY.lifecycle_fault.load(Ordering::Relaxed),
         ownership_invariant: RX_TELEMETRY.ownership_invariant.load(Ordering::Relaxed),
         drop_malformed_ip: drop_reasons[0],
@@ -587,6 +591,59 @@ pub fn rx_snapshot_v3() -> RxSnapshotV3 {
         drop_frame_too_large: drop_reasons[4],
     }
 }
+
+/// Reads the V3 ledger and lease tuple from a locked Service in one guard.
+fn read_v3_ledger_and_lease(service: &mut Service) -> V3LedgerAndLease {
+    let ledger = service.v3_slot_ledger();
+    // RW-2: the real driver buffer/descriptor ledger, not a synthesis from
+    // slot or ticket capacities.
+    let tx_ledger = service.v3_tx_resource_ledger();
+    let target = service.v3_flush_target();
+    let counters = service.v3_flush_counters();
+    let drops = service.v3_drop_reasons();
+    #[cfg(feature = "qemu-diagnostics")]
+    let lease = (
+        service.diag_hold_mode(),
+        service.diag_lease_expiry(),
+        service.diag_auto_release_failure(),
+    );
+    #[cfg(not(feature = "qemu-diagnostics"))]
+    let lease = (0u64, 0u64, 0u64);
+    (
+        ledger, tx_ledger, target, counters, drops, lease.0, lease.1, lease.2,
+    )
+}
+
+/// Pre-init fallback: a missing Service reports zeros, never a synthetic
+/// lease tuple that could be mistaken for a committed no-hold.
+fn default_v3_ledger_and_lease() -> V3LedgerAndLease {
+    #[cfg(feature = "qemu-diagnostics")]
+    let hold_none = crate::diag::HOLD_NONE;
+    #[cfg(not(feature = "qemu-diagnostics"))]
+    let hold_none = 0u64;
+    (
+        crate::device::SlotLedger::default(),
+        None,
+        u64::MAX,
+        [0; 4],
+        [0; 5],
+        hold_none,
+        0u64,
+        0u64,
+    )
+}
+
+/// Ledger and lease tuple read under one Service guard for the V3 payload.
+type V3LedgerAndLease = (
+    crate::device::SlotLedger,
+    Option<axdriver_net::TxResourceLedger>,
+    u64,
+    [u64; 4],
+    [u64; 5],
+    u64,
+    u64,
+    u64,
+);
 
 /// MS05 V3 diagnostic snapshot source (Task 4.2).
 ///
@@ -749,13 +806,50 @@ impl ServiceAccess {
         }
     }
 
-    pub(crate) fn try_lock(&self) -> Option<ServiceGuard<'_>> {
+    /// Blocking acquisition for the sole owner (queue task, flush): the
+    /// caller waits for the brief stack hold instead of returning early, so
+    /// a lost lock never silently delays queue or flush progress. `None`
+    /// only when the global Service is not initialized.
+    pub(crate) fn lock(&self) -> Option<ServiceGuard<'_>> {
         match self {
             Self::Global => crate::SERVICE.get().map(|m| ServiceGuard::Global(m.lock())),
             #[cfg(test)]
             Self::Injected(m) => Some(ServiceGuard::Injected(m.lock())),
         }
     }
+}
+
+/// C2/T4.4-R1 shared bounded control path: one nonblocking Service
+/// acquisition, a checked commit under the guard, unlock, then exactly one
+/// queue-work publication. Both the production [`diagnostic_control`]
+/// (crate::diagnostic_control) entry and host tests with an injected Service
+/// execute this path, so Busy / validation-error / success event ordering is
+/// witnessed once. A missing global Service is `BadState`; a held Service is
+/// `ResourceBusy` and changes neither state nor event generation.
+#[cfg(feature = "qemu-diagnostics")]
+pub(crate) fn diagnostic_control_shared(
+    service: ServiceAccess,
+    notify: &QueueEvent,
+    op: u64,
+    lease_ms: u64,
+) -> DevResult {
+    let mut guard = match service {
+        ServiceAccess::Global => ServiceGuard::Global(
+            crate::SERVICE
+                .get()
+                .ok_or(DevError::BadState)?
+                .try_lock()
+                .ok_or(DevError::ResourceBusy)?,
+        ),
+        #[cfg(test)]
+        ServiceAccess::Injected(mutex) => {
+            ServiceGuard::Injected(mutex.try_lock().ok_or(DevError::ResourceBusy)?)
+        }
+    };
+    guard.diag_control(op, lease_ms, crate::diag::diag_now())?;
+    drop(guard);
+    notify.publish_queue_work();
+    Ok(())
 }
 
 /// The unique RX queue task future.
@@ -770,18 +864,13 @@ pub(crate) struct RxRxFuture {
     lifecycle: &'static RxLifecycle,
     notify: &'static QueueEvent,
     telemetry: &'static RxTelemetry,
-    /// RW-1: the QEMU diagnostic hold state this queue owner drives.
-    /// Production passes the global `&DIAGNOSTIC`; host tests inject their own
-    /// instance so a hold committed by one test can never leak into a parallel
-    /// sibling that services a round.
-    #[cfg(feature = "qemu-diagnostics")]
-    diag: &'static crate::diag::DiagnosticState,
-    /// RW-1: armed QEMU diagnostic lease deadline (wall nanos) the owner is
-    /// sleeping on. When it elapses the next round's `diag_hold_tick`
-    /// auto-releases the expired hold.
+    /// C4: armed QEMU diagnostic lease deadline (wall nanos) the owner is
+    /// sleeping on. The timer is wake-only: it carries no generation, so a
+    /// stale wake costs at most one bounded poll and the current Service
+    /// lease decides whether to remain held and which deadline is rearmed.
     #[cfg(feature = "qemu-diagnostics")]
     lease_deadline: Option<u64>,
-    /// RW-1: axtask timer that wakes the queue owner at `lease_deadline`.
+    /// C4: axtask timer that wakes the queue owner at `lease_deadline`.
     /// Production only; host tests drive the fake clock and re-poll instead.
     #[cfg(all(feature = "qemu-diagnostics", not(test)))]
     lease_timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
@@ -796,7 +885,7 @@ enum RoundOutcome {
     /// Wait for a resource release (slot space or Router space), possibly
     /// retrying.
     WaitSpace(SpaceDecision),
-    /// RW-1: sleep purely on the QEMU diagnostic lease deadline (wall nanos).
+    /// C4: sleep purely on the QEMU diagnostic lease deadline (wall nanos).
     /// The held stage's completion must not drive the arm/recheck protocol
     /// (it would retry forever); the only exits are the lease timer or an
     /// explicit Release publishing queue work.
@@ -817,11 +906,12 @@ impl RxRxFuture {
     /// the register/arm/recheck protocol.
     fn service_round(&self, service: &mut Service) -> RoundOutcome {
         // QEMU diagnostic hold (D9): a hold pauses exactly one stage of the
-        // sole queue owner. The lease is advanced once per round; an expired
-        // lease auto-releases and counts a failure. The state is the future's
-        // own instance (`self.diag`), so a hold only ever gates this owner.
+        // sole queue owner. The lease is Service-owned and advanced once per
+        // round under the Service guard; an expired lease auto-releases and
+        // counts a failure. No lease generation exists, so no identity can
+        // exhaust and no reachable Hold is ever permanent.
         #[cfg(feature = "qemu-diagnostics")]
-        let hold = service.diag_hold_tick(self.diag);
+        let hold = service.diag_hold_tick();
         #[cfg(not(feature = "qemu-diagnostics"))]
         let hold = 0u64;
 
@@ -1013,15 +1103,18 @@ impl RxRxFuture {
             }
             RoundOutcome::WaitSpace(decision)
         } else if hold_active {
-            // RW-1: a hold lease is active and the held stage blocks the
+            // C4: a hold lease is active and the held stage blocks the
             // remaining work. Sleep until the lease deadline; never self-wake
             // and never run the register/arm/recheck protocol on a held
             // completion (it would retry forever). The deadline timer only
             // wakes the owner; `diag_hold_tick` on the next round performs
-            // the release, failure counter and queue-work publication.
+            // the release and failure counter. The expiry comes from the
+            // committed Service lease under the same guard, so it is always
+            // the deadline of the lease that armed it.
             #[cfg(feature = "qemu-diagnostics")]
             {
-                RoundOutcome::SleepUntil(self.diag.lease_expiry())
+                let expiry = service.diag_lease_expiry();
+                RoundOutcome::SleepUntil(expiry)
             }
             #[cfg(not(feature = "qemu-diagnostics"))]
             {
@@ -1051,7 +1144,7 @@ impl RxRxFuture {
             self.transition_preflight(false);
             return Poll::Ready(());
         }
-        let Some(mut service) = self.service.try_lock() else {
+        let Some(mut service) = self.service.lock() else {
             self.notify.register_queue(cx.waker());
             return Poll::Pending;
         };
@@ -1087,7 +1180,7 @@ impl RxRxFuture {
     /// service at most RX_BUDGET completions under the guard.
     fn poll_active(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.notify.register_queue(cx.waker());
-        let Some(mut service) = self.service.try_lock() else {
+        let Some(mut service) = self.service.lock() else {
             return Poll::Pending;
         };
         match self.service_round(&mut service) {
@@ -1108,13 +1201,16 @@ impl RxRxFuture {
                 Poll::Pending
             }
             RoundOutcome::WaitSpace(SpaceDecision::Waiting) => {
-                drop(service);
-                // RW-1: while waiting for RX slot space the lease may also
+                // C4: while waiting for RX slot space the lease may also
                 // expire; arm the deadline so an expired hold still
                 // auto-releases without an external NIC event. A 0 deadline
-                // (no hold) cancels any stale one.
+                // (no hold) cancels any stale one. The expiry is read from
+                // the committed Service lease while the guard is still held.
                 #[cfg(feature = "qemu-diagnostics")]
-                self.arm_lease_deadline(cx, self.diag.lease_expiry());
+                let lease_expiry = service.diag_lease_expiry();
+                drop(service);
+                #[cfg(feature = "qemu-diagnostics")]
+                self.arm_lease_deadline(cx, lease_expiry);
                 Poll::Pending
             }
             RoundOutcome::RegisterRecheck => {
@@ -1139,25 +1235,27 @@ impl RxRxFuture {
         }
     }
 
-    /// RW-1: cancels any armed lease deadline and its timer.
+    /// C4: cancels any armed lease deadline and its timer.
     #[cfg(feature = "qemu-diagnostics")]
     fn cancel_lease_deadline(&mut self) {
         self.lease_deadline = None;
         self.cancel_lease_timer();
     }
 
-    /// RW-1: arms (or cancels) the QEMU diagnostic lease deadline wake.
+    /// C4: arms (or cancels) the QEMU diagnostic lease deadline wake.
     ///
     /// The lease expiry is the only reason the owner must wake without an
     /// external NIC event: an expired hold must auto-release so the paused
     /// stage resumes. In production this registers an axtask timer that
     /// wakes the queue waker at `deadline`; host tests drive the fake clock
-    /// instead. The timer only wakes the owner: the release, failure counter
-    /// and queue-work publication stay in [`Service::diag_hold_tick`].
+    /// instead. The timer only wakes the owner: the release and failure
+    /// counter stay in [`Service::diag_hold_tick`].
     ///
     /// A `deadline` of 0 (no active hold) cancels any previously armed
-    /// deadline, so an explicit Release invalidates the old timer and a
-    /// stale timer can never release a newer lease.
+    /// deadline, so an explicit Release invalidates the old timer. The
+    /// timer carries no lease generation: a stale wake costs at most one
+    /// bounded poll, and the current Service lease decides at poll time
+    /// whether to remain held and which deadline to rearm.
     #[cfg(feature = "qemu-diagnostics")]
     fn arm_lease_deadline(&mut self, cx: &mut Context<'_>, deadline: u64) {
         if deadline == 0 || crate::diag::diag_now() >= deadline {
@@ -1203,9 +1301,15 @@ impl RxRxFuture {
     #[cfg(all(feature = "qemu-diagnostics", test))]
     fn arm_lease_timer(&mut self, _cx: &mut Context<'_>, _deadline: u64) {}
 
-    /// RW-1: if an armed lease deadline has elapsed, clear it and self-wake
+    /// C4: if an armed lease deadline has elapsed, clear it and self-wake
     /// so the round runs, whose `diag_hold_tick` auto-releases the expired
     /// hold. The self-wake is observable by a counting waker in host tests.
+    ///
+    /// The timer is wake-only and carries no generation: a stale wake (a
+    /// newer lease replaced the armed one) costs at most one bounded poll,
+    /// and the current Service lease decides at poll time whether to remain
+    /// held and which deadline to rearm. The newer control already published
+    /// queue work, so the owner was or will be woken anyway.
     #[cfg(feature = "qemu-diagnostics")]
     fn lease_deadline_elapsed(&mut self, cx: &mut Context<'_>) {
         let Some(deadline) = self.lease_deadline else {
@@ -1250,7 +1354,7 @@ impl RxRxFuture {
     /// directions under the Service lock, then observe the generation again.
     fn poll_register_recheck(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         let decision = self.notify.wait_decision(cx.waker(), || {
-            let Some(mut service) = self.service.try_lock() else {
+            let Some(mut service) = self.service.lock() else {
                 return Err(DevError::BadState);
             };
             service.arm_and_check_both_target().map(|pending| {
@@ -1312,8 +1416,6 @@ fn spawn_rx_task() {
                 lifecycle: &RX_LIFECYCLE,
                 notify: &QUEUE_EVENT,
                 telemetry: &RX_TELEMETRY,
-                #[cfg(feature = "qemu-diagnostics")]
-                diag: &crate::diag::DIAGNOSTIC,
                 #[cfg(feature = "qemu-diagnostics")]
                 lease_deadline: None,
                 #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -2241,40 +2343,6 @@ mod tests {
         service_mutex: &'static spin::Mutex<Service>,
         notify: &'static QueueEvent,
     ) -> (&'static RxLifecycle, RxRxFuture) {
-        #[cfg(feature = "qemu-diagnostics")]
-        {
-            leaked_future_diag(service_mutex, notify, leaked_diag())
-        }
-        #[cfg(not(feature = "qemu-diagnostics"))]
-        {
-            let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
-            lifecycle.start().unwrap();
-            let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
-            let fut = RxRxFuture {
-                service: ServiceAccess::Injected(service_mutex),
-                lifecycle,
-                notify,
-                telemetry,
-            };
-            (lifecycle, fut)
-        }
-    }
-
-    /// A fresh per-test QEMU diagnostic state so a hold committed by one test
-    /// never leaks into a parallel sibling that services a round (RW-1).
-    #[cfg(feature = "qemu-diagnostics")]
-    fn leaked_diag() -> &'static crate::diag::DiagnosticState {
-        Box::leak(Box::new(crate::diag::DiagnosticState::new()))
-    }
-
-    /// Builds an injected Future over a caller-provided diagnostic state, so
-    /// the QEMU hold tests control exactly the instance the owner services.
-    #[cfg(feature = "qemu-diagnostics")]
-    fn leaked_future_diag(
-        service_mutex: &'static spin::Mutex<Service>,
-        notify: &'static QueueEvent,
-        diag: &'static crate::diag::DiagnosticState,
-    ) -> (&'static RxLifecycle, RxRxFuture) {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
         let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
@@ -2283,7 +2351,7 @@ mod tests {
             lifecycle,
             notify,
             telemetry,
-            diag,
+            #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
@@ -2343,8 +2411,6 @@ mod tests {
             lifecycle,
             notify,
             telemetry,
-            #[cfg(feature = "qemu-diagnostics")]
-            diag: leaked_diag(),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -3006,8 +3072,6 @@ mod tests {
             notify: Box::leak(Box::new(QueueEvent::new())),
             telemetry,
             #[cfg(feature = "qemu-diagnostics")]
-            diag: leaked_diag(),
-            #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
@@ -3230,9 +3294,12 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_submit_pauses_submit_stage_but_not_reclaim_or_rx() {
-        // The QEMU diagnostic state is per-future; a hold only ever gates this
-        // owner, so parallel siblings servicing a round stay unaffected.
-        let diag = leaked_diag();
+        let _serial = SERIAL.lock();
+        // The QEMU diagnostic lease is Service-owned; a hold committed under
+        // the injected Service guard only ever gates this owner, so parallel
+        // siblings servicing a round stay unaffected. The fake clock is fixed
+        // because `diag_hold_tick` reads the global `diag_now()`.
+        crate::diag::set_test_now(0);
         let t0 = crate::diag::diag_now();
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Consumed, RxStep::Empty],
@@ -3241,11 +3308,13 @@ mod tests {
             true,
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
         let count = Arc::new(AtomicUsize::new(0));
 
         // Commit a long-lived submit hold (well under the 2 s max lease).
-        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 1000, t0)
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_SUBMIT, 1000, t0)
             .unwrap();
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
@@ -3257,8 +3326,10 @@ mod tests {
         }
         assert!(mutex.try_lock().is_some());
         // Release the hold; the sole owner resumes the paused stage.
-        diag.control(crate::diag::OP_RELEASE, 0, t0).unwrap();
-        diag.tick(u64::MAX);
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_RELEASE, 0, t0)
+            .unwrap();
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         {
             let mut guard = mutex.lock();
@@ -3271,9 +3342,12 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_reclaim_pauses_reclaim_stage_and_again_still_backpressures() {
-        // The QEMU diagnostic state is per-future; a hold only ever gates this
-        // owner, so parallel siblings servicing a round stay unaffected.
-        let diag = leaked_diag();
+        let _serial = SERIAL.lock();
+        // The QEMU diagnostic lease is Service-owned; a hold committed under
+        // the injected Service guard only ever gates this owner, so parallel
+        // siblings servicing a round stay unaffected. The fake clock is fixed
+        // because `diag_hold_tick` reads the global `diag_now()`.
+        crate::diag::set_test_now(0);
         let t0 = crate::diag::diag_now();
         let (mutex, _, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
@@ -3282,19 +3356,280 @@ mod tests {
             true,
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
         let count = Arc::new(AtomicUsize::new(0));
 
-        diag.control(crate::diag::OP_HOLD_TX_RECLAIM, 1000, t0)
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 1000, t0)
             .unwrap();
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         // The reclaim stage was paused but the round stays Active and the held
         // submit `Again` backpressures without a busy loop or a fault.
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
         assert!(mutex.try_lock().is_some());
-        // Release the hold; the per-future state never leaks anywhere.
-        diag.control(crate::diag::OP_RELEASE, 0, t0).unwrap();
-        diag.tick(u64::MAX);
+        // Release the hold; the Service-owned lease never leaks anywhere.
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_RELEASE, 0, t0)
+            .unwrap();
+    }
+
+    // ── Iteration 008 rework: shared production control/V3 witnesses ────
+
+    /// Waker that probes whether the injected Service is unlocked at the
+    /// moment a queue-work publication fires.
+    ///
+    /// `publish_queue_work()` wakes synchronously inside the shared control
+    /// path. If the Service guard were still held at publication time, the
+    /// probe would observe `try_lock` failing, so a successful success event
+    /// proves the guard was dropped before the single post-unlock
+    /// publication without relying on source order.
+    struct UnlockObservingWake {
+        mutex: &'static spin::Mutex<Service>,
+        unlocked: Arc<AtomicBool>,
+        woken: Arc<AtomicUsize>,
+    }
+
+    impl alloc::task::Wake for UnlockObservingWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.woken.fetch_add(1, Ordering::Relaxed);
+            self.unlocked
+                .store(self.mutex.try_lock().is_some(), Ordering::Relaxed);
+        }
+    }
+
+    fn unlock_observing_waker(
+        mutex: &'static spin::Mutex<Service>,
+        unlocked: Arc<AtomicBool>,
+        woken: Arc<AtomicUsize>,
+    ) -> Waker {
+        Waker::from(Arc::new(UnlockObservingWake {
+            mutex,
+            unlocked,
+            woken,
+        }))
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock() {
+        // T4.4-R1: the production `diagnostic_control` entry and this test
+        // share `diagnostic_control_shared`. The test holds the injected
+        // Service and forces the Busy / validation-error / success event
+        // ordering that the public entry cannot be driven through in a host
+        // test (the production global `SERVICE` is never initialized here).
+        let _serial = SERIAL.lock();
+        let t0 = 1_000_000_000_000u64;
+        crate::diag::set_test_now(t0);
+        let (mutex, _copy_calls, _stats) =
+            leaked_service_tx(vec![RxStep::Empty], vec![], vec![], true);
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+
+        // Busy: while the Service is held, the shared path must return
+        // `ResourceBusy` immediately, change neither the lease nor the queue
+        // generation, and publish no event.
+        let held = mutex.lock();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let unlocked = Arc::new(AtomicBool::new(false));
+        notify.register_queue(&unlock_observing_waker(
+            mutex,
+            unlocked.clone(),
+            woken.clone(),
+        ));
+        let before = notify.generation();
+        let err = super::diagnostic_control_shared(
+            ServiceAccess::Injected(mutex),
+            notify,
+            crate::diag::OP_HOLD_TX_SUBMIT,
+            100,
+        );
+        assert!(matches!(err, Err(DevError::ResourceBusy)));
+        assert_eq!(held.diag_hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(held.diag_lease_expiry(), 0);
+        assert_eq!(
+            notify.generation(),
+            before,
+            "Busy must not advance the queue generation"
+        );
+        assert_eq!(woken.load(Ordering::Relaxed), 0, "Busy must not publish");
+        drop(held);
+
+        // Validation error: an invalid control also publishes nothing and
+        // leaves the committed no-hold state untouched.
+        let before = notify.generation();
+        let err = super::diagnostic_control_shared(
+            ServiceAccess::Injected(mutex),
+            notify,
+            crate::diag::OP_RELEASE,
+            1,
+        );
+        assert!(matches!(err, Err(DevError::InvalidParam)));
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(
+            notify.generation(),
+            before,
+            "validation error must not publish"
+        );
+        assert_eq!(woken.load(Ordering::Relaxed), 0);
+
+        // Success: a valid Hold commits under the guard, and the exactly-once
+        // queue-work publication fires only after the guard is dropped — the
+        // wake-time probe must observe the Service unlocked.
+        let before = notify.generation();
+        let res = super::diagnostic_control_shared(
+            ServiceAccess::Injected(mutex),
+            notify,
+            crate::diag::OP_HOLD_TX_SUBMIT,
+            100,
+        );
+        assert!(res.is_ok());
+        assert_eq!(
+            notify.generation(),
+            before + 1,
+            "success publishes exactly one event"
+        );
+        assert_eq!(woken.load(Ordering::Relaxed), 1, "woken exactly once");
+        assert!(
+            unlocked.load(Ordering::Relaxed),
+            "wake-time probe must observe the Service unlocked (post-unlock publication)"
+        );
+        {
+            let guard = mutex.lock();
+            assert_eq!(guard.diag_hold_mode(), crate::diag::HOLD_SUBMIT);
+            assert_eq!(guard.diag_lease_expiry(), t0 + 100 * crate::diag::NS_PER_MS);
+        }
+
+        // Overflow: a checked-deadline overflow fails closed before any
+        // mutation or publication; the previous committed Hold survives.
+        crate::diag::set_test_now(u64::MAX - 10);
+        let before = notify.generation();
+        let err = super::diagnostic_control_shared(
+            ServiceAccess::Injected(mutex),
+            notify,
+            crate::diag::OP_HOLD_TX_SUBMIT,
+            crate::diag::MAX_LEASE_MS,
+        );
+        assert!(matches!(err, Err(DevError::InvalidParam)));
+        assert_eq!(
+            notify.generation(),
+            before,
+            "overflow rejection must not publish"
+        );
+        assert_eq!(woken.load(Ordering::Relaxed), 1, "no second wake");
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick() {
+        // T4.4-R2: the public `rx_snapshot_v3` and this test share
+        // `rx_snapshot_v3_from`. Every snapshot is assembled under ONE
+        // Service guard, so a control or tick ordered on either side of the
+        // acquisition can only expose the complete before or after committed
+        // tuple — never a synthetic no-hold, torn pair or cross-state mix.
+        let _serial = SERIAL.lock();
+        let t0 = 1_000_000_000_000u64;
+        crate::diag::set_test_now(t0);
+        let (mutex, _copy_calls, _stats) =
+            leaked_service_tx(vec![RxStep::Empty], vec![], vec![], true);
+        let base = super::rx_snapshot();
+
+        // Before any control: only the committed no-hold tuple is observable.
+        let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
+        assert_eq!(snap.hold_mode, crate::diag::HOLD_NONE);
+        assert_eq!(snap.lease_expiry, 0);
+        assert_eq!(snap.auto_release_failure, 0);
+
+        // Control ordered BEFORE the snapshot: the shared assembly sees the
+        // complete committed after-tuple of Hold A.
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
+            .unwrap();
+        let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
+        assert_eq!(snap.hold_mode, crate::diag::HOLD_SUBMIT);
+        assert_eq!(snap.lease_expiry, t0 + 100 * crate::diag::NS_PER_MS);
+        assert_eq!(snap.auto_release_failure, 0);
+
+        // Tick ordered AFTER the snapshot: the snapshot at A's deadline still
+        // returns the complete held tuple (it never mutates); only the queue
+        // owner's guarded tick commits the after-state.
+        crate::diag::set_test_now(t0 + 100 * crate::diag::NS_PER_MS);
+        let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
+        assert_eq!(snap.hold_mode, crate::diag::HOLD_SUBMIT);
+        assert_eq!(snap.auto_release_failure, 0);
+        let mode = mutex.lock().diag_hold_tick();
+        assert_eq!(mode, crate::diag::HOLD_NONE);
+        let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
+        assert_eq!(snap.hold_mode, crate::diag::HOLD_NONE);
+        assert_eq!(snap.lease_expiry, 0);
+        assert_eq!(snap.auto_release_failure, 1);
+
+        // A replacement Hold B ordered before the snapshot: only B's
+        // committed tuple is observable, never a stale A.
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 200, t0)
+            .unwrap();
+        let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
+        assert_eq!(snap.hold_mode, crate::diag::HOLD_RECLAIM);
+        assert_eq!(snap.lease_expiry, t0 + 200 * crate::diag::NS_PER_MS);
+        assert_eq!(snap.auto_release_failure, 1);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn diagnostic_control_public_entry_delegates_to_shared_path_in_source() {
+        // T4.4-R1 source guard: the production control entry must delegate to
+        // the shared bounded path. Re-implementing acquisition or publication
+        // in the entry would silently bypass the witnessed Busy / unlock-order
+        // contract.
+        let source = include_str!("lib.rs");
+        let start = source.find("pub fn diagnostic_control").unwrap();
+        let rest = &source[start..];
+        let end = rest.find("/// Reserves the sole C4 flush waiter").unwrap();
+        let entry = &rest[..end];
+        assert!(
+            entry.contains("diagnostic_control_shared"),
+            "production entry must call the shared bounded control path"
+        );
+        assert!(
+            !entry.contains("try_lock"),
+            "production entry must not implement Service acquisition itself"
+        );
+        assert!(
+            !entry.contains("publish_queue_work"),
+            "production entry must not publish the event itself"
+        );
+    }
+
+    #[test]
+    fn rx_snapshot_v3_public_entry_delegates_to_shared_assembly_in_source() {
+        // T4.4-R2 source guard: the public V3 entry must delegate to the
+        // shared one-guard assembly seam. Re-inlining Service reads in the
+        // entry would bypass the committed-tuple/ledger witness.
+        let source = include_str!("async_rx.rs");
+        let start = source.find("pub fn rx_snapshot_v3()").unwrap();
+        let rest = &source[start..];
+        let end = rest.find("/// C5/T4.4-R2 shared V3 assembly seam").unwrap();
+        let entry = &rest[..end];
+        assert!(
+            entry.contains("rx_snapshot_v3_from"),
+            "public entry must delegate to the shared V3 assembly seam"
+        );
+        assert!(
+            !entry.contains("v3_slot_ledger"),
+            "public entry must not read the ledger itself"
+        );
+        assert!(
+            !entry.contains("diag_hold_mode"),
+            "public entry must not read the lease itself"
+        );
     }
 
     // ── RW-1: lease deadline drives the owner wake (fake clock) ─────────
@@ -3313,7 +3648,6 @@ mod tests {
         // event, the only way the owner can wake is the lease deadline.
         let t0 = 1_000_000_000_000u64;
         fake_clock(t0);
-        let diag = leaked_diag();
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
@@ -3321,10 +3655,12 @@ mod tests {
             true,
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
         let count = Arc::new(AtomicUsize::new(0));
 
-        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
             .unwrap();
 
         // Poll before the deadline: the future sleeps with the deadline armed
@@ -3332,22 +3668,22 @@ mod tests {
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
         assert_eq!(count.load(Ordering::Relaxed), 0, "no wake before deadline");
-        assert_eq!(diag.auto_release_failure(), 0);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
         assert!(mutex.try_lock().is_some());
 
         // Just before the deadline: still sleeping, no wake, no auto-release.
         fake_clock(t0 + 99 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(count.load(Ordering::Relaxed), 0, "no wake before deadline");
-        assert_eq!(diag.auto_release_failure(), 0);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
 
         // At the deadline the fake clock elapses: the future wakes exactly
         // once and the next round auto-releases the expired hold exactly once.
         fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(count.load(Ordering::Relaxed), 1, "deadline wake fires once");
-        assert_eq!(diag.auto_release_failure(), 1);
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
         // The resumed submit stage drains the queued frames.
         {
             let mut guard = mutex.lock();
@@ -3356,7 +3692,7 @@ mod tests {
         }
         // A later poll must not auto-release a second time.
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.auto_release_failure(), 1);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
         assert!(mutex.try_lock().is_some());
     }
 
@@ -3366,7 +3702,6 @@ mod tests {
         let _serial = SERIAL.lock();
         let t0 = 1_000_000_000_000u64;
         fake_clock(t0);
-        let diag = leaked_diag();
         // A TX completion is visible, but the reclaim stage is held: the
         // completion can never advance, so the round must not self-wake into
         // a busy loop before the lease deadline.
@@ -3378,10 +3713,12 @@ mod tests {
         );
         control.tx_completion_visible.store(true, Ordering::Relaxed);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
         let count = Arc::new(AtomicUsize::new(0));
 
-        diag.control(crate::diag::OP_HOLD_TX_RECLAIM, 100, t0)
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 100, t0)
             .unwrap();
 
         // Poll many times before the deadline: no self-wake may ever fire.
@@ -3393,15 +3730,15 @@ mod tests {
                 0,
                 "held TX completion must not busy-loop self-wake"
             );
-            assert_eq!(diag.auto_release_failure(), 0);
+            assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
             assert!(mutex.try_lock().is_some());
         }
 
         // At the deadline the hold auto-releases exactly once.
         fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.auto_release_failure(), 1);
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
     }
 
     #[cfg(feature = "qemu-diagnostics")]
@@ -3410,7 +3747,6 @@ mod tests {
         let _serial = SERIAL.lock();
         let t0 = 1_000_000_000_000u64;
         fake_clock(t0);
-        let diag = leaked_diag();
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
@@ -3418,21 +3754,26 @@ mod tests {
             true,
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (_lifecycle, mut fut) = leaked_future_diag(mutex, notify, diag);
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
         let count = Arc::new(AtomicUsize::new(0));
 
         // Hold A with a 100 ms lease.
-        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_SUBMIT, 100, t0)
             .unwrap();
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_SUBMIT);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
 
         // Explicit Release before the deadline: the stage resumes and the
         // stale deadline must be invalidated.
-        diag.control(crate::diag::OP_RELEASE, 0, t0).unwrap();
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_RELEASE, 0, t0)
+            .unwrap();
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
-        assert_eq!(diag.auto_release_failure(), 0);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
         {
             let mut guard = mutex.lock();
             let submits = guard.router_for_test().devices[0].tx_submit_calls_for_test();
@@ -3441,22 +3782,24 @@ mod tests {
 
         // A new hold B with a longer lease must not be released by the stale
         // deadline from hold A.
-        diag.control(crate::diag::OP_HOLD_TX_SUBMIT, 200, t0)
+        mutex
+            .lock()
+            .diag_control(crate::diag::OP_HOLD_TX_SUBMIT, 200, t0)
             .unwrap();
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_SUBMIT);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
 
         // Advance past hold A's old deadline: B must stay held.
         fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_SUBMIT);
-        assert_eq!(diag.auto_release_failure(), 0);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
 
         // Only B's own deadline releases it, exactly once.
         fake_clock(t0 + 200 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
-        assert_eq!(diag.auto_release_failure(), 1);
-        assert_eq!(diag.hold_mode(), crate::diag::HOLD_NONE);
+        assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
+        assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
         assert!(mutex.try_lock().is_some());
     }
 }
