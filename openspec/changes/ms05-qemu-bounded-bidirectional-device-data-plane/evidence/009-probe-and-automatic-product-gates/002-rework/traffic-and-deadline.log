@@ -1,0 +1,50 @@
+# MS05 Cycle 002 - non-vacuous traffic and absolute deadline witnesses (RED before GREEN)
+Captured: 2026-08-15 18:58:28 +0800
+Method: final source with the Cycle 001 baseline decisions restored (fixtures in /tmp/ms05-red-fixture/),
+        run against the new production-shared tests. Each C RED exits 134 (assert abort);
+        the Python RED shows the buggy acceptance; the same assertions pass (exit 0) against the
+        final source (GREEN below).
+
+## T5.1-R3 RED: vacuous zero/partial traffic accepted (cycle 001 equality-only predicate)
+### C: EXACT mode zero traffic
+$ cc -std=c11 -Wall -Wextra -Werror -Wno-unused-function /tmp/ms05-red-fixture/one_test_traffic_exact_rules.c -o /tmp/ms05-red-fixture/one_test_traffic_exact_rules && /tmp/ms05-red-fixture/one_test_traffic_exact_rules
+one_test_traffic_exact_rules: one_test_traffic_exact_rules.c:385: test_traffic_exact_rules: Assertion `!ms05_traffic_proved(MS05_TRAFFIC_EXACT, 96, 0, 0)' failed.
+/bin/bash: line 69: 179288 Aborted                 (core dumped) /tmp/ms05-red-fixture/one_test_traffic_exact_rules 2>&1
+EXIT=134
+### C: HELD mode zero traffic
+$ /tmp/ms05-red-fixture/one_test_traffic_held_rules
+one_test_traffic_held_rules: one_test_traffic_held_rules.c:399: test_traffic_held_rules: Assertion `!ms05_traffic_proved(MS05_TRAFFIC_HELD, 96, 0, 0)' failed.
+/bin/bash: line 69: 179290 Aborted                 (core dumped) /tmp/ms05-red-fixture/one_test_traffic_held_rules 2>&1
+EXIT=134
+
+## T5.1-R4 RED: mode-only budget ignores phase/absolute deadline
+### C: phase-aware clamped budget
+$ /tmp/ms05-red-fixture/one_test_clamped_budget
+one_test_clamped_budget: one_test_clamped_budget.c:422: test_clamped_budget: Assertion `ms05_ctx_budget_ms(&ctx, 2500) == 700' failed.
+/bin/bash: line 69: 179293 Aborted                 (core dumped) /tmp/ms05-red-fixture/one_test_clamped_budget 2>&1
+EXIT=134
+### C: flush equal-budget accepted (no preflight)
+$ /tmp/ms05-red-fixture/one_test_flush_affordable
+one_test_flush_affordable: one_test_flush_affordable.c:446: test_flush_affordable: Assertion `!ms05_flush_affordable(2000, 2000)' failed.
+/bin/bash: line 69: 179294 Aborted                 (core dumped) /tmp/ms05-red-fixture/one_test_flush_affordable 2>&1
+EXIT=134
+
+## T5.1-R3/R4 RED: Python mode-aware SENT and exchange deadline
+### Python: zero normal-mode SENT accepted (cycle 001 rule)
+$ python3 - <<EOF (parse_sent against stimulus_red.py) EOF
+zero normal-mode SENT accepted  (RED: expected ValueError)
+### Python: drip-fed exchange completes past the absolute exchange deadline
+$ python3 - <<EOF (DripFeedSocket + FakeClock, exchange_timeout=2.0) EOF
+BUGGY BEHAVIOR: drip-fed exchange completed past 2.0s budget: ('tx-only', 96, 64, 96, 96)  (RED)
+
+## GREEN: same assertions against the final source (exit 0)
+$ cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test && /tmp/ms05-data-plane-probe-test
+ms05 probe decision tests: 22 passed
+EXIT=0
+$ python3 scripts/ms05_data_plane_stimulus.py --self-test
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS drip=PASS
+EXIT=0
+$ python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+EXIT=0

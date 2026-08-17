@@ -1,0 +1,48 @@
+# MS05 Cycle 002 - kernel checks, fresh build and payloads (final source)
+Window start: 2026-08-15 18:59:42 +0800
+
+## kernel QEMU check
+$ cargo check --offline -p starry-kernel --features qemu
+Finished dev profile; EXIT=0 (2 pre-existing axnet warnings)
+
+## D1 comparison (expected: exactly 25 axfs/axtask errors, 20 E0432 + 5 E0433)
+$ cargo check --offline -p starry-kernel --features lichee-d1 > d1-full.log 2>&1
+exit=101; error[E0432]=20, error[E0433]=5, total error lines=25
+raw diagnostics: d1-full.log (full output preserved)
+
+## fresh QEMU image
+$ make LOG=info build
+EXIT=0; StarryOS_riscv64-qemu-virt.bin 40190144 bytes
+
+## payload builds
+$ /opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
+MS01 EXIT=0
+$ make -B tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe
+riscv64-linux-musl-gcc -static -O2 -o tests/ms02_guest_service tests/ms02_guest_service.c
+riscv64-linux-musl-gcc -static -Os -o tests/ms03_irq_probe tests/ms03_irq_probe.c
+riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o tests/ms04_rx_probe tests/ms04_rx_probe.c
+riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o tests/ms05_data_plane_probe tests/ms05_data_plane_probe.c
+MS02-05 EXIT=0
+
+## artifact file/stat/sha256sum
+$ file StarryOS_riscv64-qemu-virt.bin tests/ms01_socket_baseline tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe
+StarryOS_riscv64-qemu-virt.bin: data
+tests/ms01_socket_baseline:     ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms02_guest_service:       ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms03_irq_probe:           ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms04_rx_probe:            ELF 64-bit LSB executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), statically linked, with debug_info, not stripped
+tests/ms05_data_plane_probe:    ELF 64-bit LSB executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), statically linked, with debug_info, not stripped
+$ stat -c "%n %s %y" <six artifacts>
+StarryOS_riscv64-qemu-virt.bin 40190144 2026-08-15 18:59:46.144436217 +0800
+tests/ms01_socket_baseline 150832 2026-08-15 19:00:11.308673399 +0800
+tests/ms02_guest_service 134712 2026-08-15 19:00:11.398242831 +0800
+tests/ms03_irq_probe 138600 2026-08-15 19:00:11.476473960 +0800
+tests/ms04_rx_probe 134232 2026-08-15 19:00:11.591990474 +0800
+tests/ms05_data_plane_probe 144576 2026-08-15 19:00:11.824734260 +0800
+$ sha256sum <six artifacts>
+57b672cfbea84c6fc37b591823a81ce9457d59d0dc84f4db8e0551260ff276ac  StarryOS_riscv64-qemu-virt.bin
+168036806819a73fb5a098cbda31a1d383423d9e709b9ac59cd5263065f07a75  tests/ms01_socket_baseline
+c2a252f9fc47353953f71d14a4ffc415f555ac648035e0c45fed1dd98dd877b3  tests/ms02_guest_service
+9cd43fa87ef6a7a0e6ab0efa3c768fa680d4b7040e0f26cce7df01bd1aefc495  tests/ms03_irq_probe
+11b567a1a071999fe1eb0f2c8539e692d5825715e592aa6f817db7ea0d04e77c  tests/ms04_rx_probe
+4bb59491833c4ec950907dac30fe9d83fb1c036bb382c873429d2eb393c64e57  tests/ms05_data_plane_probe

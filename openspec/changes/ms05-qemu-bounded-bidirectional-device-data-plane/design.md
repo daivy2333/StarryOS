@@ -551,6 +551,70 @@ Gate 可避免用 QEMU 成功掩盖 ownership bug。模拟器不能代替真板 
 - 用历史 MS04 Evidence 代替重跑：产物和 queue task 已变化，拒绝。
 - 将 QEMU 结果外推真板/SMP：证据能力不支持，拒绝。
 
+### D11. 用可注入 operation seam 闭合 probe deadline，用结构化 manifest 生成 Evidence
+
+**Decision**
+
+Iteration 009 已接受网络字节序、peer 校验、非空流量、精确 Full/POST 账本和 artifact hash，
+但连续三次执行都没有证明所有真实阻塞路径受同一 deadline 约束，也没有形成可拒绝伪命令
+和摘要日志的 Evidence。后续工作迁入新的逻辑 Iteration，不创建 Iteration 009 Cycle 003。
+
+guest probe 在测试工具内部建立一个可注入 operation seam，覆盖 monotonic clock、bounded
+sleep、diagnostic/flush ioctl、socket timeout、send 和 receive。生产实现调用现有 libc/syscall；
+host harness 注入 fake clock 与 fake operations，执行与 RISC-V payload 相同的 mode runner，
+不得再以纯 decision helper 或 source guard 代替生产路径测试。所有操作共享一个 absolute
+mode deadline，并可附加更短的 phase deadline：
+
+- 每次 ioctl、send、receive 和 sleep 前先读取 clock，剩余 budget 为零时不得启动操作；
+- 可阻塞操作的 timeout 和 retry sleep clamp 到 `min(mode remaining, phase remaining, nominal)`；
+- 操作返回后再次读取 clock，equal/late completion 失败，且不能继续下一 side effect；
+- Python host 对 `recvfrom` 和 `sendto` 使用相同的 pre/post deadline rule；bidirectional 发送
+  循环每个 datagram 都重新取 budget，fake socket 必须能模拟 send 阻塞跨界；
+- held mode 用单一 cleanup 出口维护 `hold_active`。Hold 一旦提交，任意后续 success/error 都
+  至多尝试一次 Release；Release 使用原 absolute mode deadline，不创建 cleanup deadline。
+
+自动 Evidence 不再由手写 `commands.txt` 或拼接摘要作为权威来源。新增 capture runner 与
+JSON manifest，复用仓库现有 network-benchmark Evidence 的“结构化 manifest + file hash +
+fixture self-test”模式，但使用 MS05 Gate schema。每条 Gate record 至少包含稳定 gate ID、
+literal argv array、cwd、RFC 3339 start/end、exit、expected result/classification、raw log 相对路径
+和 log SHA-256。runner 直接以 argv 启动 subprocess；需要顺序的命令拆成独立 records，不把
+`&&`、循环或重定向 prose 当作命令。100× Gate 为 100 个可枚举 child records，每次保留完整
+stdout/stderr；汇总只从 records 生成。
+
+artifact records 保存 path、size、mtime、SHA-256、生成 Gate ID，以及 source-freeze 的 path、
+content hash 和 index/worktree identity。`file`、`stat`、`sha256sum` 也是带完整 argv/raw log 的
+records。README 和人读摘要从 manifest 派生，不替代 raw log。
+
+audit 校验 schema、必需 Gate 集、唯一 ID、可解析时间、argv 非空、exit/classification、每个
+log 的存在性/非空/hash、100× child 完整性、source-freeze→build 顺序、artifact identity、D1
+精确诊断和 R44 原始失败。负向 fixtures 在临时复制中逐项变异，并必须返回预期的稳定 error
+code；任何其他 AuditFailure 都算 fixture 失败。product manifest冻结后，runner用同一subprocess
+capture primitive收集audit完整stdout/stderr，但不把audit追加回被审计manifest；随后生成只引用
+manifest hash、audit-log hash和verdict的qualification record，避免自引用。最终 diff Gate同时
+检查index与worktree，避免staged实现被普通`git diff --check`忽略。
+
+**Reason**
+
+前三个 Cycle 的 helper tests 能证明算术，却不能驱动真实 mode runner 的 ioctl/socket/cleanup
+分支；手写 Evidence 又允许命令、时间和 raw output 脱节。operation seam 把 production control
+flow 放进 deterministic host tests，manifest runner 则让 argv、exit、log 和 hash 在执行时一次
+生成，审计无需从 prose 推断发生过什么。
+
+**Impact**
+
+新增 probe runtime harness、MS05 capture runner、manifest schema/fixtures，并重写现有 audit。
+产品 kernel/driver、V1/V2/V3 ABI、wire protocol和六个 mode 名不变。Iteration 009 Evidence 保持
+历史不可变；新资格证据写入新逻辑 Iteration。原手工 QEMU Iteration 顺延一位。
+
+**Alternatives**
+
+- 继续增加纯 helper 与 source regex：不能证明 side-effect 顺序、Release 次数或 syscall 前后
+  deadline，拒绝。
+- 继续手写 Markdown 命令索引并扩大 placeholder regex：无法证明 argv 与 raw log 同源，拒绝。
+- 直接进入手工 QEMU 观察 timeout：环境调度不稳定且不能穷举 post-Hold error，拒绝。
+- 修改 kernel/driver ABI以便测试：当前缺口位于 probe orchestration 与 Evidence，不需要扩大
+  产品接口，拒绝。
+
 ## Risks / Trade-offs
 
 - [每个 NIC 约增加 194 KiB frame backing 和两次 L2 copy] → 初始化时记录容量与分配失败

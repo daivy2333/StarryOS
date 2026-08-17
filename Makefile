@@ -93,6 +93,14 @@ host-test:
 	/tmp/ms04-rx-probe-test
 	python3 scripts/ms04_rx_stimulus.py --self-test
 	python3 scripts/ms04_rx_stimulus.py --loopback-self-test
+	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms05_data_plane_probe.c
+	cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test
+	/tmp/ms05-data-plane-probe-test
+	python3 scripts/ms05_data_plane_stimulus.py --self-test
+	python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
+	python3 -m unittest tests.test_ms05_evidence_tools -v
+	python3 scripts/ms05_evidence_capture.py --self-test
+	python3 scripts/ms05_evidence_audit.py --self-test
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)
 network-benchmark-test:
@@ -161,6 +169,10 @@ tests/ms03_irq_probe: tests/ms03_irq_probe.c
 
 # MS04 async RX probe (RISC-V static — built automatically, run manually)
 tests/ms04_rx_probe: tests/ms04_rx_probe.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
+# MS05 data-plane probe (RISC-V static — built automatically, run manually)
+tests/ms05_data_plane_probe: tests/ms05_data_plane_probe.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
 # Aliases

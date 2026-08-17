@@ -1,0 +1,227 @@
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Checking starry-kernel v0.2.0-preview.2 (/home/daivy/projects/serial/work/StarryOS/kernel)
+error[E0432]: unresolved import `axfs`
+  --> kernel/src/file/fs.rs:10:5
+   |
+10 | use axfs::{FS_CONTEXT, FsContext};
+   |     ^^^^ use of unresolved module or unlinked crate `axfs`
+   |
+   = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/pseudofs/dev/loop.rs:7:5
+  |
+7 | use axfs::FileBackend;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/fs/io.rs:8:5
+  |
+8 | use axfs::{FS_CONTEXT, FileFlags, OpenOptions};
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/fs/memfd.rs:5:5
+  |
+5 | use axfs::{FS_CONTEXT, OpenOptions};
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/fs/mount.rs:4:5
+  |
+4 | use axfs::FS_CONTEXT;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/fs/stat.rs:4:5
+  |
+4 | use axfs::FS_CONTEXT;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axtask::AxTaskExt`
+ --> kernel/src/syscall/task/clone.rs:6:14
+  |
+6 | use axtask::{AxTaskExt, current, spawn_task};
+  |              ^^^^^^^^^ no `AxTaskExt` in the root
+  |
+help: a similar name exists in the module
+  |
+6 - use axtask::{AxTaskExt, current, spawn_task};
+6 + use axtask::{AxTaskRef, current, spawn_task};
+  |
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/task/execve.rs:5:5
+  |
+5 | use axfs::FS_CONTEXT;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axtask::TaskExt`
+  --> kernel/src/task/mod.rs:19:14
+   |
+19 | use axtask::{TaskExt, TaskInner};
+   |              ^^^^^^^ no `TaskExt` in the root
+
+error[E0432]: unresolved import `axfs`
+  --> kernel/src/file/mod.rs:14:5
+   |
+14 | use axfs::{FS_CONTEXT, OpenOptions};
+   |     ^^^^ use of unresolved module or unlinked crate `axfs`
+   |
+   = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/mm/aspace/backend/cow.rs:5:5
+  |
+5 | use axfs::FileBackend;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/mm/aspace/backend/file.rs:9:5
+  |
+9 | use axfs::{CachedFile, FileFlags};
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/mm/loader.rs:8:5
+  |
+8 | use axfs::{CachedFile, FS_CONTEXT, FileBackend};
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/pseudofs/device.rs:5:5
+  |
+5 | use axfs::CachedFile;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+  --> kernel/src/pseudofs/mod.rs:20:5
+   |
+20 | use axfs::{FS_CONTEXT, FsContext};
+   |     ^^^^ use of unresolved module or unlinked crate `axfs`
+   |
+   = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+  --> kernel/src/syscall/fs/ctl.rs:11:5
+   |
+11 | use axfs::{FS_CONTEXT, FsContext};
+   |     ^^^^ use of unresolved module or unlinked crate `axfs`
+   |
+   = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/fs/fd_ops.rs:5:5
+  |
+5 | use axfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/mm/mmap.rs:4:5
+  |
+4 | use axfs::FileBackend;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/sys.rs:6:5
+  |
+6 | use axfs::FS_CONTEXT;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `axfs`
+ --> kernel/src/syscall/task/clone.rs:4:5
+  |
+4 | use axfs::FS_CONTEXT;
+  |     ^^^^ use of unresolved module or unlinked crate `axfs`
+  |
+  = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `axfs` in this scope
+  --> kernel/src/syscall/fs/fd_ops.rs:78:28
+   |
+78 |                     file = axfs::File::new(FileBackend::Direct(loc), file.flags());
+   |                            ^^^^ use of unresolved module or unlinked crate `axfs`
+   |
+   = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::file::File;
+   |
+help: if you import `File`, refer to it directly
+   |
+78 -                     file = axfs::File::new(FileBackend::Direct(loc), file.flags());
+78 +                     file = File::new(FileBackend::Direct(loc), file.flags());
+   |
+
+error[E0433]: cannot find module or crate `axfs` in this scope
+  --> kernel/src/syscall/fs/fd_ops.rs:96:28
+   |
+96 |                     file = axfs::File::new(FileBackend::Direct(loc), file.flags());
+   |                            ^^^^ use of unresolved module or unlinked crate `axfs`
+   |
+   = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::file::File;
+   |
+help: if you import `File`, refer to it directly
+   |
+96 -                     file = axfs::File::new(FileBackend::Direct(loc), file.flags());
+96 +                     file = File::new(FileBackend::Direct(loc), file.flags());
+   |
+
+error[E0433]: cannot find module or crate `axfs` in this scope
+   --> kernel/src/file/fs.rs:101:12
+    |
+101 |     inner: axfs::File,
+    |            ^^^^ use of unresolved module or unlinked crate `axfs`
+    |
+    = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `axfs` in this scope
+   --> kernel/src/file/fs.rs:106:23
+    |
+106 |     pub fn new(inner: axfs::File) -> Self {
+    |                       ^^^^ use of unresolved module or unlinked crate `axfs`
+    |
+    = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `axfs` in this scope
+   --> kernel/src/file/fs.rs:113:29
+    |
+113 |     pub fn inner(&self) -> &axfs::File {
+    |                             ^^^^ use of unresolved module or unlinked crate `axfs`
+    |
+    = help: if you wanted to use a crate named `axfs`, use `cargo add axfs` to add it to your `Cargo.toml`
+
+Some errors have detailed explanations: E0432, E0433.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `starry-kernel` (lib) due to 25 previous errors

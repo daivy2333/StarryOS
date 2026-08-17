@@ -66,15 +66,19 @@
 
 ## 5. Probe and Automatic Product Gates
 
-- [ ] 5.1 在 `tests/ms05_data_plane_probe.c`、host decision harness、`scripts/ms05_data_plane_stimulus.py` 和 Makefile probe target 中实现 snapshot、TX-only、bidirectional、slot-full、descriptor-full、flush 与 bounded network protocol。WHY 是 R6/R14 要求 change-local、非歧义、可确定复现的 runtime witness；HOW 是先用 C decision mutations 和 Python self-tests构造缺 PRE、伪 Full、账本不闭合、deadline/equal boundary、重复 marker、错误 exit、malformed control 等 RED，再实现每个 mode 唯一 `MS05 PASS|FAIL mode=...`、固定 deadline、PRE/HELD/FULL/RELEASED/POST 和 host sequence validation；EXPECTED 是 probe 不能用普通 throughput 代替 Full，不能重置 counter，MS04 V2 probe/stimulus 原样回归。运行 strict C syntax、host harness、script self-tests和 static RISC-V payload build；任何 source/parser/mutation failure 都是产品 Gate，不能交给 QEMU。
+- [x] 5.1 在 `tests/ms05_data_plane_probe.c`、host decision harness、`scripts/ms05_data_plane_stimulus.py` 和 Makefile probe target 中实现 snapshot、TX-only、bidirectional、slot-full、descriptor-full、flush 与 bounded network protocol。WHY 是 R6/R14 要求 change-local、非歧义、可确定复现的 runtime witness；HOW 是先用 C decision mutations 和 Python self-tests构造缺 PRE、伪 Full、账本不闭合、deadline/equal boundary、重复 marker、错误 exit、malformed control 等 RED，再实现每个 mode 唯一 `MS05 PASS|FAIL mode=...`、固定 deadline、PRE/HELD/FULL/RELEASED/POST 和 host sequence validation；EXPECTED 是 probe 不能用普通 throughput 代替 Full，不能重置 counter，MS04 V2 probe/stimulus 原样回归。运行 strict C syntax、host harness、script self-tests和 static RISC-V payload build；任何 source/parser/mutation failure 都是产品 Gate，不能交给 QEMU。
 
-- [ ] 5.2 依次运行全部 driver/virtio/axnet/100×竞态/UART/host/probe tests、QEMU 与 D1 checks/build、fmt/source assertions、strict OpenSpec、specs-vs-code 和 full diff review，并在 `evidence/009-probe-and-automatic-product-gates/000-initial/` 保存环境、命令、原始输出、退出码、artifact size/hash、review 与 `ENV-BLOCKED` 清单。WHY 是手工 QEMU 前必须关闭所有自动产品和 ownership Gate；HOW 是只把原始日志明确定位的只读路径、禁网、`EPERM`、`SIGSYS` 或用户终端能力记为 `ENV-BLOCKED`，其余任一 compile/link/assert/source/validation/diff 失败立即停止；EXPECTED 是无 Missing、无未批准 Simplified、无未决设计项，Critical/Important finding 为零，fresh QEMU image与四组 guest payload 可追溯。不得清洗 raw log制造 whitespace PASS，也不得用历史 MS04 artifact替代当前产物。
+- [x] 5.2 依次运行全部 driver/virtio/axnet/100×竞态/UART/host/probe tests、QEMU 与 D1 checks/build、fmt/source assertions、strict OpenSpec、specs-vs-code 和 full diff review，并在 `evidence/009-probe-and-automatic-product-gates/000-initial/` 保存环境、命令、原始输出、退出码、artifact size/hash、review 与 `ENV-BLOCKED` 清单。WHY 是手工 QEMU 前必须关闭所有自动产品和 ownership Gate；HOW 是只把原始日志明确定位的只读路径、禁网、`EPERM`、`SIGSYS` 或用户终端能力记为 `ENV-BLOCKED`，其余任一 compile/link/assert/source/validation/diff 失败立即停止；EXPECTED 是无 Missing、无未批准 Simplified、无未决设计项，Critical/Important finding 为零，fresh QEMU image与四组 guest payload 可追溯。不得清洗 raw log制造 whitespace PASS，也不得用历史 MS04 artifact替代当前产物。
+
+- [x] 5.3 按 Iteration 009 Cycle 002 的 `replan-required` Review 和 D11，把 MS05 guest/host probe 的 clock、sleep、ioctl、socket timeout、send、receive 与 held cleanup 收敛到可注入 operation seam，并让真实六 mode runner 在 host harness 中执行。WHY 是前三个 Cycle 的纯 helper/source review 不能证明 control datagram、Python send、retry sleep和所有 post-Hold error 受同一 absolute deadline约束；HOW 是先用 fake clock/operations 对当前生产 runner 建立 RED，覆盖 send/recv/ioctl 前预算耗尽、阻塞后 equal/late、EAGAIN 后 sleep 越界、snapshot/held/full/release/drain/DONE 失败和 Release exactly-once，再让每个 side effect precheck、timeout/sleep clamp、postcheck，held mode 统一通过 `hold_active` cleanup 出口。EXPECTED 是任何操作都不会在剩余 budget 为零时启动，晚返回不能继续副作用，Hold 后每个出口至多一次有界 Release，C/Python host 都在同一 absolute bound 内，已接受的 network order、peer、非空流量、Full/POST/flush 规则不退化。运行 strict C syntax、production-runner harness、Python fake send/recv tests、self-test、loopback attempt、host-test和 static payload build；若需要修改产品 ioctl/wire/driver ABI，或 production path无法通过同一 seam执行，停止返回 Plan。
+
+- [x] 5.4 按 D11 建立 MS05 capture runner、版本化 JSON manifest、临时负向 fixtures和严格 audit，以新 Iteration final source重跑全套自动 Gate并生成资格 Evidence。WHY 是 Iteration 009 的手写 commands/build/race 日志含伪命令、占位时间和摘要输出，旧 audit又可因错误原因或缺失 log false-pass；HOW 是 runner以 literal argv直接启动每个 Gate并原子记录 gate ID、cwd、RFC3339 start/end、exit/classification、raw log path/hash，100× Gate逐 child保留完整stdout/stderr，source freeze/artifact/file/stat/hash与D1诊断均进入manifest；audit逐schema/required Gate/log/hash/time/classification检查，fixture必须匹配稳定error code，index与worktree diff checks都作为独立 Gate。EXPECTED 是任何缺 command/log、空/改写 raw、hash/time/source顺序错误、child缺失、错误R44分类或错误fixture reason均确定失败；final manifest、派生README、六个fresh artifacts和audit一致，Critical/Important为零后才允许手工QEMU。不得重写 Iteration 009历史Evidence、从 prose重建命令、只保存result line、修改live source mtime做fixture或把product failure归为环境。运行 capture/audit unit fixtures、完整 automatic Gate manifest、artifact re-read、strict OpenSpec、双层diff check、specs-vs-code/full diff review；任一必需 record不能由runner重现时停止，不得手工补日志。
 
 ## 6. Independent Manual QEMU Runtime and Closeout
 
-- [ ] 6.1 仅在任务 5.2 全部产品 Gate 通过后，由用户在 R44 允许的普通终端中复跑 `evidence/009-probe-and-automatic-product-gates/000-initial/` 列出的原始 `ENV-BLOCKED` 命令，并把完整首次/最终输出、exit、环境差异、payload/image size 与 SHA-256 保存到 `evidence/010-independent-manual-qemu-runtime-and-closeout/000-initial/`。WHY 是当前 sandbox 已确认 `make host-test` UDP socket 创建 `EPERM`，但环境豁免不能掩盖产品失败；HOW 是逐项使用同一命令，不扩大权限后改用不同测试；EXPECTED 是所有项最终 PASS 或任务保持未完成，任何 Rust/C/link/assert 诊断都返回对应产品任务，不进入 QEMU。
+- [ ] 6.1 仅在任务 5.3-5.4 全部产品 Gate 通过后，由用户在 R44 允许的普通终端中复跑 `evidence/010-deadline-closed-probe-and-evidence-pipeline/000-initial/` manifest列出的原始 `ENV-BLOCKED` argv，并把完整首次/最终输出、exit、环境差异、payload/image size 与 SHA-256 保存到 `evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial/`。WHY 是 Review sandbox 可拒绝 UDP socket，但环境豁免不能掩盖产品失败；HOW 是逐项使用同一 argv，不扩大权限后改用不同测试；EXPECTED 是所有项最终 PASS 或任务保持未完成，任何 Rust/C/link/assert/audit诊断都返回对应产品任务，不进入 QEMU。
 
-- [ ] 6.2 用户按 R44 在单 hart、单 VirtIO-MMIO NIC QEMU 中运行 MS05 TX-only、bidirectional、slot Full→recovery、descriptor Full→recovery、flush C4、ARP、ICMP、UDP、TCP 5555、nonblocking 和 poll，并按 R51 重跑 MS04 snapshot/idle/nudge/burst；保存完整 serial、probe、host stimulus、commands、environment、exit、marker、revision 与 artifact hashes。WHY 是 model tests不能证明真实 VirtIO device-model IRQ/descriptor progression；HOW 是每个 mode 使用任务 5.1 的 fixed deadline和唯一 marker，检查 slot/ticket/buffer/descriptor账本、三个 budget/yield、fault/restore/IRQ-entry 为零，并保留 MS04 历史 waiver；EXPECTED 是所有本 change 必需 mode 分项 PASS，缺日志、中断、超时、partial telemetry 或单协议成功都不能提升为 PASS。结论必须限定于当前 QEMU 软件/设备模型，不外推 SMP、DWMAC、真板或性能。
+- [ ] 6.2 用户按 R44 在单 hart、单 VirtIO-MMIO NIC QEMU 中运行 MS05 TX-only、bidirectional、slot Full→recovery、descriptor Full→recovery、flush C4、ARP、ICMP、UDP、TCP 5555、nonblocking 和 poll，并按 R51 重跑 MS04 snapshot/idle/nudge/burst；保存完整 serial、probe、host stimulus、commands、environment、exit、marker、revision 与 artifact hashes。WHY 是 model tests不能证明真实 VirtIO device-model IRQ/descriptor progression；HOW 是每个 mode 使用任务 5.3 的 fixed deadline和唯一 marker，检查 slot/ticket/buffer/descriptor账本、三个 budget/yield、fault/restore/IRQ-entry 为零，并保留 MS04 历史 waiver；EXPECTED 是所有本 change 必需 mode 分项 PASS，缺日志、中断、超时、partial telemetry 或单协议成功都不能提升为 PASS。结论必须限定于当前 QEMU 软件/设备模型，不外推 SMP、DWMAC、真板或性能。
 
 - [ ] 6.3 在同一 manual iteration 中执行最终 specs-vs-code、完整 code/full diff Review、strict change validation、non-Evidence whitespace checks和 Evidence index/hash audit，记录所有 task/RTM/Gate 的最终状态。WHY 是 runtime 成功不能覆盖实现偏差或不完整 provenance；HOW 是核对 V1/V2 compatibility、QEMU-only controls feature边界、历史 WAIVED/SKIPPED、每个 required Evidence 文件和唯一 marker，并对 raw logs只做非空/hash/时间范围检查；EXPECTED 是 Critical/Important finding 为零、没有 Missing 或未批准 Simplified、所有 required task有可追溯证据，之后才可由用户决定 change 收尾。不得在本任务归档 change、刷新 SNAPSHOT 或修改 M/D/K/R/I。
 
@@ -165,15 +169,24 @@
 
 - Tasks: 5.1, 5.2
 - Depends on: Iteration 008
-- Stable baseline: 所有自动产品 Gate、probe parser/decision、fresh artifacts与 full diff review完成，手工边界只剩明确 `ENV-BLOCKED` 和 QEMU runtime。
-- Verification boundary: task 5.2 明列的全套命令全部 PASS或只有R44原始日志支持的环境阻塞；required Evidence完整、Critical/Important为零。
-- Diagnostic boundary: probe/harness失败与产品 test/build/review失败分别记录；任何无法归类的非零结果按产品失败处理并停止。
-- Non-goals: 不手工操作 QEMU console，不用历史日志补证。
+- Stable baseline: 历史 replan 边界。Cycle 002 接受 network order、peer、非空流量、精确Full/POST账本和当前artifact hash，但fixed-deadline production path与exact Evidence未获接受；不得作为手工QEMU资格基线。
+- Verification boundary: Cycle 002 Review为`replan-required`；保留三个Cycle及Evidence原样，未满足的deadline/Evidence合同迁入Tasks 5.3-5.4。
+- Diagnostic boundary: 已确认失败位于probe orchestration test seam和手写Evidence/audit，而非kernel/driver ABI或非空流量决策。
+- Non-goals: 不创建Cycle 003，不把历史Evidence修饰为PASS，不进入手工QEMU。
 
-### Iteration 010: Independent Manual QEMU Runtime and Closeout Review
+### Iteration 010: Deadline-Closed Probe and Evidence Pipeline
+
+- Tasks: 5.3, 5.4
+- Depends on: Iteration 008稳定diagnostic lease，以及Iteration 009的`replan-required` handoff和已接受probe决策
+- Stable baseline: 六个production mode runner和Python host在可注入operation seam下共享absolute deadline；结构化manifest由runner生成并通过严格fixture audit；final source、全套automatic Gates与六个artifact可追溯。
+- Verification boundary: production-runner fake clock/operation RED→GREEN、host send/recv deadline、Release exactly-once、capture/audit fixtures、完整automatic Gate manifest、100×lossless child logs、fresh build/artifact、strict OpenSpec、index+worktree diff和full review全部PASS，或只有manifest/raw-log支持的R44 block。
+- Diagnostic boundary: 先定位guest/host operation ordering与held cleanup，再定位capture schema/runner/audit，最后定位既有产品Gate；任何层失败停止下游build或手工runtime。
+- Non-goals: 不修改kernel/driver/ABI/wire，不重写Iteration 009 Evidence，不运行手工QEMU，不声明硬件/SMP/性能。
+
+### Iteration 011: Independent Manual QEMU Runtime and Closeout Review
 
 - Tasks: 6.1, 6.2, 6.3
-- Depends on: Iteration 009
+- Depends on: Iteration 010
 - Stable baseline: 当前产物的环境阻塞复跑、MS05全部runtime modes、R51回归、网络功能与最终 provenance/review形成 change-local证据。
 - Verification boundary: 所有 required marker、账本、raw logs、exit、hash、revision和最终review满足R6/R14；历史waiver保持原状态。
 - Diagnostic boundary: 环境复跑、每个QEMU mode、协议回归和最终Evidence审计分项判定，partial结果不能互相替代。
@@ -192,8 +205,9 @@
 | 006 | 关闭 fatal 发布顺序与并行 Gate 污染 | wake-time lifecycle + repeated default-runner full suite | lifecycle/event publication/test isolation | Balanced（flush前置；单一 correctness fault domain） |
 | 007 | flush/ABI 可复用成果与 diagnostic replan handoff | model/ABI/build + Review | tracker/ABI/failed lease protocol | Balanced as historical replan boundary；不视为 diagnostic acceptance |
 | 008 | Service-owned committed diagnostic lease | Service-local model + ABI/driver/kernel regressions | lease owner/try-lock/timer/V3 | Balanced；单一 replacement design boundary |
-| 009 | 可交给用户的 fresh runtime package | automatic full Gate+Evidence | probe/product/review | Balanced；required Evidence 路径与 iteration 009 同名 |
-| 010 | 独立 QEMU 运行与最终审计 | per-mode raw Evidence | environment/runtime/provenance | Balanced；required Evidence 路径与 iteration 010 同名 |
+| 009 | 历史probe尝试与replan handoff | focused tests+Review | orchestration/Evidence假设 | Historical replan boundary；不作为runtime baseline |
+| 010 | deadline闭合且manifest可审计的fresh runtime package | injected production runner + automatic manifest/audit | operation seam → capture/audit → product Gates | Balanced；两个依赖有序且共同形成用户交接包 |
+| 011 | 独立 QEMU 运行与最终审计 | per-mode raw Evidence | environment/runtime/provenance | Balanced；依赖Iteration 010资格manifest |
 
 所有任务只属于一个 iteration，依赖只指向同轮或更早轮次。首轮没有承载 axnet、kernel
 runtime 或 Evidence 工作；后续每轮都有前一轮可复用的稳定接口和独立停止边界。

@@ -1,0 +1,49 @@
+# MS05 Cycle 001 rework — exact command log
+
+Window: 2026-08-15 18:20:01 -> 18:22:18 +0800
+HEAD: 8dc3ef7d63da00c1966e9cb70820c337494d3c57 (net-k3, worktree modified)
+Raw output is appended to the named log file; EXIT is the final exit status.
+
+## Focused protocol/decision Gates -> protocol-and-decision.log
+
+- 18:20:01 cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms05_data_plane_probe.c                      EXIT=0
+- 18:20:01 cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test  EXIT=0
+- 18:20:01 /tmp/ms05-data-plane-probe-test     ("ms05 probe decision tests: 17 passed")                       EXIT=0
+- 18:20:01 python3 scripts/ms05_data_plane_stimulus.py --self-test     (peer=PASS timeout=PASS grace=PASS)    EXIT=0
+- 18:20:01 python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test  (datagrams=96 bounded=PASS)       EXIT=0
+
+## Host and model/driver compatibility -> automatic-gates.log
+
+- 18:20:05 make host-test                       (6+8+33+16 rust harnesses, ms04 10/10 + self/loopback, ms05 17/17 + self/loopback)  EXIT=0
+- 18:20:12 cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib   234 passed  EXIT=0
+- 18:20:12 cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib                             215 passed  EXIT=0
+- 18:20:12 cargo test --manifest-path crates/axdriver_net/Cargo.toml --offline                                       7 passed   EXIT=0
+- 18:20:13 cargo test --manifest-path crates/axdriver_virtio/Cargo.toml --offline --features net                     16 passed  EXIT=0
+- 18:20:13 cargo test --manifest-path crates/virtio-drivers/Cargo.toml --offline --features alloc                    36 passed + 8 doctests  EXIT=0
+- 18:20:13 cargo test --manifest-path crates/uart_16550/Cargo.toml --offline --features async                       62 passed + 8 + 10 doctests  EXIT=0
+
+## Required race stability (literal loop commands; per-run raw output in race-stability/) -> race-stability.log
+
+- 18:20:2x for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock; done
+          raw per-run: race-stability/control-100x.log   (100 runs, 0 failures)
+- 18:20:3x for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick; done
+          raw per-run: race-stability/v3-100x.log       (100 runs, 0 failures)
+- 18:20:4x for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib; done
+          raw per-run: race-stability/full-suite-100x.log (100 runs, 100/100 "215 passed", 0 failures)
+
+## Target checks, fresh build and payloads -> build.log
+
+- 18:21:17 cargo check --offline -p starry-kernel --features qemu                  EXIT=0
+- 18:21:23 cargo check --offline -p starry-kernel --features lichee-d1             EXIT=101 (comparison Gate: exactly 25 axfs/axtask errors, 20 E0432 + 5 E0433)
+- 18:21:34 make LOG=info build                                                    EXIT=0 (fresh StarryOS_riscv64-qemu-virt.bin, 40190144 bytes)
+- 18:21:48 riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c   EXIT=0 (150832 bytes)
+- 18:21:53 make -B tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe  EXIT=0
+          (ms02 134712, ms03 138600, ms04 134232, ms05 144520 bytes)
+- 18:22:01 file/stat/sha256sum of QEMU image + five payloads -> artifacts.sha256   EXIT=0 (all six artifacts)
+
+## Quality and Review Gates -> automatic-gates.log
+
+- 18:22:11 rustfmt --check --edition 2024 --config skip_children=true crates/axdriver_net/src/lib.rs crates/axdriver_virtio/src/net.rs crates/axnet/src/async_rx.rs crates/axnet/src/device/ethernet.rs crates/axnet/src/device/fixed_queue.rs crates/axnet/src/device/mod.rs crates/axnet/src/device/tests.rs crates/axnet/src/diag.rs crates/axnet/src/flush.rs crates/axnet/src/lib.rs crates/axnet/src/router.rs crates/axnet/src/service.rs crates/virtio-drivers/src/device/net/dev_raw.rs kernel/src/drivers/virtio_net_irq.rs kernel/src/drivers/virtio_net_irq_logic.rs kernel/src/syscall/fs/ctl.rs tests/ms03-irq-host-harness.rs tests/ms04-async-rx-host-harness.rs  EXIT=0
+- 18:22:16 openspec validate ms05-qemu-bounded-bidirectional-device-data-plane --strict   EXIT=0 ("Change ... is valid")
+- 18:22:18 git diff --check -- . ':(exclude)openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/**'   EXIT=0
+- 18:2x:xx specs-vs-code review, full git diff review and Cycle 001 Evidence audit -> review.md

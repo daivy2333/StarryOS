@@ -1,0 +1,6 @@
+=== diagnostic_control race 100x ===
+result=0
+=== v3 snapshot race 100x ===
+result=0
+=== default full suite race 100x ===
+result=0

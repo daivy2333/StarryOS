@@ -1,0 +1,58 @@
+# MS05 Cycle 002 rework — exact command log
+
+Window: 2026-08-15 18:58:28 -> 19:00:45 +0800
+HEAD: 8dc3ef7d63da00c1966e9cb70820c337494d3c57 (net-k3, worktree modified)
+Final source frozen: probe.c 18:52:11, test.c 18:49:56, stimulus.py 18:54:50.
+Raw output is appended to the named log file; EXIT is the final exit status.
+No source edit occurred after a build.
+
+## RED/GREEN focused witnesses -> traffic-and-deadline.log
+
+- 18:58:28 cc -std=c11 -Wall -Wextra -Werror -Wno-unused-function /tmp/ms05-red-fixture/one_test_traffic_exact_rules.c -o /tmp/ms05-red-fixture/one_test_traffic_exact_rules && /tmp/ms05-red-fixture/one_test_traffic_exact_rules  EXIT=134 (RED: zero EXACT traffic accepted)
+- 18:58:28 /tmp/ms05-red-fixture/one_test_traffic_held_rules  EXIT=134 (RED: zero HELD traffic accepted)
+- 18:58:28 /tmp/ms05-red-fixture/one_test_clamped_budget  EXIT=134 (RED: phase-aware budget ignored)
+- 18:58:28 /tmp/ms05-red-fixture/one_test_flush_affordable  EXIT=134 (RED: flush equal-budget accepted)
+- 18:58:28 python3 parse_sent against stimulus_red.py  (RED: zero normal-mode SENT accepted)
+- 18:58:28 python3 DripFeedSocket + FakeClock, exchange_timeout=2.0  (RED: drip-fed exchange completed past budget)
+- 18:58:29 cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test && /tmp/ms05-data-plane-probe-test  EXIT=0 ("22 passed")
+- 18:58:29 python3 scripts/ms05_data_plane_stimulus.py --self-test  EXIT=0 (drip=PASS)
+- 18:58:29 python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test  EXIT=0 (96 datagrams)
+
+## Automatic Gates -> automatic-gates.log
+
+- 18:58:42 make host-test  (ms05 22/22 + self/loopback + ms03/ms04 harnesses)  EXIT=0
+- 18:58:47 cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib  234 passed  EXIT=0
+- 18:58:50 cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib  215 passed  EXIT=0
+- 18:58:53 cargo test --manifest-path crates/axdriver_net/Cargo.toml --offline  7 passed  EXIT=0
+- 18:58:56 cargo test --manifest-path crates/axdriver_virtio/Cargo.toml --offline --features net  16 passed  EXIT=0
+- 18:58:59 cargo test --manifest-path crates/virtio-drivers/Cargo.toml --offline --features alloc  36 + 8 doctests  EXIT=0
+- 18:59:02 cargo test --manifest-path crates/uart_16550/Cargo.toml --offline --features async  62 + 8 + 10 doctests  EXIT=0
+- 18:59:05 rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test && /tmp/ms03-irq-host-test  33 passed  EXIT=0
+- 18:59:07 rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test && /tmp/ms04-async-rx-host-test  16 passed  EXIT=0
+
+## Race stability (literal loops; per-run raw in race-stability/) -> race-stability.log
+
+- 18:59:10 for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock; done
+          race-stability/control-100x.log (100 runs, 0 failures)
+- 18:59:25 for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick; done
+          race-stability/v3-100x.log (100 runs, 0 failures)
+- 18:59:40 for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib; done
+          race-stability/full-suite-100x.log (100 runs, 100/100 "215 passed")
+
+## Kernel checks, fresh build and payloads -> build.log
+
+- 18:59:42 cargo check --offline -p starry-kernel --features qemu  EXIT=0 (2 pre-existing axnet warnings)
+- 18:59:50 cargo check --offline -p starry-kernel --features lichee-d1 > d1-full.log 2>&1  EXIT=101 (comparison Gate: exactly 25 axfs/axtask errors, 20 E0432 + 5 E0433; raw in d1-full.log)
+- 19:00:00 make LOG=info build  EXIT=0 (fresh StarryOS_riscv64-qemu-virt.bin, 40190144 bytes)
+- 19:00:10 /opt/musl/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c  EXIT=0 (150832 bytes)
+- 19:00:11 make -B tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe  EXIT=0
+          (ms02 134712, ms03 138600, ms04 134232, ms05 144576 bytes)
+- 19:00:20 file/stat/sha256sum of QEMU image + five payloads -> build.log, artifacts.sha256  EXIT=0 (six artifacts, re-audited)
+
+## Quality and Evidence Gates
+
+- 19:00:30 rustfmt --check --edition 2024 --config skip_children=true crates/axdriver_net/src/lib.rs crates/axdriver_virtio/src/net.rs crates/axnet/src/async_rx.rs crates/axnet/src/device/ethernet.rs crates/axnet/src/device/fixed_queue.rs crates/axnet/src/device/mod.rs crates/axnet/src/device/tests.rs crates/axnet/src/diag.rs crates/axnet/src/flush.rs crates/axnet/src/lib.rs crates/axnet/src/router.rs crates/axnet/src/service.rs crates/virtio-drivers/src/device/net/dev_raw.rs kernel/src/drivers/virtio_net_irq.rs kernel/src/drivers/virtio_net_irq_logic.rs kernel/src/syscall/fs/ctl.rs tests/ms03-irq-host-harness.rs tests/ms04-async-rx-host-harness.rs  EXIT=0
+- 19:00:33 openspec validate ms05-qemu-bounded-bidirectional-device-data-plane --strict  EXIT=0 ("Change 'ms05-qemu-bounded-bidirectional-device-data-plane' is valid")
+- 19:00:36 git diff --check -- . ':(exclude)openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/**'  EXIT=0
+- 19:04:36 python3 scripts/ms05_evidence_audit.py --write-log evidence/009-probe-and-automatic-product-gates/002-rework/evidence-audit.log  EXIT=0 (7 negative fixtures fail for intended reasons; positive audit PASS)
+- 19:04:36 specs-vs-code review, full git diff review -> review.md

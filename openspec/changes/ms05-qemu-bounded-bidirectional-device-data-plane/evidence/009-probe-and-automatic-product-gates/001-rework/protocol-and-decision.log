@@ -1,0 +1,14 @@
+=== 2026-08-15 18:20:01 CMD: cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms05_data_plane_probe.c ===
+EXIT=0
+=== 2026-08-15 18:20:01 CMD: cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test ===
+EXIT=0
+=== 2026-08-15 18:20:01 CMD: /tmp/ms05-data-plane-probe-test ===
+ms05 probe decision tests: 17 passed
+EXIT=0
+=== 2026-08-15 18:20:01 CMD: python3 scripts/ms05_data_plane_stimulus.py --self-test ===
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS
+EXIT=0
+=== 2026-08-15 18:20:01 CMD: python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test ===
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+EXIT=0

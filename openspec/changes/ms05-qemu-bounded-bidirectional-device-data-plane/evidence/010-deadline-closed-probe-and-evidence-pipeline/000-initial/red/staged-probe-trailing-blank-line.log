@@ -1,0 +1,15 @@
+RED record: staged probe has a trailing blank line (diff --cached --check)
+==================================================================
+Date: 2026-08-15
+Baseline: HEAD 8dc3ef7d, staged Iteration 009 probe file.
+
+Command: git diff --cached --check
+Failure:
+    tests/ms05_data_plane_probe.c:1538: new blank line at EOF
+    exit=2
+
+A worktree-only `git diff --check` cannot qualify staged changes: the index
+still carried the Iteration 009 probe with the trailing blank line. The
+Iteration 010 source freeze re-staged the corrected probe so both
+`git diff --check` and `git diff --cached --check` pass as independent
+manifest Gates.

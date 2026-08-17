@@ -1,0 +1,21 @@
+RED record: Cycle 002 audit accepts an unrelated failure reason
+================================================================
+Date: 2026-08-15
+Pre-fix artifact: git blob b869852a (scripts/ms05_evidence_audit.py, Cycle 002)
+
+The old fixture wrapper treats ANY AuditFailure as "failed as expected":
+
+    def fixture_fails_as_expected(name, check):
+        try:
+            check()
+        except AuditFailure as error:
+            print(f"  fixture {name}: FAILED AS EXPECTED ({error})")
+            return
+        raise AssertionError(f"fixture {name} did NOT fail...")
+
+There is no exact-code contract: a fixture that fails for the WRONG reason
+(e.g. a missing required file instead of the intended hash mismatch) is still
+reported as "FAILED AS EXPECTED". A wrong-reason fixture therefore passes.
+
+New validator: each negative fixture must return its exact named error code;
+an unrelated AuditFailure fails the fixture run.

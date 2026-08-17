@@ -1,0 +1,14 @@
+=== cc -fsyntax-only ===
+exit=0
+=== decision harness ===
+ms05 probe decision tests: 12 passed
+exit=0
+=== stimulus self-tests ===
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS
+exit=0
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+exit=0
+=== static RISC-V payload ===
+riscv64-linux-musl-gcc -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o tests/ms05_data_plane_probe tests/ms05_data_plane_probe.c
+exit=0

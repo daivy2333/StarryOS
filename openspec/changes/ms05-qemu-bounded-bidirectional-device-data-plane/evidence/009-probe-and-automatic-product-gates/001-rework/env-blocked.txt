@@ -1,0 +1,20 @@
+# ENV-BLOCKED (R44) — Cycle 001 rework
+
+None.
+
+During this Cycle 001 run every automatic Gate completed from raw output:
+
+- `python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test` passed (real UDP loopback,
+  96 datagrams, EXIT=0) — no `EPERM` occurred in this sandbox run.
+- `riscv64-linux-musl-gcc` static payload builds (MS01-MS05) passed (EXIT=0) — no
+  `SIGSYS`/`Bad system call` occurred in this run.
+- `cargo check --offline -p starry-kernel --features lichee-d1` exited 101 with exactly the
+  25 established axfs/axtask comparison errors (20 E0432 + 5 E0433). This is the expected
+  comparison Gate result, not an environment block and not a product failure.
+
+The Cycle 000 review-time sandbox reports of `EPERM` (UDP) and `SIGSYS` (musl) did not recur
+under this run's environment (environment.txt). If they recur in Iteration 010, R44 applies:
+the exact unchanged command must be preserved in raw output and rerun by the user in a normal
+terminal; no artifact may be qualified from this Cycle's hashes in that case.
+
+Iteration 010 rerun list: None (no environment block was observed in this Cycle).

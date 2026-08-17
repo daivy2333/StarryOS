@@ -1,0 +1,306 @@
+=== control witness 100x: cargo test ... --lib diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock ===
+run=1 result=0
+run=2 result=0
+run=3 result=0
+run=4 result=0
+run=5 result=0
+run=6 result=0
+run=7 result=0
+run=8 result=0
+run=9 result=0
+run=10 result=0
+run=11 result=0
+run=12 result=0
+run=13 result=0
+run=14 result=0
+run=15 result=0
+run=16 result=0
+run=17 result=0
+run=18 result=0
+run=19 result=0
+run=20 result=0
+run=21 result=0
+run=22 result=0
+run=23 result=0
+run=24 result=0
+run=25 result=0
+run=26 result=0
+run=27 result=0
+run=28 result=0
+run=29 result=0
+run=30 result=0
+run=31 result=0
+run=32 result=0
+run=33 result=0
+run=34 result=0
+run=35 result=0
+run=36 result=0
+run=37 result=0
+run=38 result=0
+run=39 result=0
+run=40 result=0
+run=41 result=0
+run=42 result=0
+run=43 result=0
+run=44 result=0
+run=45 result=0
+run=46 result=0
+run=47 result=0
+run=48 result=0
+run=49 result=0
+run=50 result=0
+run=51 result=0
+run=52 result=0
+run=53 result=0
+run=54 result=0
+run=55 result=0
+run=56 result=0
+run=57 result=0
+run=58 result=0
+run=59 result=0
+run=60 result=0
+run=61 result=0
+run=62 result=0
+run=63 result=0
+run=64 result=0
+run=65 result=0
+run=66 result=0
+run=67 result=0
+run=68 result=0
+run=69 result=0
+run=70 result=0
+run=71 result=0
+run=72 result=0
+run=73 result=0
+run=74 result=0
+run=75 result=0
+run=76 result=0
+run=77 result=0
+run=78 result=0
+run=79 result=0
+run=80 result=0
+run=81 result=0
+run=82 result=0
+run=83 result=0
+run=84 result=0
+run=85 result=0
+run=86 result=0
+run=87 result=0
+run=88 result=0
+run=89 result=0
+run=90 result=0
+run=91 result=0
+run=92 result=0
+run=93 result=0
+run=94 result=0
+run=95 result=0
+run=96 result=0
+run=97 result=0
+run=98 result=0
+run=99 result=0
+run=100 result=0
+control witness: 100 runs, failures=0
+=== V3 witness 100x: cargo test ... --lib v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick ===
+run=1 result=0
+run=2 result=0
+run=3 result=0
+run=4 result=0
+run=5 result=0
+run=6 result=0
+run=7 result=0
+run=8 result=0
+run=9 result=0
+run=10 result=0
+run=11 result=0
+run=12 result=0
+run=13 result=0
+run=14 result=0
+run=15 result=0
+run=16 result=0
+run=17 result=0
+run=18 result=0
+run=19 result=0
+run=20 result=0
+run=21 result=0
+run=22 result=0
+run=23 result=0
+run=24 result=0
+run=25 result=0
+run=26 result=0
+run=27 result=0
+run=28 result=0
+run=29 result=0
+run=30 result=0
+run=31 result=0
+run=32 result=0
+run=33 result=0
+run=34 result=0
+run=35 result=0
+run=36 result=0
+run=37 result=0
+run=38 result=0
+run=39 result=0
+run=40 result=0
+run=41 result=0
+run=42 result=0
+run=43 result=0
+run=44 result=0
+run=45 result=0
+run=46 result=0
+run=47 result=0
+run=48 result=0
+run=49 result=0
+run=50 result=0
+run=51 result=0
+run=52 result=0
+run=53 result=0
+run=54 result=0
+run=55 result=0
+run=56 result=0
+run=57 result=0
+run=58 result=0
+run=59 result=0
+run=60 result=0
+run=61 result=0
+run=62 result=0
+run=63 result=0
+run=64 result=0
+run=65 result=0
+run=66 result=0
+run=67 result=0
+run=68 result=0
+run=69 result=0
+run=70 result=0
+run=71 result=0
+run=72 result=0
+run=73 result=0
+run=74 result=0
+run=75 result=0
+run=76 result=0
+run=77 result=0
+run=78 result=0
+run=79 result=0
+run=80 result=0
+run=81 result=0
+run=82 result=0
+run=83 result=0
+run=84 result=0
+run=85 result=0
+run=86 result=0
+run=87 result=0
+run=88 result=0
+run=89 result=0
+run=90 result=0
+run=91 result=0
+run=92 result=0
+run=93 result=0
+run=94 result=0
+run=95 result=0
+run=96 result=0
+run=97 result=0
+run=98 result=0
+run=99 result=0
+run=100 result=0
+v3 witness: 100 runs, failures=0
+=== default-parallel axnet full suite 100x: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib ===
+run=1 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=2 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=3 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=4 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=5 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+run=6 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=7 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=8 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+run=9 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=10 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=11 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=12 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=13 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=14 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=15 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=16 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=17 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=18 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=19 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=20 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=21 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=22 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=23 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=24 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=25 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=26 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=27 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=28 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=29 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=30 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=31 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=32 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=33 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=34 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=35 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=36 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=37 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=38 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=39 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=40 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=41 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=42 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=43 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=44 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=45 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=46 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=47 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=48 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=49 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=50 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=51 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=52 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=53 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=54 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=55 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=56 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=57 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=58 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=59 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=60 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=61 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=62 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=63 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=64 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=65 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=66 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=67 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=68 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=69 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=70 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=71 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=72 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=73 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=74 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=75 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+run=76 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=77 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=78 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=79 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=80 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=81 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=82 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=83 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=84 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=85 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=86 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=87 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+run=88 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=89 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=90 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=91 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+run=92 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=93 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=94 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=95 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=96 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=97 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=98 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=99 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+run=100 result=0 test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+default-parallel full suite: 100 runs, failures=0

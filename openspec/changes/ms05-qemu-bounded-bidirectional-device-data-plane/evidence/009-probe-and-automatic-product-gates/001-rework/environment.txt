@@ -1,0 +1,38 @@
+=== Worktree / source identity (captured before Gates) ===
+branch: net-k3
+HEAD: 8dc3ef7d63da00c1966e9cb70820c337494d3c57 MS06:第六次提交
+index-mtime-check: probe.c=1786789132 2026-08-15 18:18:52.301586866 +0800 stimulus.py=1786789149 2026-08-15 18:19:09.455645559 +0800 test.c=1786788906 2026-08-15 18:15:06.264356540 +0800
+git status --short:
+M  Makefile
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/README.md
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/artifacts.sha256
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/automatic-gates.log
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/build.log
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/commands.txt
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/env-blocked.txt
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/environment.txt
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/probe-tests.log
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/race-stability.log
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/000-initial/review.md
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/README.md
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/README.md
+M  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/iterations/009-probe-and-automatic-product-gates/000-initial.md
+A  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/iterations/009-probe-and-automatic-product-gates/001-rework.md
+M  openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/tasks.md
+AM scripts/ms05_data_plane_stimulus.py
+A  tests/ms05_data_plane_probe
+AM tests/ms05_data_plane_probe.c
+AM tests/ms05_data_plane_probe_test.c
+?? openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/009-probe-and-automatic-product-gates/001-rework/
+
+=== Tool versions ===
+cc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+Python 3.10.12
+rustc 1.95.0-nightly (859951e3c 2026-02-24)
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+cargo 1.95.0-nightly (8cc0cb136 2026-02-17)
+riscv64-linux-musl-gcc (GCC) 11.2.1 20211120
+QEMU emulator version 7.0.0
+Linux daivy 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux

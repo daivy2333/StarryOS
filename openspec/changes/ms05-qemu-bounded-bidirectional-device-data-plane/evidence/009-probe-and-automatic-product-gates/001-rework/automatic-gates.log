@@ -1,0 +1,1129 @@
+=== 2026-08-15 18:20:05 CMD: make host-test ===
+rustc --edition=2024 --test tests/early-console-host-harness.rs -o /tmp/early-console-test
+/tmp/early-console-test
+
+running 6 tests
+test early_console::tests::write_str_empty ... ok
+test early_console::tests::write_str_no_newline ... ok
+test early_console::tests::dw_apb_uart_register_offsets ... ok
+test early_console::tests::write_str_only_newline ... ok
+test early_console::tests::write_str_multiple_newlines ... ok
+test early_console::tests::write_str_converts_lf_to_crlf ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
+/tmp/memtrack-session-test
+
+running 8 tests
+test session::tests::failed_transition_allows_later_valid_session ... ok
+test session::tests::parses_complete_commands_and_empty_noop ... ok
+test session::tests::completes_session ... ok
+test session::tests::analyzing_rejects_start_and_end ... ok
+test session::tests::rejects_end_before_start_without_changing_state ... ok
+test session::tests::rejects_unknown_and_fragmented_commands ... ok
+test session::tests::rejects_repeated_start_without_changing_state ... ok
+test session::tests::concurrent_start_has_one_winner ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test
+/tmp/ms03-irq-host-test
+
+running 33 tests
+test ack_mask_never_touches_unknown_bits ... ok
+test classify_combined ... ok
+test axnet_exposes_a_v3_snapshot_source ... ok
+test classify_config_change_only ... ok
+test classify_no_status ... ok
+test classify_unknown_multiple_high_bits ... ok
+test classify_unknown_only_high_bits ... ok
+test classify_used_ring_only ... ok
+test classify_used_ring_with_unknown_bits ... ok
+test has_unknown_bits_detects_reserved ... ok
+test has_unknown_bits_false_for_known_only ... ok
+test irq_state_observation_distinguishes_entry_and_restore_violation ... ok
+test legacy_v1_write_does_not_touch_adjacent_canaries ... ok
+test publish_only_for_causes_with_used_ring_bit ... ok
+test snapshot_abi_appended_fields_follow_in_order ... ok
+test snapshot_abi_preserves_first_eight_fields ... ok
+test snapshot_is_repr_c_compatible ... ok
+test snapshot_v3_appended_fields_follow_the_fixed_order ... ok
+test snapshot_v3_is_larger_than_v2_without_reusing_it ... ok
+test snapshot_v3_is_a_distinct_struct_never_aliased_to_v2 ... ok
+test snapshot_v3_preserves_the_full_v2_prefix_byte_for_byte ... ok
+test telemetry_ack_count_requires_explicit_increment ... ok
+test snapshot_zero_fields_on_new_telemetry ... ok
+test telemetry_new_all_zero ... ok
+test telemetry_record_combined_increments_combined ... ok
+test telemetry_record_combined_with_unknown_bits_counts_both ... ok
+test telemetry_record_config_change_increments_correct_counters ... ok
+test telemetry_monotonic_across_mixed_events ... ok
+test telemetry_record_spurious_increments_spurious ... ok
+test telemetry_record_unknown_increments_unknown ... ok
+test telemetry_record_used_ring_increments_correct_counters ... ok
+test v3_diagnostic_controls_and_flush_are_qemu_gated ... ok
+test v3_snapshot_command_and_write_path_are_gated_and_distinct ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test
+/tmp/ms04-async-rx-host-test
+
+running 16 tests
+test acquire_always_disables_irqs ... ok
+test legacy_direct_call_impl_is_rejected ... ok
+test nested_isr_context_never_enables ... ok
+test nested_acquire_only_outermost_release_reenables ... ok
+test enabled_acquire_disables_and_release_reenables_once ... ok
+test probe_modes_have_one_central_terminal_marker_path ... ok
+test isr_entry_acquire_returns_false_and_release_never_enables ... ok
+test probe_includes_the_timeval_definition_directly ... ok
+test probe_terminal_guard_rejects_a_missing_failure_path ... ok
+test production_impl_delegates_to_seam ... ok
+test release_false_never_enables_irqs ... ok
+test qemu_diagnostics_feature_propagates_only_from_kernel_qemu ... ok
+test virtio_net_irq_guard_rejects_wrong_record_argument ... ok
+test snapshot_command_consumer_inventory_is_versioned_and_bounded ... ok
+test virtio_net_irq_handler_guard_passes ... ok
+test virtio_net_irq_guard_requires_return_in_registration_failure_branch ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c tests/ms04_rx_probe.c
+cc -std=c11 -Wall -Wextra -Werror tests/ms04_rx_probe_test.c -o /tmp/ms04-rx-probe-test
+/tmp/ms04-rx-probe-test
+ms04 probe decision tests: 10 passed
+python3 scripts/ms04_rx_stimulus.py --self-test
+ms04 stimulus self-test: protocol=PASS packets=96 sequence=PASS bounds=PASS malformed=PASS
+python3 scripts/ms04_rx_stimulus.py --loopback-self-test
+ms04 stimulus loopback self-test: protocol=PASS packets=96 sequence=PASS bounded=PASS
+cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms05_data_plane_probe.c
+cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test
+/tmp/ms05-data-plane-probe-test
+ms05 probe decision tests: 17 passed
+python3 scripts/ms05_data_plane_stimulus.py --self-test
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS
+python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+EXIT=0
+=== 2026-08-15 18:20:12 CMD: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib ===
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: unused import: `crate::iface::Route`
+ --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv6.rs:3:5
+  |
+3 | use crate::iface::Route;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `super::fragmentation::PacketAssemblerSet`
+  --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/mod.rs:35:5
+   |
+35 | use super::fragmentation::PacketAssemblerSet;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `IFACE_MAX_PREFIX_COUNT` and `IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT`
+  --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/mod.rs:42:27
+   |
+42 |     IFACE_MAX_ADDR_COUNT, IFACE_MAX_PREFIX_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv4.rs:103:13
+    |
+103 |         let mut ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `frag`
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv4.rs:101:9
+    |
+101 |         frag: &'a mut FragmentsBuffer,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_frag`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `repr`
+    --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/mod.rs:1274:26
+     |
+1274 |             IpRepr::Ipv4(repr) => {
+     |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_repr`
+
+warning: variable does not need to be mutable
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/socket/dns.rs:247:13
+    |
+247 |         let mut mdns = MulticastDns::Disabled;
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: methods `link_local_ipv6_address` and `mldv2_report_packet` are never used
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv6.rs:173:8
+    |
+ 23 | impl InterfaceInner {
+    | ------------------- methods in this implementation
+...
+173 |     fn link_local_ipv6_address(&self) -> Option<Ipv6Address> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+565 |     pub(super) fn mldv2_report_packet<'any>(
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `HopByHopIcmpv6` is never constructed
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/packet.rs:218:5
+    |
+210 | pub(crate) enum IpPayload<'p> {
+    |                 --------- variant in this enum
+...
+218 |     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `IpPayload` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `is_solicited_node_multicast` is never used
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/wire/ipv6.rs:125:8
+    |
+ 80 | pub(crate) trait AddressExt {
+    |                  ---------- method in this trait
+...
+125 |     fn is_solicited_node_multicast(&self) -> bool;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `emit_header` is never used
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/wire/udp.rs:275:19
+    |
+232 | impl Repr {
+    | --------- method in this implementation
+...
+275 |     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
+    |                   ^^^^^^^^^^^
+
+warning: `smoltcp` (lib) generated 11 warnings (run `cargo fix --lib -p smoltcp` to apply 7 suggestions)
+warning: unused import: `fixed_queue::MAX_LIVE_TICKETS`
+  --> src/async_rx.rs:23:55
+   |
+23 |     device::{RxCopyStep, TxReclaimStep, TxSubmitStep, fixed_queue::MAX_LIVE_TICKETS},
+   |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/flush.rs:682:13
+    |
+682 |         let mut guard = service.lock();
+    |             ----^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/flush.rs:712:17
+    |
+712 |             let mut guard = service.lock();
+    |                 ----^^^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/flush.rs:730:13
+    |
+730 |         let mut guard = service.lock();
+    |             ----^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: `axnet-ng` (lib test) generated 4 warnings (run `cargo fix --lib -p axnet-ng --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (crates/axnet/target/debug/deps/axnet_ng-84c82b85f0acf75c)
+
+running 234 tests
+test async_rx::tests::arm_error_maps_to_fault_with_error_category ... ok
+test async_rx::tests::active_stack_preflight_source_has_no_raw_tx_entry_points ... ok
+test async_rx::tests::event_after_arm_wakes_sleep_decision ... ok
+test async_rx::tests::event_before_register_is_caught_by_arm_recheck ... ok
+test async_rx::tests::event_dual_role_wait_decision_retries_on_any_generation_change ... ok
+test async_rx::tests::diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock ... ok
+test async_rx::tests::event_during_register_window_retries ... ok
+test async_rx::tests::event_generation_wraps_and_wakes_both ... ok
+test async_rx::tests::diagnostic_control_public_entry_delegates_to_shared_path_in_source ... ok
+test async_rx::tests::event_queue_and_stack_wakers_are_independent ... ok
+test async_rx::tests::event_queue_register_does_not_overwrite_stack_waker ... ok
+test async_rx::tests::event_space_wait_wakes_only_queue_role ... ok
+test async_rx::tests::event_stack_register_does_not_overwrite_queue_waker ... ok
+test async_rx::tests::fatal_arm_recheck_wake_observes_faulted_lifecycle ... ok
+test async_rx::tests::explicit_release_invalidates_stale_deadline_and_new_lease_is_not_released ... ok
+test async_rx::tests::fatal_service_round_wake_observes_faulted_lifecycle ... ok
+test async_rx::tests::future_arm_error_faults_and_keeps_async_owner ... ok
+test async_rx::tests::future_budget_exhausted_with_backlog_self_wakes_and_yields ... ok
+test async_rx::tests::fatal_paths_commit_before_publish_in_source ... ok
+test async_rx::tests::future_missing_service_publishes_unavailable ... ok
+test async_rx::tests::future_31_completions_then_empty_registers_once ... ok
+test async_rx::tests::future_missing_control_publishes_unavailable ... ok
+test async_rx::tests::future_arm_pending_retries_with_self_wake ... ok
+test async_rx::tests::future_missing_target_publishes_unavailable ... ok
+test async_rx::tests::fatal_wakes_stack_progress ... ok
+test async_rx::tests::future_first_poll_activates_and_waits_on_empty ... ok
+test async_rx::tests::future_preflight_suppress_failure_publishes_unavailable ... ok
+test async_rx::tests::future_budget_exhausted_without_backlog_stops_cleanly ... ok
+test async_rx::tests::future_rx_copy_publishes_stack_progress ... ok
+test async_rx::tests::last_error_pair_round_trips_as_one_value ... ok
+test async_rx::tests::notify_not_waiting_does_not_wake ... ok
+test async_rx::tests::illegal_fatal_transition_publishes_no_progress ... ok
+test async_rx::tests::notify_second_publish_after_clear_wakes_again ... ok
+test async_rx::tests::round_rx_full_does_not_block_tx_backlog ... ok
+test async_rx::tests::last_error_pair_uses_one_atomic_publication ... ok
+test async_rx::tests::lifecycle_duplicate_start_is_rejected_without_state_change ... ok
+test async_rx::tests::round_tx_again_without_completion_sleeps ... ok
+test async_rx::tests::software_nudge_advances_generation_and_wakes_queue ... ok
+test async_rx::tests::publish_event_increments_generation_and_wakes ... ok
+test async_rx::tests::round_reclaim_exhausted_still_runs_rx_and_submit ... ok
+test async_rx::tests::future_services_one_completion_then_registers ... ok
+test async_rx::tests::rx_snapshot_v3_public_entry_delegates_to_shared_assembly_in_source ... ok
+test async_rx::tests::rx_copy_missing_target_maps_to_bad_state ... ok
+test async_rx::tests::lifecycle_fatal_only_from_active ... ok
+test async_rx::tests::start_seam_spawns_once_and_rejects_duplicate_with_local_state ... ok
+test async_rx::tests::lifecycle_owner_view_mapping ... ok
+test async_rx::tests::publish_event_generation_wraps ... ok
+test async_rx::tests::notify_still_full_does_not_wake ... ok
+test async_rx::tests::lifecycle_preflight_only_from_spawned ... ok
+test async_rx::tests::lifecycle_preflight_outcomes_from_spawned ... ok
+test async_rx::tests::quiescent_arm_without_event_sleeps ... ok
+test async_rx::tests::notify_full_waiting_then_space_wakes_once ... ok
+test async_rx::tests::lifecycle_start_moves_polling_to_spawned ... ok
+test async_rx::tests::telemetry_active_arm_fault_records_exactly_once ... ok
+test async_rx::tests::lifecycle_terminal_states_accept_no_transition ... ok
+test async_rx::tests::pending_found_by_arm_recheck_retries_without_event ... ok
+test async_rx::tests::telemetry_active_arm_fault_records_fault_and_stage ... ok
+test async_rx::tests::round_tx_again_with_completion_retries ... ok
+test async_rx::tests::telemetry_active_receive_fault_records_exactly_once ... ok
+test async_rx::tests::telemetry_consumed_increments_reap_and_refill ... ok
+test async_rx::tests::snapshot_source_uses_one_lifecycle_observation ... ok
+test device::fixed_queue::tests::accepts_exact_max_frame ... ok
+test device::fixed_queue::tests::failed_enqueue_preserves_failed_bytes_untouched ... ok
+test async_rx::tests::telemetry_missing_service_records_preflight_bad_state ... ok
+test device::fixed_queue::tests::fill_writes_directly_into_vacant_slot_storage ... ok
+test async_rx::tests::telemetry_illegal_preflight_records_lifecycle_stage ... ok
+test async_rx::tests::telemetry_illegal_fatal_records_lifecycle_stage ... ok
+test async_rx::tests::telemetry_preflight_failure_records_last_error_without_fault ... ok
+test async_rx::tests::telemetry_snapshot_mirrors_lifecycle_and_counters ... ok
+test async_rx::tests::telemetry_empty_round_increments_empty_check_once ... ok
+test async_rx::tests::tx_reclaim_missing_target_maps_to_bad_state ... ok
+test async_rx::tests::telemetry_rx_copy_increments_reap_and_refill ... ok
+test async_rx::tests::telemetry_budget_backlog_increments_exhausted_and_self_yield ... ok
+test device::fixed_queue::tests::flush_done_empty_data_plane_succeeds_immediately ... ok
+test device::fixed_queue::tests::fill_abort_publishes_nothing ... ok
+test device::fixed_queue::tests::fill_full_rejects_without_touching_head ... ok
+test device::fixed_queue::tests::flush_done_never_mutates_live_set ... ok
+test device::fixed_queue::tests::fill_publishes_length_meta_and_ticket_after_success ... ok
+test device::fixed_queue::tests::flush_done_post_target_tickets_do_not_block ... ok
+test device::fixed_queue::tests::flush_done_out_of_order_hole_blocks_until_all_target_tickets_reclaimed ... ok
+test device::fixed_queue::tests::flush_done_queued_ticket_blocks_until_submit_and_reclaim ... ok
+test device::fixed_queue::tests::oversize_enqueue_changes_nothing ... ok
+test device::fixed_queue::tests::peek_full_reports_none_when_empty_and_preserves_order ... ok
+test device::fixed_queue::tests::construction_allocates_but_data_path_does_not ... ok
+test device::fixed_queue::tests::reclaim_only_releases_device_owned_tickets ... ok
+test device::fixed_queue::tests::release_queued_ticket_cancels_pre_submit_abort ... ok
+test async_rx::tests::tx_submit_missing_target_maps_to_bad_state ... ok
+test device::fixed_queue::tests::new_is_empty_with_exact_capacity ... ok
+test device::fixed_queue::tests::max_frame_wrap_preserves_fifo ... ok
+test device::fixed_queue::tests::repeated_wrap_preserves_fifo ... ok
+test device::fixed_queue::tests::peek_is_read_only ... ok
+test device::fixed_queue::tests::pop_from_full_reports_one_space_transition ... ok
+test device::fixed_queue::tests::size_proves_heap_direct_storage ... ok
+test device::fixed_queue::tests::full_rejects_65th_without_side_effect ... ok
+test device::tests::activate_target_missing_target_is_bad_state ... ok
+test device::tests::activate_target_missing_control_is_unsupported ... ok
+test device::fixed_queue::tests::preflight_exact_length_and_capacity ... ok
+test device::tests::activate_target_suppresses_both_directions_once_each ... ok
+test device::fixed_queue::tests::fill_oversize_result_publishes_nothing ... ok
+test device::fixed_queue::tests::ticket_allocator_is_monotonic_and_checked ... ok
+test device::tests::arp_reply_tx_full_keeps_neighbor_unresolved_and_rx_consumed ... ok
+test device::fixed_queue::tests::ticket_backing_exhausts_at_128_live ... ok
+test device::fixed_queue::tests::ticket_mark_device_owned_transitions_state_exactly_once ... ok
+test device::fixed_queue::tests::ticket_counter_exhaustion_keeps_flush_semantics ... ok
+test device::tests::arp_request_replies_but_is_consumed ... ok
+test device::fixed_queue::tests::ticket_counter_exhausts_at_u64_max ... ok
+test device::tests::dispatch_fanout_all_ready_commits_each_once_and_dequeues_once ... ok
+test device::tests::arm_error_propagates_with_category ... ok
+test device::tests::arp_request_tx_full_does_not_record_pending_neighbor ... ok
+test device::tests::completion_pending_without_control_is_unsupported ... ok
+test device::tests::arp_reply_accepted_resolves_neighbor_and_flushes_pending_once ... ok
+test device::fixed_queue::tests::ticket_alloc_sets_queued_state_and_last_accepted ... ok
+test device::tests::dispatch_fanout_drift_removes_head_after_first_target_accepted ... ok
+test device::tests::dispatch_fanout_drop_counts_exactly_once ... ok
+test device::tests::dispatch_fanout_second_full_commits_nothing ... ok
+test device::tests::dispatch_ethernet_accepted_without_rx_ready ... ok
+test device::tests::arp_reply_flushes_pending_ipv4_once ... ok
+test device::tests::dispatch_ipv6_multicast_fanout_preflights_all ... ok
+test device::tests::dispatch_fanout_allocates_zero_after_initialization ... ok
+test device::tests::completion_pending_both_reports_control_state ... ok
+test device::tests::dispatch_malformed_drop_allocates_zero ... ok
+test device::tests::dispatch_malformed_drops_once_and_continues ... ok
+test device::tests::dispatch_loopback_accepted_reports_rx_ready ... ok
+test device::tests::arm_and_check_both_reports_pending_and_quiescent ... ok
+test device::tests::activate_target_suppress_error_propagates_and_keeps_polling ... ok
+test device::tests::dispatch_preflight_drop_counts_once_and_dequeues ... ok
+test device::tests::dispatch_preflight_fault_enters_stable_fault ... ok
+test device::tests::arp_pending_flush_allocates_zero_after_initialization ... ok
+test device::tests::again_maps_to_empty ... ok
+test device::tests::dispatch_missing_route_drops_with_reason ... ok
+test device::tests::dispatch_ready_commit_drift_enters_stable_fault_and_removes_head ... ok
+test device::tests::activate_target_switches_ethernet_to_slot_mode ... ok
+test device::tests::dispatch_route_source_mismatch_drops_with_reason ... ok
+test device::tests::dispatch_unicast_allocates_zero_after_initialization ... ok
+test device::tests::dormant_rx_arp_reply_full_retains_exact_frame_and_retries_once ... ok
+test device::tests::dormant_slots_mode_keeps_polling_parity_for_broadcast ... ok
+test device::tests::expired_neighbor_retriggers_arp_request ... ok
+test device::tests::full_destination_enqueue_returns_fault ... ok
+test device::tests::dormant_slots_full_returns_backpressure ... ok
+test device::tests::dormant_slots_mode_commits_to_fixed_slot_with_ticket ... ok
+test device::tests::dormant_slots_preflight_broadcast_never_touches_raw_tx ... ok
+test device::tests::foreign_mac_frame_is_consumed ... ok
+test device::tests::dispatch_single_target_full_keeps_head_no_commit ... ok
+test device::tests::dormant_emission_allocates_zero_after_initialization ... ok
+test device::tests::ethernet_1500_payload_is_accepted_and_1501_dropped ... ok
+test device::tests::dormant_slots_preflight_unknown_neighbor_never_touches_raw_tx ... ok
+test device::tests::dormant_slots_preflight_resolved_neighbor_never_touches_raw_tx ... ok
+test device::tests::loopback_storage_is_exact_socket_capacity ... ok
+test device::tests::loopback_empty_returns_empty ... ok
+test device::tests::loopback_delivers_after_send ... ok
+test device::tests::loopback_full_destination_returns_fault ... ok
+test device::tests::ethernet_oversize_packet_is_dropped_with_reason ... ok
+test device::tests::ethernet_preflight_reports_again_as_full ... ok
+test device::tests::ethernet_delegates_queue_control_to_inner ... ok
+test device::tests::preflight_missing_target_is_bad_state ... ok
+test device::tests::ipv4_delivers_payload_and_recycles ... ok
+test device::tests::ethernet_slots_are_exact_64_heap_direct_and_transport_neutral ... ok
+test device::tests::malformed_frame_is_consumed_and_recycled ... ok
+test device::tests::pending_flush_only_dequeues_after_accepted_send ... ok
+test device::tests::preflight_suppress_error_propagates ... ok
+test device::tests::pending_head_full_keeps_router_packet ... ok
+test device::tests::one_completion_per_recv_call ... ok
+test device::tests::non_ipv4_ethertype_is_consumed ... ok
+test device::tests::loopback_target_control_is_unsupported ... ok
+test device::tests::preflight_suppresses_target_control_without_reaping ... ok
+test device::tests::recycle_fault_overrides_delivered ... ok
+test device::tests::repeated_suppress_both_is_idempotent ... ok
+test device::tests::reclaim_unknown_cookie_faults_instead_of_reclaimed ... ok
+test device::tests::reclaim_duplicate_cookie_faults_after_release ... ok
+test device::tests::receive_fault_propagates ... ok
+test device::tests::reclaim_valid_cookie_still_releases_matching_ticket ... ok
+test device::tests::requested_neighbor_preflight_full_only_when_pending_full ... ok
+test device::tests::router_stops_on_fault ... ok
+test device::tests::router_poll_async_owned_without_target_is_safe ... ok
+test device::tests::router_poll_polling_owned_drains_target ... ok
+test device::tests::router_stops_on_empty ... ok
+test device::tests::preflight_missing_control_is_unsupported ... ok
+test device::tests::router_continues_on_consumed_and_delivered ... ok
+test device::tests::requested_neighbor_preflight_ignores_raw_tx_full ... ok
+test device::tests::recycle_fault_prevails_over_enqueue_fault ... ok
+test device::tests::router_poll_async_owned_consumes_slots_keeps_loopback ... ok
+test device::tests::router_poll_async_owned_faulted_target_still_consumes_slots ... ok
+test diag::tests::clock_constants_are_stable ... ok
+test device::tests::tx_resource_ledger_is_none_when_driver_cannot_observe_it ... ok
+test flush::tests::flush_empty_data_plane_completes_immediately ... ok
+test device::tests::v3_snapshot_maps_real_driver_ledger_under_the_service_guard ... ok
+test device::tests::tx_resource_ledger_forwards_driver_counts_and_conserves_capacity ... ok
+test flush::tests::flush_monotonic_stale_drop_and_identity_exhaustion_witness ... ok
+test flush::tests::flush_out_of_order_hole_blocks_until_all_target_tickets_reclaimed ... ok
+test flush::tests::flush_after_terminal_fault_returns_stable_error_even_without_waiter ... ok
+test flush::tests::flush_drop_releases_waiter_without_changing_packet_ownership ... ok
+test flush::tests::flush_post_target_tickets_do_not_block ... ok
+test flush::tests::flush_register_recheck_sees_reclaim_before_first_poll ... ok
+test flush::tests::flush_pends_until_queued_and_device_owned_tickets_reclaimed ... ok
+test flush::tests::v3_flush_counters_track_success_busy_and_cancel ... ok
+test flush::tests::flush_terminal_fault_persists_after_first_waiter_consumes_it ... ok
+test service::tests::chooses_earlier_protocol_or_polling_deadline ... ok
+test flush::tests::flush_fatal_wakes_and_returns_stable_error ... ok
+test flush::tests::flush_second_waiter_is_resource_busy ... ok
+test service::tests::masked_polling_device_triggers_fallback ... ok
+test service::tests::mixed_devices_only_masked_polling_decides ... ok
+test flush::tests::v3_ledger_reports_tickets_and_slots_under_the_guard ... ok
+test service::tests::preserves_protocol_deadline_without_polling_fallback ... ok
+test service::tests::no_deadline_without_protocol_timer_or_polling_fallback ... ok
+test service::tests::unmasked_polling_device_does_not_trigger_fallback ... ok
+test service::tests::masked_non_polling_device_does_not_trigger_fallback ... ok
+test service::tests::uses_polling_fallback_without_protocol_deadline ... ok
+test async_rx::tests::future_rx_slot_full_waits_then_service_poll_wakes ... ok
+test async_rx::tests::service_poll_router_space_alone_does_not_wake_waiting ... ok
+test async_rx::tests::hold_reclaim_pauses_reclaim_stage_and_again_still_backpressures ... ok
+test async_rx::tests::still_full_publishes_waiting_then_space_wakes_once ... ok
+test async_rx::tests::hold_submit_lease_deadline_wakes_and_auto_releases_exactly_once ... ok
+test async_rx::tests::v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick ... ok
+test async_rx::tests::successful_reclaim_never_counts_ownership_invariant ... ok
+test async_rx::tests::space_freed_before_waiting_rechecks_to_retry_without_publish ... ok
+test async_rx::tests::reclaim_ownership_fault_increments_invariant_and_keeps_fault ... ok
+test service::tests::diag::hold_submit_and_reclaim_set_modes_and_expiry ... ok
+test async_rx::tests::hold_submit_pauses_submit_stage_but_not_reclaim_or_rx ... ok
+test service::tests::diag::control_deadline_overflow_fails_closed_atomically ... ok
+test service::tests::diag::any_reachable_hold_is_releasable_or_expirable ... ok
+test device::tests::service_poll_deferred_arp_retries_once_after_tx_space ... ok
+test service::tests::service_poll_wakes_waiting_rx_task_after_ingress_frees_space ... ok
+test device::tests::service_poll_deferred_arp_attempts_once_and_stops_round ... ok
+test async_rx::tests::held_reclaim_visible_tx_completion_does_not_busy_loop_before_deadline ... ok
+test device::tests::service_poll_polling_owned_drains_target ... ok
+test service::tests::diag::control_rejects_out_of_range_lease_and_bad_ops ... ok
+test service::tests::diag::release_clears_hold_and_never_counts_failure ... ok
+test service::tests::diag::second_hold_after_expiry_reuses_the_state ... ok
+test device::tests::service_without_target_dev_async_owned_is_safe ... ok
+test service::tests::diag::hold_does_not_mutate_owner_or_completion_state ... ok
+test device::tests::service_poll_publishes_queue_event_after_tx_enqueue ... ok
+test device::tests::service_poll_async_owned_consumes_slots ... ok
+test async_rx::tests::telemetry_rx_slot_full_waits_then_service_poll_wakes ... ok
+test service::tests::diag::expired_lease_auto_releases_and_counts_failure ... ok
+
+test result: ok. 234 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+EXIT=0
+=== 2026-08-15 18:20:12 CMD: cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib ===
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: unused import: `crate::iface::Route`
+ --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv6.rs:3:5
+  |
+3 | use crate::iface::Route;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `super::fragmentation::PacketAssemblerSet`
+  --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/mod.rs:35:5
+   |
+35 | use super::fragmentation::PacketAssemblerSet;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `IFACE_MAX_PREFIX_COUNT` and `IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT`
+  --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/mod.rs:42:27
+   |
+42 |     IFACE_MAX_ADDR_COUNT, IFACE_MAX_PREFIX_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv4.rs:103:13
+    |
+103 |         let mut ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `frag`
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv4.rs:101:9
+    |
+101 |         frag: &'a mut FragmentsBuffer,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_frag`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `repr`
+    --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/mod.rs:1274:26
+     |
+1274 |             IpRepr::Ipv4(repr) => {
+     |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_repr`
+
+warning: variable does not need to be mutable
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/socket/dns.rs:247:13
+    |
+247 |         let mut mdns = MulticastDns::Disabled;
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: methods `link_local_ipv6_address` and `mldv2_report_packet` are never used
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/interface/ipv6.rs:173:8
+    |
+ 23 | impl InterfaceInner {
+    | ------------------- methods in this implementation
+...
+173 |     fn link_local_ipv6_address(&self) -> Option<Ipv6Address> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+565 |     pub(super) fn mldv2_report_packet<'any>(
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `HopByHopIcmpv6` is never constructed
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/iface/packet.rs:218:5
+    |
+210 | pub(crate) enum IpPayload<'p> {
+    |                 --------- variant in this enum
+...
+218 |     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `IpPayload` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `is_solicited_node_multicast` is never used
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/wire/ipv6.rs:125:8
+    |
+ 80 | pub(crate) trait AddressExt {
+    |                  ---------- method in this trait
+...
+125 |     fn is_solicited_node_multicast(&self) -> bool;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `emit_header` is never used
+   --> /home/daivy/projects/serial/work/StarryOS/crates/smoltcp/src/wire/udp.rs:275:19
+    |
+232 | impl Repr {
+    | --------- method in this implementation
+...
+275 |     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
+    |                   ^^^^^^^^^^^
+
+warning: `smoltcp` (lib) generated 11 warnings (run `cargo fix --lib -p smoltcp` to apply 7 suggestions)
+warning: unused import: `fixed_queue::MAX_LIVE_TICKETS`
+  --> src/async_rx.rs:23:55
+   |
+23 |     device::{RxCopyStep, TxReclaimStep, TxSubmitStep, fixed_queue::MAX_LIVE_TICKETS},
+   |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/flush.rs:682:13
+    |
+682 |         let mut guard = service.lock();
+    |             ----^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/flush.rs:712:17
+    |
+712 |             let mut guard = service.lock();
+    |                 ----^^^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/flush.rs:730:13
+    |
+730 |         let mut guard = service.lock();
+    |             ----^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: struct `UnlockObservingWake` is never constructed
+    --> src/async_rx.rs:3388:12
+     |
+3388 |     struct UnlockObservingWake {
+     |            ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `unlock_observing_waker` is never used
+    --> src/async_rx.rs:3406:8
+     |
+3406 |     fn unlock_observing_waker(
+     |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `tx_submit_calls_for_test` is never used
+   --> src/device/mod.rs:335:8
+    |
+179 | pub trait Device: Send + Sync {
+    |           ------ method in this trait
+...
+335 |     fn tx_submit_calls_for_test(&self) -> usize {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `axnet-ng` (lib test) generated 7 warnings (run `cargo fix --lib -p axnet-ng --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (crates/axnet/target/debug/deps/axnet_ng-7ae829c10db130aa)
+
+running 215 tests
+test async_rx::tests::arm_error_maps_to_fault_with_error_category ... ok
+test async_rx::tests::event_after_arm_wakes_sleep_decision ... ok
+test async_rx::tests::event_before_register_is_caught_by_arm_recheck ... ok
+test async_rx::tests::event_dual_role_wait_decision_retries_on_any_generation_change ... ok
+test async_rx::tests::event_during_register_window_retries ... ok
+test async_rx::tests::active_stack_preflight_source_has_no_raw_tx_entry_points ... ok
+test async_rx::tests::event_generation_wraps_and_wakes_both ... ok
+test async_rx::tests::event_queue_register_does_not_overwrite_stack_waker ... ok
+test async_rx::tests::event_queue_and_stack_wakers_are_independent ... ok
+test async_rx::tests::event_space_wait_wakes_only_queue_role ... ok
+test async_rx::tests::event_stack_register_does_not_overwrite_queue_waker ... ok
+test async_rx::tests::fatal_arm_recheck_wake_observes_faulted_lifecycle ... ok
+test async_rx::tests::fatal_service_round_wake_observes_faulted_lifecycle ... ok
+test async_rx::tests::fatal_paths_commit_before_publish_in_source ... ok
+test async_rx::tests::future_31_completions_then_empty_registers_once ... ok
+test async_rx::tests::future_missing_control_publishes_unavailable ... ok
+test async_rx::tests::future_budget_exhausted_with_backlog_self_wakes_and_yields ... ok
+test async_rx::tests::future_missing_service_publishes_unavailable ... ok
+test async_rx::tests::future_arm_pending_retries_with_self_wake ... ok
+test async_rx::tests::future_missing_target_publishes_unavailable ... ok
+test async_rx::tests::future_budget_exhausted_without_backlog_stops_cleanly ... ok
+test async_rx::tests::fatal_wakes_stack_progress ... ok
+test async_rx::tests::future_first_poll_activates_and_waits_on_empty ... ok
+test async_rx::tests::future_arm_error_faults_and_keeps_async_owner ... ok
+test async_rx::tests::future_preflight_suppress_failure_publishes_unavailable ... ok
+test async_rx::tests::future_rx_copy_publishes_stack_progress ... ok
+test async_rx::tests::illegal_fatal_transition_publishes_no_progress ... ok
+test async_rx::tests::last_error_pair_round_trips_as_one_value ... ok
+test async_rx::tests::lifecycle_fatal_only_from_active ... ok
+test async_rx::tests::last_error_pair_uses_one_atomic_publication ... ok
+test async_rx::tests::publish_event_increments_generation_and_wakes ... ok
+test async_rx::tests::pending_found_by_arm_recheck_retries_without_event ... ok
+test async_rx::tests::round_rx_full_does_not_block_tx_backlog ... ok
+test async_rx::tests::rx_copy_missing_target_maps_to_bad_state ... ok
+test async_rx::tests::lifecycle_duplicate_start_is_rejected_without_state_change ... ok
+test async_rx::tests::lifecycle_preflight_only_from_spawned ... ok
+test async_rx::tests::notify_full_waiting_then_space_wakes_once ... ok
+test async_rx::tests::future_services_one_completion_then_registers ... ok
+test async_rx::tests::round_reclaim_exhausted_still_runs_rx_and_submit ... ok
+test async_rx::tests::software_nudge_advances_generation_and_wakes_queue ... ok
+test async_rx::tests::snapshot_source_uses_one_lifecycle_observation ... ok
+test async_rx::tests::lifecycle_owner_view_mapping ... ok
+test async_rx::tests::start_seam_spawns_once_and_rejects_duplicate_with_local_state ... ok
+test async_rx::tests::telemetry_budget_backlog_increments_exhausted_and_self_yield ... ok
+test async_rx::tests::telemetry_active_receive_fault_records_exactly_once ... ok
+test async_rx::tests::telemetry_active_arm_fault_records_fault_and_stage ... ok
+test async_rx::tests::telemetry_active_arm_fault_records_exactly_once ... ok
+test async_rx::tests::lifecycle_preflight_outcomes_from_spawned ... ok
+test async_rx::tests::notify_still_full_does_not_wake ... ok
+test async_rx::tests::telemetry_consumed_increments_reap_and_refill ... ok
+test async_rx::tests::telemetry_missing_service_records_preflight_bad_state ... ok
+test async_rx::tests::notify_second_publish_after_clear_wakes_again ... ok
+test async_rx::tests::telemetry_illegal_preflight_records_lifecycle_stage ... ok
+test async_rx::tests::publish_event_generation_wraps ... ok
+test async_rx::tests::round_tx_again_without_completion_sleeps ... ok
+test device::fixed_queue::tests::fill_abort_publishes_nothing ... ok
+test device::fixed_queue::tests::fill_writes_directly_into_vacant_slot_storage ... ok
+test async_rx::tests::rx_snapshot_v3_public_entry_delegates_to_shared_assembly_in_source ... ok
+test async_rx::tests::telemetry_empty_round_increments_empty_check_once ... ok
+test async_rx::tests::notify_not_waiting_does_not_wake ... ok
+test async_rx::tests::lifecycle_terminal_states_accept_no_transition ... ok
+test async_rx::tests::telemetry_illegal_fatal_records_lifecycle_stage ... ok
+test async_rx::tests::telemetry_preflight_failure_records_last_error_without_fault ... ok
+test async_rx::tests::telemetry_rx_copy_increments_reap_and_refill ... ok
+test async_rx::tests::telemetry_snapshot_mirrors_lifecycle_and_counters ... ok
+test async_rx::tests::tx_submit_missing_target_maps_to_bad_state ... ok
+test async_rx::tests::round_tx_again_with_completion_retries ... ok
+test device::fixed_queue::tests::construction_allocates_but_data_path_does_not ... ok
+test async_rx::tests::tx_reclaim_missing_target_maps_to_bad_state ... ok
+test device::fixed_queue::tests::failed_enqueue_preserves_failed_bytes_untouched ... ok
+test async_rx::tests::quiescent_arm_without_event_sleeps ... ok
+test device::fixed_queue::tests::flush_done_queued_ticket_blocks_until_submit_and_reclaim ... ok
+test device::fixed_queue::tests::flush_done_out_of_order_hole_blocks_until_all_target_tickets_reclaimed ... ok
+test device::fixed_queue::tests::fill_full_rejects_without_touching_head ... ok
+test device::fixed_queue::tests::oversize_enqueue_changes_nothing ... ok
+test device::fixed_queue::tests::flush_done_post_target_tickets_do_not_block ... ok
+test device::fixed_queue::tests::preflight_exact_length_and_capacity ... ok
+test device::fixed_queue::tests::peek_full_reports_none_when_empty_and_preserves_order ... ok
+test device::fixed_queue::tests::peek_is_read_only ... ok
+test device::fixed_queue::tests::reclaim_only_releases_device_owned_tickets ... ok
+test device::fixed_queue::tests::release_queued_ticket_cancels_pre_submit_abort ... ok
+test device::fixed_queue::tests::max_frame_wrap_preserves_fifo ... ok
+test device::fixed_queue::tests::new_is_empty_with_exact_capacity ... ok
+test device::fixed_queue::tests::flush_done_never_mutates_live_set ... ok
+test device::fixed_queue::tests::flush_done_empty_data_plane_succeeds_immediately ... ok
+test device::fixed_queue::tests::repeated_wrap_preserves_fifo ... ok
+test device::fixed_queue::tests::ticket_counter_exhaustion_keeps_flush_semantics ... ok
+test device::fixed_queue::tests::ticket_mark_device_owned_transitions_state_exactly_once ... ok
+test device::fixed_queue::tests::fill_publishes_length_meta_and_ticket_after_success ... ok
+test device::fixed_queue::tests::ticket_alloc_sets_queued_state_and_last_accepted ... ok
+test device::tests::activate_target_missing_target_is_bad_state ... ok
+test device::fixed_queue::tests::pop_from_full_reports_one_space_transition ... ok
+test device::fixed_queue::tests::full_rejects_65th_without_side_effect ... ok
+test async_rx::tests::lifecycle_start_moves_polling_to_spawned ... ok
+test device::fixed_queue::tests::fill_oversize_result_publishes_nothing ... ok
+test device::fixed_queue::tests::size_proves_heap_direct_storage ... ok
+test device::fixed_queue::tests::ticket_allocator_is_monotonic_and_checked ... ok
+test device::tests::again_maps_to_empty ... ok
+test device::tests::activate_target_suppress_error_propagates_and_keeps_polling ... ok
+test device::fixed_queue::tests::ticket_backing_exhausts_at_128_live ... ok
+test device::tests::activate_target_suppresses_both_directions_once_each ... ok
+test device::tests::activate_target_switches_ethernet_to_slot_mode ... ok
+test device::fixed_queue::tests::ticket_counter_exhausts_at_u64_max ... ok
+test device::tests::arp_pending_flush_allocates_zero_after_initialization ... ok
+test device::fixed_queue::tests::accepts_exact_max_frame ... ok
+test device::tests::arp_reply_accepted_resolves_neighbor_and_flushes_pending_once ... ok
+test device::tests::arp_reply_tx_full_keeps_neighbor_unresolved_and_rx_consumed ... ok
+test device::tests::arp_request_tx_full_does_not_record_pending_neighbor ... ok
+test device::tests::dispatch_ethernet_accepted_without_rx_ready ... ok
+test device::tests::dispatch_fanout_all_ready_commits_each_once_and_dequeues_once ... ok
+test device::tests::arp_request_replies_but_is_consumed ... ok
+test device::tests::dispatch_fanout_allocates_zero_after_initialization ... ok
+test device::tests::completion_pending_both_reports_control_state ... ok
+test device::tests::dispatch_fanout_drift_removes_head_after_first_target_accepted ... ok
+test device::tests::dispatch_malformed_drop_allocates_zero ... ok
+test device::tests::dispatch_loopback_accepted_reports_rx_ready ... ok
+test device::tests::dispatch_missing_route_drops_with_reason ... ok
+test device::tests::dispatch_preflight_fault_enters_stable_fault ... ok
+test device::tests::dispatch_route_source_mismatch_drops_with_reason ... ok
+test device::tests::dispatch_single_target_full_keeps_head_no_commit ... ok
+test device::tests::dispatch_ipv6_multicast_fanout_preflights_all ... ok
+test device::tests::dispatch_malformed_drops_once_and_continues ... ok
+test device::tests::dispatch_preflight_drop_counts_once_and_dequeues ... ok
+test device::tests::dispatch_ready_commit_drift_enters_stable_fault_and_removes_head ... ok
+test device::tests::completion_pending_without_control_is_unsupported ... ok
+test device::tests::arm_error_propagates_with_category ... ok
+test device::tests::dispatch_fanout_drop_counts_exactly_once ... ok
+test device::tests::dormant_slots_preflight_unknown_neighbor_never_touches_raw_tx ... ok
+test device::tests::arm_and_check_both_reports_pending_and_quiescent ... ok
+test device::tests::ethernet_oversize_packet_is_dropped_with_reason ... ok
+test device::tests::ethernet_slots_are_exact_64_heap_direct_and_transport_neutral ... ok
+test device::tests::dispatch_unicast_allocates_zero_after_initialization ... ok
+test device::tests::expired_neighbor_retriggers_arp_request ... ok
+test device::tests::loopback_delivers_after_send ... ok
+test device::tests::foreign_mac_frame_is_consumed ... ok
+test device::tests::dormant_rx_arp_reply_full_retains_exact_frame_and_retries_once ... ok
+test device::tests::ethernet_1500_payload_is_accepted_and_1501_dropped ... ok
+test device::tests::dormant_emission_allocates_zero_after_initialization ... ok
+test device::tests::ipv4_delivers_payload_and_recycles ... ok
+test device::tests::dormant_slots_full_returns_backpressure ... ok
+test device::tests::dormant_slots_mode_keeps_polling_parity_for_broadcast ... ok
+test device::tests::dormant_slots_mode_commits_to_fixed_slot_with_ticket ... ok
+test device::tests::dispatch_fanout_second_full_commits_nothing ... ok
+test device::tests::dormant_slots_preflight_broadcast_never_touches_raw_tx ... ok
+test device::tests::pending_head_full_keeps_router_packet ... ok
+test device::tests::ethernet_preflight_reports_again_as_full ... ok
+test device::tests::pending_flush_only_dequeues_after_accepted_send ... ok
+test device::tests::ethernet_delegates_queue_control_to_inner ... ok
+test device::tests::full_destination_enqueue_returns_fault ... ok
+test device::tests::preflight_missing_control_is_unsupported ... ok
+test device::tests::loopback_full_destination_returns_fault ... ok
+test device::tests::activate_target_missing_control_is_unsupported ... ok
+test device::tests::loopback_empty_returns_empty ... ok
+test device::tests::recycle_fault_prevails_over_enqueue_fault ... ok
+test device::tests::arp_reply_flushes_pending_ipv4_once ... ok
+test device::tests::loopback_target_control_is_unsupported ... ok
+test device::tests::loopback_storage_is_exact_socket_capacity ... ok
+test device::tests::non_ipv4_ethertype_is_consumed ... ok
+test device::tests::one_completion_per_recv_call ... ok
+test device::tests::preflight_missing_target_is_bad_state ... ok
+test device::tests::malformed_frame_is_consumed_and_recycled ... ok
+test device::tests::repeated_suppress_both_is_idempotent ... ok
+test device::tests::dormant_slots_preflight_resolved_neighbor_never_touches_raw_tx ... ok
+test device::tests::router_continues_on_consumed_and_delivered ... ok
+test device::tests::requested_neighbor_preflight_full_only_when_pending_full ... ok
+test device::tests::requested_neighbor_preflight_ignores_raw_tx_full ... ok
+test device::tests::router_poll_async_owned_without_target_is_safe ... ok
+test device::tests::preflight_suppresses_target_control_without_reaping ... ok
+test device::tests::reclaim_duplicate_cookie_faults_after_release ... ok
+test device::tests::receive_fault_propagates ... ok
+test device::tests::router_poll_async_owned_consumes_slots_keeps_loopback ... ok
+test device::tests::reclaim_unknown_cookie_faults_instead_of_reclaimed ... ok
+test device::tests::reclaim_valid_cookie_still_releases_matching_ticket ... ok
+test device::tests::preflight_suppress_error_propagates ... ok
+test device::tests::recycle_fault_overrides_delivered ... ok
+test device::tests::router_poll_async_owned_faulted_target_still_consumes_slots ... ok
+test device::tests::router_poll_polling_owned_drains_target ... ok
+test device::tests::router_stops_on_fault ... ok
+test device::tests::router_stops_on_empty ... ok
+test device::tests::tx_resource_ledger_forwards_driver_counts_and_conserves_capacity ... ok
+test device::tests::tx_resource_ledger_is_none_when_driver_cannot_observe_it ... ok
+test flush::tests::flush_after_terminal_fault_returns_stable_error_even_without_waiter ... ok
+test device::tests::v3_snapshot_maps_real_driver_ledger_under_the_service_guard ... ok
+test flush::tests::flush_empty_data_plane_completes_immediately ... ok
+test flush::tests::flush_drop_releases_waiter_without_changing_packet_ownership ... ok
+test flush::tests::flush_monotonic_stale_drop_and_identity_exhaustion_witness ... ok
+test flush::tests::flush_fatal_wakes_and_returns_stable_error ... ok
+test flush::tests::flush_pends_until_queued_and_device_owned_tickets_reclaimed ... ok
+test flush::tests::flush_out_of_order_hole_blocks_until_all_target_tickets_reclaimed ... ok
+test flush::tests::flush_post_target_tickets_do_not_block ... ok
+test service::tests::chooses_earlier_protocol_or_polling_deadline ... ok
+test flush::tests::flush_terminal_fault_persists_after_first_waiter_consumes_it ... ok
+test flush::tests::flush_second_waiter_is_resource_busy ... ok
+test flush::tests::v3_ledger_reports_tickets_and_slots_under_the_guard ... ok
+test service::tests::no_deadline_without_protocol_timer_or_polling_fallback ... ok
+test service::tests::masked_non_polling_device_does_not_trigger_fallback ... ok
+test flush::tests::flush_register_recheck_sees_reclaim_before_first_poll ... ok
+test service::tests::masked_polling_device_triggers_fallback ... ok
+test flush::tests::v3_flush_counters_track_success_busy_and_cancel ... ok
+test service::tests::preserves_protocol_deadline_without_polling_fallback ... ok
+test service::tests::uses_polling_fallback_without_protocol_deadline ... ok
+test service::tests::mixed_devices_only_masked_polling_decides ... ok
+test service::tests::unmasked_polling_device_does_not_trigger_fallback ... ok
+test async_rx::tests::future_rx_slot_full_waits_then_service_poll_wakes ... ok
+test device::tests::service_poll_async_owned_consumes_slots ... ok
+test device::tests::service_poll_deferred_arp_retries_once_after_tx_space ... ok
+test device::tests::service_without_target_dev_async_owned_is_safe ... ok
+test device::tests::service_poll_polling_owned_drains_target ... ok
+test async_rx::tests::still_full_publishes_waiting_then_space_wakes_once ... ok
+test async_rx::tests::telemetry_rx_slot_full_waits_then_service_poll_wakes ... ok
+test device::tests::service_poll_publishes_queue_event_after_tx_enqueue ... ok
+test service::tests::service_poll_wakes_waiting_rx_task_after_ingress_frees_space ... ok
+test device::tests::service_poll_deferred_arp_attempts_once_and_stops_round ... ok
+test async_rx::tests::space_freed_before_waiting_rechecks_to_retry_without_publish ... ok
+test async_rx::tests::service_poll_router_space_alone_does_not_wake_waiting ... ok
+
+test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+EXIT=0
+=== 2026-08-15 18:20:12 CMD: cargo test --manifest-path crates/axdriver_net/Cargo.toml --offline ===
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (crates/axdriver_net/target/debug/deps/axdriver_net-28874191d63a66bc)
+
+running 7 tests
+test tests::accessor_exposes_queue_control ... ok
+test tests::arm_reports_pending_completion ... ok
+test tests::default_accessor_is_none ... ok
+test tests::direction_mask_and_cookie_are_transport_neutral ... ok
+test tests::dwmac_model_controls_rx_and_tx_without_transport_tokens ... ok
+test tests::dwmac_model_round_trips_cookie_and_recovers_submit_error_buffer ... ok
+test tests::suppress_is_atomic_on_repeat ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests axdriver_net
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=0
+=== 2026-08-15 18:20:12 CMD: cargo test --manifest-path crates/axdriver_virtio/Cargo.toml --offline --features net ===
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> /home/daivy/projects/serial/work/StarryOS/crates/virtio-drivers/src/transport/pci/bus.rs:242:25
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator {
+    |                         ^^^^^ the lifetime is elided here          ^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator<'_> {
+    |                                                                                      ++++
+
+warning: `virtio-drivers` (lib) generated 1 warning (run `cargo fix --lib -p virtio-drivers` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (crates/axdriver_virtio/target/debug/deps/axdriver_virtio-57fb36b0b6f3eeb0)
+
+running 16 tests
+test net::tests::duplicate_completion_after_reclaim_is_stable_fatal ... ok
+test net::tests::legacy_completion_error_retains_owner_and_enters_fault ... ok
+test net::tests::legacy_recycle_rejects_queue_owned_token ... ok
+test net::tests::post_accept_out_of_range_token_is_stable_fatal_not_panic ... ok
+test net::tests::queue_full_recovers_buffer_and_maps_to_again ... ok
+test net::tests::queue_completion_error_retains_owner_and_enters_fault ... ok
+test net::tests::queue_reclaim_rejects_legacy_owned_token ... ok
+test net::tests::post_accept_occupied_token_is_stable_fatal_not_panic ... ok
+test net::tests::repeated_oversize_errors_do_not_shrink_capacity ... ok
+test net::tests::real_adapter_round_trips_submit_and_reclaim ... ok
+test net::tests::runtime_exhaustion_is_again_and_recovers ... ok
+test net::tests::tx_resource_ledger_counts_completion_even_when_reclaim_faults ... ok
+test net::tests::tx_resource_ledger_counts_quarantined_fault_owner ... ok
+test net::tests::tx_resource_ledger_exposes_oversized_free_list_drift ... ok
+test net::tests::tx_resource_ledger_reports_real_buffer_and_descriptor_counts ... ok
+test net::tests::tx_resource_ledger_exposes_lost_owner_drift ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests axdriver_virtio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=0
+=== 2026-08-15 18:20:13 CMD: cargo test --manifest-path crates/virtio-drivers/Cargo.toml --offline --features alloc ===
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src/transport/pci/bus.rs:242:25
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator {
+    |                         ^^^^^ the lifetime is elided here          ^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+242 |     pub fn capabilities(&self, device_function: DeviceFunction) -> CapabilityIterator<'_> {
+    |                                                                                      ++++
+
+warning: `virtio-drivers` (lib) generated 1 warning (run `cargo fix --lib -p virtio-drivers` to apply 1 suggestion)
+warning: `virtio-drivers` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (crates/virtio-drivers/target/debug/deps/virtio_drivers-d247c1dd9068fbd6)
+
+running 36 tests
+test device::blk::tests::config ... ok
+test device::console::tests::receive ... ok
+test device::blk::tests::flush ... ok
+test device::blk::tests::device_id ... ok
+test device::blk::tests::read ... ok
+test device::input::tests::config ... ok
+test device::console::tests::send ... ok
+test device::socket::vsock::tests::config ... ok
+test device::blk::tests::write ... ok
+test queue::tests::add_buffers ... ok
+test queue::tests::add_buffers_indirect ... ok
+test device::sound::tests::config ... ok
+test queue::tests::add_empty ... ok
+test queue::tests::add_notify_event_idx ... ok
+test queue::tests::add_notify ... ok
+test queue::tests::arm_empty_queue_reports_no_pending ... ok
+test queue::tests::arm_with_pending_completion_reports_pending ... ok
+test queue::tests::add_too_many ... ok
+test queue::tests::event_idx_kick_uses_each_old_new_window_once_across_wrap ... ok
+test queue::tests::event_idx_kick_window_matrix ... ok
+test queue::tests::event_idx_u16_wrap ... ok
+test queue::tests::queue_already_used ... ok
+test queue::tests::queue_too_big ... ok
+test queue::tests::set_dev_notify ... ok
+test queue::tests::suppress_event_idx_writes_used_event ... ok
+test queue::tests::suppressed_pop_does_not_rearm ... ok
+test queue::tests::suppress_flags_without_event_idx ... ok
+test transport::pci::tests::virtio_device_type_valid ... ok
+test transport::pci::tests::offset_device_ids ... ok
+test transport::pci::tests::transitional_device_ids ... ok
+test transport::pci::tests::virtio_device_type_invalid ... ok
+test device::socket::connectionmanager::tests::incoming_connection ... ok
+test device::socket::connectionmanager::tests::send_recv ... ok
+test device::sound::tests::empty_info ... ok
+test device::sound::tests::stream_info ... ok
+test device::sound::tests::play ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+   Doc-tests virtio_drivers
+
+running 8 tests
+test src/volatile.rs - volatile::volread (line 69) - compile fail ... ok
+test src/volatile.rs - volatile::volwrite (line 88) - compile fail ... ok
+test src/device/socket/connectionmanager.rs - device::socket::connectionmanager::VsockConnectionManager (line 24) ... ok
+test src/device/console.rs - device::console::VirtIOConsole (line 24) ... ok
+test src/device/blk.rs - device::blk::VirtIOBlk<H,T>::read_blocks_nb (line 216) ... ok
+test src/lib.rs - (line 25) ... ok
+test src/lib.rs - (line 13) ... ok
+test src/device/blk.rs - device::blk::VirtIOBlk (line 28) ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+EXIT=0
+=== 2026-08-15 18:20:13 CMD: cargo test --manifest-path crates/uart_16550/Cargo.toml --offline --features async ===
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (crates/uart_16550/target/debug/deps/uart_16550-d182445d5b5b31ff)
+
+running 62 tests
+test async_::ring_buffer::readiness_tests::rx_occupied_after_push ... ok
+test async_::ring_buffer::readiness_tests::rx_occupied_full_ring ... ok
+test async_::ring_buffer::readiness_tests::rx_occupied_non_consuming ... ok
+test async_::ring_buffer::readiness_tests::rx_occupied_wrap_around ... ok
+test async_::ring_buffer::readiness_tests::rx_occupied_zero_when_empty ... ok
+test async_::ring_buffer::readiness_tests::rx_push_wakes ... ok
+test async_::ring_buffer::readiness_tests::rx_register_waker_increments_counter ... ok
+test async_::ring_buffer::readiness_tests::tx_is_empty_after_pop_all ... ok
+test async_::ring_buffer::readiness_tests::tx_pop_wakes ... ok
+test async_::ring_buffer::readiness_tests::tx_register_waker_increments_counter ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_decreases_after_push ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_full_capacity_when_empty ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_len_equals_capacity_when_empty ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_len_decreases_after_push ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_len_non_modifying ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_wrap_around ... ok
+test async_::ring_buffer::readiness_tests::tx_vacant_zero_when_full ... ok
+test spec::tests::fcr_set_trigger_level_twice_no_stale_bits ... ok
+test spec::tests::fcr_trigger_level_preserves_other_bits ... ok
+test spec::tests::fcr_trigger_level_roundtrip_four ... ok
+test spec::tests::fcr_trigger_level_roundtrip_eight ... ok
+test spec::tests::fcr_trigger_level_roundtrip_fourteen ... ok
+test spec::tests::fcr_trigger_level_roundtrip_one ... ok
+test spec::tests::fifo_trigger_level_from_raw_bits_masks_high_bits ... ok
+test spec::tests::fifo_trigger_level_raw_bits_roundtrip ... ok
+test spec::tests::interrupt_type_all_variants ... ok
+test spec::tests::interrupt_type_ignores_high_nibble ... ok
+test spec::tests::interrupt_type_no_interrupt_when_bit0_set ... ok
+test spec::tests::isr_interrupt_type_delegates_correctly ... ok
+test spec::tests::lcr_parity_preserves_other_bits ... ok
+test spec::tests::lcr_parity_roundtrip_disabled ... ok
+test spec::tests::lcr_parity_roundtrip_even ... ok
+test spec::tests::lcr_parity_roundtrip_forced0 ... ok
+test spec::tests::lcr_parity_roundtrip_odd ... ok
+test spec::tests::parity_raw_bits_roundtrip ... ok
+test spec::tests::psd_set_pdf_preserves_reserved_bits ... ok
+test spec::tests::psd_set_pdf_twice_no_stale_bits ... ok
+test spec::tests::test_calc_baud_rate ... ok
+test spec::tests::test_calc_divisor ... ok
+test spec::tests::test_calc_frequency ... ok
+test spec::tests::psd_pdf_roundtrip_zero ... ok
+test spec::tests::word_length_from_integer_out_of_range_fallback ... ok
+test spec::tests::interrupt_type_priority_ordering ... ok
+test spec::tests::word_length_integer_roundtrip ... ok
+test spec::tests::word_length_raw_bits_roundtrip ... ok
+test spec::tests::lcr_set_parity_twice_no_stale_bits ... ok
+test tests::is_send ... ok
+test spec::tests::lcr_set_word_length_twice_no_stale_bits ... ok
+test tests::constructors ... ok
+test spec::tests::lcr_word_length_roundtrip_seven ... ok
+test spec::tests::lsr_has_error_false_when_clean ... ok
+test spec::tests::lsr_has_error_true_for_each_error_flag ... ok
+test spec::tests::parity_from_raw_bits_all_variants ... ok
+test spec::tests::lcr_word_length_roundtrip_five ... ok
+test tests::mmio_dummy ... ok
+test spec::tests::lcr_word_length_roundtrip_six ... ok
+test spec::tests::psd_pdf_roundtrip_max_nibble ... ok
+test spec::tests::lcr_parity_roundtrip_forced1 ... ok
+test spec::tests::lcr_word_length_preserves_other_bits ... ok
+test spec::tests::lcr_word_length_roundtrip_eight ... ok
+test spec::tests::parity_from_raw_bits_masks_high_bits ... ok
+test spec::tests::parity_from_raw_bits_any_even_is_disabled ... ok
+
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests uart_16550
+
+running 8 tests
+test src/lib.rs - (line 83) - compile ... ok
+test src/lib.rs - Uart16550 (line 208) - compile ... ok
+test src/lib.rs - Uart16550 (line 218) - compile ... ok
+test src/lib.rs - (line 59) - compile ... ok
+test src/lib.rs - Uart16550 (line 232) - compile ... ok
+test src/tty.rs - tty::Uart16550Tty (line 75) - compile ... ok
+test src/lib.rs - (line 69) - compile ... ok
+test src/tty.rs - tty::Uart16550Tty (line 85) - compile ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 10 tests
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartWriter (line 204) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartReader (line 69) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartWriter (line 175) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartWriter (line 220) - compile fail ... ok
+test src/async_/driver.rs - async_::driver::AsyncUartDriver (line 232) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartReader (line 55) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartReader (line 80) - compile fail ... ok
+test src/async_/driver.rs - async_::driver::AsyncUartDriver (line 249) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartWriter (line 190) - compile fail ... ok
+test src/async_/device_ops.rs - async_::device_ops::AsyncUartReader (line 38) - compile fail ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+all doctests ran in 0.17s; merged doctests compilation took 0.12s
+EXIT=0
+=== 2026-08-15 18:22:11 CMD: rustfmt --check --edition 2024 --config skip_children=true crates/axdriver_net/src/lib.rs crates/axdriver_virtio/src/net.rs crates/axnet/src/async_rx.rs crates/axnet/src/device/ethernet.rs crates/axnet/src/device/fixed_queue.rs crates/axnet/src/device/mod.rs crates/axnet/src/device/tests.rs crates/axnet/src/diag.rs crates/axnet/src/flush.rs crates/axnet/src/lib.rs crates/axnet/src/router.rs crates/axnet/src/service.rs crates/virtio-drivers/src/device/net/dev_raw.rs kernel/src/drivers/virtio_net_irq.rs kernel/src/drivers/virtio_net_irq_logic.rs kernel/src/syscall/fs/ctl.rs tests/ms03-irq-host-harness.rs tests/ms04-async-rx-host-harness.rs ===
+EXIT=0
+=== 2026-08-15 18:22:16 CMD: openspec validate ms05-qemu-bounded-bidirectional-device-data-plane --strict ===
+Change 'ms05-qemu-bounded-bidirectional-device-data-plane' is valid
+EXIT=0
+=== 2026-08-15 18:22:18 CMD: git diff --check -- . ':(exclude)openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/**' ===
+EXIT=0

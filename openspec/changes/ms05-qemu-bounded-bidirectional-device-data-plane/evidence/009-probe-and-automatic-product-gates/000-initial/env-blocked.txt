@@ -1,0 +1,7 @@
+=== env-blocked.txt ===
+ENV-BLOCKED items for Iteration 010 rerun:
+  None.
+  Rationale: all automatic Gates in this Cycle passed in the current sandbox,
+  including make host-test UDP loopback (no EPERM observed on 2026-08-15).
+  Iteration 010 still requires the user terminal for QEMU serial + guest shell (R44),
+  which is a scope boundary, not an environment block.

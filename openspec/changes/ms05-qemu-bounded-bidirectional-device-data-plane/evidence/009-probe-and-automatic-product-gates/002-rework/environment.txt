@@ -1,0 +1,11 @@
+# MS05 Cycle 002 rework - environment and tool versions
+Window start: 2026-08-15 18:57:58 +0800
+HEAD: 8dc3ef7d63da00c1966e9cb70820c337494d3c57 (net-k3, worktree modified)
+
+## Toolchain
+Linux daivy 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+Python 3.10.12
+rustc 1.95.0-nightly (859951e3c 2026-02-24)
+cargo 1.95.0-nightly (8cc0cb136 2026-02-17)
+riscv64-linux-musl-gcc: riscv64-linux-musl-gcc (GCC) 11.2.1 20211120

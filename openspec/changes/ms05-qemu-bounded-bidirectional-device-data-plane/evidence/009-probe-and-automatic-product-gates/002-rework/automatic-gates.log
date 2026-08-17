@@ -1,0 +1,78 @@
+# MS05 Cycle 002 - full automatic Gate stack (final source frozen 18:52:11 - 18:54:50)
+Window start: 2026-08-15 18:58:42 +0800
+
+## make host-test
+$ make host-test
+ms05 probe decision tests: 22 passed
+python3 scripts/ms05_data_plane_stimulus.py --self-test
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS drip=PASS
+python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+EXIT=0
+
+## axnet qemu-diagnostics (feature)
+$ cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib
+test flush::tests::flush_after_terminal_fault_returns_stable_error_even_without_waiter ... ok
+test flush::tests::flush_fatal_wakes_and_returns_stable_error ... ok
+test result: ok. 234 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+EXIT=0
+
+## axnet default
+$ cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib
+test flush::tests::flush_after_terminal_fault_returns_stable_error_even_without_waiter ... ok
+test flush::tests::flush_fatal_wakes_and_returns_stable_error ... ok
+test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+EXIT=0
+
+## axdriver_net
+$ cargo test --manifest-path crates/axdriver_net/Cargo.toml --offline
+test tests::dwmac_model_round_trips_cookie_and_recovers_submit_error_buffer ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+EXIT=0
+
+## axdriver_virtio (net)
+$ cargo test --manifest-path crates/axdriver_virtio/Cargo.toml --offline --features net
+test net::tests::queue_completion_error_retains_owner_and_enters_fault ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+EXIT=0
+
+## virtio-drivers (alloc)
+$ cargo test --manifest-path crates/virtio-drivers/Cargo.toml --offline --features alloc
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+EXIT=0
+
+## uart_16550 (async)
+$ cargo test --manifest-path crates/uart_16550/Cargo.toml --offline --features async
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+EXIT=0
+
+## MS03/MS04 host harnesses
+$ rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test && /tmp/ms03-irq-host-test
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=0
+$ rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test && /tmp/ms04-async-rx-host-test
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=0
+# MS05 Cycle 002 - automatic gates (quality section)
+Window: 2026-08-15 18:58:42 -> 19:00:30 +0800
+
+## rustfmt (change-owned Rust files)
+$ rustfmt --check --edition 2024 --config skip_children=true crates/axdriver_net/src/lib.rs crates/axdriver_virtio/src/net.rs crates/axnet/src/async_rx.rs crates/axnet/src/device/ethernet.rs crates/axnet/src/device/fixed_queue.rs crates/axnet/src/device/mod.rs crates/axnet/src/device/tests.rs crates/axnet/src/diag.rs crates/axnet/src/flush.rs crates/axnet/src/lib.rs crates/axnet/src/router.rs crates/axnet/src/service.rs crates/virtio-drivers/src/device/net/dev_raw.rs kernel/src/drivers/virtio_net_irq.rs kernel/src/drivers/virtio_net_irq_logic.rs kernel/src/syscall/fs/ctl.rs tests/ms03-irq-host-harness.rs tests/ms04-async-rx-host-harness.rs
+EXIT=0
+
+## strict OpenSpec validation
+$ openspec validate ms05-qemu-bounded-bidirectional-device-data-plane --strict
+Change 'ms05-qemu-bounded-bidirectional-device-data-plane' is valid
+EXIT=0
+
+## non-Evidence diff check
+git diff --check (non-Evidence paths)
+EXIT=0

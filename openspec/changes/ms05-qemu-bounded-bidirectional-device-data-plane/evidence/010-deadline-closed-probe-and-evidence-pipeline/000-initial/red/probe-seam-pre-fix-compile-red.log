@@ -1,0 +1,22 @@
+RED record: pre-fix production runner cannot be driven by the harness
+==================================================================
+Date: 2026-08-15
+Pre-fix artifact: Iteration 009 tests/ms05_data_plane_probe.c
+
+The Iteration 009 probe wrapped its entire runtime (mode runners, control
+ioctl, UDP helpers) in `#ifndef MS05_DATA_PLANE_PROBE_TESTING`. The host
+harness therefore compiled only the decision core: real control sends, ioctl
+retry sleeps and post-Hold exits were untestable. There was no operation seam
+through which fake clock/sleep/ioctl/send/recv could drive the exact mode
+runners.
+
+Evidence of the gap (Iteration 009 harness build with the new seam tests):
+    cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c
+    ... 'run_flush' defined but not used [-Werror=unused-function]
+    ... 'run_tx_only' defined but not used [-Werror=unused-function]
+The runners were unreachable, so no side-effect ordering or Release-cleanup
+witness could exist.
+
+Fix: the runtime was made always-compiled behind the g_ms05_ops seam (main()
+guarded by MS05_DATA_PLANE_PROBE_TESTING), and the harness now drives every
+mode runner through injected operations.

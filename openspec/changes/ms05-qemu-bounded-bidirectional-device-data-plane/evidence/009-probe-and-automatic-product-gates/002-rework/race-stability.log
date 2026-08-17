@@ -1,0 +1,17 @@
+# MS05 Cycle 002 - race stability (literal 100-run loops, raw per-run output)
+Window start: 2026-08-15 18:58:5x +0800
+
+## control witness 100x
+$ for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock; done
+raw per-run: race-stability/control-100x.log (100 result lines, 100 ok, failures=0)
+result: PASS (100 runs, 0 failures)
+
+## V3 witness 100x
+$ for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick; done
+raw per-run: race-stability/v3-100x.log (100 result lines, 100 ok, failures=0)
+result: PASS (100 runs, 0 failures)
+
+## default-parallel axnet full suite 100x
+$ for i in $(seq 1 100); do cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib; done
+raw per-run: race-stability/full-suite-100x.log (100 result lines, 100 ok, failures=0)
+result: PASS (100 runs, 100/100 passed)

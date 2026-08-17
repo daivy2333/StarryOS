@@ -1,0 +1,16 @@
+host: Linux daivy 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+date: 2026-08-15T09:4[0-9]Z
+revision: 8dc3ef7d63da00c1966e9cb70820c337494d3c57
+branch: net-k3
+worktree: 6 entries
+cc: cc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+gcc: gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+python3: Python 3.10.12
+rustc: rustc 1.95.0-nightly (859951e3c 2026-02-24)
+warning: `/home/daivy/.cargo/config` is deprecated in favor of `config.toml`
+  |
+  = help: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+cargo: cargo 1.95.0-nightly (8cc0cb136 2026-02-17)
+riscv64-linux-musl-gcc: riscv64-linux-musl-gcc (GCC) 11.2.1 20211120
+qemu-system-riscv64: QEMU emulator version 7.0.0
+openspec: 1.6.0

@@ -1,0 +1,21 @@
+RED record: Cycle 002 audit accepts a nonexistent referenced log
+==================================================================
+Date: 2026-08-15
+Pre-fix artifact: git blob b869852a (scripts/ms05_evidence_audit.py, Cycle 002)
+
+Demonstration: a commands.txt references logs/build.log, but the file does
+not exist on disk. The old audit_commands only verifies referenced logs whose
+basename is ALREADY in the discovered raw_log_names set:
+
+    for ref in re.finditer(r"(\S+\.log)", commands_text):
+        name = ref.group(1)
+        if name in raw_log_names:          # <-- skip when basename absent
+            target = log_root / name
+            if not target.exists() or ...:
+                raise AuditFailure(...)
+
+A referenced log whose basename is not in the discovered set is silently
+skipped. The old audit therefore accepts the missing log.
+
+Result: OLD AUDIT: ACCEPTED missing referenced log -> RED CONFIRMED
+New validator: returns MISSING_LOG for the same fixture.

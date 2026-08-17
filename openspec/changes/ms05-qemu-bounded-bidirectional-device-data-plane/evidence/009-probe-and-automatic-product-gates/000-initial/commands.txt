@@ -1,0 +1,33 @@
+=== commands (ordered) ===
+1  cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms05_data_plane_probe.c
+2  cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test
+3  /tmp/ms05-data-plane-probe-test
+4  python3 scripts/ms05_data_plane_stimulus.py --self-test
+5  python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
+6  make -B tests/ms05_data_plane_probe
+7  make host-test
+8  cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --features qemu-diagnostics --lib
+9  cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib
+10 cargo test --manifest-path crates/axdriver_net/Cargo.toml --offline
+11 cargo test --manifest-path crates/axdriver_virtio/Cargo.toml --offline --features net
+12 cargo test --manifest-path crates/virtio-drivers/Cargo.toml --offline --features alloc
+13 cargo test --manifest-path crates/uart_16550/Cargo.toml --offline --features async
+14 rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test && /tmp/ms03-irq-host-test
+15 rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test && /tmp/ms04-async-rx-host-test
+16 repeat diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock 100x
+17 repeat v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick 100x
+18 repeat default-parallel axnet full-suite Gate 100x
+19 cargo check --offline -p starry-kernel --features qemu
+20 cargo check --offline -p starry-kernel --features lichee-d1 (expected: 25 axfs/axtask errors, exit 101)
+21 make LOG=info build
+22 riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
+23 make -B tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe
+24 file StarryOS_riscv64-qemu-virt.bin tests/ms01_socket_baseline tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe
+25 stat -c '%y %s %n' StarryOS_riscv64-qemu-virt.bin tests/ms01_socket_baseline tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe
+26 sha256sum StarryOS_riscv64-qemu-virt.bin tests/ms01_socket_baseline tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe
+27 rustfmt --check --edition 2024 --config skip_children=true <change-owned Rust files>
+28 openspec validate ms05-qemu-bounded-bidirectional-device-data-plane --strict
+29 git diff --check -- . ':(exclude)openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/**'
+30 specs-vs-code review for R1-R15 and D1-D10
+31 full git diff review from baseline through worktree state
+32 Evidence index/hash/completeness audit

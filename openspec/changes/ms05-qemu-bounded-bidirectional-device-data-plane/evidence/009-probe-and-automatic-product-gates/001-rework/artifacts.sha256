@@ -1,0 +1,24 @@
+=== 2026-08-15 18:22:01 CMD: file StarryOS_riscv64-qemu-virt.bin tests/ms01_socket_baseline tests/ms02_guest_service tests/ms03_irq_probe tests/ms04_rx_probe tests/ms05_data_plane_probe ===
+StarryOS_riscv64-qemu-virt.bin: data
+tests/ms01_socket_baseline:     ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms02_guest_service:       ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms03_irq_probe:           ELF 64-bit LSB pie executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+tests/ms04_rx_probe:            ELF 64-bit LSB executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), statically linked, with debug_info, not stripped
+tests/ms05_data_plane_probe:    ELF 64-bit LSB executable, UCB RISC-V, RVC, double-float ABI, version 1 (SYSV), statically linked, with debug_info, not stripped
+EXIT=0
+=== 2026-08-15 18:22:01 CMD: stat -c '%y %s %n' <6 artifacts> ===
+2026-08-15 18:21:42.550147999 +0800 40190144 StarryOS_riscv64-qemu-virt.bin
+2026-08-15 18:21:48.778755450 +0800 150832 tests/ms01_socket_baseline
+2026-08-15 18:21:53.400802584 +0800 134712 tests/ms02_guest_service
+2026-08-15 18:21:53.470331644 +0800 138600 tests/ms03_irq_probe
+2026-08-15 18:21:53.568544232 +0800 134232 tests/ms04_rx_probe
+2026-08-15 18:21:53.771050966 +0800 144520 tests/ms05_data_plane_probe
+EXIT=0
+=== 2026-08-15 18:22:01 CMD: sha256sum <6 artifacts> ===
+57b672cfbea84c6fc37b591823a81ce9457d59d0dc84f4db8e0551260ff276ac  StarryOS_riscv64-qemu-virt.bin
+168036806819a73fb5a098cbda31a1d383423d9e709b9ac59cd5263065f07a75  tests/ms01_socket_baseline
+c2a252f9fc47353953f71d14a4ffc415f555ac648035e0c45fed1dd98dd877b3  tests/ms02_guest_service
+9cd43fa87ef6a7a0e6ab0efa3c768fa680d4b7040e0f26cce7df01bd1aefc495  tests/ms03_irq_probe
+11b567a1a071999fe1eb0f2c8539e692d5825715e592aa6f817db7ea0d04e77c  tests/ms04_rx_probe
+6a7189e28a5299d8e888cb1d60ccdb950dd93e39e612e6a2f5554dc71bb64563  tests/ms05_data_plane_probe
+EXIT=0
