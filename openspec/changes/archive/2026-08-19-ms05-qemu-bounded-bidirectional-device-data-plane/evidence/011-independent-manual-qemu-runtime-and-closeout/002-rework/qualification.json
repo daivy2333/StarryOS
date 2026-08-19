@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "manifest_sha256": "e6a8ef2ffb0ef0a03932f9742fe09231977c9d9716835b665fa6d709562d337e",
+  "audit_log_sha256": "04bf2ec67b836b4921df3b97f8f5d3f65bbd56c2229d888cd513dcac80f47f7d",
+  "verdict": "PASS",
+  "created": "2026-08-17T11:05:58.877170Z"
+}

@@ -127,5 +127,111 @@ class TestContentSensitiveIdentity(unittest.TestCase):
             tmp.cleanup()
 
 
+class TestPortableIdentityContract(unittest.TestCase):
+    """Schema v2 identity must exclude the change Evidence subtree by explicit
+    pathspec (so capture never drifts the freeze), must honor repo .gitignore
+    but ignore .git/info/exclude and global excludes (so a hidden source still
+    drifts), and evidence_exclusion must reject a root outside the fixed
+    subtree."""
+
+    def _repo(self):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.email",
+                        "t@example.com"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name",
+                        "t"], check=True)
+        ev = root / capture.CHANGE_EVIDENCE_ROOT / "000-cycle"
+        ev.mkdir(parents=True, exist_ok=True)
+        (root / "tracked.txt").write_text("one\n")
+        (ev / "e.txt").write_text("ev\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"],
+                       check=True)
+        return tmp, root, ev
+
+    @unittest.skipUnless(capture_available, "capture script not found (RED)")
+    def test_self_reference_does_not_drift_excluded_identity(self):
+        tmp, root, ev = self._repo()
+        exclusion = capture.CHANGE_EVIDENCE_ROOT
+        try:
+            before = capture.source_identity(root, exclusion)
+            (ev / "README.md").write_text("capture output\n")
+            after = capture.source_identity(root, exclusion)
+            self.assertEqual(before["worktree_identity"],
+                             after["worktree_identity"])
+            self.assertEqual(before["index_identity"],
+                             after["index_identity"])
+        finally:
+            tmp.cleanup()
+
+    @unittest.skipUnless(capture_available, "capture script not found (RED)")
+    def test_without_exclusion_self_reference_drifts_identity(self):
+        tmp, root, ev = self._repo()
+        try:
+            before = capture.source_identity(root)
+            (ev / "README.md").write_text("capture output\n")
+            after = capture.source_identity(root)
+            self.assertNotEqual(before["worktree_identity"],
+                                after["worktree_identity"])
+        finally:
+            tmp.cleanup()
+
+    @unittest.skipUnless(capture_available, "capture script not found (RED)")
+    def test_info_exclude_hidden_source_still_drifts_v2_identity(self):
+        tmp, root, _ev = self._repo()
+        exclusion = capture.CHANGE_EVIDENCE_ROOT
+        try:
+            hidden = root / "hidden-src.rs"
+            hidden.write_text("one\n")
+            info = root / ".git/info"
+            info.mkdir(parents=True, exist_ok=True)
+            (info / "exclude").write_text("hidden-src.rs\n")
+            before = capture.source_identity(root, exclusion)
+            hidden.write_text("two\n")
+            after = capture.source_identity(root, exclusion)
+            self.assertNotEqual(before["worktree_identity"],
+                                after["worktree_identity"])
+        finally:
+            tmp.cleanup()
+
+    @unittest.skipUnless(capture_available, "capture script not found (RED)")
+    def test_untracked_enumeration_ignores_info_exclude_and_global(self):
+        tmp, root, _ev = self._repo()
+        exclusion = capture.CHANGE_EVIDENCE_ROOT
+        try:
+            hidden = root / "hidden-src.rs"
+            hidden.write_text("one\n")
+            info = root / ".git/info"
+            info.mkdir(parents=True, exist_ok=True)
+            (info / "exclude").write_text("hidden-src.rs\n")
+            listed = capture.git_readonly_untracked(root, exclusion)
+            self.assertIn("hidden-src.rs", listed)
+        finally:
+            tmp.cleanup()
+
+    @unittest.skipUnless(capture_available, "capture script not found (RED)")
+    def test_evidence_exclusion_rejects_outside_fixed_subtree(self):
+        tmp, root, _ev = self._repo()
+        try:
+            with self.assertRaises(ValueError):
+                capture.evidence_exclusion(root, Path("crates/axnet"))
+            with self.assertRaises(ValueError):
+                capture.evidence_exclusion(root, Path("../outside"))
+        finally:
+            tmp.cleanup()
+
+    @unittest.skipUnless(capture_available, "capture script not found (RED)")
+    def test_evidence_exclusion_returns_fixed_subtree(self):
+        tmp, root, ev = self._repo()
+        try:
+            result = capture.evidence_exclusion(
+                root, ev.relative_to(root))
+            self.assertEqual(result, capture.CHANGE_EVIDENCE_ROOT)
+        finally:
+            tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

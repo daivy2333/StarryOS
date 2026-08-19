@@ -27,6 +27,10 @@ MAX_PAYLOAD = 64
 SELF_TEST_TIMEOUT = 2.0
 GRACE_TIMEOUT = 2.0
 EXCHANGE_TIMEOUT = 10.0
+# Repair 6.2-R5: the operator-paced registration listen window is independent
+# of the short data-exchange deadline. Waiting for the operator to start the
+# guest in a manual QEMU session must not consume the exchange budget.
+MANUAL_LISTEN_TIMEOUT = 120.0
 
 
 def parse_control(data: bytes, verb: str) -> tuple[str, int, int]:
@@ -60,6 +64,25 @@ def parse_done(data: bytes, expected_mode: str) -> int:
     if received < 0:
         raise ValueError("negative received count")
     return received
+
+
+def parse_ack(data: bytes, expected_mode: str) -> tuple[str, int]:
+    """Parse an ACK control agreeing on the DONE count for `expected_mode`.
+
+    The ACK is valid only when it names the same mode and carries the shared
+    count the host just sent in DONE (repair 6.2-R5).
+    """
+    try:
+        text = data.decode("ascii")
+        marker, verb, mode, count_text = text.split()
+        count = int(count_text, 10)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError("malformed ack datagram") from error
+    if marker != "MS05" or verb != "ACK" or mode != expected_mode:
+        raise ValueError("ack does not match mode")
+    if count < 0:
+        raise ValueError("negative ack count")
+    return mode, count
 
 
 def parse_sent(data: bytes, expected_mode: str, count: int) -> int:
@@ -106,24 +129,31 @@ def validate_packet(packet: bytes, sequence: int, count: int,
 
 
 def serve_once(sock: socket.socket, clock=time.monotonic,
+               listen_timeout: float = MANUAL_LISTEN_TIMEOUT,
                exchange_timeout: float = EXCHANGE_TIMEOUT
                ) -> tuple[str, int, int, int, int]:
-    """Serve one guest exchange under a finite timeout for every phase.
+    """Serve one guest exchange under two bounded deadlines.
 
-    A receive timeout anywhere is a deterministic failure, never an infinite
-    wait. Every post-registration datagram — including SENT — is rejected
-    when its source differs from the registered peer, before its contents
-    are parsed. `clock` and `exchange_timeout` allow deterministic tests of
-    the single absolute exchange deadline.
+    Phase 1 (manual listen): wait for the first valid REGISTER under the
+    operator-paced `listen_timeout`. This is the manual QEMU registration and
+    must not consume the exchange budget. Phase 2 (exchange): starting from the
+    moment a valid REGISTER arrives, run the READY/START/data/SENT/DONE and
+    ACK exchange under a fresh short `exchange_timeout`. A receive timeout
+    anywhere is a deterministic failure, never an infinite wait; every
+    post-registration datagram — including SENT and ACK — is rejected when its
+    source differs from the registered peer, before its contents are parsed.
+    `clock`, `listen_timeout` and `exchange_timeout` allow deterministic tests.
     """
     try:
         old_timeout = sock.gettimeout()
     except AttributeError:
         old_timeout = None
-    deadline = clock() + exchange_timeout
     try:
+        registration, peer = listen_for_register(sock, clock() + listen_timeout,
+                                                 clock)
+        deadline = clock() + exchange_timeout
         sock.settimeout(GRACE_TIMEOUT)
-        return _serve_exchange(sock, deadline, clock)
+        return _serve_exchange(sock, peer, registration, deadline, clock)
     except socket.timeout as error:
         raise ValueError("protocol phase timeout") from error
     finally:
@@ -131,6 +161,45 @@ def serve_once(sock: socket.socket, clock=time.monotonic,
             sock.settimeout(old_timeout)
         except AttributeError:
             pass
+
+
+def listen_for_register(sock: socket.socket, listen_deadline: float,
+                        clock) -> tuple[bytes, tuple[str, int]]:
+    """Wait for a valid REGISTER under the operator-paced listen deadline.
+
+    A valid REGISTER is accepted only when it arrives strictly before the
+    listen deadline (equal/late registration fails). This phase is independent
+    of the exchange deadline: the operator may take a long, finite time to
+    start the guest in a manual QEMU session. Intermediate receive timeouts do
+    not end registration, and an invalid pre-registration datagram is skipped
+    rather than starting the exchange: the loop keeps listening under the same
+    absolute deadline until a well-formed REGISTER parses or the budget is
+    exhausted. The remaining listen budget is re-checked before and after each
+    receive, mirroring the exchange `bounded_recv`.
+    """
+    while True:
+        remaining = listen_deadline - clock()
+        if remaining <= 0:
+            raise ValueError("listen deadline exceeded before receive")
+        # An intermediate timeout or an invalid datagram must not consume the
+        # full listen window; clamp the socket timeout to the remaining budget
+        # so a blocking receive can never outlive the absolute deadline.
+        sock.settimeout(min(GRACE_TIMEOUT, remaining))
+        remaining = listen_deadline - clock()
+        if remaining <= 0:
+            raise ValueError("listen deadline exceeded before receive")
+        try:
+            datagram, peer = sock.recvfrom(256)
+        except socket.timeout:
+            continue
+        remaining = listen_deadline - clock()
+        if remaining <= 0:
+            raise ValueError("listen deadline exceeded after receive")
+        try:
+            parse_control(datagram, "REGISTER")
+        except ValueError:
+            continue
+        return datagram, peer
 
 
 def send_bounded(sock: socket.socket, packet: bytes,
@@ -159,7 +228,8 @@ def send_bounded(sock: socket.socket, packet: bytes,
         raise ValueError("exchange deadline exceeded after send")
 
 
-def _serve_exchange(sock: socket.socket, exchange_deadline: float,
+def _serve_exchange(sock: socket.socket, peer: tuple[str, int],
+                    registration: bytes, exchange_deadline: float,
                     clock) -> tuple[str, int, int, int, int]:
     def bounded_recv(size: int) -> tuple[bytes, tuple[str, int]]:
         remaining = exchange_deadline - clock()
@@ -175,7 +245,6 @@ def _serve_exchange(sock: socket.socket, exchange_deadline: float,
             raise ValueError("exchange deadline exceeded after receive")
         return datagram, source
 
-    registration, peer = bounded_recv(256)
     mode, count, payload = parse_control(registration, "REGISTER")
     send_bounded(sock, f"MS05 READY {mode} {count} {payload}".encode("ascii"),
                  peer, exchange_deadline, clock)
@@ -226,6 +295,16 @@ def _serve_exchange(sock: socket.socket, exchange_deadline: float,
 
     send_bounded(sock, f"MS05 DONE {mode} {received}".encode("ascii"), peer,
                  exchange_deadline, clock)
+
+    # DONE/ACK (repair 6.2-R5): the host reports PASS only after a valid ACK
+    # from the registered peer agreeing on the exact count it just sent in
+    # DONE. Missing, late, wrong-peer, wrong-mode or wrong-count ACK fails.
+    ack, ack_peer = bounded_recv(256)
+    if ack_peer != peer:
+        raise ValueError("ACK from unexpected peer")
+    ack_mode, ack_count = parse_ack(ack, mode)
+    if ack_count != received:
+        raise ValueError("ACK count does not match DONE count")
     return mode, count, payload, received, sent
 
 
@@ -260,7 +339,7 @@ class DripFeedSocket:
             (b"MS05 REGISTER tx-only 96 64", peer),
             (b"MS05 START tx-only 96 64", peer),
         ] + [(make_packet(sequence, 96, 64), peer) for sequence in range(count)
-             ] + [(b"MS05 SENT tx-only 96", peer)]
+             ] + [(b"MS05 SENT tx-only 96", peer), (b"MS05 ACK tx-only 96", peer)]
         self.outgoing: list[tuple[bytes, tuple[str, int]]] = []
 
     def settimeout(self, value: float | None) -> None:
@@ -376,7 +455,10 @@ def self_test() -> None:
             ] + [
                 (make_packet(sequence, count, 64), peer)
                 for sequence in range(count)
-            ] + [(f"MS05 SENT {mode} {count}".encode("ascii"), peer)]
+            ] + [
+                (f"MS05 SENT {mode} {count}".encode("ascii"), peer),
+                (f"MS05 ACK {mode} {count}".encode("ascii"), peer),
+            ]
             self.outgoing: list[tuple[bytes, tuple[str, int]]] = []
             self.send_delay = send_delay
             self.clock = clock if clock is not None else FakeClock()
@@ -474,13 +556,23 @@ def self_test() -> None:
     else:
         raise AssertionError("START from unexpected peer accepted")
 
-    # A receive timeout at any protocol phase is a deterministic failure.
+    # A persistent receive timeout never yields a REGISTER; the bounded
+    # registration loop must keep listening only until the absolute listen
+    # deadline, and fail there instead of hanging or accepting anything. The
+    # fake models real time advancing across each timeout so the deadline
+    # binds (with real `time.monotonic`, each recvfrom timeout consumes wall
+    # time until the deadline is exhausted).
     class TimeoutAtFirstRecv(ProtocolSocket):
+        def __init__(self, clock: FakeClock) -> None:
+            super().__init__(clock=clock)
+
         def recvfrom(self, _size: int) -> tuple[bytes, tuple[str, int]]:
+            self.clock.advance(MANUAL_LISTEN_TIMEOUT + 1.0)
             raise socket.timeout("simulated timeout")
 
+    clock = FakeClock()
     try:
-        serve_once(TimeoutAtFirstRecv())  # type: ignore[arg-type]
+        serve_once(TimeoutAtFirstRecv(clock), clock=clock)  # type: ignore[arg-type]
     except ValueError:
         pass
     else:
@@ -604,6 +696,10 @@ def self_test() -> None:
 
         def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
             data, source = super().recvfrom(size)
+            # The listen-phase REGISTER is operator-paced and consumes zero
+            # exchange budget; only exchange-phase recvs advance the clock.
+            if data.startswith(b"MS05 REGISTER"):
+                return data, source
             if not self.outgoing:
                 clock.advance(EXCHANGE_TIMEOUT - 0.5)
             else:
@@ -657,10 +753,11 @@ def self_test() -> None:
             self.recv_calls += 1
             return super().recvfrom(size)
 
-    # The 3rd settimeout is the READY send's: it lands exactly at the
-    # deadline, so the send must never start.
+    # The 2nd settimeout is the READY send's (the 1st is the inert listen
+    # settimeout): it lands exactly at the exchange deadline, so the send must
+    # never start.
     clock = FakeClock()
-    late_send = SetterDelaySocket([0.0, 0.0, EXCHANGE_TIMEOUT], clock)
+    late_send = SetterDelaySocket([0.0, EXCHANGE_TIMEOUT], clock)
     try:
         serve_once(late_send, clock=clock,
                    exchange_timeout=EXCHANGE_TIMEOUT)  # type: ignore[arg-type]
@@ -671,10 +768,10 @@ def self_test() -> None:
     assert late_send.send_calls == 0, late_send.send_calls
     assert late_send.outgoing == [], late_send.outgoing
 
-    # The 3rd settimeout landing past the deadline behaves identically.
+    # The 2nd settimeout landing past the deadline behaves identically.
     clock = FakeClock()
     late_send_past = SetterDelaySocket(
-        [0.0, 0.0, EXCHANGE_TIMEOUT + 0.5], clock)
+        [0.0, EXCHANGE_TIMEOUT + 0.5], clock)
     try:
         serve_once(late_send_past, clock=clock,
                    exchange_timeout=EXCHANGE_TIMEOUT)  # type: ignore[arg-type]
@@ -684,8 +781,8 @@ def self_test() -> None:
         raise AssertionError("past-deadline send setter accepted")
     assert late_send_past.send_calls == 0, late_send_past.send_calls
 
-    # The 2nd settimeout is the registration receive's: landing exactly at
-    # the deadline means no recvfrom and no READY send follow.
+    # A late READY-send setter on the exchange budget still lets the listen
+    # phase complete its REGISTER receive, but no READY send follows.
     clock = FakeClock()
     late_recv = SetterDelaySocket([0.0, EXCHANGE_TIMEOUT], clock)
     try:
@@ -695,10 +792,10 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("late receive setter accepted")
-    assert late_recv.recv_calls == 0, late_recv.recv_calls
+    assert late_recv.recv_calls == 1, late_recv.recv_calls
     assert late_recv.outgoing == [], late_recv.outgoing
 
-    # Same for a receive setter landing past the deadline.
+    # Same for a send setter landing past the exchange deadline.
     clock = FakeClock()
     late_recv_past = SetterDelaySocket(
         [0.0, EXCHANGE_TIMEOUT + 0.5], clock)
@@ -709,7 +806,7 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("past-deadline receive setter accepted")
-    assert late_recv_past.recv_calls == 0, late_recv_past.recv_calls
+    assert late_recv_past.recv_calls == 1, late_recv_past.recv_calls
 
     # An affordable setter delay must not break the exchange: fresh prechecks
     # still allow I/O while budget remains.
@@ -720,6 +817,153 @@ def self_test() -> None:
     assert result == ("tx-only", 96, 64, 96, 96)
     assert affordable_setter.send_calls == 2, affordable_setter.send_calls
 
+    # DONE/ACK (repair 6.2-R5): parse_ack accepts the correct mode/count and
+    # rejects malformed, wrong-mode and negative ACKs.
+    assert parse_ack(b"MS05 ACK tx-only 96", "tx-only") == ("tx-only", 96)
+    for bad_ack in (
+        b"MS05 ACK other 96",
+        b"MS05 ACK tx-only -1",
+        b"MS05 ACK tx-only bad",
+        b"bad",
+    ):
+        try:
+            parse_ack(bad_ack, "tx-only")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"malformed ack accepted: {bad_ack!r}")
+
+    # Wrong ACK count (differs from the DONE count the host sent) must fail.
+    wrong_count_ack = ProtocolSocket()
+    wrong_count_ack.incoming[-1] = (b"MS05 ACK tx-only 95", peer)
+    try:
+        serve_once(wrong_count_ack)  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("wrong-count ACK accepted")
+
+    # Missing ACK (the exchange completes on the host side only after a valid
+    # ACK, so a guest that never ACKs fails deterministically).
+    missing_ack = ProtocolSocket()
+    missing_ack.incoming = missing_ack.incoming[:-1]
+    try:
+        serve_once(missing_ack)  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("missing ACK accepted")
+
+    # ACK from an unexpected peer fails before its contents matter.
+    wrong_peer_ack = ProtocolSocket()
+    wrong_peer_ack.incoming[-1] = (b"MS05 ACK tx-only 96", ("attacker", 9999))
+    try:
+        serve_once(wrong_peer_ack)  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ACK from unexpected peer accepted")
+
+    # ACK for the wrong mode fails even when the count matches.
+    wrong_mode_ack = ProtocolSocket()
+    wrong_mode_ack.incoming[-1] = (b"MS05 ACK bidirectional 96", peer)
+    try:
+        serve_once(wrong_mode_ack)  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("wrong-mode ACK accepted")
+
+    # Manual-listen/exchange split (repair 6.2-R5): a REGISTER arriving after a
+    # long operator delay still consumes none of the short exchange budget, so
+    # the full exchange completes with a fresh deadline. The listen deadline
+    # governs only the REGISTER wait; the exchange deadline starts fresh after
+    # it. A delayed-registration socket advances the clock only during the
+    # listen phase and verifies Register before the exchange deadline is set.
+    class DelayedRegistration(ProtocolSocket):
+        def __init__(self, listen_delay: float, clock: FakeClock) -> None:
+            super().__init__(clock=clock)
+            self.listen_delay = listen_delay
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
+            data, source = super().recvfrom(size)
+            if data.startswith(b"MS05 REGISTER"):
+                self.clock.advance(self.listen_delay)
+            return data, source
+
+    clock = FakeClock()
+    delayed = DelayedRegistration(listen_delay=50.0, clock=clock)
+    result = serve_once(delayed, clock=clock,
+                        exchange_timeout=EXCHANGE_TIMEOUT)  # type: ignore[arg-type]
+    assert result == ("tx-only", 96, 64, 96, 96)
+    # The exchange deadline is set after the listen delay has already advanced
+    # the clock, so a 50s operator delay leaves the full exchange budget intact.
+    assert clock.now >= 50.0
+
+    # A REGISTER arriving at/after the listen deadline fails the listen phase,
+    # independent of the (unstarted) exchange budget.
+    class LateRegistration(ProtocolSocket):
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
+            if self.incoming and self.incoming[0][0].startswith(b"MS05 REGISTER"):
+                clock.advance(EXCHANGE_TIMEOUT + 1.0)
+            return super().recvfrom(size)
+
+    clock = FakeClock()
+    try:
+        serve_once(LateRegistration(clock=clock), clock=clock,
+                   listen_timeout=EXCHANGE_TIMEOUT,
+                   exchange_timeout=EXCHANGE_TIMEOUT)  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("late registration accepted")
+
+    # RED (repair 6.2-R6): registration stays open across intermediate receive
+    # timeouts. An operator-paced listen that times out once before the valid
+    # REGISTER must keep listening under the same absolute deadline, not exit
+    # after the first timeout. This fails today because `listen_for_register`
+    # performs a single recvfrom and a timeout aborts the exchange.
+    class TimeoutThenRegister(ProtocolSocket):
+        def __init__(self, clock: FakeClock) -> None:
+            super().__init__(clock=clock)
+            self.first = True
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
+            if self.first:
+                self.first = False
+                raise socket.timeout("intermediate listen timeout")
+            return super().recvfrom(size)
+
+    clock = FakeClock()
+    timeout_then = TimeoutThenRegister(clock=clock)
+    result = serve_once(timeout_then, clock=clock,
+                        listen_timeout=EXCHANGE_TIMEOUT,
+                        exchange_timeout=EXCHANGE_TIMEOUT)  # type: ignore[arg-type]
+    assert result == ("tx-only", 96, 64, 96, 96)
+
+    # RED (repair 6.2-R6): an invalid pre-registration datagram does not start
+    # the exchange. A noise-then-valid witness must skip the noise and accept
+    # the later valid REGISTER under the same absolute deadline. This fails
+    # today because `listen_for_register` returns the first datagram verbatim,
+    # and `parse_control` then rejects the noise and aborts the exchange.
+    class NoiseThenRegister(ProtocolSocket):
+        def __init__(self, clock: FakeClock) -> None:
+            super().__init__(clock=clock)
+            self.noise = True
+
+        def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
+            if self.noise:
+                self.noise = False
+                return (b"garbage-not-a-register", ("guest", 4242))
+            return super().recvfrom(size)
+
+    clock = FakeClock()
+    noise_then = NoiseThenRegister(clock=clock)
+    result = serve_once(noise_then, clock=clock,
+                        listen_timeout=EXCHANGE_TIMEOUT,
+                        exchange_timeout=EXCHANGE_TIMEOUT)  # type: ignore[arg-type]
+    assert result == ("tx-only", 96, 64, 96, 96)
+
     print("ms05 stimulus self-test: protocol=PASS "
           "malformed=PASS reorder=PASS duplicate=PASS missing=PASS")
     print("ms05 stimulus self-test: done=PASS sent=PASS payload=PASS "
@@ -729,6 +973,8 @@ def self_test() -> None:
     print("ms05 stimulus self-test: late-send-setter=PASS "
           "past-send-setter=PASS late-recv-setter=PASS "
           "past-recv-setter=PASS affordable-setter=PASS")
+    print("ms05 stimulus self-test: ack=PASS wrong-count=PASS missing=PASS "
+          "wrong-peer=PASS wrong-mode=PASS listen-split=PASS late-register=PASS")
 
 
 def loopback_self_test() -> None:
@@ -759,6 +1005,7 @@ def loopback_self_test() -> None:
                     client.send(make_packet(sequence, 96, 64))
                 client.send(b"MS05 SENT tx-only 96")
                 assert client.recv(256) == b"MS05 DONE tx-only 96"
+                client.send(b"MS05 ACK tx-only 96")
         finally:
             worker.join(SELF_TEST_TIMEOUT)
 

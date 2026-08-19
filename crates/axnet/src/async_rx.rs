@@ -2337,6 +2337,140 @@ mod tests {
         (mutex, copy_calls, stats)
     }
 
+    /// Capacity-aware fake driver (repair 6.2-R4). Shared atomic counters let
+    /// the Service's device and the test observe the same state. `tx_submit_one`
+    /// returns `Submitted` while `inflight < capacity`, `Full` (`Again`) when the
+    /// ledger is full; `tx_reclaim_one` frees one in-flight buffer. The slots
+    /// counter models the fixed TX slot backlog and is capped at the driver
+    /// capacity, matching the production relation (both `MS05_QS = 64`), so a full
+    /// 32-submit round budget drains exactly to capacity without a pending slot to
+    /// force a real `Again`.
+    #[derive(Default)]
+    struct LedgerCounters {
+        capacity: AtomicUsize,
+        inflight: AtomicUsize,
+        slots: AtomicUsize,
+        submit_calls: AtomicUsize,
+        reclaim_calls: AtomicUsize,
+        again_calls: AtomicUsize,
+    }
+
+    struct LedgerDevice {
+        counters: Arc<LedgerCounters>,
+        control: Option<ScriptedControl>,
+    }
+
+    impl Device for LedgerDevice {
+        fn name(&self) -> &str {
+            "ledger"
+        }
+
+        fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+            self.control.as_mut().map(|c| c as &mut dyn NetQueueControl)
+        }
+
+        fn recv(&mut self, _buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
+            RxStep::Empty
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn rx_copy_one(&mut self) -> RxCopyStep {
+            RxCopyStep::Empty
+        }
+
+        fn tx_submit_one(&mut self) -> TxSubmitStep {
+            let c = &self.counters;
+            c.submit_calls.fetch_add(1, Ordering::Relaxed);
+            if c.slots.load(Ordering::Relaxed) == 0 {
+                return TxSubmitStep::Empty;
+            }
+            if c.inflight.load(Ordering::Relaxed) >= c.capacity.load(Ordering::Relaxed) {
+                c.again_calls.fetch_add(1, Ordering::Relaxed);
+                return TxSubmitStep::Full;
+            }
+            c.slots.fetch_sub(1, Ordering::Relaxed);
+            c.inflight.fetch_add(1, Ordering::Relaxed);
+            TxSubmitStep::Submitted
+        }
+
+        fn tx_reclaim_one(&mut self) -> TxReclaimStep {
+            let c = &self.counters;
+            c.reclaim_calls.fetch_add(1, Ordering::Relaxed);
+            if c.inflight.load(Ordering::Relaxed) > 0 {
+                c.inflight.fetch_sub(1, Ordering::Relaxed);
+                TxReclaimStep::Reclaimed
+            } else {
+                TxReclaimStep::Empty
+            }
+        }
+
+        fn tx_slot_pending(&self) -> bool {
+            self.counters.slots.load(Ordering::Relaxed) > 0
+        }
+
+        fn tx_resource_ledger(&mut self) -> Option<crate::device::TxResourceLedger> {
+            let c = &self.counters;
+            let inflight = c.inflight.load(Ordering::Relaxed) as u64;
+            let cap = c.capacity.load(Ordering::Relaxed) as u64;
+            Some(axdriver_net::TxResourceLedger {
+                buffer_available: cap - inflight,
+                buffer_inflight: inflight,
+                descriptor_available: cap - inflight,
+                descriptor_inflight: inflight,
+                completions_seen: 0,
+            })
+        }
+
+        fn slot_ledger(&self) -> crate::device::SlotLedger {
+            let mut ledger = crate::device::SlotLedger::default();
+            ledger.tx_occupancy = self.counters.slots.load(Ordering::Relaxed) as u64;
+            ledger
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    /// Builds a leaked Service wrapping a [`LedgerDevice`], returning the
+    /// Service mutex, the shared counters handle and the control stats.
+    fn leaked_service_ledger(
+        capacity: usize,
+        with_control: bool,
+    ) -> (
+        &'static spin::Mutex<Service>,
+        Arc<LedgerCounters>,
+        Arc<ScriptedControlStats>,
+    ) {
+        let counters = Arc::new(LedgerCounters::default());
+        counters.capacity.store(capacity, Ordering::Relaxed);
+        let stats = Arc::new(ScriptedControlStats::default());
+        let control = with_control.then(|| ScriptedControl {
+            stats: stats.clone(),
+        });
+        let device = LedgerDevice {
+            counters: counters.clone(),
+            control,
+        };
+        let mut router = Router::new();
+        let idx = router.add_device(Box::new(device));
+        let service = Service::new(router, Some(idx));
+        let mutex: &'static spin::Mutex<Service> = Box::leak(Box::new(spin::Mutex::new(service)));
+        (mutex, counters, stats)
+    }
+
     /// Builds an injected Future: local leaked lifecycle/notify/telemetry,
     /// spin service mutex, lifecycle already driven to `Spawned`.
     fn leaked_future(
@@ -2363,6 +2497,77 @@ mod tests {
         let waker = counting_waker(count.clone());
         let mut cx = Context::from_waker(&waker);
         Pin::new(fut).poll(&mut cx)
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn reclaim_hold_drains_to_real_driver_full_without_observing_again() {
+        // Repair 6.2-R4 diagnostic witness. The TX-slot capacity equals the
+        // driver buffer/descriptor capacity (both `MS05_QS = 64`) and the
+        // 32-submit round budget divides 64 exactly: under HOLD_RECLAIM the
+        // queue service drains exactly 64 in-flight at a budget boundary, so no
+        // pending slot remains to force the 65th submit that would raise a real
+        // `Again`. This proves the probe's `tx_again > held->tx_again` FULL
+        // predicate is structurally unreachable and the driver-Full witness must
+        // come from the conserved ledger instead.
+        crate::diag::set_test_now(1_000_000_000_000);
+        let _serial = SERIAL.lock();
+        let (mutex, counters, _stats) = leaked_service_ledger(64, true);
+        counters.slots.store(64, Ordering::Relaxed);
+        {
+            let mut s = mutex.lock();
+            s.diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 1500, 1_000_000_000_000)
+                .unwrap();
+            assert_eq!(s.diag_hold_mode(), crate::diag::HOLD_RECLAIM);
+        }
+        let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+
+        // Drive service rounds: reclaim is held, submit advances 32/round. The
+        // round self-wakes while TX slots remain, then sleeps on the lease once
+        // the ledger is full and no slot is pending.
+        let mut rounds = 0u32;
+        loop {
+            let outcome;
+            {
+                let mut s = mutex.lock();
+                outcome = fut.service_round(&mut s);
+            }
+            rounds += 1;
+            match outcome {
+                super::RoundOutcome::SelfWakeYield => continue,
+                super::RoundOutcome::SleepUntil(_) => break,
+                _ => panic!("unexpected round outcome"),
+            }
+        }
+
+        // The driver reached exactly-full (64 in-flight, zero slots) ...
+        assert_eq!(counters.inflight.load(Ordering::Relaxed), 64);
+        assert_eq!(counters.slots.load(Ordering::Relaxed), 0);
+        // ... but no real `Again` ever fired:
+        assert_eq!(counters.again_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(rounds, 2, "expected two 32-submit rounds to reach capacity");
+        assert_eq!(counters.reclaim_calls.load(Ordering::Relaxed), 0);
+
+        // Release then reclaim: the ledger closes exactly (conservation).
+        {
+            let mut s = mutex.lock();
+            s.diag_control(crate::diag::OP_RELEASE, 0, 1_000_000_000_000)
+                .unwrap();
+        }
+        for _ in 0..64 {
+            let mut s = mutex.lock();
+            let step = s.tx_reclaim_one_target();
+            assert!(matches!(step, TxReclaimStep::Reclaimed));
+        }
+        assert_eq!(counters.inflight.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            mutex
+                .lock()
+                .v3_tx_resource_ledger()
+                .unwrap()
+                .buffer_available,
+            64
+        );
     }
 
     #[test]

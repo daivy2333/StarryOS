@@ -1,0 +1,178 @@
+# MS05 Iteration 011 — manual command list (R44 ordinary-terminal / QEMU run)
+
+Prepared by Act at revision 2af394e6 (net-k3, worktree clean). Run these
+commands verbatim in your ordinary terminal. QEMU guest interaction is manual
+per R44 — no automation.
+
+Every terminal first sets:
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial
+```
+
+---
+
+## Task 6.1 — host-test rerun + artifact freeze check
+
+Terminal 1 (ordinary terminal, repository root):
+
+```bash
+make host-test 2>&1 | tee "$EV/host-test.log"
+echo "EXIT=${PIPESTATUS[0]}"
+```
+
+- GREEN: exit 0 and all harnesses PASS. Keep the log; record the environment
+  delta vs `environment.txt` (append to it).
+- If it fails with `PermissionError: [Errno 1] Operation not permitted` at MS04
+  loopback, record it as the R44 environment boundary and stop (do not proceed
+  to QEMU); report back.
+
+Then confirm the frozen artifacts are unchanged:
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+sha256sum -c "$EV/artifacts.sha256"
+```
+
+- Expect 6/6 `OK`. Do NOT rebuild kernel or payloads after this.
+
+---
+
+## Task 6.2 — manual QEMU run
+
+### Terminal A — HTTP server (start first, keep running)
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS/tests
+python3 -m http.server 18765 --bind 0.0.0.0
+```
+
+### Terminal B — QEMU (serial recorded to file)
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial
+script -q -f "$EV/qemu-serial.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
+```
+
+### Terminal C — per-mode host stimulus (start fresh before EACH mode)
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial
+python3 scripts/ms05_data_plane_stimulus.py --host 0.0.0.0 --port 15557 | tee "$EV/ms05-<mode>-host.log"
+```
+
+### Guest (Terminal B shell, one command at a time at `starry:~#`)
+
+First download the probe:
+
+```sh
+wget -q -O /tmp/ms05_probe http://10.0.2.2:18765/ms05_data_plane_probe
+chmod +x /tmp/ms05_probe
+```
+
+Then for EACH mode: (1) start the matching host stimulus in Terminal C, (2) run
+the guest command, (3) wait for the host stimulus to finish, (4) record the
+guest exit status in `runtime-exits.txt`.
+
+| Mode | Guest command | Host stimulus log |
+|---|---|---|
+| snapshot | `/tmp/ms05_probe snapshot` | `ms05-snapshot-host.log` |
+| tx-only | `/tmp/ms05_probe tx-only 96 64` | `ms05-txonly-host.log` |
+| bidirectional | `/tmp/ms05_probe bidirectional 96 64` | `ms05-bidirectional-host.log` |
+| slot-full | `/tmp/ms05_probe slot-full` | `ms05-slotfull-host.log` |
+| descriptor-full | `/tmp/ms05_probe descriptor-full` | `ms05-descfull-host.log` |
+| flush | `/tmp/ms05_probe flush` | `ms05-flush-host.log` |
+
+Each mode requires: exactly one `MS05 PASS mode=<mode>` terminal marker,
+expected exact traffic counts (96×64 for tx-only/bidirectional), slot/ticket/
+buffer/descriptor conservation, Full→recovery (slot-full/descriptor-full), C4
+flush closure (flush), bounded work/yield telemetry, and zero fault/restore/IRQ
+entry errors. A timeout, interrupted log, partial telemetry or one successful
+mode cannot substitute for another.
+
+### MS04 regression (R51)
+
+Guest (Terminal B):
+
+```sh
+wget -q -O /tmp/ms04_probe http://10.0.2.2:18765/ms04_rx_probe
+chmod +x /tmp/ms04_probe
+/tmp/ms04_probe snapshot
+/tmp/ms04_probe idle
+/tmp/ms04_probe nudge
+```
+
+- snapshot: `MS04 PASS mode=snapshot`, lifecycle=2 owner=1, fault/restore/irq_entry=0.
+- idle: `MS04 PASS mode=idle`, all deltas 0.
+- nudge: `MS04 PASS mode=nudge`, nudge=1 task=1 empty=1, descriptor delta 0.
+
+Terminal C (start before burst):
+
+```bash
+python3 scripts/ms04_rx_stimulus.py --host 0.0.0.0 --port 15556 | tee "$EV/ms04-burst-host.log"
+```
+
+Guest (Terminal B):
+
+```sh
+/tmp/ms04_probe burst
+```
+
+- `MS04 PASS mode=burst`, reaped==refilled==delivered==96, budget_exhausted>0,
+  self_yield>0, fault/restore/irq_entry=0.
+
+### Network/socket regression (R45 + MS01)
+
+Guest (Terminal B):
+
+```sh
+wget -q -O /tmp/ms02_service http://10.0.2.2:18765/ms02_guest_service
+chmod +x /tmp/ms02_service
+wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline
+chmod +x /tmp/ms01_test
+/tmp/ms02_service
+```
+
+- Expect `MS02_READY tcp=5555 udp=5555`; then in a fourth terminal use
+  `nc 127.0.0.1 5555` (send `MS02_TCP_REQUEST`, expect `MS02_TCP_RESPONSE`,
+  Ctrl+C) and `echo "MS02_UDP_REQUEST" | nc -u -w1 127.0.0.1 5555` (expect
+  `MS02_UDP_RESPONSE`); guest then prints `MS02_TCP_PASS MS02_UDP_PASS
+  MS02_COMPLETE`.
+
+Guest (Terminal B), after the service completes:
+
+```sh
+/tmp/ms01_test
+```
+
+- Expect 14 `PASS:` markers (tcp-accept, tcp-adjacent, tcp-512cap,
+  tcp-512-recovery, tcp-relisten, udp-bidi, tcp-nonblock-accept, udp-nonblock,
+  poll-readiness, udp-source, bind-getsockname, bind-ephemeral, bind-conflict,
+  bind-close-cleanup), no `FAIL:`.
+
+### Collect summaries
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial
+grep -aE 'MS05 (PASS|FAIL)' "$EV/qemu-serial.log" > "$EV/ms05-markers.txt"
+grep -aE 'MS04 (PASS|FAIL)' "$EV/qemu-serial.log" > "$EV/ms04-markers.txt"
+```
+
+Also write `runtime-exits.txt` (one line per guest command: command + exit
+status, from your observation of each command's termination) and re-record
+final artifact hashes in `artifacts.sha256` (should be unchanged).
+
+---
+
+## Return to Act
+
+Report back the raw files in
+`$EV` (`qemu-serial.log`, six `ms05-*-host.log`, `ms04-burst-host.log`,
+`ms05-markers.txt`, `ms04-markers.txt`, `host-test.log`, `runtime-exits.txt`,
+pcaps if any) plus the environment delta. Act will then audit, run Task 6.3
+final review, and resume the Cycle.

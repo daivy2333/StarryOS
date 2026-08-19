@@ -1,0 +1,48 @@
+# MS05 Iteration 011 / Cycle 001 — environment record (collected 2026-08-17)
+
+## Repository
+
+- Branch: net-k3
+- Revision: 2af394e6cc8e6aa9ae7026d7ede136382258a98b (MS05:第七次提交)
+- Worktree: MODIFIED — task 6.2-R1 repair uncommitted:
+  - `crates/axnet/src/service.rs` (first-TX queue-owner wake sampling)
+  - `crates/axnet/src/device/tests.rs` (combined ARP-flush witness + preservation)
+  - OpenSpec Cycle 000 evidence/iteration docs (staged in a prior cycle)
+- Source/artifact identity is machine-captured in `manifest.json` under
+  `source_freeze` (index_identity + worktree_identity hash the staged/unstaged
+  diff and the deterministic untracked set, so this exact dirty tree is what
+  the automatic manifest and artifact freeze are bound to).
+
+## Toolchain
+
+- rustc: 1.95.0-nightly (859951e3c 2026-02-24)
+- cargo: 1.95.0-nightly (8cc0cb136 2026-02-17)
+- rustup active toolchain: nightly-2026-02-25-x86_64-unknown-linux-gnu
+- QEMU: 7.0.0
+- riscv64-linux-musl-gcc: GCC 11.2.1 20211120
+- python3: 3.10.12
+- openspec: 1.6.0
+
+## Host
+
+- uname: Linux daivy 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC
+  Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+- Timezone: Asia/Shanghai (dates in UTC unless noted)
+
+## QEMU runtime target (per R44/R51, single hart)
+
+- machine: virt, bios: default
+- memory: 1 GiB (-m 1G), smp: 1
+- NIC: virtio-net-device (VirtIO-MMIO), user networking (net0)
+- block: virtio-blk-device, make/disk.img
+- forward: hostfwd tcp::5555-:5555, udp::5555-:5555
+
+## Notes
+
+- This record was captured by Act in the preparation sandbox. If the user's
+  ordinary-terminal environment differs (e.g. real WSL2 console vs automation
+  sandbox), append the delta to this file per Task 6.1 contract.
+- Cycle 001's frozen artifacts supersede the Cycle 000 freeze: the repaired
+  kernel image (`StarryOS_riscv64-qemu-virt.bin` sha256 4018d326…) was rebuilt
+  by the automatic manifest's `build-image` gate from the repaired source;
+  the five guest payloads were rebuilt by `build-ms01`/`build-payloads`.

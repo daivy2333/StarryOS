@@ -25,7 +25,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Change-local Evidence subtree excluded from product source identity by
+# explicit git pathspec, so capture never drifts the freeze without a local
+# ignore workaround and required Evidence stays Git-visible.
+CHANGE_EVIDENCE_ROOT = ("openspec/changes/"
+                        "ms05-qemu-bounded-bidirectional-device-data-plane/"
+                        "evidence")
 
 # Declared automatic Gate set: exact IDs, order and expected outcomes. A
 # sequential shell expression is split into separate records; no record is
@@ -445,18 +452,68 @@ def git_readonly_output(cwd: Path, argv: list[str]) -> str:
     return proc.stdout
 
 
-def source_identity(cwd: Path) -> dict:
+def evidence_exclusion(cwd: Path, root: Path) -> str:
+    """Derive the fixed change-local Evidence subtree to exclude from source
+    identity.
+
+    `root` is the capture/audit Evidence root (a Cycle root under the fixed
+    change Evidence subtree). Returns the repo-relative change Evidence root.
+    Rejects a root that is not inside the fixed subtree, missing, escaping the
+    repository, or resolving through a symlink unsafe boundary. A forged or
+    broader exclusion must not be accepted.
+    """
+    repo_root = Path(str(
+        subprocess.run(["git", "-C", str(cwd), "rev-parse",
+                        "--show-toplevel"], capture_output=True, text=True)
+        .stdout.strip()))
+    fixed = (repo_root / CHANGE_EVIDENCE_ROOT).resolve()
+    target = (cwd / root).resolve()
+    if not target.is_relative_to(fixed):
+        raise ValueError(
+            f"evidence root outside fixed subtree: {root!r} not under "
+            f"{CHANGE_EVIDENCE_ROOT!r}")
+    return str(Path(CHANGE_EVIDENCE_ROOT))
+
+
+def git_readonly_untracked(cwd: Path, exclusion: str) -> list[str]:
+    """Deterministic untracked-path enumeration honoring repository
+    `.gitignore` files only.
+
+    `--exclude-per-directory=.gitignore` applies versioned per-directory
+    `.gitignore` files (whose content is already bound through index/worktree
+    identity) but ignores `.git/info/exclude` and the global excludes file.
+    The fixed Evidence subtree is then filtered out by exact prefix so
+    generating it never drifts identity.
+    """
+    raw = git_readonly_output(
+        cwd, ["git", "ls-files", "--others",
+              "--exclude-per-directory=.gitignore"])
+    prefix = exclusion + "/"
+    return [rel for rel in sorted(raw.splitlines()) if not rel.startswith(prefix)]
+
+
+def source_identity(cwd: Path, exclusion: str | None = None) -> dict:
     """Read-only index/worktree identity: hashed git state that a later edit
     invalidates. The worktree identity hashes the unstaged diff (tracked
     bytes, not status categories) plus deterministic untracked path/content
     entries, so editing an already-modified file still invalidates the
-    freeze. Never writes objects or mutates the live index/worktree."""
-    index = git_readonly_output(cwd, ["git", "ls-files", "--stage"])
-    diff = git_readonly_output(cwd, ["git", "diff", "--binary"])
-    untracked = git_readonly_output(cwd, ["git", "ls-files", "--others",
-                                          "--exclude-standard"])
+    freeze. When `exclusion` is given, that exact change Evidence subtree is
+    excluded from index, tracked-diff and untracked identity by explicit Git
+    pathspec, so capturing/writing Evidence never drifts the freeze. Never
+    writes objects or mutates the live index/worktree."""
+    pathspec = [f":(exclude){exclusion}"] if exclusion else []
+    index = git_readonly_output(cwd, ["git", "ls-files", "--stage", "--",
+                                      *pathspec])
+    diff = git_readonly_output(cwd, ["git", "diff", "--binary", "--",
+                                     *pathspec])
+    if exclusion is not None:
+        untracked = git_readonly_untracked(cwd, exclusion)
+    else:
+        untracked = sorted(git_readonly_output(
+            cwd, ["git", "ls-files", "--others", "--exclude-standard"])
+            .splitlines())
     untracked_parts = []
-    for rel in sorted(untracked.splitlines()):
+    for rel in untracked:
         path = cwd / rel
         try:
             content = path.read_bytes()
@@ -470,16 +527,21 @@ def source_identity(cwd: Path) -> dict:
     }
 
 
-def freeze_source(cwd: Path) -> dict:
-    """Record source identity before any Gate runs."""
+def freeze_source(cwd: Path, exclusion: str | None = None) -> dict:
+    """Record source identity before any Gate runs. When `exclusion` is set,
+    that change Evidence subtree is excluded from identity and recorded in the
+    manifest so the audit can derive and verify it."""
     frozen = {}
     for source in FROZEN_SOURCES:
         path = cwd / source
         frozen[source] = sha256_file(path) if path.exists() else None
     head = git_readonly_output(cwd, ["git", "rev-parse", "HEAD"]).strip()
-    identity = source_identity(cwd)
-    return {"captured_at": rfc3339_now(), "head": head, "files": frozen,
-            **identity}
+    identity = source_identity(cwd, exclusion)
+    freeze = {"captured_at": rfc3339_now(), "head": head, "files": frozen,
+              **identity}
+    if exclusion is not None:
+        freeze["evidence_exclusion"] = exclusion
+    return freeze
 
 
 def verify_frozen(root: Path, cwd: Path) -> str | None:
@@ -492,7 +554,8 @@ def verify_frozen(root: Path, cwd: Path) -> str | None:
         actual = sha256_file(path) if path.exists() else None
         if actual != recorded_hash:
             return f"file:{source}"
-    identity = source_identity(cwd)
+    exclusion = manifest["source_freeze"].get("evidence_exclusion")
+    identity = source_identity(cwd, exclusion)
     for key in ("index_identity", "worktree_identity"):
         if manifest["source_freeze"].get(key) != identity[key]:
             return key
@@ -500,7 +563,8 @@ def verify_frozen(root: Path, cwd: Path) -> str | None:
 
 
 def build_manifest(root: Path, cwd: Path) -> None:
-    freeze = freeze_source(cwd)
+    exclusion = evidence_exclusion(cwd, root)
+    freeze = freeze_source(cwd, exclusion)
     records: list[dict] = []
     for gate in GATES:
         if gate["kind"] == "repeat-100":

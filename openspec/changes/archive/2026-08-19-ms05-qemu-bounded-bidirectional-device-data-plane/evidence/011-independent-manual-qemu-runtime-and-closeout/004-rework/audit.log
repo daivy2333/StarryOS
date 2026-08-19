@@ -1,0 +1,43 @@
+== Negative fixtures (each must fail for its exact code) ==
+  fixture MISSING_LOG: FAILED AS EXPECTED ([MISSING_LOG] log missing: logs/host-test.log)
+  fixture EMPTY_LOG: FAILED AS EXPECTED ([EMPTY_LOG] log empty: logs/host-test.log)
+  fixture LOG_HASH_MISMATCH: FAILED AS EXPECTED ([LOG_HASH_MISMATCH] log hash mismatch: logs/host-test.log)
+  fixture MISSING_ARGV: FAILED AS EXPECTED ([MISSING_ARGV] host-test: non-empty argv required)
+  fixture MISSING_TIME: FAILED AS EXPECTED ([MISSING_TIME] unparseable time: 'not-a-time')
+  fixture MISSING_EXIT: FAILED AS EXPECTED ([MISSING_EXIT] host-test: exit must be an int)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: bad classification 'maybe')
+  fixture INCOMPLETE_CHILD_SET: FAILED AS EXPECTED ([INCOMPLETE_CHILD_SET] race-control-100x: expected 100 children, got 50)
+  fixture SOURCE_AFTER_FREEZE: FAILED AS EXPECTED ([SOURCE_AFTER_FREEZE] source drifted after freeze: Makefile)
+  fixture ARTIFACT_MISMATCH: FAILED AS EXPECTED ([ARTIFACT_MISMATCH] artifact StarryOS_riscv64-qemu-virt.bin hash mismatch)
+  fixture D1_DIAGNOSTIC_COUNT: FAILED AS EXPECTED ([D1_DIAGNOSTIC_COUNT] kernel-lichee-d1-check: count mismatch {'error[E0432]': 21, 'error[E0433]': 5})
+  fixture D1_UNCLASSIFIED_ERROR: FAILED AS EXPECTED ([D1_UNCLASSIFIED_ERROR] kernel-lichee-d1-check: error[E0599]: other)
+  fixture REQUIRED_GATE_MISSING: FAILED AS EXPECTED ([REQUIRED_GATE_MISSING] missing=['axnet-default'])
+  fixture GATE_ORDER: FAILED AS EXPECTED ([GATE_ORDER] required order mismatch: ['axnet-qemu-diagnostics', 'axnet-default', 'axdriver-net', 'axdriver-virtio', 'virtio-drivers', 'uart-async', 'ms03-harness-compile', 'ms03-harness-run', 'ms04-harness-compile', 'ms04-harness-run', 'evidence-tools-unittest', 'capture-self-test', 'audit-self-test', 'race-control-100x', 'race-v3-100x', 'race-full-suite-100x', 'kernel-qemu-check', 'kernel-lichee-d1-check', 'build-image', 'build-ms01', 'build-payloads', 'rustfmt-check', 'openspec-validate-strict', 'diff-check', 'diff-cached-check', 'host-test'])
+  fixture INDEX_DRIFT: FAILED AS EXPECTED ([INDEX_DRIFT] index_identity drifted after freeze)
+  fixture WORKTREE_DRIFT: FAILED AS EXPECTED ([WORKTREE_DRIFT] worktree_identity drifted after freeze)
+  fixture TIME_ORDER: FAILED AS EXPECTED ([TIME_ORDER] host-test: freeze <= start <= end violated)
+  fixture EXCLUSION_MISSING: FAILED AS EXPECTED ([EXCLUSION_MISSING] v2 freeze requires evidence_exclusion)
+  fixture EXCLUSION_MISMATCH: FAILED AS EXPECTED ([EXCLUSION_MISMATCH] evidence_exclusion 'crates/' != derived 'openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence')
+  fixture EXCLUSION_UNEXPECTED: FAILED AS EXPECTED ([EXCLUSION_UNEXPECTED] v1 freeze must not carry evidence_exclusion)
+  fixture ARTIFACT_PRODUCER: FAILED AS EXPECTED ([ARTIFACT_PRODUCER] artifact tests/ms01_socket_baseline: producer 'build-payloads' != build-ms01)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: env-blocked without capability marker)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: env-blocked without capability marker)
+  fixture ARTIFACT_RECORD_MISSING: FAILED AS EXPECTED ([ARTIFACT_RECORD_MISSING] artifact record missing: artifact-StarryOS_riscv64-qemu-virt.bin-file-0)
+  fixture ARTIFACT_RECORD_UNEXPECTED: FAILED AS EXPECTED ([ARTIFACT_RECORD_UNEXPECTED] unexpected artifact record: artifact-extra-file-99)
+  fixture ARTIFACT_RECORD_ARGV: FAILED AS EXPECTED ([ARTIFACT_RECORD_ARGV] artifact-StarryOS_riscv64-qemu-virt.bin-file-0: argv ['sha256sum', 'other'] != ['file', 'StarryOS_riscv64-qemu-virt.bin'])
+  fixture ARTIFACT_RECORD_FAILED: FAILED AS EXPECTED ([ARTIFACT_RECORD_FAILED] artifact-StarryOS_riscv64-qemu-virt.bin-file-0: exit 1 classification fail)
+  fixture DUPLICATE_GATE_ID: FAILED AS EXPECTED ([DUPLICATE_GATE_ID] duplicate gate artifact-StarryOS_riscv64-qemu-virt.bin-file-0)
+
+== Positive audit of Iteration 010 Evidence ==
+Traceback (most recent call last):
+  File "/home/daivy/projects/serial/work/StarryOS/scripts/ms05_evidence_audit.py", line 865, in <module>
+    raise SystemExit(main())
+  File "/home/daivy/projects/serial/work/StarryOS/scripts/ms05_evidence_audit.py", line 859, in main
+    positive_audit(root, Path.cwd(), print)
+  File "/home/daivy/projects/serial/work/StarryOS/scripts/ms05_evidence_audit.py", line 761, in positive_audit
+    manifest = audit_manifest(root, cwd)
+  File "/home/daivy/projects/serial/work/StarryOS/scripts/ms05_evidence_audit.py", line 335, in audit_manifest
+    manifest = load_manifest(root)
+  File "/home/daivy/projects/serial/work/StarryOS/scripts/ms05_evidence_audit.py", line 80, in load_manifest
+    raise AuditFailure("BAD_SCHEMA", "manifest.json missing")
+__main__.AuditFailure: [BAD_SCHEMA] manifest.json missing

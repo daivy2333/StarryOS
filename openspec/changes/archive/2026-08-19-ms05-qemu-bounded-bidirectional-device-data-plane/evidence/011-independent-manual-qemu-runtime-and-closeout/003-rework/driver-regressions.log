@@ -1,0 +1,7 @@
+=== Rust fmt (axnet) ===
+fmt check exit=0
+=== axdriver_net tests ===
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== virtio-drivers tests ===
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s

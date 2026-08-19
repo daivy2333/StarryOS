@@ -1,0 +1,16 @@
+=== probe syntax check ===
+PROBE_SYNTAX_OK
+=== probe host decision harness ===
+MS05 FAIL mode=tx-only reason=drain-deadline
+ms05 probe seam tests: 18 passed
+=== stimulus self-test ===
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS drip=PASS
+ms05 stimulus self-test: delayed-ready=PASS delayed-data=PASS delayed-done=PASS affordable-send=PASS
+ms05 stimulus self-test: late-send-setter=PASS past-send-setter=PASS late-recv-setter=PASS past-recv-setter=PASS affordable-setter=PASS
+ms05 stimulus self-test: ack=PASS wrong-count=PASS missing=PASS wrong-peer=PASS wrong-mode=PASS listen-split=PASS late-register=PASS
+=== stimulus loopback ===
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+=== RISC-V static probe build ===
+RISC-V_PROBE_BUILD_OK
+a567ec9149a68c68515253797243c4ce9b13b60d3d45a7118c97c1630c1d5621  tests/ms05_data_plane_probe

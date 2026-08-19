@@ -1,0 +1,62 @@
+# MS05 Iteration 011 / Cycle 001 — automatic gate manifest summary (derived)
+# Captured by ms05_evidence_capture.py --run automatic on the repaired source (task 6.2-R1).
+# Full raw logs in logs/; binds source_freeze -> gates -> artifacts. Manifest is the authority.
+
+source_freeze.head = 2af394e6cc8e6aa9ae7026d7ede136382258a98b
+source_freeze.captured_at = 2026-08-17T09:02:42.810385Z
+
+gate_id                       exit classification kind
+------------------------------------------------------------
+host-test                        0 pass  run
+axnet-qemu-diagnostics           0 pass  run
+axnet-default                    0 pass  run
+axdriver-net                     0 pass  run
+axdriver-virtio                  0 pass  run
+virtio-drivers                   0 pass  run
+uart-async                       0 pass  run
+ms03-harness-compile             0 pass  run
+ms03-harness-run                 0 pass  run
+ms04-harness-compile             0 pass  run
+ms04-harness-run                 0 pass  run
+evidence-tools-unittest          0 pass  run
+capture-self-test                0 pass  run
+audit-self-test                  0 pass  run
+race-control-100x                0 pass  repeat-100
+race-v3-100x                     0 pass  repeat-100
+race-full-suite-100x             0 pass  repeat-100
+kernel-qemu-check                0 pass  run
+kernel-lichee-d1-check         101 pass  run
+build-image                      0 pass  run
+build-ms01                       0 pass  run
+build-payloads                   0 pass  run
+rustfmt-check                    0 pass  run
+openspec-validate-strict         0 pass  run
+diff-check                       0 pass  run
+diff-cached-check                0 pass  run
+artifact-StarryOS_riscv64-qemu-virt.bin-file-0     0 pass  run
+artifact-StarryOS_riscv64-qemu-virt.bin-stat-1     0 pass  run
+artifact-StarryOS_riscv64-qemu-virt.bin-sha256sum-2     0 pass  run
+artifact-ms01_socket_baseline-file-3     0 pass  run
+artifact-ms01_socket_baseline-stat-4     0 pass  run
+artifact-ms01_socket_baseline-sha256sum-5     0 pass  run
+artifact-ms02_guest_service-file-6     0 pass  run
+artifact-ms02_guest_service-stat-7     0 pass  run
+artifact-ms02_guest_service-sha256sum-8     0 pass  run
+artifact-ms03_irq_probe-file-9     0 pass  run
+artifact-ms03_irq_probe-stat-10     0 pass  run
+artifact-ms03_irq_probe-sha256sum-11     0 pass  run
+artifact-ms04_rx_probe-file-12     0 pass  run
+artifact-ms04_rx_probe-stat-13     0 pass  run
+artifact-ms04_rx_probe-sha256sum-14     0 pass  run
+artifact-ms05_data_plane_probe-file-15     0 pass  run
+artifact-ms05_data_plane_probe-stat-16     0 pass  run
+artifact-ms05_data_plane_probe-sha256sum-17     0 pass  run
+------------------------------------------------------------
+SUMMARY: 44 records, classifications={'pass': 44}
+artifacts:
+  StarryOS_riscv64-qemu-virt.bin  size=40190144  sha256=4018d326e828bafe...  gate=build-image
+  tests/ms01_socket_baseline  size=150832  sha256=168036806819a73f...  gate=build-ms01
+  tests/ms02_guest_service  size=134712  sha256=c2a252f9fc473539...  gate=build-payloads
+  tests/ms03_irq_probe  size=138600  sha256=9cd43fa87ef6a7a0...  gate=build-payloads
+  tests/ms04_rx_probe  size=134232  sha256=11b567a1a071999f...  gate=build-payloads
+  tests/ms05_data_plane_probe  size=145008  sha256=db27b567d6f03417...  gate=build-payloads

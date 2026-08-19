@@ -1,0 +1,6 @@
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS drip=PASS
+ms05 stimulus self-test: delayed-ready=PASS delayed-data=PASS delayed-done=PASS affordable-send=PASS
+ms05 stimulus self-test: late-send-setter=PASS past-send-setter=PASS late-recv-setter=PASS past-recv-setter=PASS affordable-setter=PASS
+ms05 stimulus self-test: ack=PASS wrong-count=PASS missing=PASS wrong-peer=PASS wrong-mode=PASS listen-split=PASS late-register=PASS
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS

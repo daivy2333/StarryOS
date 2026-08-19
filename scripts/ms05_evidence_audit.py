@@ -33,10 +33,14 @@ from pathlib import Path
 
 from ms05_evidence_capture import (ARTIFACTS, ARTIFACT_PRODUCERS, GATES,
                                    REQUIRED_GATE_IDS, earliest_failure_layer,
-                                   artifact_record_specs, sha256_file)
+                                   artifact_record_specs, sha256_file,
+                                   evidence_exclusion, source_identity)
 import ms05_evidence_capture as capture
 
-SCHEMA_VERSION = 1
+# v1 kept for historical Iteration 010 binding; v2 adds identity exclusion.
+SCHEMA_VERSION_V1 = 1
+SCHEMA_VERSION_V2 = 2
+SUPPORTED_SCHEMA_VERSIONS = (SCHEMA_VERSION_V1, SCHEMA_VERSION_V2)
 
 REPEAT100_GATES = {"race-control-100x", "race-v3-100x",
                    "race-full-suite-100x"}
@@ -78,9 +82,9 @@ def load_manifest(root: Path) -> dict:
         manifest = json.loads(manifest_path.read_text())
     except (json.JSONDecodeError, OSError) as error:
         raise AuditFailure("BAD_SCHEMA", f"manifest.json parse error: {error}")
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    if manifest.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
         raise AuditFailure("BAD_SCHEMA",
-                           f"schema_version != {SCHEMA_VERSION}")
+                           f"schema_version not in {SUPPORTED_SCHEMA_VERSIONS}")
     for field in ("root", "created", "source_freeze", "records", "artifacts"):
         if field not in manifest:
             raise AuditFailure("BAD_SCHEMA", f"manifest missing {field}")
@@ -287,7 +291,24 @@ def audit_source_freeze(manifest: dict, cwd: Path) -> None:
         if actual != recorded_hash:
             raise AuditFailure("SOURCE_AFTER_FREEZE",
                                f"source drifted after freeze: {path}")
-    identity = capture.source_identity(cwd)
+    version = manifest.get("schema_version")
+    recorded_exclusion = manifest["source_freeze"].get("evidence_exclusion")
+    if version == SCHEMA_VERSION_V2:
+        derived = capture.CHANGE_EVIDENCE_ROOT
+        if not recorded_exclusion:
+            raise AuditFailure("EXCLUSION_MISSING",
+                               "v2 freeze requires evidence_exclusion")
+        if recorded_exclusion != derived:
+            raise AuditFailure(
+                "EXCLUSION_MISMATCH",
+                f"evidence_exclusion {recorded_exclusion!r} != derived "
+                f"{derived!r}")
+        identity = source_identity(cwd, derived)
+    else:
+        if recorded_exclusion is not None:
+            raise AuditFailure("EXCLUSION_UNEXPECTED",
+                               "v1 freeze must not carry evidence_exclusion")
+        identity = source_identity(cwd, None)
     for key in ("index_identity", "worktree_identity"):
         if manifest["source_freeze"].get(key) != identity[key]:
             raise AuditFailure(
@@ -439,7 +460,9 @@ def build_valid_fixture(root: Path) -> None:
         })
     frozen = {src: sha256_file(Path(src)) if Path(src).exists() else None
               for src in capture.FROZEN_SOURCES}
-    identity = capture.source_identity(Path.cwd())
+    exclusion = evidence_exclusion(
+        Path.cwd(), Path(capture.CHANGE_EVIDENCE_ROOT))
+    identity = capture.source_identity(Path.cwd(), exclusion)
     artifacts = []
     for artifact in ARTIFACTS:
         path = Path(artifact)
@@ -453,7 +476,7 @@ def build_valid_fixture(root: Path) -> None:
                 else "build-payloads"),
         })
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION_V2,
         "root": str(root),
         "created": "2026-08-15T00:00:00.000000Z",
         "source_freeze": {
@@ -462,6 +485,7 @@ def build_valid_fixture(root: Path) -> None:
             "files": frozen,
             "index_identity": identity["index_identity"],
             "worktree_identity": identity["worktree_identity"],
+            "evidence_exclusion": exclusion,
         },
         "records": records,
         "artifacts": artifacts,
@@ -605,6 +629,25 @@ def run_fixtures(emit=print) -> None:
             (root / "manifest.json").write_text(json.dumps(manifest))
             return "WORKTREE_DRIFT"
 
+        def make_missing_exclusion(root):
+            manifest = json.loads((root / "manifest.json").read_text())
+            manifest["source_freeze"].pop("evidence_exclusion", None)
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            return "EXCLUSION_MISSING"
+
+        def make_forged_exclusion(root):
+            manifest = json.loads((root / "manifest.json").read_text())
+            manifest["source_freeze"]["evidence_exclusion"] = "crates/"
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            return "EXCLUSION_MISMATCH"
+
+        def make_v1_unexpected_exclusion(root):
+            manifest = json.loads((root / "manifest.json").read_text())
+            manifest["schema_version"] = 1
+            manifest["source_freeze"]["evidence_exclusion"] = "crates/"
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            return "EXCLUSION_UNEXPECTED"
+
         def make_time_order(root):
             manifest = json.loads((root / "manifest.json").read_text())
             manifest["records"][0]["start"] = "2026-08-14T23:59:59.000000Z"
@@ -703,6 +746,8 @@ def run_fixtures(emit=print) -> None:
             make_d1_count_mismatch, make_d1_unclassified,
             make_missing_gate, make_gate_order,
             make_index_drift, make_worktree_drift, make_time_order,
+            make_missing_exclusion, make_forged_exclusion,
+            make_v1_unexpected_exclusion,
             make_wrong_artifact_producer, make_product_before_capability,
             make_capability_first_ambiguous,
             make_artifact_record_missing, make_artifact_record_unexpected,
@@ -739,7 +784,7 @@ def write_qualification(root: Path, cwd: Path) -> int:
     manifest_hash = sha256_file(root / "manifest.json")
     audit_hash = sha256_file(audit_log_path)
     qualification = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION_V2,
         "manifest_sha256": manifest_hash,
         "audit_log_sha256": audit_hash,
         "verdict": "PASS",

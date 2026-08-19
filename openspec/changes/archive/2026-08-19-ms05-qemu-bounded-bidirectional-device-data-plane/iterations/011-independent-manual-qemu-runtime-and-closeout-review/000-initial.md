@@ -235,50 +235,229 @@ returns the raw results; do not run QEMU autonomously.
 
 ## Act Response
 
-- Status: pending
+- Status: blocked
 
-Pending.
+**Preflight and Evidence preparation (Act)**
+
+- Repository: `net-k3` @ `2af394e6cc8e6aa9ae7026d7ede136382258a98b` (MS05:第七次
+  提交), worktree clean at baseline collection.
+- Automatic preflight `make host-test` ran in this environment with **exit 0**
+  and every harness PASS (early-console, memtrack, ms03-irq, ms04-async-rx,
+  ms05 data-plane decision+seam tests, stimulus self/loopback, evidence tools
+  unittest, capture/audit self-tests including all 25 negative fixtures). No
+  R44 `EPERM` reproduced in this sandbox — recorded as `host-test-preflight.log`.
+- Evidence root prepared: `evidence/011-independent-manual-qemu-runtime-and-
+  closeout/000-initial/` with `README.md`, `environment.txt`, `commands.txt`
+  (full manual command list per R44/R51/R45), `artifacts-before.txt`,
+  `artifacts.sha256`, `host-test-preflight.log`. Change-level and iteration-
+  level evidence README indexes updated (010 added, 011 in-progress).
+- Artifact freeze at revision `2af394e6` (fresh hashes; note
+  `tests/ms05_data_plane_probe` sha256 `db27b567…` differs from Iteration 010
+  evidence `8505e467…` because the payload was rebuilt by the 7th commit — the
+  new freeze is the authority for this Cycle): kernel image 40190144 B,
+  ms01/ms02/ms03/ms04/ms05 payloads present, sizes + SHA-256 in
+  `artifacts-before.txt` / `artifacts.sha256`. Do not rebuild after this freeze.
+
+**Blocker Handoff**
+
+- Task/Step: 6.1 (unchanged-argv ordinary-terminal `make host-test` rerun +
+  artifact freeze confirmation), then 6.2 (manual QEMU six modes + MS04 R51 +
+  R45/MS01 network regression).
+- Gate: R44 capability boundary — QEMU guest-shell commands and the ordinary
+  terminal run are user-executed per `.claude/runbooks/qemu-network-testing.md`.
+  The Act must not run QEMU autonomously or mark these PASS without raw output.
+- Plan expected vs actual: no deviation — the Plan's Act Handoff explicitly
+  requires stopping at this boundary with the exact command list and requested
+  output files, which is `evidence/011-…/000-initial/commands.txt`.
+- Impact: no product code changed. Evidence directory and baseline files are
+  prepared; no Gate is PASS until the user's raw outputs are returned.
+- Completed: preflight + Evidence-path preparation (Tasks 6.1 evidence prep).
+  Partial: none. Not started: user rerun (6.1 GREEN), QEMU runtime (6.2),
+  final review (6.3).
+- Recovery: user runs the commands in `commands.txt` in an ordinary terminal
+  and returns the raw files (`host-test.log`, `qemu-serial.log`, six
+  `ms05-*-host.log`, `ms04-burst-host.log`, `ms05-markers.txt`,
+  `ms04-markers.txt`, `runtime-exits.txt`, pcaps if any) plus any environment
+  delta; Act then audits, runs Task 6.3 final review and resumes the Cycle.
+
+**Blocker Resolution**
+
+None — awaiting user manual run.
+
+---
+
+**Diagnostic Addendum (2026-08-17) — QEMU runtime reveals a data-plane blocker**
+
+User executed the manual QEMU run with the frozen artifact set and, after
+`wget` hung, a layered host/guest diagnostic was performed. Raw records are in
+`evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial/`
+(`qemu-serial-info.log`, `qemu-serial-snapshot.log`, `qemu-serial-debug.log`,
+`ms05-diag.pcap`).
+
+**Facts established**
+
+- eth0 registration is correct: `mac: 52-54-00-12-34-56`, `ip: 10.0.2.15/24`
+  (`qemu-serial-info.log` lines 167-179).
+- Queue task activated: MS05 snapshot reports `lifecycle=2 owner=1` (Active,
+  async-owned), `fault=0 lc_fault=0 owner_inv=0` (`qemu-serial-snapshot.log`
+  lines 311-317).
+- IRQ→wake→reap chain works: MS04 snapshot shows `isr_publish=1 isr_wake=1
+  reaped=1 refilled=1 non_ip=1` (an ARP frame was reaped and delivered as
+  non-IP) (`qemu-serial-snapshot.log` lines 353-357).
+- TCP path is broken: `wget` printed `Connecting to 10.0.2.2:18765` and hung
+  until Ctrl-C; the pcap (`ms05-diag.pcap`) contains exactly two frames — guest
+  ARP request `who-has 10.0.2.2` and slirp ARP reply `10.0.2.2 is-at
+  52:55:0a:00:02:02` — and **no TCP SYN follows**. The guest's ARP request
+  reached the wire (TX works), the reply entered the NIC, but the stack never
+  consumed it into a TCP connection attempt.
+- `MS05 FAIL mode=tx-only reason=handshake` occurred while no host stimulus was
+  listening — environment, not a data-plane verdict.
+- `MS04 FAIL mode=nudge` shows `isr_publish=1 isr_wake=1 nudge=1 task=2
+  reaped=1 refilled=1 empty=2` in DELTA — the nudge gate is not met in this
+  build (extra ISR publish/refill during nudge). This is a regression-gate
+  failure candidate to confirm after the main blocker is resolved.
+- `ifconfig`/`ping` fail due to missing kernel surface (`/proc/net/dev`,
+  `SIOCGIF*`, `SOCK_RAW`) — tooling gap, not the data-plane blocker.
+
+**Blocker Handoff (revised)**
+
+- Task/Step: 6.2 manual QEMU runtime — TCP downloads hang; no SYN after ARP.
+- Gate: Gate 5/6 — runtime evidence cannot reach GREEN for the MS05 modes and
+  the R51/R45/MS01 network regressions while TCP stays dead in the real QEMU
+  VirtIO device model.
+- Plan expected vs actual: Plan assumed the slot-mode data plane works in QEMU
+  (host tests pass). Actual: host-model tests pass, but the real VirtIO device
+  model does not drive the ARP-reply→stack-consumption→TCP-SYN path. This is a
+  **new product-level defect**, not an environment waiver.
+- Impact: Tasks 6.1-6.3 cannot complete; all TCP/UDP-through-socket runtime
+  evidence is blocked until the data plane is repaired. No product code was
+  changed by this Cycle; frozen kernel image and disk are restored
+  (`StarryOS_riscv64-qemu-virt.bin` = `fe20b5b2…`, `make/disk.img` untouched).
+- Completed: automatic preflight (host-test exit 0), artifact freeze, layered
+  diagnostics (info/debug/snapshot serial + pcap). Partial: 6.1 rerun,
+  six-mode runtime, R51/R45/MS01 regressions (blocked). Not started: 6.3 final
+  review.
+- Recovery: `openspec-plan` investigates the data plane — TX is confirmed
+  working (ARP on the wire), the broken stage is between RX reap/refill and
+  smoltcp consuming the ARP reply to emit a TCP SYN; candidates are
+  `rx_copy_one` slot delivery, `Service::poll` RX-slot drain, or the
+  socket-waker/progress bridge. After a fix, this Cycle resumes at Task 6.2
+  with the same frozen artifacts (hashes unchanged).
 
 ## Plan Review
 
-- Status: pending
+- Status: reviewed
 
 **Review Result**
 
-Pending.
+rework-required
 
 **Findings**
 
-Pending.
+- **Blocking — first-TX queue wake is missed after ARP resolution.** In
+  `Service::poll`, `router.poll()` runs before `tx_pending_before` is sampled.
+  An ARP reply consumed by `router.poll()` can resolve the neighbor and flush
+  the pending TCP SYN into the first dormant TX slot; the later sample already
+  sees that slot, so `!tx_pending_before` is false and
+  `QUEUE_EVENT.publish_queue_work()` is skipped. With no TX completion yet,
+  the sole queue owner has no hardware event that can submit this first slot.
+  This directly violates Task 6.2's QEMU network/runtime Acceptance.
+- **Blocking — the current pcap contradicts the Act Addendum's final packet
+  count but sharpens the same defect.** `tcpdump` decodes more than the stated
+  two frames: after the initial ARP request/reply it contains later guest SYNs,
+  slirp SYN-ACK retransmissions and a final RST. The SYN appears only after a
+  long gap and later manual activity, consistent with software nudge advancing
+  the stranded TX slot. The supported boundary is therefore “ARP-created
+  first TX slot is not self-published,” not “ARP reply can never reach the
+  stack.”
+- **Blocking — the manual command plan incorrectly pairs `snapshot` with a
+  host stimulus.** `run_snapshot()` performs only bounded diagnostic snapshots
+  and never sends `MS05 REGISTER`; a host `serve_once()` for that mode waits
+  forever. The literal zero-byte `ms05-<mode>-host.log` is a template artifact,
+  not required Evidence. Snapshot is guest-only; the other five modes require
+  distinct host stimulus logs.
+- **Blocking — a product repair invalidates the old artifact freeze.** The Act
+  recovery text proposes resuming with unchanged hashes, but modifying
+  `Service::poll` requires a rebuilt image, a new revision/worktree identity
+  and a new artifact freeze before QEMU rerun. Cycle 000 Evidence remains
+  diagnostic history and cannot qualify the repaired binary.
+- **Non-conclusive — `MS04 FAIL mode=nudge` was collected while prior network
+  traffic remained in flight.** Its extra ISR/reap/refill deltas match a real
+  packet arriving during the nudge window, so it is neither a valid isolated
+  R51 PASS nor sufficient evidence of a second product regression. Recheck it
+  only after the repaired image reaches a quiescent baseline with no concurrent
+  host traffic.
+- Task 6.1's `host-test.log` contains passing output, and the Act preflight
+  exited 0, but the ordinary-terminal pipeline did not persist its
+  `${PIPESTATUS[0]}` in the log. Treat 6.1 as partial and capture the exit
+  explicitly in the rework Evidence.
 
 **Deviation Classification**
 
-Pending.
+- `NEW-EVIDENCE`: manual QEMU exposed a first-TX wake gap not observable in the
+  accepted host matrix.
+- `PLAN-OMISSION`: no combined witness covered ARP resolution creating the
+  first dormant TX slot while the owner slept.
+- `PLAN-INVALID`: Cycle 000 required a host stimulus/log for guest-only
+  `snapshot` and suggested retaining frozen artifacts after a product repair.
+- `BASELINE-CHANGED`: the persisted pcap continued beyond the two-frame prefix
+  described in the Act Addendum and now includes SYN/SYN-ACK traffic.
+- No `ACT-DEVIATION` in product code: the Act stopped without modifying the
+  implementation when the manual runtime Gate failed.
 
 **Acceptance Gaps**
 
-Pending.
+- A1: a TX slot created anywhere in one `Service::poll` round, including ARP
+  pending flush during ingress, must publish queue work exactly on the
+  empty→nonempty transition.
+- A2: the repaired source/image/payload set must be rebuilt, independently
+  qualified and refrozen; Cycle 000 hashes cannot qualify it.
+- A3: manual Evidence must separate the clean wget/ARP/TCP witness, guest-only
+  snapshot, five host-assisted MS05 modes and isolated R51 regression; every
+  run needs raw serial/pcap/host output and an explicit exit.
+- A4: Tasks 6.2 and 6.3 remain incomplete until all runtime and final review
+  Gates pass against the repaired artifact set.
 
 **Convergence**
 
-Pending.
+Expanded in implementation surface but diagnostically narrowed. The Cycle
+started as a manual capability handoff and uncovered one product wake-ordering
+gap plus two execution/Evidence-plan defects. The first failing product path is
+now localized to `Service::poll` empty→nonempty TX publication; no driver IRQ,
+descriptor ownership, ABI or wire redesign is indicated.
 
 **Evidence**
 
-Pending.
+- Both ordinary and sandbox `make host-test` logs contain the complete passing
+  host matrix; the current artifact hash file verifies 6/6 files.
+- QEMU serial proves eth0 registration, Active lifecycle/async ownership and
+  zero recorded data-plane fault. MS04 telemetry proves IRQ publish/wake and
+  raw RX reap/refill occurred.
+- Independent `tcpdump -nn -e -vvv -r ms05-diag.pcap` shows the initial ARP
+  request/reply, a later SYN burst, repeated inbound SYN-ACK and final RST.
+- Source review proves `process_arp()` flushes pending IPv4 into a dormant TX
+  slot, while `Service::poll()` samples `tx_pending_before` only after that
+  ingress action. Existing focused tests for ordinary dispatch wake and ARP
+  pending flush each pass independently, confirming the missing combined
+  witness rather than disproving the gap.
+- Strict OpenSpec validation passes at revision
+  `2af394e6cc8e6aa9ae7026d7ede136382258a98b`.
 
 **Follow-up Decision**
 
-Pending.
+Reject Cycle 000 Acceptance and create Cycle 001 in the same Iteration. Repair
+the first-TX wake transition, rebuild/refreeze artifacts, then repeat the manual
+runtime with isolated, non-appended Evidence before final closeout review.
 
 **Iteration Plan Update**
 
-None.
+None. Tasks 6.1-6.3, their requirements and the Iteration Map remain unchanged;
+the next Cycle contains local repair items only.
 
 **Next Cycle**
 
-Pending.
+`001-rework.md`
 
 **Next Iteration**
 
-Pending.
+None.

@@ -1,6 +1,6 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-14 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 任务状态最后同步: 2026-08-19 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
 > 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
 
 ---
@@ -19,9 +19,9 @@
 | <!-- T04 --> T04 | MMIO IRQ 事实 | 解析设备地址、PLIC IRQ、claim/ack/rearm；只增加计数器 | 注入 RX/TX 事件时 IRQ 可重复增长；错误 IRQ 不触碰异步队列 | T03 | ✅ 完成 |
 | <!-- T05 --> T05 | IRQ 唤醒原语 | 建立 `NetQueueControl`、AtomicWaker 和 register-recheck；ISR 不搬包 | event-before-register、register-during-event、spurious IRQ 无 lost wakeup | T04 | ✅ 完成（MS04） |
 | <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ✅ 完成（MS04 核心 Gate；兼容性重复项按用户授权豁免） |
-| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | 🔄 MS05 进行中 |
-| <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | 🔄 MS05 进行中 |
-| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ⏳ 等待 T08 |
+| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ✅ 完成（MS05） |
+| <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
+| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ⏳ 待规划（T08 已完成） |
 | <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ⏳ 等待 T09 |
 | <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 等待 T10 |
 | <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ⏳ 等待 T11 |
@@ -138,7 +138,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS05：QEMU 有界双向设备数据面
 
-- Status: active
+- Status: completed — 2026-08-19；最终 Review accepted，Evidence 与兼容性偏差按用户明确授权豁免
 - Outcome: RX/TX 通过有界 packet slot 形成可背压、可回收的双向设备数据面。
 - Rationale: T07 的 TX completion 与 T08 的 slot/backpressure 共同形成完整的设备侧双向基线。
 - Dependencies: MS04
@@ -149,7 +149,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: completion 不等于 peer delivery，flush 不永久 Pending，背压与实际容量一致。
 - Diagnostic boundary: 失败限制在 TX ownership、slot handoff、回收或背压传播。
 - Split signals: RX 与 TX slot 策略出现无法共享的验证或生命周期边界。
-- Related changes: `ms05-qemu-bounded-bidirectional-device-data-plane`（活跃；12/20 tasks；Iteration 004 Act Response 已报告，Plan Review 待完成）。
+- Related changes: `ms05-qemu-bounded-bidirectional-device-data-plane`（已归档于 `openspec/changes/archive/2026-08-19-ms05-qemu-bounded-bidirectional-device-data-plane/`；12 iterations，27/27 tasks，最终 Review: accepted with explicit user Evidence/compatibility waiver）。
 
 ### MS06：应用可见的异步网络栈
 
@@ -317,4 +317,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前唯一活跃 change 为 `ms05-qemu-bounded-bidirectional-device-data-plane`，对应 MS05，已完成 12/20 tasks。当前 Iteration 004 的 Act Response 已报告，Plan Review 待完成；本轮 Persisted Evidence 模式为 `none`。剩余任务为 4.1-4.3、5.1-5.2 与 6.1-6.3，下一步应先完成 Iteration 004 Review，再决定后续 iteration，不得提前归档或声明 MS05 完成。
+当前没有活跃 change。MS05 已归档并完成 T07-T08；下一项路线工作是仍处于 planned 的 MS06（T09-T10），尚未创建对应 change。

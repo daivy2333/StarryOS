@@ -141,12 +141,19 @@ static void test_descriptor_full_proof(void)
     full.tx_descriptor_inflight = MS05_QS - 1; /* one descriptor inflight short */
     assert(!ms05_descriptor_full_proved(&held, &full));
     full = active_snapshot();
-    full.tx_again = 0; /* again never fired */
+    full.tx_again = 0; /* again never fired: not a FULL witness (repair 6.2-R4) */
     full.tx_buffer_available = 0;
     full.tx_buffer_inflight = MS05_QS;
     full.tx_descriptor_available = 0;
     full.tx_descriptor_inflight = MS05_QS;
-    assert(!ms05_descriptor_full_proved(&held, &full));
+    /* The conserved ledger proves real driver Full even when `tx_again` never
+     * fired: slot capacity == driver capacity == MS05_QS and the 32-submit
+     * budget divides 64 exactly, so the service drains to 64 in-flight at a
+     * budget boundary with no pending slot to force the 65th submit. */
+    assert(ms05_descriptor_full_proved(&held, &full));
+    held.tx_again = 5;
+    full.tx_again = 1; /* tx_again regression must not turn Full into FALSE */
+    assert(ms05_descriptor_full_proved(&held, &full));
 }
 
 static void test_flush_proof(void)
@@ -976,6 +983,96 @@ static void test_seam_drain_recv_lands_at_deadline_no_sleep(void)
     assert(g_fake_sleep_n == 0); /* no poll sleep after the late nudge */
 }
 
+/* RED (repair 6.2-R6): drives `udp_done_recv` through the op seam with one
+ * configured received datagram and a bounded mode window. Returns the count
+ * the production parser returned, or -1. `recv_elapsed_ms` advances the fake
+ * clock across the receive so an equal/late completion is detectable. */
+static int done_recv_via_seam(const char *mode, const char *text,
+                              uint64_t recv_elapsed_ms)
+{
+    struct ms05_udp u;
+    struct ms05_deadline_ctx ctx;
+    uint64_t mode_start, mode_abs;
+    fake_ops_reset();
+    fake_recv_push(text);
+    g_fake_recv_elapsed_ms = recv_elapsed_ms;
+    mode_start = g_fake_now;
+    assert(ms05_mode_deadline_abs(mode_start, MS05_MODE_DEADLINE_MS,
+                                  &mode_abs) == 0);
+    ctx.mode_start = mode_start;
+    ctx.mode_abs = mode_abs;
+    ctx.phase_start = mode_start;
+    ctx.phase_deadline_ms = 0;
+    assert(fake_sock_open(&u) == 0);
+    return udp_done_recv(&u, mode, &ctx);
+}
+
+/* RED (repair 6.2-R6): a DONE carrying trailing text after the numeric count
+ * is permissively accepted today because `udp_done_recv` uses `strtoul`,
+ * which parses a leading numeric prefix and ignores the remainder. It must be
+ * rejected before ACK: a host DONE of `tx-only 96x` is not an exact DONE. */
+static void test_udp_done_rejects_trailing(void)
+{
+    assert(done_recv_via_seam("tx-only", "MS05 DONE tx-only 96x", 0) != 96);
+}
+
+/* RED (repair 6.2-R6): a DONE whose numeric count overflows u64 must be
+ * rejected, not silently truncated by `strtoul` to ULONG_MAX then to u32. */
+static void test_udp_done_rejects_overflow(void)
+{
+    assert(done_recv_via_seam(
+               "tx-only", "MS05 DONE tx-only 18446744073709551616", 0) != 0);
+}
+
+/* RED (repair 6.2-R6): a DONE for the wrong mode must not yield a count. */
+static void test_udp_done_rejects_wrong_mode(void)
+{
+    assert(done_recv_via_seam(
+               "tx-only", "MS05 DONE bidirectional 96", 0) != 96);
+}
+
+/* RED (repair 6.2-R6): a DONE with a missing numeric count must fail. */
+static void test_udp_done_rejects_missing_count(void)
+{
+    assert(done_recv_via_seam("tx-only", "MS05 DONE tx-only", 0) != 96);
+}
+
+/* An exact valid DONE returns the shared count under the seam. */
+static void test_udp_done_accepts_exact(void)
+{
+    assert(done_recv_via_seam("tx-only", "MS05 DONE tx-only 96", 0) == 96);
+}
+
+/* RED (repair 6.2-R8): a DONE count outside the command-line `1..4096` bound
+ * must be rejected before the narrowing conversion. `4294967392` (= 2^32 + 96)
+ * fits `unsigned long` but wraps to `96` when narrowed to `int`, so today it
+ * masquerades as the normal 96-packet completion instead of failing. */
+static void test_udp_done_rejects_wrap_into_valid(void)
+{
+    assert(done_recv_via_seam(
+               "tx-only", "MS05 DONE tx-only 4294967392", 0) != 96);
+    assert(done_recv_via_seam(
+               "tx-only", "MS05 DONE tx-only 4294967392", 0) != 0);
+}
+
+/* RED (repair 6.2-R8): zero must fail; the probe protocol bound is 1..4096. */
+static void test_udp_done_rejects_zero(void)
+{
+    assert(done_recv_via_seam("tx-only", "MS05 DONE tx-only 0", 0) == -1);
+}
+
+/* RED (repair 6.2-R8): a count above the upper protocol bound must fail. */
+static void test_udp_done_rejects_above_max(void)
+{
+    assert(done_recv_via_seam("tx-only", "MS05 DONE tx-only 4097", 0) == -1);
+}
+
+/* The upper protocol boundary 4096 is a valid exact DONE. */
+static void test_udp_done_accepts_max_boundary(void)
+{
+    assert(done_recv_via_seam("tx-only", "MS05 DONE tx-only 4096", 0) == 4096);
+}
+
 int main(void)
 {
     test_counter_regression_is_rejected();
@@ -1020,5 +1117,15 @@ int main(void)
     test_seam_drain_nonblock_never_starts_late();
     test_seam_drain_recv_lands_at_deadline_no_sleep();
     puts("ms05 probe seam tests: 18 passed");
+    test_udp_done_rejects_trailing();
+    test_udp_done_rejects_overflow();
+    test_udp_done_rejects_wrong_mode();
+    test_udp_done_rejects_missing_count();
+    test_udp_done_accepts_exact();
+    test_udp_done_rejects_wrap_into_valid();
+    test_udp_done_rejects_zero();
+    test_udp_done_rejects_above_max();
+    test_udp_done_accepts_max_boundary();
+    puts("ms05 probe seam tests: 9 done-parsing passed");
     return 0;
 }

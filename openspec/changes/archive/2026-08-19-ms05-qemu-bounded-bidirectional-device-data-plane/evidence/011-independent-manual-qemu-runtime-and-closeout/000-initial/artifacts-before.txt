@@ -1,0 +1,14 @@
+# MS05 Iteration 011 / Cycle 000 — artifact freeze before QEMU boot
+
+Collected 2026-08-17T07:15:51Z at revision 2af394e6cc8e6aa9ae7026d7ede136382258a98b.
+Do NOT rebuild any of these files after this freeze; rebuild invalidates the
+exact-binary attribution for the manual QEMU run.
+
+```
+40190144  StarryOS_riscv64-qemu-virt.bin
+150832    tests/ms01_socket_baseline
+134712    tests/ms02_guest_service
+138600    tests/ms03_irq_probe
+134232    tests/ms04_rx_probe
+145008    tests/ms05_data_plane_probe
+```

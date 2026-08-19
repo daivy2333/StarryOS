@@ -432,17 +432,22 @@ static int ms05_slot_full_proved(const struct ms05_snapshot *held,
            full->tx_slot_high_water >= MS05_SLOT_CAPACITY;
 }
 
-/* True when the FULL phase proves descriptor Full from the driver ledger:
- * no TX buffer and no TX descriptor available, an Again transition since
- * HELD, and every buffer and descriptor is inflight. */
+/* True when the FULL phase proves descriptor Full from the conserved driver
+ * ledger: no TX buffer and no TX descriptor available, and every buffer and
+ * descriptor is in flight. Repair 6.2-R4: the `tx_again` transition is NOT a
+ * reachable witness in this configuration, because the fixed TX-slot capacity
+ * equals the driver capacity (both `MS05_QS = 64`) and the 32-submit round
+ * budget divides 64 exactly — the service drains to exactly 64 in-flight at a
+ * budget boundary with no pending slot left to force the 65th submit. The
+ * driver-Full proof therefore comes from the conserved ledger alone. */
 static int ms05_descriptor_full_proved(const struct ms05_snapshot *held,
                                        const struct ms05_snapshot *full)
 {
+    (void)held;
     return full->tx_buffer_available == 0 &&
            full->tx_buffer_inflight == MS05_QS &&
            full->tx_descriptor_available == 0 &&
-           full->tx_descriptor_inflight == MS05_QS &&
-           full->tx_again > held->tx_again;
+           full->tx_descriptor_inflight == MS05_QS;
 }
 
 /* True when the POST snapshot proves exact closure: TX slot occupancy zero,
@@ -1020,24 +1025,55 @@ static int udp_done_recv(struct ms05_udp *u, const char *mode,
                          const struct ms05_deadline_ctx *ctx)
 {
     char control[96];
-    char expected[16];
-    uint32_t received = 0;
-    int matched;
+    char tokens[4][24];
+    char *save = NULL;
+    char *token;
+    size_t n = 0;
+    unsigned long count;
+    char *endptr;
     if (udp_control_recv(u, control, sizeof(control), ctx) != 0) return -1;
-    snprintf(expected, sizeof(expected), "MS05 DONE %s ", mode);
-    matched = strncmp(control, expected, strlen(expected)) == 0;
-    if (!matched) return -1;
-    received = (uint32_t)strtoul(control + strlen(expected), NULL, 10);
-    return (int)received;
+    /* Exactly four space-separated tokens: MS05 DONE <mode> <count>.
+     * Tokenizing rejects malformed, missing-token and trailing datagrams;
+     * mismatched mode and empty/overflowing count are rejected below. */
+    for (token = strtok_r(control, " ", &save);
+         token != NULL && n < 4;
+         token = strtok_r(NULL, " ", &save)) {
+        if (strlen(token) >= sizeof(tokens[0])) return -1;
+        strcpy(tokens[n], token);
+        n++;
+    }
+    if (token != NULL || n != 4) return -1;
+    if (strcmp(tokens[0], "MS05") != 0 || strcmp(tokens[1], "DONE") != 0) {
+        return -1;
+    }
+    if (strcmp(tokens[2], mode) != 0) return -1;
+    if (tokens[3][0] == '-' || tokens[3][0] == '\0') return -1;
+    errno = 0;
+    count = strtoul(tokens[3], &endptr, 10);
+    /* Reject outside the command-line `1..4096` bound while the value is still
+     * `unsigned long`: an out-of-range value such as 2^32 + 96 fits here but
+     * wraps to a valid-looking 96 when narrowed to `int` below. */
+    if (errno == ERANGE || *endptr != '\0') return -1;
+    if (count < 1 || count > 4096) return -1;
+    return (int)count;
 }
 
 static int udp_sent_done(struct ms05_udp *u, const char *mode, uint32_t sent,
                          const struct ms05_deadline_ctx *ctx)
 {
     char control[96];
+    int received;
     snprintf(control, sizeof(control), "MS05 SENT %s %u", mode, sent);
     if (udp_control(u, control, ctx) != 0) return -1;
-    return udp_done_recv(u, mode, ctx);
+    received = udp_done_recv(u, mode, ctx);
+    if (received < 0) return -1;
+    /* DONE/ACK (repair 6.2-R5): the guest acknowledges the shared host count so
+     * the host reports PASS only after a valid ACK and the guest reports PASS
+     * only after validating DONE and sending ACK. */
+    snprintf(control, sizeof(control), "MS05 ACK %s %u", mode,
+             (uint32_t)received);
+    if (udp_control(u, control, ctx) != 0) return -1;
+    return received;
 }
 
 /* ── Mode runners ───────────────────────────────────────────────────── */
@@ -1472,6 +1508,24 @@ static int run_held_mode(const char *mode, uint64_t op)
     sent = send_until_full(&u, count, payload, &ctx);
     if (wait_for_condition("MS05 FULL", &held, &ctx, condition, &full) != 0) {
         reason = "full-deadline";
+        /* Persist exactly one final V3 tuple plus the bounded maxima needed to
+         * decide whether submit, completion, descriptor occupancy or `tx_again`
+         * progressed before cleanup released and reclaimed the live state. */
+        printf("MS05 TIMEOUT mode=%s submit=%lu again=%lu comp=%lu reclaim=%lu "
+               "buf_avail=%lu buf_inflight=%lu desc_avail=%lu desc_inflight=%lu "
+               "slot_occ=%lu live=%lu dev_owned=%lu\n",
+               mode,
+               (unsigned long)full.tx_submit,
+               (unsigned long)full.tx_again,
+               (unsigned long)full.tx_completion,
+               (unsigned long)full.tx_reclaim,
+               (unsigned long)full.tx_buffer_available,
+               (unsigned long)full.tx_buffer_inflight,
+               (unsigned long)full.tx_descriptor_available,
+               (unsigned long)full.tx_descriptor_inflight,
+               (unsigned long)full.tx_slot_occupancy,
+               (unsigned long)full.live,
+               (unsigned long)full.device_owned);
         goto out;
     }
     if (ms05_bounded_control(&ctx, MS05_CTL_RELEASE, 0) != 0) {

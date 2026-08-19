@@ -2387,6 +2387,107 @@ fn service_poll_publishes_queue_event_after_tx_enqueue() {
 }
 
 #[test]
+fn service_poll_arp_flush_first_tx_slot_wakes_queue_owner_once() {
+    // Cycle 000 A1 (Iteration 011): an ARP reply consumed by `router.poll`
+    // resolves a neighbor and flushes the first dormant TX slot. The queue
+    // owner must be woken exactly once in the same `Service::poll` round, even
+    // though the slot was created during ingress rather than dispatch.
+    let _serial = SERIAL.lock();
+    let (mut dev, stats) = make_ethernet_with_tx_queue();
+    dev.activate_slot_mode().unwrap();
+    // Unknown neighbor: the ARP request lands in the TX slot and the IPv4
+    // payload is held pending until the reply resolves the neighbor.
+    let outcome = dev.send(
+        IpAddress::Ipv4(PEER_IP),
+        &IPV4_PAYLOAD,
+        Instant::from_millis_const(0),
+    );
+    assert!(matches!(outcome, TxOutcome::Accepted { .. }));
+    // Drain the already-published ARP request through the fake driver's real
+    // ticket path so TX is empty again: submit the slot (Queued ->
+    // DeviceOwned), then reclaim the matching completion. This never uses the
+    // test-only slot pop, so the ticket/ownership assertion stays intact.
+    assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+    stats.reclaim_cookies.lock().push_back(0);
+    assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
+
+    // Place the matching ARP reply in an RX slot.
+    assert!(dev.push_rx_frame_for_test(&arp_reply_frame()));
+
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    let mut service = Service::new(router, Some(eth));
+    let count = Arc::new(AtomicUsize::new(0));
+    QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
+    let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+
+    // The ARP reply flushed the pending IPv4 into the first TX slot inside
+    // `router.poll`; a sleeping queue owner must observe exactly one queue
+    // work wake so it submits the frame without waiting for a hardware
+    // completion.
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    // The flushed frame stays in the TX slot, correctly ticketed for the
+    // queue owner to submit; no stable Router fault was entered.
+    let router = service.router_for_test();
+    assert_eq!(router.devices[eth].tx_slot_len_for_test(), 1);
+    assert!(!router.tx_faulted());
+}
+
+#[test]
+fn service_poll_already_pending_tx_does_not_publish_again() {
+    // Preservation (Cycle 000 A1): a TX slot already pending at the start of
+    // the round must not produce a second queue-owner wake, so an in-flight
+    // frame never creates a wake storm.
+    let _serial = SERIAL.lock();
+    let (mut dev, _stats) = make_ethernet();
+    dev.activate_slot_mode().unwrap();
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    router.add_rule(Rule::new(
+        Ipv4Cidr::new(Ipv4Address::new(10, 0, 2, 0), 24).into(),
+        None,
+        eth,
+        Ipv4Address::new(SRC_IPV4[0], SRC_IPV4[1], SRC_IPV4[2], SRC_IPV4[3]).into(),
+    ));
+    let mut service = Service::new(router, Some(eth));
+    {
+        let router = service.router_for_test();
+        assert!(router.enqueue_tx_for_test(&ipv4_packet(SRC_IPV4, DST_IPV4)));
+    }
+
+    let count = Arc::new(AtomicUsize::new(0));
+    QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
+    let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+    // Round 1 publishes exactly one wake when dispatch fills the empty slot.
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    // The slot is still pending; a second round with no new TX work must not
+    // publish another wake.
+    count.store(0, Ordering::Relaxed);
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn service_poll_empty_round_keeps_queue_owner_asleep() {
+    // Preservation (Cycle 000 A1): an empty round that creates no TX slot and
+    // consumes no frame stays quiescent for the queue owner.
+    let _serial = SERIAL.lock();
+    let (dev, _stats) = make_ethernet();
+    // `dev` is consumed by the router; the empty round touches the shared
+    // `QUEUE_EVENT` through the production `Service::poll`.
+    let mut router = Router::new();
+    let eth = router.add_device(Box::new(dev));
+    let mut service = Service::new(router, Some(eth));
+    let count = Arc::new(AtomicUsize::new(0));
+    QUEUE_EVENT.register_queue(&counting_waker(count.clone()));
+    let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+    service.poll(RxOwnerView::AsyncOwned, &mut sockets);
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn service_poll_deferred_arp_attempts_once_and_stops_round() {
     // Task 3.6 (Finding 3): a TX-full ARP request entering the real
     // Router/Service loop must be attempted once, retain the exact RX bytes,

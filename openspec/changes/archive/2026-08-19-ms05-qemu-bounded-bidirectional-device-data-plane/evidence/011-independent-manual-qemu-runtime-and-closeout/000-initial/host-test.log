@@ -1,0 +1,223 @@
+rustc --edition=2024 --test tests/early-console-host-harness.rs -o /tmp/early-console-test
+/tmp/early-console-test
+
+running 6 tests
+test early_console::tests::dw_apb_uart_register_offsets ... ok
+test early_console::tests::write_str_empty ... ok
+test early_console::tests::write_str_converts_lf_to_crlf ... ok
+test early_console::tests::write_str_multiple_newlines ... ok
+test early_console::tests::write_str_no_newline ... ok
+test early_console::tests::write_str_only_newline ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
+/tmp/memtrack-session-test
+
+running 8 tests
+test session::tests::analyzing_rejects_start_and_end ... ok
+test session::tests::completes_session ... ok
+test session::tests::parses_complete_commands_and_empty_noop ... ok
+test session::tests::rejects_repeated_start_without_changing_state ... ok
+test session::tests::rejects_end_before_start_without_changing_state ... ok
+test session::tests::failed_transition_allows_later_valid_session ... ok
+test session::tests::rejects_unknown_and_fragmented_commands ... ok
+test session::tests::concurrent_start_has_one_winner ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test
+/tmp/ms03-irq-host-test
+
+running 33 tests
+test classify_combined ... ok
+test classify_no_status ... ok
+test classify_unknown_multiple_high_bits ... ok
+test axnet_exposes_a_v3_snapshot_source ... ok
+test classify_config_change_only ... ok
+test ack_mask_never_touches_unknown_bits ... ok
+test classify_unknown_only_high_bits ... ok
+test classify_used_ring_only ... ok
+test classify_used_ring_with_unknown_bits ... ok
+test has_unknown_bits_detects_reserved ... ok
+test has_unknown_bits_false_for_known_only ... ok
+test irq_state_observation_distinguishes_entry_and_restore_violation ... ok
+test legacy_v1_write_does_not_touch_adjacent_canaries ... ok
+test publish_only_for_causes_with_used_ring_bit ... ok
+test snapshot_abi_appended_fields_follow_in_order ... ok
+test snapshot_abi_preserves_first_eight_fields ... ok
+test snapshot_is_repr_c_compatible ... ok
+test snapshot_v3_appended_fields_follow_the_fixed_order ... ok
+test snapshot_v3_is_larger_than_v2_without_reusing_it ... ok
+test snapshot_v3_preserves_the_full_v2_prefix_byte_for_byte ... ok
+test snapshot_zero_fields_on_new_telemetry ... ok
+test telemetry_ack_count_requires_explicit_increment ... ok
+test telemetry_new_all_zero ... ok
+test telemetry_monotonic_across_mixed_events ... ok
+test telemetry_record_combined_increments_combined ... ok
+test snapshot_v3_is_a_distinct_struct_never_aliased_to_v2 ... ok
+test telemetry_record_config_change_increments_correct_counters ... ok
+test telemetry_record_combined_with_unknown_bits_counts_both ... ok
+test telemetry_record_spurious_increments_spurious ... ok
+test telemetry_record_unknown_increments_unknown ... ok
+test telemetry_record_used_ring_increments_correct_counters ... ok
+test v3_diagnostic_controls_and_flush_are_qemu_gated ... ok
+test v3_snapshot_command_and_write_path_are_gated_and_distinct ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-async-rx-host-test
+/tmp/ms04-async-rx-host-test
+
+running 16 tests
+test acquire_always_disables_irqs ... ok
+test isr_entry_acquire_returns_false_and_release_never_enables ... ok
+test enabled_acquire_disables_and_release_reenables_once ... ok
+test legacy_direct_call_impl_is_rejected ... ok
+test nested_acquire_only_outermost_release_reenables ... ok
+test probe_includes_the_timeval_definition_directly ... ok
+test nested_isr_context_never_enables ... ok
+test probe_terminal_guard_rejects_a_missing_failure_path ... ok
+test qemu_diagnostics_feature_propagates_only_from_kernel_qemu ... ok
+test probe_modes_have_one_central_terminal_marker_path ... ok
+test snapshot_command_consumer_inventory_is_versioned_and_bounded ... ok
+test virtio_net_irq_guard_rejects_wrong_record_argument ... ok
+test release_false_never_enables_irqs ... ok
+test production_impl_delegates_to_seam ... ok
+test virtio_net_irq_guard_requires_return_in_registration_failure_branch ... ok
+test virtio_net_irq_handler_guard_passes ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms03_irq_probe.c tests/ms04_rx_probe.c
+cc -std=c11 -Wall -Wextra -Werror tests/ms04_rx_probe_test.c -o /tmp/ms04-rx-probe-test
+/tmp/ms04-rx-probe-test
+ms04 probe decision tests: 10 passed
+python3 scripts/ms04_rx_stimulus.py --self-test
+ms04 stimulus self-test: protocol=PASS packets=96 sequence=PASS bounds=PASS malformed=PASS
+python3 scripts/ms04_rx_stimulus.py --loopback-self-test
+ms04 stimulus loopback self-test: protocol=PASS packets=96 sequence=PASS bounded=PASS
+cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms05_data_plane_probe.c
+cc -std=c11 -Wall -Wextra -Werror tests/ms05_data_plane_probe_test.c -o /tmp/ms05-data-plane-probe-test
+/tmp/ms05-data-plane-probe-test
+ms05 probe decision tests: 22 passed
+MS05 FAIL mode=tx-only reason=handshake
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=hold-control
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=MS05 HELD
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=MS05 HELD
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 HELD lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=clock
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 HELD lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=hold-mode
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=1 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 HELD lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=1 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=full-deadline
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=slot-full reason=hold-control
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 WARN mode=slot-full release-in-cleanup-failed
+MS05 FAIL mode=slot-full reason=MS05 HELD
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=flush reason=flush-ioctl
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=flush reason=drain-deadline
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=bidirectional reason=drain-deadline
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=descriptor-full reason=MS05 HELD
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 POST lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 DELTA tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 tx_enq=0 tx_deq=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 flush_ok=0
+MS05 PASS mode=snapshot
+MS05 FAIL mode=tx-only reason=handshake
+MS05 FAIL mode=tx-only reason=handshake
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=tx-only reason=drain-deadline
+MS05 PRE lifecycle=2 owner=1 fault=0 lc_fault=0 owner_inv=0 hold=0 auto_rel=0 rx_occ=0 rx_full=0 tx_occ=0 tx_full=0 tx_enq=0 tx_deq=0 tx_submit=0 tx_again=0 tx_comp=0 tx_reclaim=0 buf_avail=64 buf_inflight=0 desc_avail=64 desc_inflight=0 live=0 queued=0 dev_owned=0 flush_ok=0 flush_err=0 flush_busy=0 flush_cancel=0 last_accepted=0
+MS05 FAIL mode=tx-only reason=drain-deadline
+ms05 probe seam tests: 18 passed
+python3 scripts/ms05_data_plane_stimulus.py --self-test
+ms05 stimulus self-test: protocol=PASS malformed=PASS reorder=PASS duplicate=PASS missing=PASS
+ms05 stimulus self-test: done=PASS sent=PASS payload=PASS peer=PASS timeout=PASS grace=PASS drip=PASS
+ms05 stimulus self-test: delayed-ready=PASS delayed-data=PASS delayed-done=PASS affordable-send=PASS
+ms05 stimulus self-test: late-send-setter=PASS past-send-setter=PASS late-recv-setter=PASS past-recv-setter=PASS affordable-setter=PASS
+python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
+ms05 stimulus loopback self-test: protocol=PASS datagrams=96 sequence=PASS bounded=PASS
+python3 -m unittest tests.test_ms05_evidence_tools -v
+test_exact_18_records_are_derived (tests.test_ms05_evidence_tools.TestArtifactRecordSpec) ... ok
+test_d1_contract_declared (tests.test_ms05_evidence_tools.TestCaptureRunner) ... ok
+test_required_gate_ids_are_declared (tests.test_ms05_evidence_tools.TestCaptureRunner) ... ok
+test_self_test_passes (tests.test_ms05_evidence_tools.TestCaptureRunner) ... ok
+test_same_status_byte_edit_changes_identity (tests.test_ms05_evidence_tools.TestContentSensitiveIdentity) ... ok
+test_untracked_content_changes_identity (tests.test_ms05_evidence_tools.TestContentSensitiveIdentity) ... ok
+test_d1_gates_declared (tests.test_ms05_evidence_tools.TestEvidenceAudit) ... ok
+test_repeat100_gates_declared (tests.test_ms05_evidence_tools.TestEvidenceAudit) ... ok
+test_self_test_passes (tests.test_ms05_evidence_tools.TestEvidenceAudit) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.690s
+
+OK
+ms05 evidence capture self-test: schema=PASS hash=PASS classify=PASS d1=PASS
+== Negative fixtures (each must fail for its exact code) ==
+  fixture MISSING_LOG: FAILED AS EXPECTED ([MISSING_LOG] log missing: logs/host-test.log)
+  fixture EMPTY_LOG: FAILED AS EXPECTED ([EMPTY_LOG] log empty: logs/host-test.log)
+  fixture LOG_HASH_MISMATCH: FAILED AS EXPECTED ([LOG_HASH_MISMATCH] log hash mismatch: logs/host-test.log)
+  fixture MISSING_ARGV: FAILED AS EXPECTED ([MISSING_ARGV] host-test: non-empty argv required)
+  fixture MISSING_TIME: FAILED AS EXPECTED ([MISSING_TIME] unparseable time: 'not-a-time')
+  fixture MISSING_EXIT: FAILED AS EXPECTED ([MISSING_EXIT] host-test: exit must be an int)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: bad classification 'maybe')
+  fixture INCOMPLETE_CHILD_SET: FAILED AS EXPECTED ([INCOMPLETE_CHILD_SET] race-control-100x: expected 100 children, got 50)
+  fixture SOURCE_AFTER_FREEZE: FAILED AS EXPECTED ([SOURCE_AFTER_FREEZE] source drifted after freeze: Makefile)
+  fixture ARTIFACT_MISMATCH: FAILED AS EXPECTED ([ARTIFACT_MISMATCH] artifact StarryOS_riscv64-qemu-virt.bin hash mismatch)
+  fixture D1_DIAGNOSTIC_COUNT: FAILED AS EXPECTED ([D1_DIAGNOSTIC_COUNT] kernel-lichee-d1-check: count mismatch {'error[E0432]': 21, 'error[E0433]': 5})
+  fixture D1_UNCLASSIFIED_ERROR: FAILED AS EXPECTED ([D1_UNCLASSIFIED_ERROR] kernel-lichee-d1-check: error[E0599]: other)
+  fixture REQUIRED_GATE_MISSING: FAILED AS EXPECTED ([REQUIRED_GATE_MISSING] missing=['axnet-default'])
+  fixture GATE_ORDER: FAILED AS EXPECTED ([GATE_ORDER] required order mismatch: ['axnet-qemu-diagnostics', 'axnet-default', 'axdriver-net', 'axdriver-virtio', 'virtio-drivers', 'uart-async', 'ms03-harness-compile', 'ms03-harness-run', 'ms04-harness-compile', 'ms04-harness-run', 'evidence-tools-unittest', 'capture-self-test', 'audit-self-test', 'race-control-100x', 'race-v3-100x', 'race-full-suite-100x', 'kernel-qemu-check', 'kernel-lichee-d1-check', 'build-image', 'build-ms01', 'build-payloads', 'rustfmt-check', 'openspec-validate-strict', 'diff-check', 'diff-cached-check', 'host-test'])
+  fixture INDEX_DRIFT: FAILED AS EXPECTED ([INDEX_DRIFT] index_identity drifted after freeze)
+  fixture WORKTREE_DRIFT: FAILED AS EXPECTED ([WORKTREE_DRIFT] worktree_identity drifted after freeze)
+  fixture TIME_ORDER: FAILED AS EXPECTED ([TIME_ORDER] host-test: freeze <= start <= end violated)
+  fixture ARTIFACT_PRODUCER: FAILED AS EXPECTED ([ARTIFACT_PRODUCER] artifact tests/ms01_socket_baseline: producer 'build-payloads' != build-ms01)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: env-blocked without capability marker)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: env-blocked without capability marker)
+  fixture ARTIFACT_RECORD_MISSING: FAILED AS EXPECTED ([ARTIFACT_RECORD_MISSING] artifact record missing: artifact-StarryOS_riscv64-qemu-virt.bin-file-0)
+  fixture ARTIFACT_RECORD_UNEXPECTED: FAILED AS EXPECTED ([ARTIFACT_RECORD_UNEXPECTED] unexpected artifact record: artifact-extra-file-99)
+  fixture ARTIFACT_RECORD_ARGV: FAILED AS EXPECTED ([ARTIFACT_RECORD_ARGV] artifact-StarryOS_riscv64-qemu-virt.bin-file-0: argv ['sha256sum', 'other'] != ['file', 'StarryOS_riscv64-qemu-virt.bin'])
+  fixture ARTIFACT_RECORD_FAILED: FAILED AS EXPECTED ([ARTIFACT_RECORD_FAILED] artifact-StarryOS_riscv64-qemu-virt.bin-file-0: exit 1 classification fail)
+  fixture DUPLICATE_GATE_ID: FAILED AS EXPECTED ([DUPLICATE_GATE_ID] duplicate gate artifact-StarryOS_riscv64-qemu-virt.bin-file-0)
+python3 scripts/ms05_evidence_capture.py --self-test
+ms05 evidence capture self-test: schema=PASS hash=PASS classify=PASS d1=PASS
+python3 scripts/ms05_evidence_audit.py --self-test
+== Negative fixtures (each must fail for its exact code) ==
+  fixture MISSING_LOG: FAILED AS EXPECTED ([MISSING_LOG] log missing: logs/host-test.log)
+  fixture EMPTY_LOG: FAILED AS EXPECTED ([EMPTY_LOG] log empty: logs/host-test.log)
+  fixture LOG_HASH_MISMATCH: FAILED AS EXPECTED ([LOG_HASH_MISMATCH] log hash mismatch: logs/host-test.log)
+  fixture MISSING_ARGV: FAILED AS EXPECTED ([MISSING_ARGV] host-test: non-empty argv required)
+  fixture MISSING_TIME: FAILED AS EXPECTED ([MISSING_TIME] unparseable time: 'not-a-time')
+  fixture MISSING_EXIT: FAILED AS EXPECTED ([MISSING_EXIT] host-test: exit must be an int)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: bad classification 'maybe')
+  fixture INCOMPLETE_CHILD_SET: FAILED AS EXPECTED ([INCOMPLETE_CHILD_SET] race-control-100x: expected 100 children, got 50)
+  fixture SOURCE_AFTER_FREEZE: FAILED AS EXPECTED ([SOURCE_AFTER_FREEZE] source drifted after freeze: Makefile)
+  fixture ARTIFACT_MISMATCH: FAILED AS EXPECTED ([ARTIFACT_MISMATCH] artifact StarryOS_riscv64-qemu-virt.bin hash mismatch)
+  fixture D1_DIAGNOSTIC_COUNT: FAILED AS EXPECTED ([D1_DIAGNOSTIC_COUNT] kernel-lichee-d1-check: count mismatch {'error[E0432]': 21, 'error[E0433]': 5})
+  fixture D1_UNCLASSIFIED_ERROR: FAILED AS EXPECTED ([D1_UNCLASSIFIED_ERROR] kernel-lichee-d1-check: error[E0599]: other)
+  fixture REQUIRED_GATE_MISSING: FAILED AS EXPECTED ([REQUIRED_GATE_MISSING] missing=['axnet-default'])
+  fixture GATE_ORDER: FAILED AS EXPECTED ([GATE_ORDER] required order mismatch: ['axnet-qemu-diagnostics', 'axnet-default', 'axdriver-net', 'axdriver-virtio', 'virtio-drivers', 'uart-async', 'ms03-harness-compile', 'ms03-harness-run', 'ms04-harness-compile', 'ms04-harness-run', 'evidence-tools-unittest', 'capture-self-test', 'audit-self-test', 'race-control-100x', 'race-v3-100x', 'race-full-suite-100x', 'kernel-qemu-check', 'kernel-lichee-d1-check', 'build-image', 'build-ms01', 'build-payloads', 'rustfmt-check', 'openspec-validate-strict', 'diff-check', 'diff-cached-check', 'host-test'])
+  fixture INDEX_DRIFT: FAILED AS EXPECTED ([INDEX_DRIFT] index_identity drifted after freeze)
+  fixture WORKTREE_DRIFT: FAILED AS EXPECTED ([WORKTREE_DRIFT] worktree_identity drifted after freeze)
+  fixture TIME_ORDER: FAILED AS EXPECTED ([TIME_ORDER] host-test: freeze <= start <= end violated)
+  fixture ARTIFACT_PRODUCER: FAILED AS EXPECTED ([ARTIFACT_PRODUCER] artifact tests/ms01_socket_baseline: producer 'build-payloads' != build-ms01)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: env-blocked without capability marker)
+  fixture UNSUPPORTED_CLASSIFICATION: FAILED AS EXPECTED ([UNSUPPORTED_CLASSIFICATION] host-test: env-blocked without capability marker)
+  fixture ARTIFACT_RECORD_MISSING: FAILED AS EXPECTED ([ARTIFACT_RECORD_MISSING] artifact record missing: artifact-StarryOS_riscv64-qemu-virt.bin-file-0)
+  fixture ARTIFACT_RECORD_UNEXPECTED: FAILED AS EXPECTED ([ARTIFACT_RECORD_UNEXPECTED] unexpected artifact record: artifact-extra-file-99)
+  fixture ARTIFACT_RECORD_ARGV: FAILED AS EXPECTED ([ARTIFACT_RECORD_ARGV] artifact-StarryOS_riscv64-qemu-virt.bin-file-0: argv ['sha256sum', 'other'] != ['file', 'StarryOS_riscv64-qemu-virt.bin'])
+  fixture ARTIFACT_RECORD_FAILED: FAILED AS EXPECTED ([ARTIFACT_RECORD_FAILED] artifact-StarryOS_riscv64-qemu-virt.bin-file-0: exit 1 classification fail)
+  fixture DUPLICATE_GATE_ID: FAILED AS EXPECTED ([DUPLICATE_GATE_ID] duplicate gate artifact-StarryOS_riscv64-qemu-virt.bin-file-0)
+
+ms05 evidence audit self-test: negative fixtures PASS

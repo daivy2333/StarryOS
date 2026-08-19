@@ -1,7 +1,7 @@
 # QEMU Network Testing Runbook
 
-> Status: active | Related: K31, K32 | Last updated: 2026-08-09
-> Verified: 2026-07-29 MS01 manual QEMU 10/10 PASS; 2026-08-09 build exit/artifact classification checked
+> Status: active | Related: K31, K32, R55, R48 | Last updated: 2026-08-17
+> Verified: 2026-07-29 MS01 manual QEMU 10/10 PASS; 2026-08-09 build exit/artifact classification checked; 2026-08-17 offline-injection fallback path (R55/R48) added
 
 ## Purpose
 
@@ -53,7 +53,8 @@ Agent 仍应先执行不需要 QEMU 交互的自动 Gate。只有命令最终失
 
 - 原自动命令、最终退出码和最早环境失败层；
 - 用户在 sandbox 外执行的同一命令及环境差异；
-- 完整输出、最终退出码和要求的产物或 hash；
+- 关键输出、最终退出码和要求的产物（按「证据精简原则」，不缺省必要证据，但不再
+  强制记录 hash 值）；
 - PASS、FAIL 或中断结论。
 
 手工复跑若出现产品错误，仍按对应产品 Gate 失败处理。中断、缺日志或缺产物不能
@@ -105,6 +106,71 @@ wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline && chmod +x
 
 输出在 `MS01_SOCKET_BASELINE_START` 和 `MS01_SOCKET_BASELINE_END` 之间，每行 `PASS: <name>` 或 `FAIL: <name> <reason>`。
 
+## 备用路径：下载失败 / 网络挂起时直接挂载注入 payload
+
+当 guest `wget` 因网络问题（挂起、下载失败）无法从 `10.0.2.2` 拉取测试 payload，
+但 host 测试已确认数据面以外的事实、仍需在 guest 内跑 probe 或回归 payload 做层间/数据面
+判断时，可用直接挂载（或离线注入）把 payload 放进 rootfs，绕过网络。**仍须遵循本 Runbook
+「QEMU 一律手工」政策——仅注入方式是离线的，guest 命令依旧手工输入。**
+
+两种工具按需选择：
+
+### 方式 A：`debugfs` 离线写入（不需要 sudo；推荐用于诊断）
+
+把 payload 写进 **`make/disk.img` 的副本**（原盘不动，避免污染冻结 hash），重启 QEMU 时
+让 virtio-blk 指向该副本：
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+cp make/disk.img /tmp/ms05-diag-disk.img
+for f in ms05_data_plane_probe ms04_rx_probe; do
+  debugfs -w -R "write tests/$f /root/$f" /tmp/ms05-diag-disk.img
+done
+# 重启 QEMU 时把 -drive ...file=make/disk.img 换成 ...file=/tmp/ms05-diag-disk.img，其余参数不变
+```
+
+guest 里直接离线执行（无需网络）：
+
+```sh
+/root/ms05_data_plane_probe snapshot
+/root/ms05_data_plane_probe tx-only 96 64
+/root/ms04_rx_probe snapshot
+```
+
+### 方式 B：`mount -o loop` 直挂根目录（需要 sudo；MS03 已验证）
+
+`make/disk.img` 是裸 ext4（无分区表），loop 直挂不需 offset：
+
+```bash
+sudo mount -o loop make/disk.img /mnt/starry-rootfs
+sudo cp tests/ms03_irq_probe /mnt/starry-rootfs/root/
+sudo umount /mnt/starry-rootfs
+```
+
+### 判据与边界
+
+- 用 `debugfs` 或 mount 注入后，guest 能直接执行的依据是 payload 是**静态链接**的 RISC-V ELF
+  （`file tests/<name>` 应为 `statically linked`），不依赖动态库或网络。
+- 备用路径能证明「guest 内的探针/程序在数据面上是否工作」，**不能替代**对 wget/HTTP 下载
+  主路径本身的验证；若目标是回归网络协议（TCP/UDP/socket），仍要在网络可用时用主路径复跑。
+- 所有注入只作用于副本或 rootfs 挂载目录；完成后确认探针可执行、数据面工作即达
+  目标，不必保存 hash 值（见「证据精简原则」）；诊断盘/挂载目录用后清理。
+
+## 证据精简原则
+
+自 2026-08-19 起（来源：MS05 Cycle 004 后用户决定，Recorder 登记）：
+
+- **证据不收录过大/过多的日志文件**。几百个 gate 日志、几万行的原始日志属于过度，
+  不适合作为普通 Evidence。原始长日志保留在外部或临时文件，Evidence 只存必要摘录
+  （每模式终态 marker、host 结果、退出码）并按需引用其来源路径，不复制长正文。
+- **不再强制记录 hash 值**。未来证据以保证代码功能正确为准，只保留能证明行为的
+  命令、关键输出和退出码；hash/manifest 的细粒度 provenance 除非明确要求，不再
+  作为每 Cycle 的必填产物。
+- 当某个具体 change（如 MS05 自动 gate 管线）仍需机器可审计的 manifest/日志时，
+  由该 change 或对应 Runbook 单独声明，不把此项默认套用到全部手工 QEMU 证据。
+- 已被删除的 `ms05-automatic-gate-manifest.md`（R54，数百 logs + hash 冻结）不再
+  作为通用证据模板；其 R54 引用标记为悬空，待 `openspec-docs-maintainer` 处理。
+
 ## 验证
 
 - QEMU 必须进入 `starry:~#`，payload 命令最终退出，并输出完整 START/END marker。
@@ -116,14 +182,17 @@ wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline && chmod +x
 ## 回滚
 
 本流程不修改产品源码。HTTP 下载到 guest `/tmp` 的 payload 会在 QEMU 退出后消失。
-用 `Ctrl-A X` 退出 QEMU，用 `Ctrl-C` 停止 host HTTP server。若具体 change 另行要求
-mount 或修改 rootfs，必须按该 change 的手工步骤执行 umount/恢复，不能套用本段。
+用 `Ctrl-A X` 退出 QEMU，用 `Ctrl-C` 停止 host HTTP server。若用了「直接挂载注入」备用路径，
+清理诊断盘副本与挂载目录：`rm /tmp/ms05-diag-disk.img`、`sudo umount /mnt/starry-rootfs`（若仍挂载）；
+原 `make/disk.img` 不受影响。若具体 change 另行要求修改 rootfs，必须按该 change 的手工步骤执行
+umount/恢复，不能套用本段。
 
 ## 排障
 
 | 症状 | 原因 | 解决 |
 |------|------|------|
 | `wget: Connection refused` | HTTP server bind `127.0.0.1`，guest 通过 10.0.2.2 连不上 | 改 `--bind 0.0.0.0` |
+| `wget` 挂起（`Connecting to ...` 停住） | 产品数据面问题；host 服务正常 | 先用 R55 分层诊断定位；需要离线跑 probe 时用上方「直接挂载注入」备用路径 |
 | shell 提示符是 `starry:~# ` 不是 `/ #` | 不同版本 prompt 不同 | 看到可输入光标即可 |
 | rebind `Address in use` | fork 版 smoltcp 不立即释放 port | 测试中 `sleep(2)` 临时绕过（迁移后移除） |
 
@@ -133,10 +202,17 @@ mount 或修改 rootfs，必须按该 change 的手工步骤执行 umount/恢复
   失败记录，支持 guest shell 手工政策和 HTTP 下载路径。
 - 2026-08-09：`make LOG=info build` 的同次输出同时出现 Cargo home 只读、禁止联网
   和最终 build/objcopy 成功，支持“按最终退出与产物分类，不按中间警告分类”。
-- 适用限制：该规则只处理执行环境能力边界，不证明任何具体 change 的产品行为。
+- 2026-08-17：R55 `qemu-kernel-net-dataplane-debug.md`（第5步，debugfs 离线注入）与
+  R48 `ms03-virtio-mmio-irq-evidence.md`（步骤2.2，mount -o loop 直挂）各已验证端到端，
+  支持「下载失败→直接挂载注入 payload」备用路径。
+- 适用限制：该规则只处理执行环境能力边界，不证明任何具体 change 的产品行为；备用路径结论
+  限定于单 hart QEMU VirtIO-MMIO 软件/设备模型，不替代网络主路径回归。
 
 ## 变更历史
 
+- 2026-08-17：新增「直接挂载注入」备用路径（debugfs 离线写入 + mount -o loop 直挂），
+  供 guest `wget` 网络挂起/下载失败时离线跑 probe/回归 payload 做数据面判断；排障表
+  增加 `wget` 挂起到 R55 分层诊断 + 备用路径的指引；回滚段补充诊断盘副本/挂载目录清理。
 - 2026-08-09：增加 sandbox 阻塞分类与手工交接规则。只有明确的环境能力拒绝可以
   标记 `ENV-BLOCKED`；该项移到 iteration 末尾，并保留命令、退出码、日志和产物
   见证。产品错误不得转为手工边界。

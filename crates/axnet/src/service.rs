@@ -117,6 +117,13 @@ impl Service {
         let timestamp = now();
         let mut changed = false;
 
+        // Task 3.5 (Finding 2) + Iteration 011 A1: observe the target TX
+        // pending state before ANY operation in this round can create a slot.
+        // An ARP reply consumed by `router.poll` resolves a neighbor and flushes
+        // the first dormant TX slot; sampling after that ingress hides the
+        // empty->nonempty transition from the queue-owner event below.
+        let tx_pending_before = self.tx_slot_pending_target();
+
         self.router.poll(owner, self.target_dev, timestamp);
         // MS05 Task 3.2: frames are delivered/consumed by the stack RX path
         // (slot mode drains the fixed slots); the queue task only copies
@@ -160,8 +167,9 @@ impl Service {
         // Task 3.5 (Finding 2): a stack TX dispatch that fills an empty TX
         // slot must publish a queue-owner event. A sleeping queue task has no
         // hardware completion to wait on for the first frame, so without this
-        // event the frame would sit in the slot forever.
-        let tx_pending_before = self.tx_slot_pending_target();
+        // event the frame would sit in the slot forever. The before-sample is
+        // taken at the top of the round so ingress-created slots (Iteration
+        // 011 A1) also publish exactly once.
         let dispatched = self.router.dispatch(timestamp) || changed;
         if !tx_pending_before && self.tx_slot_pending_target() {
             QUEUE_EVENT.publish_queue_work();

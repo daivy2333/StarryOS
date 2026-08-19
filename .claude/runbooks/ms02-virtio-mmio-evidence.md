@@ -76,6 +76,10 @@ sha256sum tests/ms02_guest_service
 
 保存命令、exit、文件路径和 SHA-256 为 `payload-build.log`。
 
+> 证据精简原则（2026-08-19，来源 R44）：不再强制记录 hash 值，也不收录几百个日志或
+> 几万行原始日志；以保证代码功能正确为准，只保存能证明行为的命令、关键输出和退出码。
+> 上述 SHA-256 步骤仅在明确需要 provenance 时保留。
+
 #### 步骤 2.2：无 Hostfwd QEMU（证明串口+MMIO probe 不依赖 hostfwd）
 
 Terminal A（QEMU）：

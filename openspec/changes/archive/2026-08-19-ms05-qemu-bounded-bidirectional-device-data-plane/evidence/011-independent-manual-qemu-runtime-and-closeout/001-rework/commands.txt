@@ -1,0 +1,200 @@
+# MS05 Iteration 011 / Cycle 001 — manual command list (R44 ordinary-terminal / QEMU run)
+
+Prepared by Act at revision 2af394e6 (net-k3, worktree contains the uncommitted
+task 6.2-R1 repair; artifacts frozen by the automatic manifest in this cycle).
+These commands supersede the Cycle 000 command list; the repaired image and
+payloads are the only freeze that qualifies this run. Run them verbatim in an
+ordinary terminal. QEMU guest interaction is manual per R44 — no automation.
+
+Every terminal first sets:
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/001-rework
+```
+
+Verify the frozen artifacts are the ones being run BEFORE the first QEMU boot
+and after EVERY QEMU session:
+
+```bash
+sha256sum -c "$EV/artifacts.sha256"   # expect 6/6 OK
+```
+
+---
+
+## Task 6.1 — ordinary-terminal `make host-test` rerun + exit capture
+
+Terminal 1 (ordinary terminal, repository root):
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+make host-test 2>&1 | tee "$EV/host-test.log"
+echo "EXIT=${PIPESTATUS[0]}"
+```
+
+- GREEN: exit 0 and all harnesses PASS (the sandbox run already passed; this
+  rerun confirms the ordinary-terminal environment is not restricted).
+- If it fails with `PermissionError: [Errno 1] Operation not permitted`, record
+  it as the exact R44 environment boundary and STOP (do not proceed to QEMU).
+
+---
+
+## Task 6.2 — manual QEMU run
+
+### Session 0 — minimal live-socket smoke (required BEFORE the mode matrix)
+
+Terminal A — HTTP server (start first, keep running across sessions):
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS/tests
+python3 -m http.server 18765 --bind 0.0.0.0
+```
+
+Terminal B — QEMU (serial recorded to a NEW file):
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+script -q -f "$EV/qemu-wget-serial.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
+```
+
+Terminal C — packet capture for this session (fresh pcap, never append):
+
+```bash
+sudo tcpdump -i any -nn -e -vv -w "$EV/wget.pcap" port 18765 or arp 2>&1 | tee "$EV/wget-tcpdump.log"
+```
+
+Guest (Terminal B shell):
+
+```sh
+wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline
+chmod +x /tmp/ms01_test
+/tmp/ms01_test
+```
+
+- Smoke GREEN (all four required):
+  1. guest command exits 0 with the 14 `PASS:` markers, no `FAIL:`;
+  2. pcap order is ARP request/reply -> SYN/SYN-ACK/ACK -> HTTP request/response;
+  3. no manual nudge or host injection was used;
+  4. frozen hashes still verify (6/6 OK).
+- If the wget/HTTP exchange stalls with no SYN after ARP or relies on any
+  manual/software nudge, the smoke FAILS — capture the synchronized serial+pcap
+  and return to Act/Plan. Do NOT proceed to the mode matrix.
+- Use a fresh pcap file; append nothing to Cycle 000's `ms05-diag.pcap`.
+
+### Session 1 — guest-only MS05 snapshot (NO host stimulus)
+
+With the QEMU session from the smoke still booted (or a fresh identical boot),
+guest-only:
+
+```sh
+wget -q -O /tmp/ms05_probe http://10.0.2.2:18765/ms05_data_plane_probe
+chmod +x /tmp/ms05_probe
+/tmp/ms05_probe snapshot
+```
+
+Record the marker and exit. `run_snapshot()` performs bounded diagnostic
+snapshots only and never sends `MS05 REGISTER`; NO host stimulus is started for
+this mode and NO `ms05-snapshot-host.log` is required. Save this as
+`qemu-ms05-serial.log` (or keep session serials distinct per contract).
+
+### Session 2 — five host-assisted modes (fresh host stimulus BEFORE each mode)
+
+Keep the QEMU serial recording into `qemu-ms05-serial.log`. For each mode:
+(1) start a fresh stimulus process in a separate terminal, (2) run the guest
+command, (3) wait for the stimulus to finish, (4) record guest exit. The host
+stimulus binds externally to the QEMU user-net; it does not require a hostfwd.
+
+| Mode | Guest command | Host stimulus (start fresh, `tee` to the named file) |
+|---|---|---|
+| tx-only | `/tmp/ms05_probe tx-only 96 64` | `python3 scripts/ms05_data_plane_stimulus.py --host 0.0.0.0 --port 15557 \| tee "$EV/ms05-txonly-host.log"` |
+| bidirectional | `/tmp/ms05_probe bidirectional 96 64` | `python3 scripts/ms05_data_plane_stimulus.py --host 0.0.0.0 --port 15557 \| tee "$EV/ms05-bidirectional-host.log"` |
+| slot-full | `/tmp/ms05_probe slot-full` | `python3 scripts/ms05_data_plane_stimulus.py --host 0.0.0.0 --port 15557 \| tee "$EV/ms05-slotfull-host.log"` |
+| descriptor-full | `/tmp/ms05_probe descriptor-full` | `python3 scripts/ms05_data_plane_stimulus.py --host 0.0.0.0 --port 15557 \| tee "$EV/ms05-descfull-host.log"` |
+| flush | `/tmp/ms05_probe flush` | `python3 scripts/ms05_data_plane_stimulus.py --host 0.0.0.0 --port 15557 \| tee "$EV/ms05-flush-host.log"` |
+
+Each mode requires exactly one `MS05 PASS mode=<mode>` marker, the expected
+exact traffic counts (96×64 for tx-only/bidirectional), slot/ticket/buffer/
+descriptor conservation, Full->recovery (slot-full/descriptor-full), C4 flush
+closure (flush), bounded work/yield telemetry, and zero fault/restore/IRQ-entry
+errors, all within the fixed absolute deadline. A timeout, interrupted log,
+partial telemetry or one successful mode cannot substitute for another.
+
+### Session 3 — isolated MS04 regression (R51), quiescent baseline required
+
+Wait until two consecutive quiescent snapshots with NO concurrent host traffic
+(download/setup must have finished); restart the QEMU session for a clean
+baseline if needed and record into `qemu-ms04-serial.log`:
+
+```sh
+wget -q -O /tmp/ms04_probe http://10.0.2.2:18765/ms04_rx_probe
+chmod +x /tmp/ms04_probe
+/tmp/ms04_probe snapshot
+/tmp/ms04_probe idle
+/tmp/ms04_probe nudge
+```
+
+Then (Terminal C) start: `python3 scripts/ms04_rx_stimulus.py --host 0.0.0.0 --port 15556 | tee "$EV/ms04-burst-host.log"` and (guest) `/tmp/ms04_probe burst`.
+
+- snapshot: `MS04 PASS mode=snapshot`, lifecycle=2 owner=1, fault/restore/irq_entry=0.
+- idle: `MS04 PASS mode=idle`, all deltas 0.
+- nudge: `MS04 PASS mode=nudge`, nudge=1 task=1 empty=1, descriptor delta 0.
+- burst: `MS04 PASS mode=burst`, reaped==refilled==delivered==96, budget_exhausted>0,
+  self_yield>0, fault/restore/irq_entry=0.
+- Extra packet work during the nudge window makes the observation interrupted,
+  not PASS/FAIL — repeat from a clean session.
+
+### Session 4 — network/socket regression (R45 + MS01), own declared session
+
+New QEMU boot recorded into `qemu-network-serial.log`:
+
+```sh
+wget -q -O /tmp/ms02_service http://10.0.2.2:18765/ms02_guest_service
+chmod +x /tmp/ms02_service
+/tmp/ms02_service
+```
+
+- Expect `MS02_READY tcp=5555 udp=5555`; in a fourth terminal use
+  `nc 127.0.0.1 5555` (send `MS02_TCP_REQUEST`, expect `MS02_TCP_RESPONSE`) and
+  `echo "MS02_UDP_REQUEST" | nc -u -w1 127.0.0.1 5555` (expect
+  `MS02_UDP_RESPONSE`); guest then prints `MS02_TCP_PASS MS02_UDP_PASS
+  MS02_COMPLETE`. Capture host output to `network-host.log`.
+
+Guest (after the service completes):
+
+```sh
+wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline
+chmod +x /tmp/ms01_test
+/tmp/ms01_test
+```
+
+- Expect 14 `PASS:` markers (tcp-accept, tcp-adjacent, tcp-512cap,
+  tcp-512-recovery, tcp-relisten, udp-bidi, tcp-nonblock-accept, udp-nonblock,
+  poll-readiness, udp-source, bind-getsockname, bind-ephemeral, bind-conflict,
+  bind-close-cleanup), no `FAIL:`.
+
+### Collect summaries
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/001-rework
+grep -aE 'MS05 (PASS|FAIL)' "$EV"/qemu-ms05-serial.log "$EV"/*.log > "$EV/ms05-markers.txt"
+grep -aE 'MS04 (PASS|FAIL)' "$EV"/qemu-ms04-serial.log > "$EV/ms04-markers.txt"
+```
+
+Write `runtime-exits.txt` (one line per guest command: command + observed exit
+status), include the network host output, and re-verify:
+`sha256sum -c "$EV/artifacts.sha256"` (expect 6/6 OK, unchanged).
+
+---
+
+## Return to Act
+
+Report back the raw files in `$EV` (`host-test.log`, `qemu-wget-serial.log`,
+`wget.pcap`, `wget-tcpdump.log`, `qemu-ms05-serial.log`,
+`ms05-txonly-host.log`, `ms05-bidirectional-host.log`, `ms05-slotfull-host.log`,
+`ms05-descfull-host.log`, `ms05-flush-host.log`, `ms05-markers.txt`,
+`qemu-ms04-serial.log`, `ms04-burst-host.log`, `ms04-markers.txt`,
+`qemu-network-serial.log`, `network-host.log` and any pcaps,
+`runtime-exits.txt`) plus the environment delta. Act will then audit, run
+Task 6.3 final review, and resume the Cycle.
