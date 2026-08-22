@@ -1,6 +1,6 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-19 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 任务状态最后同步: 2026-08-22 | 路线规划更新: 2026-08-14 | 分支: linshi | grep: `<!-- T{编号} -->`
 > 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
 
 ---
@@ -164,7 +164,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 多 waiter、overflow、close、error 和三类 runner 唤醒均有见证。
 - Diagnostic boundary: 失败限制在 stack 推进、timer/software wake 或 socket event bridge。
 - Split signals: readiness bridge 需要替换 axpoll 并形成独立的多 waiter 子系统。
-- Related changes: None
+- Related changes: `ms06-application-visible-async-network-stack`（活跃，2026-08-21 创建，Gate 1/Gate 2 approved，Iteration 000 `resident-stack-runner` Cycle 000 ready、Act pending；0/14 tasks）
 
 ### MS07：QEMU 单 hart 恢复语义
 
@@ -317,4 +317,5 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前没有活跃 change。MS05 已归档并完成 T07-T08；下一项路线工作是仍处于 planned 的 MS06（T09-T10），尚未创建对应 change。
+- 活跃：`ms06-application-visible-async-network-stack`（0/14 tasks，2026-08-21 创建，Gate 1/Gate 2 approved，Iteration 000 `resident-stack-runner` 的 Cycle 000 已 ready、Act pending）。对应 MS06（T09-T10）。
+- 已归档：`demo-host-guest-chat`（linshi 分支周会演示产物，2026-08-22 归档为 `openspec/changes/archive/2026-08-22-demo-host-guest-chat/`；1 iteration、4/4 tasks、Plan Review accepted）。独立于 T01-T25 与 MS 路线，不占用 MSxx 编号。Runbook R57 `demo-host-guest-chat-qemu.md` 已发布。

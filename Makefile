@@ -175,6 +175,19 @@ tests/ms04_rx_probe: tests/ms04_rx_probe.c
 tests/ms05_data_plane_probe: tests/ms05_data_plane_probe.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
+# Demo host-guest chat client (RISC-V static — built automatically, run manually)
+tests/demo_chat_client: tests/demo_chat_client.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
+# Demo host-guest chat client — host decision-core tests (no guest needed)
+demo-chat-client-test: tests/demo_chat_client_test.c tests/demo_chat_client.c
+	cc -std=c11 -Wall -Wextra -Werror tests/demo_chat_client_test.c -o /tmp/demo-chat-client-test
+	/tmp/demo-chat-client-test
+
+# Demo host-guest chat server — host decision-core tests (stdlib only)
+demo-chat-server-test: scripts/demo_chat_server_test.py scripts/demo_chat_server.py
+	python3 scripts/demo_chat_server_test.py
+
 # Aliases
 rv:
 	$(MAKE) ARCH=riscv64 run
@@ -237,4 +250,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf demo-chat-client-test demo-chat-server-test

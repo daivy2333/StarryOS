@@ -146,5 +146,6 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R54 --> | `scripts/ms05_evidence_capture.py`、`scripts/ms05_evidence_audit.py` | MS05 自动 Gate manifest 与审计工具入口 — capture 记录 literal argv、child records、source freeze 和 artifacts；audit 校验 schema、资格与漂移分类。原 Runbook 已移除，工具与归档 change 保留实现和历史 Evidence |
 | <!-- R55 --> | `.claude/runbooks/qemu-kernel-net-dataplane-debug.md` | QEMU 内核网络数据面分层诊断 Runbook — host 测试全 PASS 但 guest 网络挂起时的逐层归因（冻结/备份镜像、INFO 隔离日志、filter-dump pcap 客观层间证据、debugfs 离线注入 probe、snapshot rx/tx/irq 计数）；区分驱动注册 / TX / IRQ→wake→reap / slot 交付 / smoltcp 消费 / socket 唤醒，含 debug 日志噪声与 `ifconfig` 工具缺口误判处理 |
 | <!-- R56 --> | `.claude/runbooks/ms05-qemu-bidirectional-dataplane-evidence.md` | MS05 QEMU 有界双向数据面证据采集 Runbook — 六 mode（snapshot / tx-only / bidirectional / slot-full / descriptor-full / flush）完整手工命令行、host stimulus 拓扑（guest UDP client → host 15557，无需 hostfwd）、终态 `MS05 PASS mode=…` + exit 0 判据、slot/descriptor Full→recovery 与 flush 闭合见证、失败处理与证据精简原则交叉引用；适用 R44 手工政策 |
+| <!-- R57 --> | `.claude/runbooks/demo-host-guest-chat-qemu.md` | Demo Host–Guest Chat QEMU 手测 Runbook — host 聊天服务器（15560）+ guest 静态客户端（wget 18765 注入）在单 hart QEMU 的双向逐行聊天：连接提示、双向交换、空行丢弃、`/quit` 关闭、对端断开语义，含 S1-S4 场景表、成功判据、失败处理与回滚；结论只限单 hart QEMU |
 
 <!-- arc: cleanup-uart-documentation-system --> 全部历史 R 条目已归档至 archive carrier（见上方已归档条目）。
