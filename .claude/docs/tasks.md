@@ -1,6 +1,6 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-19 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 任务状态最后同步: 2026-08-22 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
 > 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
 
 ---
@@ -164,7 +164,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 多 waiter、overflow、close、error 和三类 runner 唤醒均有见证。
 - Diagnostic boundary: 失败限制在 stack 推进、timer/software wake 或 socket event bridge。
 - Split signals: readiness bridge 需要替换 axpoll 并形成独立的多 waiter 子系统。
-- Related changes: None
+- Related changes: `ms06-application-visible-async-network-stack`（位于 `openspec/changes/ms06-application-visible-async-network-stack/`；3 iterations 规划，13/13 tasks，RTM 全 Covered，Gate 1/2 已批准 2026-08-21；当前 Iteration `000-resident-stack-runner` / Cycle `000-initial.md` 处于 Act 阶段，Act Response 与 Plan Review 仍 pending）
 
 ### MS07：QEMU 单 hart 恢复语义
 
@@ -317,4 +317,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前没有活跃 change。MS05 已归档并完成 T07-T08；下一项路线工作是仍处于 planned 的 MS06（T09-T10），尚未创建对应 change。
+当前活跃 change：`ms06-application-visible-async-network-stack`（MS06，T09–T10）。位于 `openspec/changes/ms06-application-visible-async-network-stack/`；3 个 Iteration 规划，13/13 tasks，RTM 全 Covered；Gate 1 与 Gate 2 已于 2026-08-21 由用户批准；当前 Iteration `000-resident-stack-runner` / Cycle `000-initial.md` 处于 Act 阶段（Act Response 与 Plan Review 仍 pending），旧 socket inline poll / `Service::register_waker` / `Service::timeout` 在本 Iteration 保留为兼容层，Iteration 001 原子切换 readiness。
+
+MS05 已于 2026-08-19 归档并完成 T07–T08。
