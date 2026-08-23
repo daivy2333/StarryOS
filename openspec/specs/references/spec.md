@@ -134,7 +134,7 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | 条目 | 路径 | 摘要 |
 |------|------|------|
 | <!-- R38 --> | `.claude/runbooks/incremental-merge.md` | 增量融合 Runbook — 多 commit 合入的依赖排序、逐步 apply、Gate 与退化处理 |
-| <!-- R39 --> | `.claude/runbooks/regression-gate.md` | 回归验证 Gate Runbook — Phase/change 收尾标准五层验证链与 ENV BLOCK 处理 |
+| <!-- R39 --> | `.claude/runbooks/regression-gate.md` | 回归验证 Gate Runbook — Phase/change 收尾五层验证链；按产品命令、最终 exit、首个决定性失败层和产物区分 PASS、产品 FAIL、invalid witness 与 ENV BLOCK；包含只读 Cargo home 导致 `cargo-binutils` 探测假阴性及用户同命令复跑边界（2026-08-23 更新） |
 | <!-- R40 --> | `.claude/runbooks/board-bringup-ladder.md` | 真板 bring-up 阶梯 Runbook — 新板 L0-L7 逐层适配、每层单变量约束与 Gate |
 | <!-- R44 --> | `.claude/runbooks/qemu-network-testing.md` | QEMU 网络测试 Runbook — QEMU guest 操作保持手工执行；定义 sandbox `ENV-BLOCKED` 与产品失败的分类、iteration 末尾手工交接、HTTP 下载流程、证据要求、证据精简原则（2026-08-19：证据不收录过大/过多日志、不再强制记录 hash 值，以保证代码功能正确为准），以及「下载失败/网络挂起→直接挂载注入 payload」备用路径（debugfs 离线写入 + mount -o loop 直挂，绕过网络离线跑 probe/回归） |
 | <!-- R45 --> | `.claude/runbooks/ms02-virtio-mmio-evidence.md` | MS02 VirtIO-MMIO 证据采集 Runbook — axnet 策略测试 + agent 静态验证 + QEMU 手工验证（无 hostfwd / user-net TCP+UDP / TAP ARP+ICMP / 空闲 CPU / MS01 runtime）完整流程与失败处理；含证据精简原则交叉引用（2026-08-19，不再强制记录 hash） |

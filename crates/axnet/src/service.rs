@@ -53,6 +53,57 @@ fn any_masked_device_requires_polling(
         .any(|(i, requires_polling)| mask & (1 << i) != 0 && requires_polling)
 }
 
+pub(crate) const STACK_STAGE_BUDGET: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageStep {
+    Idle,
+    Processed,
+    SocketStateChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StageOutcome {
+    processed: usize,
+    budget_exhausted: bool,
+    socket_changed: bool,
+}
+
+fn run_bounded_stage(mut step: impl FnMut() -> StageStep) -> StageOutcome {
+    let mut processed = 0usize;
+    let mut socket_changed = false;
+    while processed < STACK_STAGE_BUDGET {
+        match step() {
+            StageStep::Idle => break,
+            StageStep::Processed => processed += 1,
+            StageStep::SocketStateChanged => {
+                processed += 1;
+                socket_changed = true;
+            }
+        }
+    }
+    StageOutcome {
+        processed,
+        budget_exhausted: processed == STACK_STAGE_BUDGET,
+        socket_changed,
+    }
+}
+
+/// Observable result of one bounded smoltcp stack round.
+#[derive(Debug)]
+pub(crate) struct StackRoundOutcome {
+    pub(crate) work: usize,
+    pub(crate) backlog: bool,
+    pub(crate) self_yield: bool,
+    pub(crate) socket_changed: bool,
+    pub(crate) rx_ready: bool,
+    pub(crate) rx_space_woken: bool,
+    pub(crate) tx_enqueued: bool,
+    pub(crate) faulted: bool,
+    pub(crate) protocol_deadline: Option<Instant>,
+    pub(crate) requires_polling: bool,
+}
+
 pub struct Service {
     pub iface: Interface,
     router: Router,
@@ -114,8 +165,17 @@ impl Service {
     }
 
     pub fn poll(&mut self, owner: RxOwnerView, sockets: &mut SocketSet) -> bool {
+        let outcome = self.stack_round(owner, sockets);
+        outcome.socket_changed || outcome.rx_ready || outcome.self_yield
+    }
+
+    /// Runs one fixed-order, bounded stack round.
+    pub(crate) fn stack_round(
+        &mut self,
+        owner: RxOwnerView,
+        sockets: &mut SocketSet,
+    ) -> StackRoundOutcome {
         let timestamp = now();
-        let mut changed = false;
 
         // Task 3.5 (Finding 2) + Iteration 011 A1: observe the target TX
         // pending state before ANY operation in this round can create a slot.
@@ -124,7 +184,9 @@ impl Service {
         // empty->nonempty transition from the queue-owner event below.
         let tx_pending_before = self.tx_slot_pending_target();
 
-        self.router.poll(owner, self.target_dev, timestamp);
+        let router_rx =
+            self.router
+                .poll_bounded(owner, self.target_dev, timestamp, STACK_STAGE_BUDGET);
         // MS05 Task 3.2: frames are delivered/consumed by the stack RX path
         // (slot mode drains the fixed slots); the queue task only copies
         // raw→slot, so the delivered/non-IP counters come from here.
@@ -136,30 +198,34 @@ impl Service {
             .fetch_add(self.router.take_rx_consumed_delta(), Ordering::Relaxed);
         self.iface.poll_maintenance(timestamp);
         LISTEN_TABLE.reconcile(sockets);
-        loop {
-            match self
+        let ingress = run_bounded_stage(|| {
+            let step = match self
                 .iface
                 .poll_ingress_single(timestamp, &mut self.router, sockets)
             {
-                PollIngressSingleResult::None => break,
-                PollIngressSingleResult::PacketProcessed => {}
-                PollIngressSingleResult::SocketStateChanged => changed = true,
+                PollIngressSingleResult::None => StageStep::Idle,
+                PollIngressSingleResult::PacketProcessed => StageStep::Processed,
+                PollIngressSingleResult::SocketStateChanged => StageStep::SocketStateChanged,
+            };
+            if !matches!(step, StageStep::Idle) {
+                LISTEN_TABLE.reconcile(sockets);
             }
-            LISTEN_TABLE.reconcile(sockets);
-        }
-        loop {
+            step
+        });
+        let egress = run_bounded_stage(|| {
             match self.iface.poll_egress(timestamp, &mut self.router, sockets) {
-                PollResult::None => break,
-                PollResult::SocketStateChanged => changed = true,
+                PollResult::None => StageStep::Idle,
+                PollResult::SocketStateChanged => StageStep::SocketStateChanged,
             }
-        }
+        });
         LISTEN_TABLE.reconcile(sockets);
         // Waking the queue task is a release of the resource it is blocked
         // on. The waiting bit is published only for a full RX slot (Task 3.2
         // slot-mode copy); Router-buffer space is drained by the stack itself
         // and must never clear it (Task 3.5 Finding 6).
         let space = self.rx_slot_has_space_target();
-        if QUEUE_EVENT.wake_if_space(space) {
+        let rx_space_woken = QUEUE_EVENT.wake_if_space(space);
+        if rx_space_woken {
             RX_TELEMETRY
                 .space_wake
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -170,11 +236,37 @@ impl Service {
         // event the frame would sit in the slot forever. The before-sample is
         // taken at the top of the round so ingress-created slots (Iteration
         // 011 A1) also publish exactly once.
-        let dispatched = self.router.dispatch(timestamp) || changed;
-        if !tx_pending_before && self.tx_slot_pending_target() {
+        let dispatch = self.router.dispatch_bounded(timestamp, STACK_STAGE_BUDGET);
+        let tx_enqueued = !tx_pending_before && self.tx_slot_pending_target();
+        if tx_enqueued {
             QUEUE_EVENT.publish_queue_work();
         }
-        dispatched
+        let protocol_deadline = self.iface.poll_at(timestamp, sockets);
+        let requires_polling = self
+            .router
+            .devices
+            .iter()
+            .any(|device| device.requires_polling());
+        let socket_changed = ingress.socket_changed || egress.socket_changed;
+        let self_yield = router_rx.budget_exhausted
+            || ingress.budget_exhausted
+            || egress.budget_exhausted
+            || dispatch.budget_exhausted;
+        StackRoundOutcome {
+            work: router_rx.processed + ingress.processed + egress.processed + dispatch.processed,
+            backlog: router_rx.backlog
+                || ingress.budget_exhausted
+                || egress.budget_exhausted
+                || dispatch.backlog,
+            self_yield,
+            socket_changed,
+            rx_ready: dispatch.rx_ready,
+            rx_space_woken,
+            tx_enqueued,
+            faulted: router_rx.fault.is_some() || dispatch.faulted,
+            protocol_deadline,
+            requires_polling,
+        }
     }
 
     /// Whether the target's fixed RX slots have room for at least one frame.
@@ -594,18 +686,22 @@ impl Service {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, sync::Arc, task::Wake, vec};
+    use alloc::{boxed::Box, sync::Arc, task::Wake, vec, vec::Vec};
     use core::{
         sync::atomic::{AtomicUsize, Ordering},
         task::Waker,
     };
 
-    use smoltcp::time::Instant;
+    use axdriver::prelude::DevError;
+    use smoltcp::{time::Instant, wire::IpAddress};
 
-    use super::{Service, any_masked_device_requires_polling, select_wake_deadline};
+    use super::{
+        STACK_STAGE_BUDGET, Service, StageStep, any_masked_device_requires_polling,
+        run_bounded_stage, select_wake_deadline,
+    };
     use crate::{
         async_rx::{QUEUE_EVENT, SERIAL},
-        device::LoopbackDevice,
+        device::{Device, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
         router::{Router, RxOwnerView},
     };
 
@@ -624,6 +720,226 @@ mod tests {
 
     fn counting_waker(count: Arc<AtomicUsize>) -> Waker {
         Waker::from(Arc::new(CountWake(count)))
+    }
+
+    struct CountingRxDevice {
+        remaining: usize,
+    }
+
+    impl Device for CountingRxDevice {
+        fn name(&self) -> &str {
+            "counting-rx"
+        }
+
+        fn recv(
+            &mut self,
+            _buffer: &mut smoltcp::storage::PacketBuffer<()>,
+            _ts: Instant,
+        ) -> RxStep {
+            if self.remaining > 0 {
+                self.remaining -= 1;
+                RxStep::Consumed
+            } else {
+                RxStep::Empty
+            }
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    struct FaultingRxDevice;
+
+    impl Device for FaultingRxDevice {
+        fn name(&self) -> &str {
+            "faulting-rx"
+        }
+
+        fn recv(
+            &mut self,
+            _buffer: &mut smoltcp::storage::PacketBuffer<()>,
+            _ts: Instant,
+        ) -> RxStep {
+            RxStep::Fault(DevError::Io)
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    struct FaultingTxDevice;
+
+    impl Device for FaultingTxDevice {
+        fn name(&self) -> &str {
+            "faulting-tx"
+        }
+
+        fn recv(
+            &mut self,
+            _buffer: &mut smoltcp::storage::PacketBuffer<()>,
+            _ts: Instant,
+        ) -> RxStep {
+            RxStep::Empty
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Fault(DevError::Io)
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Fault(DevError::Io)
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    // Builds a minimal valid IPv4 broadcast packet (src = 10.0.2.15).
+    // Broadcast fans out without a route lookup, so this needs no Router rule.
+    fn broadcast_ipv4_packet() -> Vec<u8> {
+        vec![
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 2, 15, 255, 255, 255, 255,
+        ]
+    }
+
+    #[test]
+    fn bounded_stage_reports_31_32_33_without_drain_to_empty() {
+        for count in [31usize, 32, 33] {
+            let mut remaining = count;
+            let outcome = run_bounded_stage(|| {
+                if remaining == 0 {
+                    StageStep::Idle
+                } else {
+                    remaining -= 1;
+                    StageStep::Processed
+                }
+            });
+            assert_eq!(outcome.processed, count.min(STACK_STAGE_BUDGET));
+            assert_eq!(outcome.budget_exhausted, count >= STACK_STAGE_BUDGET);
+            assert_eq!(remaining, count.saturating_sub(STACK_STAGE_BUDGET));
+        }
+    }
+
+    #[test]
+    fn bounded_stage_preserves_socket_change() {
+        let mut steps = [
+            StageStep::Processed,
+            StageStep::SocketStateChanged,
+            StageStep::Idle,
+        ]
+        .into_iter();
+        let outcome = run_bounded_stage(|| steps.next().unwrap_or(StageStep::Idle));
+        assert_eq!(outcome.processed, 2);
+        assert!(outcome.socket_changed);
+        assert!(!outcome.budget_exhausted);
+    }
+
+    #[test]
+    fn quiet_stack_round_has_no_backlog_or_fault() {
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+
+        let outcome = service.stack_round(RxOwnerView::PollingOwned, &mut sockets);
+
+        assert!(!outcome.backlog);
+        assert!(!outcome.faulted);
+        assert!(!outcome.socket_changed);
+        assert!(!outcome.tx_enqueued);
+    }
+
+    #[test]
+    fn full_round_executes_dispatch_after_rx_budget_hit() {
+        let _serial = SERIAL.lock();
+        // 33 RX items exhaust the 32-item Router RX budget; 5 malformed TX
+        // packets must still be dispatched by the same round so the stage
+        // order never skips later stages after a budget hit.
+        let mut router = Router::new();
+        router.add_device(Box::new(CountingRxDevice { remaining: 33 }));
+        let mut service = Service::new(router, None);
+        for _ in 0..5 {
+            assert!(service.router_for_test().enqueue_tx_for_test(&[0u8; 1]));
+        }
+
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let outcome = service.stack_round(RxOwnerView::PollingOwned, &mut sockets);
+
+        assert_eq!(outcome.work, 32 + 5);
+        assert!(outcome.backlog);
+        assert!(outcome.self_yield);
+        assert!(!outcome.faulted);
+        assert_eq!(
+            service
+                .router_for_test()
+                .drop_count(crate::device::TxDropReason::MalformedIp),
+            5
+        );
+    }
+
+    #[test]
+    fn full_round_rx_fault_is_not_hidden_as_idle() {
+        let _serial = SERIAL.lock();
+        let mut router = Router::new();
+        router.add_device(Box::new(FaultingRxDevice));
+        let mut service = Service::new(router, None);
+
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let outcome = service.stack_round(RxOwnerView::PollingOwned, &mut sockets);
+
+        assert!(outcome.faulted);
+        assert!(!outcome.self_yield);
+    }
+
+    #[test]
+    fn full_round_dispatch_fault_surfaces_in_outcome() {
+        let _serial = SERIAL.lock();
+        let mut router = Router::new();
+        router.add_device(Box::new(FaultingTxDevice));
+        let mut service = Service::new(router, None);
+        assert!(
+            service
+                .router_for_test()
+                .enqueue_tx_for_test(&broadcast_ipv4_packet())
+        );
+
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let outcome = service.stack_round(RxOwnerView::PollingOwned, &mut sockets);
+
+        assert!(outcome.faulted);
+        assert!(service.router_for_test().tx_faulted());
     }
 
     #[test]

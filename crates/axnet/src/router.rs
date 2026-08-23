@@ -55,6 +55,27 @@ pub enum RxOwnerView {
     AsyncOwned,
 }
 
+/// Result of one bounded Router RX stage.
+#[derive(Debug)]
+pub(crate) struct RouterRxOutcome {
+    pub(crate) processed: usize,
+    pub(crate) budget_exhausted: bool,
+    pub(crate) backlog: bool,
+    pub(crate) fault: Option<DevError>,
+}
+
+/// Result of one bounded Router TX dispatch stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RouterDispatchOutcome {
+    pub(crate) processed: usize,
+    pub(crate) budget_exhausted: bool,
+    pub(crate) backlog: bool,
+    pub(crate) rx_ready: bool,
+    pub(crate) faulted: bool,
+}
+
+const DEFAULT_ROUTER_BUDGET: usize = 32;
+
 // TODO(mivik): optimize
 pub struct RouteTable {
     rules: Vec<Rule>,
@@ -93,6 +114,8 @@ pub struct Router {
     rx_delivered_delta: u64,
     /// Non-IP / malformed completions consumed since the last `take_*`.
     rx_consumed_delta: u64,
+    /// Next device considered by the bounded RX stage.
+    rx_cursor: usize,
 }
 impl Router {
     pub fn new() -> Self {
@@ -113,6 +136,7 @@ impl Router {
             tx_drop_counts: [0; TxDropReason::COUNT],
             rx_delivered_delta: 0,
             rx_consumed_delta: 0,
+            rx_cursor: 0,
         }
     }
 
@@ -126,31 +150,69 @@ impl Router {
     }
 
     pub fn poll(&mut self, owner: RxOwnerView, target_dev: Option<usize>, timestamp: Instant) {
+        let _ = self.poll_bounded(owner, target_dev, timestamp, DEFAULT_ROUTER_BUDGET);
+    }
+
+    /// Polls at most `budget` RX items, rotating after every attempt so one
+    /// continuously-ready device cannot hide a later device.
+    pub(crate) fn poll_bounded(
+        &mut self,
+        owner: RxOwnerView,
+        target_dev: Option<usize>,
+        timestamp: Instant,
+        budget: usize,
+    ) -> RouterRxOutcome {
         // `recv` decides consumption by the device's own mode: slot mode
         // drains the fixed RX slots, polling mode reaps raw completions.
         // The owner view no longer selects a per-device skip (MS05 T3.2).
         let _ = (owner, target_dev);
-        for dev in self.devices.iter_mut() {
-            while !self.rx_buffer.is_full() {
-                match dev.recv(&mut self.rx_buffer, timestamp) {
-                    RxStep::Consumed => {
-                        self.rx_consumed_delta += 1;
+        let device_count = self.devices.len();
+        let mut processed = 0usize;
+        let mut inactive = 0usize;
+        let mut fault = None;
+        let mut blocked = false;
+
+        while processed < budget
+            && inactive < device_count
+            && !self.rx_buffer.is_full()
+            && device_count != 0
+        {
+            let dev_idx = self.rx_cursor % device_count;
+            self.rx_cursor = (dev_idx + 1) % device_count;
+            match self.devices[dev_idx].recv(&mut self.rx_buffer, timestamp) {
+                RxStep::Consumed => {
+                    self.rx_consumed_delta += 1;
+                    processed += 1;
+                    inactive = 0;
+                }
+                RxStep::Delivered => {
+                    self.rx_delivered_delta += 1;
+                    processed += 1;
+                    inactive = 0;
+                }
+                // Blocked and Empty are quiescent for this device in this
+                // round. The cursor still advances so later devices run.
+                RxStep::Blocked => {
+                    blocked = true;
+                    inactive += 1;
+                }
+                RxStep::Empty => inactive += 1,
+                RxStep::Fault(err) => {
+                    warn!("receive failed: {err}");
+                    if fault.is_none() {
+                        fault = Some(err);
                     }
-                    RxStep::Delivered => {
-                        self.rx_delivered_delta += 1;
-                    }
-                    // A deferred TX obligation (e.g. a full-TX ARP reply)
-                    // retains the device's RX head; stop this device's loop so
-                    // the same frame is not reprocessed in this poll. A later
-                    // poll retries once TX capacity frees (Task 3.6).
-                    RxStep::Blocked => break,
-                    RxStep::Empty => break,
-                    RxStep::Fault(err) => {
-                        warn!("receive failed: {err}");
-                        break;
-                    }
+                    inactive += 1;
                 }
             }
+        }
+
+        let budget_exhausted = budget != 0 && processed == budget;
+        RouterRxOutcome {
+            processed,
+            budget_exhausted,
+            backlog: budget_exhausted || blocked || self.rx_buffer.is_full(),
+            fault,
         }
     }
 
@@ -349,10 +411,29 @@ impl Router {
     /// stable fault and removes the head, so the possibly-delivered packet is
     /// never forwarded twice.
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {
-        let mut poll_next = false;
+        self.dispatch_bounded(timestamp, DEFAULT_ROUTER_BUDGET)
+            .rx_ready
+    }
+
+    /// Dispatches at most `budget` logical packets while preserving the
+    /// existing peek/preflight/commit ownership rules.
+    pub(crate) fn dispatch_bounded(
+        &mut self,
+        timestamp: Instant,
+        budget: usize,
+    ) -> RouterDispatchOutcome {
         if self.tx_fault.is_some() {
-            return false;
+            return RouterDispatchOutcome {
+                processed: 0,
+                budget_exhausted: false,
+                backlog: !self.tx_buffer.is_empty(),
+                rx_ready: false,
+                faulted: true,
+            };
         }
+        let mut processed = 0usize;
+        let mut rx_ready = false;
+        let mut faulted = false;
         let Self {
             tx_buffer,
             devices,
@@ -373,7 +454,7 @@ impl Router {
             FaultRemoveHead,
         }
 
-        loop {
+        while processed < budget {
             // The packet borrow lives only inside this loop so `tx_buffer`
             // can be dequeued afterwards (split borrows: `tx_buffer` vs
             // `devices`).
@@ -431,7 +512,7 @@ impl Router {
                     let dev = &mut devices[dev_idx];
                     match dev.send(next_hop, packet, timestamp) {
                         TxOutcome::Accepted { rx_became_ready } => {
-                            poll_next |= rx_became_ready;
+                            rx_ready |= rx_became_ready;
                         }
                         // A non-Accepted commit after preflight Ready is an
                         // invariant violation: enter the stable fault.
@@ -457,16 +538,29 @@ impl Router {
             match action {
                 Action::DequeueContinue => {
                     let _ = tx_buffer.dequeue();
+                    processed += 1;
                 }
                 Action::KeepHeadStop => break,
-                Action::FaultKeepHead => return poll_next,
+                Action::FaultKeepHead => {
+                    faulted = true;
+                    break;
+                }
                 Action::FaultRemoveHead => {
                     let _ = tx_buffer.dequeue();
-                    return poll_next;
+                    processed += 1;
+                    faulted = true;
+                    break;
                 }
             }
         }
-        poll_next
+        let backlog = !tx_buffer.is_empty();
+        RouterDispatchOutcome {
+            processed,
+            budget_exhausted: budget != 0 && processed == budget && backlog,
+            backlog,
+            rx_ready,
+            faulted,
+        }
     }
 }
 

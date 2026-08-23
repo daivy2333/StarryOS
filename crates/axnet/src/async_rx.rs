@@ -19,10 +19,13 @@ use axdriver::prelude::{DevError, DevResult};
 use axdriver_net::NetQueueDirection;
 use embassy_sync::waitqueue::AtomicWaker;
 
+#[cfg(not(test))]
+use crate::stack_runner::STACK_EVENT;
 use crate::{
     device::{RxCopyStep, TxReclaimStep, TxSubmitStep, fixed_queue::MAX_LIVE_TICKETS},
     router::RxOwnerView,
     service::Service,
+    stack_runner::StackEvent,
 };
 
 /// Dual-role queue notification state shared by the future queue task and
@@ -863,6 +866,8 @@ pub(crate) struct RxRxFuture {
     service: ServiceAccess,
     lifecycle: &'static RxLifecycle,
     notify: &'static QueueEvent,
+    stack_notify: &'static StackEvent,
+    stack_progress_pending: bool,
     telemetry: &'static RxTelemetry,
     /// C4: armed QEMU diagnostic lease deadline (wall nanos) the owner is
     /// sleeping on. The timer is wake-only: it carries no generation, so a
@@ -904,7 +909,8 @@ impl RxRxFuture {
     /// ≤32. Exhausting one stage never skips a later stage. After the
     /// stages, a visible backlog self-wakes/yields once; no work sleeps via
     /// the register/arm/recheck protocol.
-    fn service_round(&self, service: &mut Service) -> RoundOutcome {
+    fn service_round(&mut self, service: &mut Service) -> RoundOutcome {
+        self.stack_progress_pending = false;
         // QEMU diagnostic hold (D9): a hold pauses exactly one stage of the
         // sole queue owner. The lease is Service-owned and advanced once per
         // round under the Service guard; an expired lease auto-releases and
@@ -974,7 +980,7 @@ impl RxRxFuture {
                     self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
                     // A new frame in the RX slot is stack-progress: wake the
                     // socket role so smoltcp re-evaluates readiness (T3.3).
-                    self.notify.publish_progress();
+                    self.stack_progress_pending = true;
                     if copied >= RX_BUDGET {
                         self.telemetry
                             .budget_exhausted
@@ -1015,7 +1021,7 @@ impl RxRxFuture {
                         self.telemetry.tx_submitted.fetch_add(1, Ordering::Relaxed);
                         // A freed TX slot is stack-progress: wake the socket
                         // role so blocked senders re-check write readiness (T3.3).
-                        self.notify.publish_progress();
+                        self.stack_progress_pending = true;
                         if submitted >= SUBMIT_BUDGET {
                             self.telemetry
                                 .budget_exhausted
@@ -1180,12 +1186,24 @@ impl RxRxFuture {
     /// service at most RX_BUDGET completions under the guard.
     fn poll_active(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.notify.register_queue(cx.waker());
-        let Some(mut service) = self.service.lock() else {
+        let access = self.service;
+        let Some(mut service) = access.lock() else {
             return Poll::Pending;
         };
-        match self.service_round(&mut service) {
+        let outcome = self.service_round(&mut service);
+        #[cfg(feature = "qemu-diagnostics")]
+        let waiting_lease_expiry = if matches!(&outcome, RoundOutcome::WaitSpace(_)) {
+            service.diag_lease_expiry()
+        } else {
+            0
+        };
+        drop(service);
+        if core::mem::take(&mut self.stack_progress_pending) {
+            self.notify.publish_progress();
+            self.stack_notify.publish_device();
+        }
+        match outcome {
             RoundOutcome::SelfWakeYield => {
-                drop(service);
                 // Not a lease sleep: cancel any stale deadline so an explicit
                 // Release invalidates the old timer (RW-1).
                 #[cfg(feature = "qemu-diagnostics")]
@@ -1194,7 +1212,6 @@ impl RxRxFuture {
                 Poll::Pending
             }
             RoundOutcome::WaitSpace(SpaceDecision::Retry) => {
-                drop(service);
                 #[cfg(feature = "qemu-diagnostics")]
                 self.cancel_lease_deadline();
                 cx.waker().wake_by_ref();
@@ -1207,21 +1224,16 @@ impl RxRxFuture {
                 // (no hold) cancels any stale one. The expiry is read from
                 // the committed Service lease while the guard is still held.
                 #[cfg(feature = "qemu-diagnostics")]
-                let lease_expiry = service.diag_lease_expiry();
-                drop(service);
-                #[cfg(feature = "qemu-diagnostics")]
-                self.arm_lease_deadline(cx, lease_expiry);
+                self.arm_lease_deadline(cx, waiting_lease_expiry);
                 Poll::Pending
             }
             RoundOutcome::RegisterRecheck => {
-                drop(service);
                 #[cfg(feature = "qemu-diagnostics")]
                 self.cancel_lease_deadline();
                 self.poll_register_recheck(cx)
             }
             #[cfg(feature = "qemu-diagnostics")]
             RoundOutcome::SleepUntil(deadline) => {
-                drop(service);
                 self.arm_lease_deadline(cx, deadline);
                 Poll::Pending
             }
@@ -1229,7 +1241,6 @@ impl RxRxFuture {
                 // Task 3.7: commit `Active -> Faulted` first, publish only on
                 // success, so a woken stack waiter observes Faulted.
                 self.publish_fatal();
-                drop(service);
                 Poll::Ready(())
             }
         }
@@ -1331,6 +1342,7 @@ impl RxRxFuture {
     fn publish_fatal(&self) {
         if self.transition_fatal() {
             self.notify.publish_progress();
+            self.stack_notify.publish_device();
         }
     }
 
@@ -1415,6 +1427,8 @@ fn spawn_rx_task() {
                 service: ServiceAccess::Global,
                 lifecycle: &RX_LIFECYCLE,
                 notify: &QUEUE_EVENT,
+                stack_notify: &STACK_EVENT,
+                stack_progress_pending: false,
                 telemetry: &RX_TELEMETRY,
                 #[cfg(feature = "qemu-diagnostics")]
                 lease_deadline: None,
@@ -1602,6 +1616,7 @@ mod tests {
         device::{Device, RxCopyStep, RxStep, TxOutcome, TxPreflight, TxReclaimStep, TxSubmitStep},
         router::{Router, RxOwnerView},
         service::Service,
+        stack_runner::StackEvent,
     };
 
     #[derive(Default)]
@@ -2484,6 +2499,8 @@ mod tests {
             service: ServiceAccess::Injected(service_mutex),
             lifecycle,
             notify,
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
             telemetry,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
@@ -2615,6 +2632,8 @@ mod tests {
             service: ServiceAccess::Global,
             lifecycle,
             notify,
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
             telemetry,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
@@ -2877,6 +2896,35 @@ mod tests {
         // Visible TX completion keeps the round self-waking once.
         assert_eq!(count.load(Ordering::Relaxed), 1);
         assert!(mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn rx_copy_publishes_the_independent_stack_event() {
+        let (mutex, _, control) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
+        control.completion_visible.store(true, Ordering::Relaxed);
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let stack_wakes = Arc::new(AtomicUsize::new(0));
+        stack_notify.register(&counting_waker(stack_wakes.clone()));
+        let mut fut = RxRxFuture {
+            service: ServiceAccess::Injected(mutex),
+            lifecycle,
+            notify: queue_notify,
+            stack_notify,
+            stack_progress_pending: false,
+            telemetry: Box::leak(Box::new(RxTelemetry::new())),
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
+        };
+
+        let owner_wakes = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, owner_wakes), Poll::Pending));
+        assert_eq!(stack_notify.generation(), 1);
+        assert_eq!(stack_wakes.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -3275,6 +3323,8 @@ mod tests {
             service: ServiceAccess::Global,
             lifecycle,
             notify: Box::leak(Box::new(QueueEvent::new())),
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
             telemetry,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,

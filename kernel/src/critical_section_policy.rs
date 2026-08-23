@@ -1,9 +1,8 @@
 //! Restore-policy seam for the shared kernel critical-section implementation.
 //!
 //! Kept dependency-free (no `axhal`, no `critical_section`, no atomics) so the
-//! same file compiles both as the kernel module
-//! `crate::drivers::critical_section_policy` and, via `#[path]` include, inside
-//! `tests/ms04-async-rx-host-harness.rs`.
+//! same file compiles both as the kernel module `crate::critical_section_policy`
+//! and, via `#[path]` include, inside `tests/ms04-async-rx-host-harness.rs`.
 //!
 //! ## Semantics
 //!

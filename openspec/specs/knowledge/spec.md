@@ -393,3 +393,36 @@ iteration 009
 - **WHEN** MS05 或后续 change 依赖 MS04 异步 RX
 - **THEN** MUST 按 R51 重跑其受影响的核心模式，或明确引用未受影响的既有证据
 - **AND** MUST 将完整 compatibility、SMP、真板和性能资格作为独立 Gate 处理
+
+### Requirement: K43 — 构建 Gate 的环境噪声与产品失败分层
+
+构建 Gate MUST 以匹配目标平台的命令、最终退出码、首个决定性失败层和预期产物共同
+判定。依赖探测、自动安装或联网的中间告警不能单独构成产品失败或 `ENV BLOCK`。
+
+**证据**: R39、R44；MS06 `000-resident-stack-runner/000-initial.md` Act Response；用户于
+2026-08-23 在正常宿主执行默认 QEMU `make build` exit 0 并生成 ELF/bin
+**状态**: ✅ 已验证，2026-08-23
+
+- **命令资格**: target、feature、平台配置或产品入口不匹配时，结果是 invalid witness；
+  修正命令后重跑，不计入产品失败次数。
+- **工具资格**: 实际工具调用优先于包管理器登记。只读 Cargo home 可使
+  `cargo install --list` 失败并触发错误的安装分支，但随后 `rust-objcopy` 成功执行说明
+  工具可用。
+- **结果优先级**: 最终 exit 0 且预期产物生成是 PASS；最终非零且有编译、链接、断言
+  或验证诊断是产品 FAIL；只有最终非零且最早失败层纯属权限、网络、syscall 或硬件能力
+  限制时才是 `ENV BLOCK`。
+- **交叉验证边界**: 用户宿主复跑必须使用同一产品命令才能替代 sandbox Gate。不同平台
+  命令成功只能解除共享工具链疑点，不能关闭原平台失败。
+
+#### Scenario: 构建准备阶段报安装或联网错误
+
+- **WHEN** 构建日志先出现 Cargo home 只读、自动安装或联网失败
+- **THEN** MUST 继续读取命令的最终退出码和后续编译、链接、objcopy、产物结果
+- **AND** MUST NOT 在命令仍可继续并成功生成产物时标记 blocker
+- **AND** MUST 在最终非零时按首个决定性产品或环境失败层分类
+
+#### Scenario: 用户在 sandbox 外提供构建结果
+
+- **WHEN** 用户手工构建用于解除 agent 的环境疑点
+- **THEN** MUST 对比 target、feature、平台配置和产品入口
+- **AND** MUST 只关闭该命令实际覆盖的 Gate

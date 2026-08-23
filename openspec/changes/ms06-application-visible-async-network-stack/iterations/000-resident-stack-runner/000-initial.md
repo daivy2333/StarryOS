@@ -278,41 +278,71 @@ Act Response记录命令、关键输出、exit和revision即可；本Cycle没有
 
 ## Act Response
 
-- Status: pending
+- Status: blocked
 
 **Implemented**
 
-Pending.
+- Task 1.1：新增独立 `StackEvent`、Release/Acquire generation、唯一 runner lifecycle、固定 task name 和可注入 spawn seam；device/software publication 不修改 queue generation。
+- Task 1.2：Router RX 与 dispatch 改为预算 32 的有界推进，RX 使用持久 round-robin cursor，并保留 Full、drop、fault、ticket 和 packet ownership 语义。
+- Task 1.3：Service 按固定顺序执行有界 stack round，返回 work、backlog、self-yield、socket change、space wake、TX enqueue、fault、protocol deadline 和 polling requirement。
+- Task 1.4：实现 generation register-recheck、runner-owned `poll_at` timer、10 ms lifecycle fallback、Active IRQ quiet 和 Faulted no-fallback；wake、timer arm 和 Pending 均在 guard 释放后发生。
+- Task 1.5 的代码部分：Service 安装后启动唯一 runner，导出只读 T09 snapshot，并保留本 Iteration 的 socket inline poll、register_waker 和 timeout 兼容层。该 task 因受支持 D1 Gate 未通过而未标记完成。
 
 **Changed Files and Symbols**
 
-Pending.
+- `crates/axnet/src/stack_runner.rs`：`StackEvent`、`StackRunnerLifecycle`、`StackRunnerFuture`、`StackTelemetry`、`StackSnapshot`、`start_stack_runner`。
+- `crates/axnet/src/async_rx.rs`：`RxRxFuture::stack_notify`、guard 释放后的 stack progress/fatal publication。
+- `crates/axnet/src/router.rs`：`RouterRxOutcome`、`RouterDispatchOutcome`、`Router::poll_bounded`、`Router::dispatch_bounded`、`rx_cursor`。
+- `crates/axnet/src/service.rs`：`STACK_STAGE_BUDGET`、`StackRoundOutcome`、`Service::stack_round`。
+- `crates/axnet/src/lib.rs`：runner module/export 与 `init_network` 启动顺序。
+- `crates/axnet/src/device/tests.rs` 及上述模块 tests：31/32/33、round-robin、公平性、event/lifecycle/timer/quiet/lock 和 snapshot witnesses。
+- `openspec/changes/ms06-application-visible-async-network-stack/tasks.md`：仅将已完成的 1.1–1.4 标记为完成；1.5 保持未完成。
 
 **Deviations from Plan**
 
-Pending.
+- root D1 原命令必须补充 RISC-V target，宿主 target 会在 `sbi-rt` 报无效寄存器。补充 target 后，仓库的 `lichee-d1-smoke` feature 组合仍因裁掉 `kernel::drivers` 却继续导入 `drivers::critical_section_policy` 而失败。
+- 仓库正式 `make ... APP_FEATURES=lichee-d1 ... build` 同样复现该条件编译错误。这些路径没有编译到 axnet，未对 Cycle 代码作越界修复。
+- Act 沙箱中的 `cargo-binutils` 安装告警来自只读 `$HOME` 与受限网络造成的依赖探测假阴性，不是产品工具链缺失。用户在正常宿主环境执行默认 QEMU `make build` 已成功生成 ELF/bin；该结果只解除工具链疑点，不替代 D1 Gate。
 
 **Blocker Handoff**
 
-None.
+- Task/step/Gate：Task 1.5，受支持 root D1 compile，Acceptance 7 / Gate 6。
+- Plan 预期：root D1 支持组合 exit 0。
+- 实际：不带 target 的 root 命令在宿主架构触发 `sbi-rt` invalid-register，属于无效 D1 诊断，不计产品 Gate。显式使用 `riscv64gc-unknown-none-elf` 后，`kernel/src/lib.rs:66` 报 `E0432/E0433`；仓库正式 D1 make build 复现相同错误。根因是提交 `661f6fcd8` 将 shared critical-section policy 放入 `drivers`，而 `lichee-d1-smoke` 会排除整个 `drivers` 模块。
+- 影响：Tasks 1.1–1.4 已完成；Task 1.5 代码和除 D1 外的 Gate 已完成，但 Acceptance 7 未闭合，Cycle 不能 reported。
+- 建议的 rework 边界：把 `critical_section_policy` 提升为不受 `lichee-d1-smoke` 排除的 kernel shared module，保持 production impl 与 MS04 host harness 复用同一 policy；不得把完整 drivers 子系统拉回 smoke，也不得简单删除 smoke 下的 critical-section impl。修复后重跑 MS04 harness、root D1 check、`make lichee`、QEMU kernel check 和本 Cycle 完整 Gate。
+- 恢复条件：`openspec-plan` Review 当前 blocked Response，将该基线变化分类并在同一 Iteration 创建 rework Cycle。若用户改为停止维护 D1，则属于支持范围和 Acceptance 变化，必须 replan，不能在 Act 中直接删除 D1 Gate。
+- Evidence：None required；错误可由下列命令和两行 kernel 条件编译关系低成本复现。
 
 **Blocker Resolution**
 
-None.
+None. 用户手工 `make build` 只纠正了工具链判断；D1 产品 blocker 仍存在，因此本 Cycle 不恢复为 `pending`。
 
 **Self-Review**
 
-- Plan compliance: BLOCKED
-- Full diff reviewed: BLOCKED
+- Plan compliance: BLOCKED（受支持 D1 Acceptance 未通过）
+- Full diff reviewed: PASS
 - Critical findings unresolved: 0
 - Important findings unresolved: 0
 - Minor findings unresolved: 0
 
-Pending implementation and review.
+完整代码 diff 与新增文件已审查；未发现 Cycle 范围内的 Critical、Important 或 Minor finding。用户已暂存的 `openspec/specs/improvements/spec.md` 未修改、未归因于本 Cycle。
 
 **Verification Evidence**
 
-Pending.
+- Revision：`b8e7bcae27579aa7ea7bf31698e3136f5856302d`；工作区实现未提交。
+- `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib` → exit 0，239 passed。
+- `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib --features qemu-diagnostics` → exit 0，259 passed。
+- StackEvent/runner register、lifecycle、timer、quiet 和 lock targeted tests ×100 → 每次 exit 0；ordinary 与 qemu-diagnostics targeted suites 均通过。
+- `cargo check --manifest-path crates/axnet/Cargo.toml --locked --offline` 及 `--features qemu-diagnostics` → exit 0。
+- `cargo check --locked --offline -p starry-kernel --features qemu` → exit 0；仅证明 QEMU kernel compile，不是 runtime evidence。
+- `cargo check --locked --offline --features lichee-d1` → exit 101，宿主 target 下 `sbi-rt` 43 个 invalid register；命令缺少 D1 target，不计产品 Gate。
+- `cargo check --locked --offline --target riscv64gc-unknown-none-elf --features lichee-d1` → exit 101，`kernel/src/lib.rs:66` 的 `E0432/E0433`。
+- `make ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$PWD/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build` → exit 2，复现相同 kernel 错误；沙箱中的 `cargo-binutils` 探测告警是环境噪声。
+- 用户于 2026-08-23 在正常宿主环境执行默认 `make build` → exit 0，release profile 完成并由 `rust-objcopy` 生成 `StarryOS_riscv64-qemu-virt.bin`；证明本机工具链和 QEMU 产品构建正常，不证明 D1 feature。
+- `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check`、`git diff --check` → exit 0。
+- source assertions → PASS：新增 stack 数据路径仅含预算受限循环；guard 在 wake/Pending 前释放；software event 不调用 queue-only publication；TCP/UDP inline poll 和 register_waker 仍存在。
+- `openspec validate ms06-application-visible-async-network-stack --strict` → exit 0，change valid。
 
 **Persisted Evidence**
 
@@ -324,52 +354,115 @@ None.
 
 **Remaining Issues**
 
-Pending implementation.
+- 当前 blocker：root D1 支持组合因 shared critical-section policy 的模块归属与 `lichee-d1-smoke` 条件编译冲突而无法编译；工具链不再是 blocker。
+- Tasks 2.1–3.4 未开始，仍属于后续 Iteration；本 Cycle 未宣称 T10 multiwaiter/readiness 或 QEMU runtime 完成。
 
 **Commit or Diff Reference**
 
-None.
+- Working-tree diff at revision `b8e7bcae27579aa7ea7bf31698e3136f5856302d`; no commit created.
 
 ## Plan Review
 
-- Status: pending
+- Status: reviewed
 
 **Review Result**
 
-Pending.
+rework-required
 
 **Findings**
 
-Pending.
+独立检查当前代码、完整 diff、Act Response、Self-Review 和 fresh 自动验证后，Tasks
+1.1–1.4 的产品实现可以保留，但当前 Iteration 的 Acceptance 2、3、7 尚未全部满足。
+
+1. **Important — D1 产品 Gate 仍失败。** 根 `lichee-d1` feature 会启用
+   `starry-kernel/lichee-d1-smoke`；该 mode 在 `kernel/src/lib.rs` 排除整个
+   `drivers`，无条件编译的 `critical_impl` 却仍导入
+   `drivers::critical_section_policy`。显式 RISC-V target check 稳定报
+   `E0432/E0433`。该错误在 Plan revision 前已经存在，但 Plan 没有运行获批契约要求
+   的 root D1 基线，因此不是 MS06 Act 引入的回归，也不能豁免 Acceptance 7。
+2. **Important — future-level interleaving/timer witness 不完整。** 当前
+   `event_before_register_is_seen_by_generation_recheck` 和
+   `event_during_register_window_wakes_and_changes_generation` 只直接测试 `StackEvent`；
+   `deadline_selection_replaces_earlier_and_later_deadlines` 只测试 deadline 的 `min`。
+   100×重跑能证明这些静态用例稳定，但没有让事件穿过
+   `StackRunnerFuture::poll` 的 snapshot/register/round/recheck 路径，也没有验证实际
+   timer replacement 与 stale deadline 不触发。Task 1.4 和 Acceptance 2 明确要求
+   future-level register interleaving、replacement 和 stale-wake 见证。
+3. **Important — 完整 stack round 的 stage/fault witness 不完整。** 当前
+   `run_bounded_stage` 的 31/32/33 tests 证明单个 helper 有界；既有 RX-space 与
+   TX-enqueue tests 证明各自路径，但没有直接证明 Router RX 达到 32 后，后续
+   ingress/egress/dispatch 仍执行，也没有断言 `StackRoundOutcome::faulted`。Task 1.3
+   和 Acceptance 3 要求前 stage 达预算不跳过后 stage及 fault propagation。
+4. **PASS — 已实现的数据面和 runner 边界可保留。** Router/Service 循环均受 32
+   budget 约束；device progress 在释放 Service guard 后发布独立 `StackEvent`；
+   stack runner 在 wake、timer arm 和 Pending 前释放 Service/SocketSet guard；legacy
+   socket inline poll、queue owner、64-frame slots、typed outcome、ticketed flush 和
+   V1/V2/V3 ABI 未被切换。
+5. **PASS — 未发现新的产品代码 Critical/Important finding。** ordinary 239/239、
+   qemu-diagnostics 259/259、MS04 host harness 16/16、QEMU kernel check、strict
+   OpenSpec 和 diff check 均通过。现有 warning 不属于本 Cycle 新增 Acceptance gap。
+6. **Worktree note — 用户内容保持隔离。** Review 期间工作树还出现了 SNAPSHOT、
+   regression Runbook、knowledge、references 与 improvements 修改；它们不属于本
+   Cycle。Review 未修改、未归因这些路径，也不把 index 状态当作提交边界。
 
 **Deviation Classification**
 
-None.
+- `PLAN-OMISSION`：Plan 在记录 root D1 为必过 Gate 时没有建立该受支持 feature
+  组合的 fresh baseline，遗漏了早已存在的 shared policy 模块可达性错误。
+- `ACT-DEVIATION`：Act 报告 Task 1.3/1.4 的计划内 stage/fault 与 future-level
+  interleaving/timer witnesses 已完成，但实际 tests 只覆盖单 helper 或纯函数层。
+- `NEW-EVIDENCE`：本次 Review fresh 复验确认 axnet、MS04 host harness、QEMU compile
+  通过，D1 target compile 以同一 `E0432/E0433` 失败，且现有 runner suite 100×稳定。
 
 **Acceptance Gaps**
 
-Pending.
+1. Acceptance 7 / Task 1.5：受支持 root D1 feature 组合必须在 RISC-V target 下编译
+   通过，同时保持 QEMU 与 MS04 critical-section restore witness。
+2. Acceptance 2 / Task 1.4：必须用完整 `StackRunnerFuture` 路径证明 generation
+   interleaving 会 self-wake/retry，并证明实际 timer replacement、stale deadline 和
+   exactly-once expiry。
+3. Acceptance 3 / Task 1.3：必须证明前 stage 达到 budget 后不跳过后 stage，并让
+   Router RX/TX fault 显式出现在 `StackRoundOutcome`。
 
 **Convergence**
 
-N/A.
+N/A（initial Cycle）。三个缺口均已定位到原 Task 1.3–1.5，已有实现和通过的回归可
+保留；没有目标、范围、依赖或验收边界变化。
 
 **Evidence**
 
-Pending.
+- `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib` → exit 0，
+  239 passed。
+- 同命令增加 `--features qemu-diagnostics` → exit 0，259 passed。
+- ordinary 与 qemu-diagnostics 的 `stack_runner::tests::` 各重复 100 次 →
+  100/100 PASS；测试清单确认缺少完整 future interleaving 和 timer stale/replacement
+  场景。
+- `rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs ...` 并执行 →
+  exit 0，16 passed。
+- `cargo check --locked --offline -p starry-kernel --features qemu` → exit 0。
+- `cargo check --locked --offline --target riscv64gc-unknown-none-elf --features lichee-d1`
+  → exit 101，`kernel/src/lib.rs:66` 的 `E0432/E0433`；`drivers` 被
+  `lichee-d1-smoke` cfg 排除。
+- `openspec validate ms06-application-visible-async-network-stack --strict`、
+  `git diff --check` → exit 0。
+- Persisted Evidence 仍为 `none`；以上结果均可低成本重跑，缺少 Evidence 目录不是
+  finding。
 
 **Follow-up Decision**
 
-Pending.
+在当前 `000-resident-stack-runner` Iteration 创建一个 rework Cycle。三个 repair
+item 只关闭既有 Acceptance：提升 shared critical-section policy 的模块可达性、补齐
+完整 stack-round stage/fault witnesses、补齐 future-level generation/timer witnesses。
+不新增全局 task，不修改 Iteration Map，不提前进入 readiness bridge。
 
 **Iteration Plan Update**
 
-Pending.
+None。Iteration 000 的目标、范围、依赖、稳定基线和验收边界保持不变。
 
 **Next Cycle**
 
-None.
+`001-rework.md`
 
 **Next Iteration**
 
-`../001-socket-and-listener-readiness-bridge/000-initial.md` after this Cycle is accepted; do not create it before Plan Review.
+None。Iteration 000 尚未 accepted；不得创建 Iteration 001。

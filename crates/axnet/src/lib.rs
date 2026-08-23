@@ -30,6 +30,7 @@ pub mod options;
 mod router;
 mod service;
 mod socket;
+mod stack_runner;
 pub(crate) mod state;
 /// TCP socket implementation.
 pub mod tcp;
@@ -64,6 +65,7 @@ pub use self::{
         rx_snapshot_v3, software_nudge, start_rx_task,
     },
     socket::*,
+    stack_runner::{StackSnapshot, stack_snapshot},
 };
 
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
@@ -134,6 +136,9 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         }
     });
     SERVICE.call_once(|| Mutex::new(service));
+    if let Err(err) = stack_runner::start_stack_runner() {
+        warn!("stack runner already started: {err:?}");
+    }
 }
 
 /// Init vsock subsystem by vsock devices.
