@@ -27,6 +27,7 @@ mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
+mod readiness;
 mod router;
 mod service;
 mod socket;
@@ -163,6 +164,7 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 pub fn poll_interfaces() {
     let owner = RX_LIFECYCLE.owner_view();
     while get_service().poll(owner, &mut SOCKET_SET.inner.lock()) {}
+    LISTEN_TABLE.drain_accept_wakes();
 }
 
 /// Applies a QEMU-only bounded pressure control (D9).

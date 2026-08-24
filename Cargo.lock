@@ -719,7 +719,6 @@ dependencies = [
  "cfg-if",
  "embassy-sync",
  "enum_dispatch",
- "event-listener",
  "hashbrown",
  "lazy_static",
  "log",

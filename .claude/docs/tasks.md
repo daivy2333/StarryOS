@@ -21,8 +21,8 @@
 | <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ✅ 完成（MS04 核心 Gate；兼容性重复项按用户授权豁免） |
 | <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ✅ 完成（MS05） |
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
-| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ⏳ 待规划（T08 已完成） |
-| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ⏳ 等待 T09 |
+| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | 🔄 进行中（MS06 Iteration 000 `001-rework` accepted，Tasks 1.1–1.5 全部闭合） |
+| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | 🔄 进行中（MS06 Iteration 001 `002-rework.md` ready，Gate 2 PASS，用户于 2026-08-24 批准，等显式 `openspec-act` 执行） |
 | <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 等待 T10 |
 | <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ⏳ 等待 T11 |
 | <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待 T12 |
@@ -317,6 +317,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前活跃 change：`ms06-application-visible-async-network-stack`（MS06，T09–T10）。位于 `openspec/changes/ms06-application-visible-async-network-stack/`；3 个 Iteration 规划，13/13 tasks，RTM 全 Covered；Gate 1 与 Gate 2 已于 2026-08-21 由用户批准；当前 Iteration `000-resident-stack-runner` / Cycle `000-initial.md` 处于 Act 阶段（Act Response 与 Plan Review 仍 pending），旧 socket inline poll / `Service::register_waker` / `Service::timeout` 在本 Iteration 保留为兼容层，Iteration 001 原子切换 readiness。
+当前活跃 change：`ms06-application-visible-async-network-stack`（MS06，T09–T10）。位于 `openspec/changes/ms06-application-visible-async-network-stack/`；3 个 Iteration 规划，10/14 tasks，RTM 全 Covered（Iteration 002 Tasks 3.1–3.4 待启动）；Gate 1 与 Gate 2 已于 2026-08-21 由用户批准；当前 Iteration `001-socket-and-listener-readiness-bridge` / Cycle `002-rework.md` ready，Gate 2 PASS，用户于 2026-08-24 显式批准（原话：“批准”），等显式 `openspec-act` 调用执行；Iteration 000 已通过 Cycle `001-rework` accepted，Tasks 1.1–1.5 全部闭合。Iteration 002 仍 pending，需 Iteration 001 accepted 后展开。
 
 MS05 已于 2026-08-19 归档并完成 T07–T08。

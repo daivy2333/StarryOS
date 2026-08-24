@@ -1,4 +1,4 @@
-use alloc::vec;
+use alloc::{sync::Arc, vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     task::Context,
@@ -23,7 +23,7 @@ use crate::{
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces,
+    readiness::ReadinessBridge,
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
@@ -37,6 +37,7 @@ pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
 /// A UDP socket that provides POSIX-like APIs.
 pub struct UdpSocket {
     handle: SocketHandle,
+    readiness: Arc<ReadinessBridge>,
     local_addr: RwLock<Option<IpEndpoint>>,
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
 
@@ -48,10 +49,11 @@ impl UdpSocket {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let socket = new_udp_socket();
-        let handle = SOCKET_SET.add(socket);
+        let (handle, readiness) = SOCKET_SET.add_public(socket);
 
         Self {
             handle,
+            readiness,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
 
@@ -141,11 +143,10 @@ impl SocketOps for UdpSocket {
                 smol::BindError::Unaddressable => ax_err_type!(ConnectionRefused, "unaddressable"),
             })
         })?;
-        self.general
-            .set_device_mask(get_service().device_mask_for(&endpoint));
 
         *guard = Some(local_endpoint);
         info!("UDP socket {}: bound on {}", self.handle, endpoint);
+        crate::stack_runner::publish_software_work();
         Ok(())
     }
 
@@ -163,6 +164,7 @@ impl SocketOps for UdpSocket {
         let src = get_service().get_source_address(&remote_addr.addr);
         *guard = Some((remote_addr, src));
         debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
+        crate::stack_runner::publish_software_work();
         Ok(())
     }
 
@@ -186,8 +188,7 @@ impl SocketOps for UdpSocket {
             )))?;
         }
         self.general.send_poller(self, || {
-            poll_interfaces();
-            self.with_smol_socket(|socket| {
+            let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not connected
                     Err(ax_err_type!(NotConnected))
@@ -213,7 +214,11 @@ impl SocketOps for UdpSocket {
                     assert_eq!(read, buf.len());
                     Ok(read)
                 }
-            })
+            });
+            if result.is_ok() {
+                crate::stack_runner::publish_software_work();
+            }
+            result
         })
     }
 
@@ -236,12 +241,12 @@ impl SocketOps for UdpSocket {
         };
 
         self.general.recv_poller(self, || {
-            poll_interfaces();
-            self.with_smol_socket(|socket| {
+            let result = self.with_smol_socket(|socket| {
                 if !socket.is_open() {
                     // not bound
                     Err(ax_err_type!(NotConnected))
                 } else if !socket.can_recv() {
+                    info!("UDP socket {}: recv recheck WouldBlock", self.handle);
                     Err(AxError::WouldBlock)
                 } else {
                     let result = if options.flags.contains(RecvFlags::PEEK) {
@@ -271,6 +276,7 @@ impl SocketOps for UdpSocket {
                             if read < src.len() {
                                 warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
                             }
+                            info!("UDP socket {}: recv {} bytes", self.handle, read);
 
                             Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
                                 src.len()
@@ -284,7 +290,11 @@ impl SocketOps for UdpSocket {
                         }
                     }
                 }
-            })
+            });
+            if result.is_ok() && !options.flags.contains(RecvFlags::PEEK) {
+                crate::stack_runner::publish_software_work();
+            }
+            result
         })
     }
 
@@ -306,40 +316,70 @@ impl SocketOps for UdpSocket {
 
     fn shutdown(&self, _how: Shutdown) -> AxResult {
         // TODO(mivik): shutdown
-        poll_interfaces();
-
         self.with_smol_socket(|socket| {
             debug!("UDP socket {}: shutting down", self.handle);
             socket.close();
         });
+        crate::stack_runner::publish_software_work();
         Ok(())
     }
 }
 
 impl Pollable for UdpSocket {
     fn poll(&self) -> IoEvents {
-        poll_interfaces();
-        if self.local_addr.read().is_none() {
-            return IoEvents::empty();
-        }
-
-        let mut events = IoEvents::empty();
-        self.with_smol_socket(|socket| {
-            events.set(IoEvents::IN, socket.can_recv());
-            events.set(IoEvents::OUT, socket.can_send());
-        });
-        events
+        let bound = self.local_addr.read().is_some();
+        self.with_smol_socket(|socket| udp_readiness(socket, bound))
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            self.general.register_waker(context.waker());
-        }
+        self.readiness.register(events, context.waker());
+        let bound = self.local_addr.read().is_some();
+        let ready = self.with_smol_socket(|socket| {
+            let slot_ready = self.readiness.rearm(socket, events);
+            let full = udp_readiness(socket, bound);
+            slot_ready | (full & events)
+        });
+        self.readiness.wake(ready);
+    }
+}
+
+impl<'a> super::readiness::OneShotSocket for smol::Socket<'a> {
+    fn rearm_read(&mut self, waker: &core::task::Waker) -> bool {
+        self.register_recv_waker(waker);
+        self.can_recv()
+    }
+
+    fn rearm_write(&mut self, waker: &core::task::Waker) -> bool {
+        self.register_send_waker(waker);
+        self.can_send()
     }
 }
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
+        // T2.7: dropping a socket whose TX buffer still holds an
+        // undispatched datagram must NOT reset/remove it (smoltcp `close()`
+        // resets the TX buffer; removing drops the queued packet). The
+        // resident runner dispatches the queued datagram in its egress
+        // rounds and the reaper reclaims the raw handle once the TX drained
+        // (guest MS01 udp-bidirectional lost the fork child's echo otherwise).
+        let has_queued_tx = {
+            let sockets = crate::SOCKET_SET.inner.lock();
+            sockets.get::<smol::Socket>(self.handle).can_send()
+        };
+        if has_queued_tx {
+            if let Some(service) = crate::SERVICE.get() {
+                crate::SOCKET_SET.retire_public(self.handle);
+                service
+                    .lock()
+                    .queue_deferred_removal(self.handle, crate::service::CloseKind::UdpQueued);
+                crate::stack_runner::publish_software_work();
+                return;
+            }
+            // No resident runner installed: fall through to the safe
+            // immediate teardown (the queued datagram is lost, matching the
+            // pre-fix close semantics when there is no runner to dispatch).
+        }
         self.shutdown(Shutdown::Both).ok();
         SOCKET_SET.remove(self.handle);
     }
@@ -358,4 +398,99 @@ fn get_ephemeral_port() -> AxResult<u16> {
         *curr += 1;
     }
     Ok(port)
+}
+
+/// Task 2.5: the single UDP readiness predicate shared by `poll` and the
+/// register recheck, so readiness agrees with the next `recv`/`send`.
+/// `bound` mirrors the axnet `local_addr` state; shut-down sockets report HUP.
+fn udp_readiness(socket: &smol::Socket, bound: bool) -> IoEvents {
+    if !bound {
+        return IoEvents::empty();
+    }
+    let mut events = IoEvents::empty();
+    if socket.is_open() {
+        if socket.can_recv() {
+            events.insert(IoEvents::IN);
+        }
+        if socket.can_send() {
+            events.insert(IoEvents::OUT);
+        }
+    } else {
+        events.insert(IoEvents::HUP);
+    }
+    events
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use axpoll::IoEvents;
+    use smoltcp::wire::IpListenEndpoint;
+
+    use super::{new_udp_socket, udp_readiness};
+
+    #[test]
+    fn unbound_socket_reports_no_readiness() {
+        let socket = new_udp_socket();
+        assert!(udp_readiness(&socket, false).is_empty());
+    }
+
+    #[test]
+    fn bound_socket_with_send_room_reports_out() {
+        let mut socket = new_udp_socket();
+        assert!(
+            socket
+                .bind(IpListenEndpoint {
+                    addr: None,
+                    port: 9000
+                })
+                .is_ok()
+        );
+        let events = udp_readiness(&socket, true);
+
+        assert!(events.contains(IoEvents::OUT));
+        assert!(!events.contains(IoEvents::IN));
+        assert!(!events.contains(IoEvents::HUP));
+    }
+
+    #[test]
+    fn closed_socket_reports_hup_and_no_io() {
+        let mut socket = new_udp_socket();
+        socket
+            .bind(IpListenEndpoint {
+                addr: None,
+                port: 9001,
+            })
+            .unwrap();
+        socket.close();
+        let events = udp_readiness(&socket, true);
+
+        assert!(events.contains(IoEvents::HUP));
+        assert!(!events.contains(IoEvents::IN));
+        assert!(!events.contains(IoEvents::OUT));
+    }
+
+    #[test]
+    fn rebound_socket_after_close_reports_io_again() {
+        let mut socket = new_udp_socket();
+        socket
+            .bind(IpListenEndpoint {
+                addr: None,
+                port: 9002,
+            })
+            .unwrap();
+        socket.close();
+        assert!(
+            socket
+                .bind(IpListenEndpoint {
+                    addr: None,
+                    port: 9003
+                })
+                .is_ok()
+        );
+        let events = udp_readiness(&socket, true);
+        assert!(events.contains(IoEvents::OUT));
+        assert!(!events.contains(IoEvents::HUP));
+    }
 }

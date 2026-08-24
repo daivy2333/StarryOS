@@ -52,7 +52,7 @@ stack runner MUST 通过一个独立的 generation + single-runner waker 入口�
 
 ### Requirement: 有界推进、公平性与 quiet path
 
-每个 stack runner poll MUST 分别限制 Router RX、smoltcp ingress、smoltcp egress 和 Router dispatch 的工作量，并在一次轮次中为每个 stage 提供运行机会。达到 budget 且仍有可推进工作时 runner MUST self-wake 后返回 `Pending`；无工作、无到期 timer 且 IRQ-backed queue 已激活时 MUST 保持休眠。
+每个 stack runner poll MUST 分别限制 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、listener pending reconciliation 和 deferred socket retirement 的工作量，并在一次轮次中为每个 stage 提供运行机会。达到 budget 且仍有可立即推进工作时 runner MUST self-wake 后返回 `Pending`；无工作、无到期 timer 且 IRQ-backed queue 已激活时 MUST 保持休眠。
 
 #### Scenario: 精确 budget 边界
 
@@ -66,6 +66,18 @@ stack runner MUST 通过一个独立的 generation + single-runner waker 入口�
 - **THEN** runner MUST 在固定 stage 顺序中仍执行其他 stage 并定期让出 CPU
 - **AND** queue task、应用 task 和相反方向 MUST NOT 因单轮无界 drain 被饿死
 
+#### Scenario: Deferred close storm
+
+- **WHEN** 至少 512 个 TCP handle 已提交 deferred close，且其中部分仍等待 peer ACK
+- **THEN** 每个 runner poll 检查的 deferred entry 数 MUST 不超过固定 budget，并从持久 cursor 继续后续 entry
+- **AND** listener refill、UDP progress、Router RX/dispatch 和应用 task MUST NOT 被全表扫描或仅由未确认 entry 触发的 busy self-wake 饿死
+
+#### Scenario: Listener reconciliation budget
+
+- **WHEN** listener queue含31、32、33或512个pending hidden slots，且其中任意位置发生Ready、Reset或`SynReceived → Listen`转换
+- **THEN** 每个runner poll检查的pending slot数 MUST 不超过固定budget，并从持久cursor继续
+- **AND** 同一round MUST NOT 在每个ingress step后重新扫描完整listener queue
+
 #### Scenario: 活跃 IRQ 设备空闲
 
 - **WHEN** queue lifecycle 为 Active、无 stack event、无 socket work 且 `poll_at` 无 deadline
@@ -77,6 +89,12 @@ stack runner MUST 通过一个独立的 generation + single-runner waker 入口�
 - **WHEN** queue lifecycle 仍为 Polling/Spawned/Unavailable，或选中设备明确要求 polling
 - **THEN** runner MUST 以有界 10ms fallback 提供旧数据路径进展
 - **AND** lifecycle 变为 Active 后该 fallback MUST 停止，变为 Faulted 后 MUST 保持 async ownership 并传播错误而不得回退第二 owner
+
+#### Scenario: 单轮时间戳一致
+
+- **WHEN** runner 开始一次 poll 并推进协议栈、计算 `poll_at` 和维护 timer
+- **THEN** Router、smoltcp、Service outcome 与 timer decision MUST 使用该轮同一次时钟采样
+- **AND** host/model injected clock MUST 进入同一 Service 路径，使时间推进能确定性触发 delayed ACK、retransmit 和 close confirmation
 
 ### Requirement: 锁序与 await 生命周期
 
@@ -126,6 +144,18 @@ TCP listener MUST 为其隐藏 smoltcp listener sockets 维护独立 accept brid
 - **THEN** public listener 的 accept PollSet MUST 唤醒全部 waiter并报告 `IN`
 - **AND** 紧随其后的 accept MUST 返回唯一连接或在并发 winner 已消费时返回 `WouldBlock`
 
+#### Scenario: 满 backlog 释放后立即恢复容量
+
+- **WHEN** 512个listener slot已满，先前overflow尝试已达到可判定终态，应用accept一个连接并立即发起新的loopback connect
+- **THEN** accept 提交必须在返回前恢复一个 idle hidden listener，且 recovery connect MUST NOT 因等待 runner reconcile 而返回 `ConnectionRefused`
+- **AND** refill 不得调用 caller-driven stack progress、改变 512 backlog 上限或违反 `SOCKET_SET → ListenTable entry` 的锁序子序列
+
+#### Scenario: 满 backlog overflow 与 RST 恢复
+
+- **WHEN** 满backlog期间的额外connect仍在runner ingress排队，或hidden listener在`SynReceived`收到RST并回到`Listen`
+- **THEN** 验证 MUST 把该overflow尝试的终态与后续headroom recovery分开判定
+- **AND** 回到`Listen`的pending hidden socket MUST 恢复为idle或被安全移除，不得永久占用pending slot
+
 #### Scenario: TCP 数据、EOF 与 half-close
 
 - **WHEN** TCP socket 有 buffered receive data、peer FIN 或本地 read shutdown
@@ -149,6 +179,12 @@ TCP listener MUST 为其隐藏 smoltcp listener sockets 维护独立 accept brid
 - **WHEN** UDP datagram 可读、完整 datagram buffer 可写或 socket 已关闭
 - **THEN** poll MUST 分别报告 `IN`、`OUT` 或 `HUP`
 - **AND** recv/send MUST 保持 datagram 原子性并与该 readiness 或并发 race 一致
+
+#### Scenario: UDP send 后立即关闭
+
+- **WHEN** UDP `sendto` 已把datagram提交到smoltcp TX buffer，但public handle在runner派发前关闭
+- **THEN** raw socket MUST 保留到runner完成该datagram派发，peer在fixed deadline内 MUST 收到完整datagram
+- **AND** TX buffer清空后raw handle和deferred entry MUST 恰好回收一次，空TX socket关闭不得被无条件延迟
 
 #### Scenario: 稳定数据面 fault
 

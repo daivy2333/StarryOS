@@ -95,7 +95,7 @@ MS05 已建立唯一双向 queue service 和有界 packet slots，但 smoltcp �
 - 默认决策：产品路径由唯一 stack runner 推进；TCP/UDP 不再依赖同步 `poll_interfaces()`；采用 `IN/OUT/RDHUP/HUP/ERR` 最小一致性契约；沿用 `PollSet` 64 容量与 overflow 唤醒重注册；listener 单独桥接隐藏 socket；未激活 queue 可有界 fallback，稳定 fault 不回退第二 owner。
 - 用户于 2026-08-21 审计集中决策、BDD 草图和 MS06 范围后回复“同意，继续吧”，正式批准 Requirements and Scope。
 
-## Gate 2
+## Initial Gate 2
 
 - Status: approved.
 - Investigation: PASS。已定位初始化顺序、Service/Router 推进链、QueueEvent/lifecycle、timer/fallback、TCP/UDP/listener waker、锁序、axpoll overflow 和现有测试入口，并记录当前 revision 的新鲜基线。
@@ -104,3 +104,17 @@ MS05 已建立唯一双向 queue service 和有界 packet slots，但 smoltcp �
 - Traceability and verification: PASS。9 个 delta requirements 全部映射到 design、task、Iteration、代码位置和测试见证；无 Missing 或未批准 Simplified。当前 Cycle 的 RED/GREEN、100×交错、编译、兼容、OpenSpec 和 diff Gate 已明确。
 - Persisted Evidence: `none`。Iteration 000 只有可低成本复现的 host/model、编译和审查 Gate，Act Response 足以记录决定性结果。
 - 用户于 2026-08-21 审计完整计划后回复“批准”，正式批准 Execution Readiness。
+
+## Cycle 003 Replan Gate 2
+
+- Status: approved。
+- Trigger: Cycle 002 Review确认runner/Service双时钟、无界deferred reaper和满backlog
+  accept→立即reconnect缺口；fresh QEMU原MS01无14/14或END。
+- Requirements and Scope: Gate 1不变。replan只补齐达到既有R2/R3/R4/R6和MS01兼容所需的
+  时间、budget和listener headroom契约，不增加用户可见目标。
+- Task contracts and iteration balance: PASS。16个任务分配到3个Iteration；Iteration 001增加
+  Tasks 2.6–2.7，Iteration 002保持原依赖和范围。
+- Investigation、Design、Traceability、Verification和Persisted Evidence：PASS，详见
+  `iterations/001-socket-and-listener-readiness-bridge/003-replan.md`。
+- User Approval: PASS。用户于2026-08-24回复“批准”；Cycle 003已由`draft`更新为`ready`，
+  等待显式`openspec-act`调用。

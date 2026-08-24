@@ -380,39 +380,84 @@ None.
 
 ## Plan Review
 
-- Status: pending
+- Status: reviewed
 
 **Review Result**
 
-Pending.
+accepted
 
 **Findings**
 
-Pending.
+独立检查实际代码、完整 Cycle 001 相关 diff、Act Response、Self-Review 和 fresh 验证后，
+三个父 Cycle Acceptance gap 均已关闭；未发现阻塞 Iteration 000 Acceptance 的问题。
+
+1. **PASS — 完整 stack round 的 stage/fault 见证成立。**
+   `service.rs` 的三个 `full_round_*` tests 直接调用实际 `Service::stack_round`：33 项 RX
+   在 32 budget 后仍执行 dispatch；RX fault 与 TX preflight fault 均进入
+   `StackRoundOutcome::faulted`。测试未复制生产 round helper，也未修改 packet、slot、
+   ticket 或 descriptor ownership。
+2. **PASS — future-level generation/timer 见证成立。**
+   `event_published_inside_round_retries_after_guard_release` 让事件在真实
+   `StackRunnerFuture::poll` 的 register 后、round 内发布；generation recheck 记录一次
+   retry，`UnlockWake` 只在 Service guard 释放后观察到 self-wake。
+   `timer_replacement_ignores_stale_and_expires_exactly_once` 直接驱动同一 future 的
+   `arm_timer`/`poll_timer` 状态，覆盖 later replacement、旧 deadline 不触发、当前
+   deadline 单次触发和重新 arm。
+3. **PASS — D1 feature 可达性恢复且 policy 保持单一来源。**
+   `critical_section_policy` 已提升到无 feature gate 的 kernel crate root；production
+   `critical_impl` 与 MS04 host harness 引用同一文件。旧 drivers 路径不存在，
+   `lichee-d1-smoke` 仍排除完整 drivers，restore-state 语义未改变。
+4. **PASS — 兼容与所有权边界未退化。** ordinary 244/244、qemu-diagnostics
+   264/264、MS04 host harness 16/16、QEMU kernel check、root D1 target check、D1 产品
+   build、fmt、strict OpenSpec 和 diff check 均通过。QEMU 结果只用于编译/回归，D1
+   build 不声明真板 runtime。
+5. **环境说明 — 非阻塞。** fresh `make lichee` 的工具探测先因 Cargo home 只读和网络
+   不可用报告安装失败，随后已安装的 `rust-objcopy` 完成 release build、objcopy、boot
+   image pack/inspect，命令最终 exit 0；按 `regression-gate.md` 的失败分类，该输出是环境
+   噪声，不是产品失败。
 
 **Deviation Classification**
 
-None.
+None。fresh evidence 与 Act Response 一致；未发现 Plan 遗漏、Plan 错误、Act 偏离或
+基线变化。
 
 **Acceptance Gaps**
 
-Pending.
+None.
 
 **Convergence**
 
-Pending.
+reduced。父 Cycle 的三个 gap（完整 round、future/timer、D1 compile）全部关闭，没有
+遗留同类问题；三次失败规则未触发。
 
 **Evidence**
 
-Pending.
+- `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib` → exit 0，
+  244 passed。
+- 同命令增加 `--features qemu-diagnostics` → exit 0，264 passed。
+- future interleaving 与 timer targeted cases 在 ordinary、qemu-diagnostics 下分别
+  100/100 PASS。
+- `rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs ...` 并执行 → exit 0，
+  16 passed。
+- `cargo check --locked --offline -p starry-kernel --features qemu` → exit 0。
+- `cargo check --locked --offline --target riscv64gc-unknown-none-elf --features lichee-d1`
+  → exit 0。
+- `make lichee` → exit 0；release build、objcopy、Android boot image pack/inspect 完成。
+- 两个 Cargo manifest 的 `cargo fmt -- --check`、source guards、
+  `openspec validate ms06-application-visible-async-network-stack --strict` 和
+  `git diff --check HEAD` → exit 0。
+- Persisted Evidence 为 `none`；全部决定性结果已由 Act Response 和本 Review 摘要，
+  不要求 Evidence 目录。
 
 **Follow-up Decision**
 
-Pending.
+接受 Cycle 001 和 Iteration 000。已有 resident stack runner、bounded round、三源 wake、
+timer/fallback、QEMU/D1 编译边界满足本 Iteration Acceptance；按既有 Map 展开
+Iteration 001 的 socket/listener readiness bridge，不创建第二个 rework Cycle。
 
 **Iteration Plan Update**
 
-Pending.
+None。目标、范围、依赖、任务分配和验收边界保持不变。
 
 **Next Cycle**
 
@@ -420,4 +465,4 @@ None.
 
 **Next Iteration**
 
-None; create Iteration 001 only after this Cycle is accepted.
+`../001-socket-and-listener-readiness-bridge/000-initial.md`

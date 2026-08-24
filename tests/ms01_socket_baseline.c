@@ -21,6 +21,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <stdint.h>
+#include <time.h>
 
 #define TEST_PORT_BASE 18001
 #define PASS(fmt, ...) fprintf(stdout, "PASS: " fmt "\n", ##__VA_ARGS__)
@@ -30,6 +32,42 @@
 } while (0)
 
 static volatile int _failed = 0;
+
+/* Deadline/phase helpers for the first (forked loopback) case: on success the
+ * original markers and PASS order are byte-for-byte identical; a stalled
+ * blocking step now flushes a phase marker and fails instead of hanging. */
+#define TCP_ACCEPT_DEADLINE_US 15000000u
+#define TCP_ACCEPT_TIMEOUT_MS 3000
+
+static void phase(const char *name) {
+    fprintf(stdout, "PHASE: %s\n", name);
+    fflush(stdout);
+}
+
+static uint64_t now_us(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static int expired(uint64_t t0) {
+    uint64_t now = now_us();
+    return now != 0 && now - t0 >= TCP_ACCEPT_DEADLINE_US;
+}
+
+static int deadline_ms(uint64_t t0) {
+    uint64_t now = now_us();
+    if (now == 0) return (int)(TCP_ACCEPT_DEADLINE_US / 1000u);
+    if (now - t0 >= TCP_ACCEPT_DEADLINE_US) return 0;
+    return (int)((TCP_ACCEPT_DEADLINE_US - (now - t0)) / 1000u);
+}
+
+static void set_so_timeout(int fd, int opt, int ms) {
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, opt, &tv, sizeof(tv));
+}
 
 static void set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -41,6 +79,7 @@ static void set_nonblock(int fd) {
 
 static void test_tcp_accept_roundtrip(void) {
     int port = TEST_PORT_BASE + 1;
+    uint64_t t0 = now_us();
     pid_t pid = fork();
     if (pid < 0) { FAIL("tcp-accept: fork failed: %s", strerror(errno)); return; }
 
@@ -49,15 +88,22 @@ static void test_tcp_accept_roundtrip(void) {
         sleep(1);
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) { fprintf(stdout, "FAIL: tcp-accept: client socket: %s\n", strerror(errno)); _exit(1); }
+        set_so_timeout(fd, SO_SNDTIMEO, TCP_ACCEPT_TIMEOUT_MS);
+        set_so_timeout(fd, SO_RCVTIMEO, TCP_ACCEPT_TIMEOUT_MS);
         struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port) };
         inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        phase("tcp-accept child-connect");
         if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            fprintf(stdout, "FAIL: tcp-accept: client connect: %s\n", strerror(errno)); _exit(1);
+            fprintf(stdout, "FAIL: tcp-accept: client connect after %llu us: %s\n",
+                    (unsigned long long)(now_us() - t0), strerror(errno)); _exit(1);
         }
         const char *msg = "tcp-ms01";
+        phase("tcp-accept child-send");
         if (send(fd, msg, strlen(msg), 0) < 0) {
-            fprintf(stdout, "FAIL: tcp-accept: client send: %s\n", strerror(errno)); _exit(1);
+            fprintf(stdout, "FAIL: tcp-accept: client send after %llu us: %s\n",
+                    (unsigned long long)(now_us() - t0), strerror(errno)); _exit(1);
         }
+        phase("tcp-accept child-done");
         close(fd);
         _exit(0);
     }
@@ -81,16 +127,35 @@ static void test_tcp_accept_roundtrip(void) {
 
     struct sockaddr_in peer;
     socklen_t peer_len = sizeof(peer);
+    phase("tcp-accept parent-accept-poll");
+    {
+        struct pollfd pfd = { .fd = srv, .events = POLLIN };
+        int pr = poll(&pfd, 1, deadline_ms(t0));
+        if (pr <= 0 || !(pfd.revents & POLLIN)) {
+            FAIL("tcp-accept: parent-accept-poll pr=%d revents=0x%x after %llu us",
+                 pr, pfd.revents, (unsigned long long)(now_us() - t0));
+            close(srv); kill(pid, SIGKILL); waitpid(pid, NULL, 0); return;
+        }
+    }
+    phase("tcp-accept parent-accept");
     int cli = accept(srv, (struct sockaddr *)&peer, &peer_len);
     if (cli < 0) {
-        FAIL("tcp-accept: accept: %s", strerror(errno));
+        FAIL("tcp-accept: accept after %llu us: %s",
+             (unsigned long long)(now_us() - t0), strerror(errno));
         close(srv); waitpid(pid, NULL, 0); return;
     }
+    if (expired(t0)) {
+        FAIL("tcp-accept: total deadline before recv");
+        close(cli); close(srv); kill(pid, SIGKILL); waitpid(pid, NULL, 0); return;
+    }
+    set_so_timeout(cli, SO_RCVTIMEO, TCP_ACCEPT_TIMEOUT_MS);
 
     char buf[64] = {0};
+    phase("tcp-accept parent-recv");
     ssize_t n = recv(cli, buf, sizeof(buf) - 1, 0);
     if (n < 0) {
-        FAIL("tcp-accept: recv: %s", strerror(errno));
+        FAIL("tcp-accept: recv after %llu us: %s",
+             (unsigned long long)(now_us() - t0), strerror(errno));
     } else if (strcmp(buf, "tcp-ms01") != 0) {
         FAIL("tcp-accept: expected 'tcp-ms01', got '%s'", buf);
     } else {

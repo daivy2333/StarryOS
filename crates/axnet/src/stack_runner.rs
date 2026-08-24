@@ -126,23 +126,41 @@ pub(crate) enum StackAccess {
     Injected {
         service: &'static spin::Mutex<crate::service::Service>,
         sockets: &'static spin::Mutex<smoltcp::iface::SocketSet<'static>>,
+        listen_table: &'static crate::listen_table::ListenTable,
     },
 }
 
 impl StackAccess {
-    fn round(&self, owner: RxOwnerView) -> Option<StackRoundOutcome> {
+    /// Runs one bounded round under the injected or production guards with
+    /// the single `now` the resident runner sampled for this poll (Task 2.6
+    /// replan), so smoltcp ingress/egress/maintenance, `poll_at` and the
+    /// timer all observe the same Instant.
+    fn round(&self, now: Instant, owner: RxOwnerView) -> Option<StackRoundOutcome> {
         match self {
             Self::Global => {
                 let mut service = crate::SERVICE.get()?.lock();
                 let mut sockets = crate::SOCKET_SET.inner.lock();
-                Some(service.stack_round(owner, &mut sockets))
+                Some(service.stack_round(now, owner, &mut sockets))
             }
             #[cfg(test)]
-            Self::Injected { service, sockets } => {
+            Self::Injected {
+                service, sockets, ..
+            } => {
                 let mut service = service.lock();
                 let mut sockets = sockets.lock();
-                Some(service.stack_round(owner, &mut sockets))
+                Some(service.stack_round(now, owner, &mut sockets))
             }
+        }
+    }
+
+    /// Drains listener accept wakes after `round` released every Service /
+    /// SocketSet / ListenTable guard. Production drains the global table; a
+    /// full-chain test must drain its injected local table.
+    fn drain_accept_wakes(&self) {
+        match self {
+            Self::Global => crate::LISTEN_TABLE.drain_accept_wakes(),
+            #[cfg(test)]
+            Self::Injected { listen_table, .. } => listen_table.drain_accept_wakes(),
         }
     }
 }
@@ -172,6 +190,7 @@ pub(crate) struct StackTelemetry {
     rounds: AtomicU64,
     work: AtomicU64,
     self_yield: AtomicU64,
+    progress_wake: AtomicU64,
     timer_wake: AtomicU64,
     fallback_poll: AtomicU64,
     event_retry: AtomicU64,
@@ -179,6 +198,10 @@ pub(crate) struct StackTelemetry {
     fault: AtomicU64,
     rx_space_wake: AtomicU64,
     tx_enqueue: AtomicU64,
+    /// Task 2.6 replan: deferred-close entries examined / reclaimed by the
+    /// bounded retirement stage (cumulative; observation-only).
+    deferred_checked: AtomicU64,
+    deferred_reclaimed: AtomicU64,
 }
 
 impl StackTelemetry {
@@ -188,6 +211,7 @@ impl StackTelemetry {
             rounds: AtomicU64::new(0),
             work: AtomicU64::new(0),
             self_yield: AtomicU64::new(0),
+            progress_wake: AtomicU64::new(0),
             timer_wake: AtomicU64::new(0),
             fallback_poll: AtomicU64::new(0),
             event_retry: AtomicU64::new(0),
@@ -195,6 +219,8 @@ impl StackTelemetry {
             fault: AtomicU64::new(0),
             rx_space_wake: AtomicU64::new(0),
             tx_enqueue: AtomicU64::new(0),
+            deferred_checked: AtomicU64::new(0),
+            deferred_reclaimed: AtomicU64::new(0),
         }
     }
 }
@@ -210,6 +236,7 @@ pub struct StackSnapshot {
     pub rounds: u64,
     pub work: u64,
     pub self_yield: u64,
+    pub progress_wake: u64,
     pub timer_wake: u64,
     pub fallback_poll: u64,
     pub event_retry: u64,
@@ -217,6 +244,9 @@ pub struct StackSnapshot {
     pub fault: u64,
     pub rx_space_wake: u64,
     pub tx_enqueue: u64,
+    /// Task 2.6 replan: deferred-close entries examined / reclaimed so far.
+    pub deferred_checked: u64,
+    pub deferred_reclaimed: u64,
 }
 
 fn stack_snapshot_impl(
@@ -231,6 +261,7 @@ fn stack_snapshot_impl(
         rounds: telemetry.rounds.load(Ordering::Relaxed),
         work: telemetry.work.load(Ordering::Relaxed),
         self_yield: telemetry.self_yield.load(Ordering::Relaxed),
+        progress_wake: telemetry.progress_wake.load(Ordering::Relaxed),
         timer_wake: telemetry.timer_wake.load(Ordering::Relaxed),
         fallback_poll: telemetry.fallback_poll.load(Ordering::Relaxed),
         event_retry: telemetry.event_retry.load(Ordering::Relaxed),
@@ -238,6 +269,8 @@ fn stack_snapshot_impl(
         fault: telemetry.fault.load(Ordering::Relaxed),
         rx_space_wake: telemetry.rx_space_wake.load(Ordering::Relaxed),
         tx_enqueue: telemetry.tx_enqueue.load(Ordering::Relaxed),
+        deferred_checked: telemetry.deferred_checked.load(Ordering::Relaxed),
+        deferred_reclaimed: telemetry.deferred_reclaimed.load(Ordering::Relaxed),
     }
 }
 
@@ -247,7 +280,6 @@ pub fn stack_snapshot() -> StackSnapshot {
 }
 
 /// Publishes stack work committed by a software socket operation.
-#[allow(dead_code)]
 pub(crate) fn publish_software_work() {
     STACK_EVENT.publish_software();
 }
@@ -367,13 +399,22 @@ impl Future for StackRunnerFuture {
         let observed = this.event.generation();
         this.event.register(cx.waker());
         let lifecycle = this.rx_lifecycle.load();
-        let Some(outcome) = this.access.round(lifecycle.owner_view()) else {
+        let Some(outcome) = this.access.round(now, lifecycle.owner_view()) else {
             return Poll::Pending;
         };
+        // Listener transitions committed inside the round wake accept waiters
+        // only after the Service/SocketSet guards in `round` have dropped.
+        this.access.drain_accept_wakes();
         this.telemetry.rounds.fetch_add(1, Ordering::Relaxed);
         this.telemetry
             .work
             .fetch_add(outcome.work as u64, Ordering::Relaxed);
+        this.telemetry
+            .deferred_checked
+            .fetch_add(outcome.deferred_checked as u64, Ordering::Relaxed);
+        this.telemetry
+            .deferred_reclaimed
+            .fetch_add(outcome.deferred_reclaimed as u64, Ordering::Relaxed);
         if outcome.backlog {
             this.telemetry.backlog_round.fetch_add(1, Ordering::Relaxed);
         }
@@ -387,9 +428,29 @@ impl Future for StackRunnerFuture {
             this.telemetry.tx_enqueue.fetch_add(1, Ordering::Relaxed);
         }
 
-        if outcome.self_yield {
+        // A round must continue immediately when more work is reachable without a
+        // new event: budget exhaust (`self_yield`), a loopback/non-IRQ TX that
+        // made RX ready (`rx_ready`), a protocol state transition
+        // (`socket_changed`), or an unfinished bounded deferred sweep
+        // (`deferred_sweep_incomplete`, Task 2.6 replan) — mirroring
+        // `Service::poll`'s drain condition. Once the deferred sweep is
+        // complete with nothing reclaimable, the runner parks and relies on a
+        // new protocol event or the `poll_at` deadline; a non-empty deferred
+        // list alone never self-wakes it.
+        if outcome.socket_changed {
+            debug!("stack round: socket state changed (ingress/egress)");
+        }
+        if outcome.self_yield
+            || outcome.rx_ready
+            || outcome.socket_changed
+            || outcome.deferred_sweep_incomplete
+        {
             this.cancel_timer();
-            this.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
+            if outcome.self_yield {
+                this.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
+            } else {
+                this.telemetry.progress_wake.fetch_add(1, Ordering::Relaxed);
+            }
             cx.waker().wake_by_ref();
             return Poll::Pending;
         }
@@ -449,7 +510,14 @@ mod tests {
         task::{Context, Poll, Waker},
     };
 
-    use smoltcp::{iface::SocketSet, storage::PacketBuffer, time::Instant, wire::IpAddress};
+    use axpoll::IoEvents;
+    use smoltcp::{
+        iface::{SocketHandle, SocketSet},
+        socket::tcp::{Socket, State},
+        storage::PacketBuffer,
+        time::Instant,
+        wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Cidr},
+    };
 
     use super::{
         STACK_EVENT, STACK_RUNNER_LIFECYCLE, STACK_RUNNER_TASK_NAME, StackAccess, StackClock,
@@ -458,10 +526,19 @@ mod tests {
     };
     use crate::{
         async_rx::{QueueEvent, RxLifecycle, RxTaskLifecycle},
-        device::{Device, RxStep, TxOutcome, TxPreflight},
-        router::Router,
+        device::{Device, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
+        listen_table::ListenTable,
+        readiness::ReadinessBridge,
+        router::{Router, Rule},
         service::Service,
+        tcp::new_tcp_socket,
     };
+
+    const FULL_CHAIN_PORT: u16 = 19555;
+    const FULL_CHAIN_LOCAL_PORT: u16 = 39501;
+    const FULL_CHAIN_UDP_PORT: u16 = 19556;
+    const FULL_CHAIN_UDP_LOCAL_PORT: u16 = 39502;
+    const POLL_BOUND: usize = 128;
 
     #[derive(Default)]
     struct CountWake(Arc<AtomicUsize>);
@@ -601,6 +678,7 @@ mod tests {
         &'static AtomicI64,
         &'static StackTelemetry,
         &'static spin::Mutex<Service>,
+        &'static ListenTable,
     ) {
         let mut router = Router::new();
         if work != 0 || requires_polling {
@@ -611,12 +689,17 @@ mod tests {
         }
         let service = Box::leak(Box::new(spin::Mutex::new(Service::new(router, None))));
         let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
         let event = Box::leak(Box::new(StackEvent::new()));
         let now = Box::leak(Box::new(AtomicI64::new(0)));
         let telemetry = Box::leak(Box::new(StackTelemetry::new()));
         (
             StackRunnerFuture::new(
-                StackAccess::Injected { service, sockets },
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
                 lifecycle(state),
                 event,
                 StackClock::Injected(now),
@@ -625,6 +708,7 @@ mod tests {
             now,
             telemetry,
             service,
+            listen_table,
         )
     }
 
@@ -731,7 +815,7 @@ mod tests {
 
     #[test]
     fn active_quiet_has_no_periodic_fallback_or_self_wake() {
-        let (mut future, _, telemetry, _) = runner(RxTaskLifecycle::Active, 0, false);
+        let (mut future, _, telemetry, ..) = runner(RxTaskLifecycle::Active, 0, false);
         let wakes = Arc::new(AtomicUsize::new(0));
         assert_eq!(
             poll_once(&mut future, &counting_waker(wakes.clone())),
@@ -784,7 +868,7 @@ mod tests {
 
     #[test]
     fn elapsed_fallback_runs_one_more_bounded_round_and_rearms() {
-        let (mut future, now, telemetry, _) = runner(RxTaskLifecycle::Polling, 0, false);
+        let (mut future, now, telemetry, ..) = runner(RxTaskLifecycle::Polling, 0, false);
         let waker = counting_waker(Arc::new(AtomicUsize::new(0)));
         assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
         now.store(10_000, Ordering::Relaxed);
@@ -828,7 +912,7 @@ mod tests {
 
     #[test]
     fn budget_self_yield_wakes_after_service_guard_is_released() {
-        let (mut future, _, telemetry, service) = runner(RxTaskLifecycle::Active, 33, false);
+        let (mut future, _, telemetry, service, _) = runner(RxTaskLifecycle::Active, 33, false);
         let unlocked = Arc::new(AtomicUsize::new(0));
         let waker = Waker::from(Arc::new(UnlockWake {
             service,
@@ -853,11 +937,16 @@ mod tests {
         }));
         let service = Box::leak(Box::new(spin::Mutex::new(Service::new(router, None))));
         let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
         let lifecycle = lifecycle(RxTaskLifecycle::Active);
         let now = Box::leak(Box::new(AtomicI64::new(0)));
         let telemetry = Box::leak(Box::new(StackTelemetry::new()));
         let mut future = StackRunnerFuture::new(
-            StackAccess::Injected { service, sockets },
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
             lifecycle,
             event,
             StackClock::Injected(now),
@@ -881,7 +970,7 @@ mod tests {
 
     #[test]
     fn timer_replacement_ignores_stale_and_expires_exactly_once() {
-        let (mut future, now, telemetry, _) = runner(RxTaskLifecycle::Polling, 0, false);
+        let (mut future, now, telemetry, ..) = runner(RxTaskLifecycle::Polling, 0, false);
         let wakes = Arc::new(AtomicUsize::new(0));
         let waker = counting_waker(wakes.clone());
         let mut cx = Context::from_waker(&waker);
@@ -924,7 +1013,10 @@ mod tests {
     fn pre_service_global_access_is_safe_and_does_not_start_runner() {
         assert!(
             StackAccess::Global
-                .round(RxTaskLifecycle::Polling.owner_view())
+                .round(
+                    Instant::from_millis_const(0),
+                    RxTaskLifecycle::Polling.owner_view()
+                )
                 .is_none()
         );
         assert!(!STACK_RUNNER_LIFECYCLE.is_started());
@@ -938,7 +1030,1057 @@ mod tests {
         assert!(install < start);
         assert_eq!(source.matches("start_stack_runner()").count(), 1);
         assert!(source.contains("while get_service().poll"));
-        assert!(include_str!("service.rs").contains("pub fn register_waker"));
+    }
+
+    #[test]
+    fn task_24_cutover_removed_socket_register_and_caller_driven_poll() {
+        // The per-waiter Service register/timer entry and the 12 product
+        // inline-poll call sites are gone; the runner now owns progress.
+        assert!(!include_str!("service.rs").contains("pub fn register_waker"));
+        assert!(!include_str!("general.rs").contains("register_waker"));
+        assert!(!include_str!("tcp.rs").contains("poll_interfaces"));
+        assert!(!include_str!("udp.rs").contains("poll_interfaces"));
+        // Mutations signal the unique runner through the software seam.
+        assert!(include_str!("tcp.rs").contains("publish_software_work"));
+        assert!(include_str!("udp.rs").contains("publish_software_work"));
+    }
+
+    #[test]
+    fn task_24_r2_public_socket_paths_never_drive_stack_progress() {
+        // T2.4-R2: the synchronous close flush and every direct stack-round
+        // call from the public socket modules are gone. The resident runner
+        // is the only smoltcp progress owner after the T2.5-R2 deferred
+        // retirement design; a caller must never advance the stack itself.
+        let tcp = include_str!("tcp.rs");
+        let udp = include_str!("udp.rs");
+        assert!(!tcp.contains("flush_removal_tx"));
+        assert!(!tcp.contains("stack_round"));
+        assert!(!udp.contains("stack_round"));
+        assert!(!include_str!("listen_table.rs").contains("stack_round"));
+        assert!(!include_str!("wrapper.rs").contains("stack_round"));
+    }
+
+    #[test]
+    fn drop_keeps_socket_set_and_service_guards_disjoint() {
+        // T2.4-R2: the new `TcpSocket::drop` reads the raw close state under
+        // the SocketSet guard alone (a scoped expression block), then
+        // enqueues the runner-owned deferred retirement under the Service
+        // guard alone. It never holds both guards at once, never runs a
+        // stack round, and never calls the removed synchronous flush.
+        let tcp = include_str!("tcp.rs");
+        let start = tcp.find("impl Drop for TcpSocket").unwrap();
+        let end = tcp.find("fn get_ephemeral_port").unwrap();
+        let drop_src = &tcp[start..end];
+        assert!(!drop_src.contains("flush_removal_tx"));
+        assert!(!drop_src.contains("stack_round"));
+        assert!(drop_src.contains("let defer = {"));
+        assert!(drop_src.contains("SOCKET_SET.inner.lock()"));
+        assert!(drop_src.contains("queue_deferred_removal"));
+    }
+
+    #[test]
+    fn task_26_round_and_service_share_one_sampled_timestamp() {
+        // Task 2.6 replan: the runner samples ONE timestamp per poll and
+        // passes it into `StackAccess::round` and `Service::stack_round`;
+        // `Service::stack_round` must not re-read the wall clock itself.
+        // Only the retained compatibility `Service::poll` helper may sample
+        // the system clock at its entry.
+        assert!(
+            include_str!("stack_runner.rs")
+                .contains("fn round(&self, now: Instant, owner: RxOwnerView)")
+        );
+        assert!(include_str!("stack_runner.rs").contains("this.access.round(now,"));
+        assert!(include_str!("service.rs").contains(
+            "pub(crate) fn stack_round(\n        &mut self,\n        timestamp: Instant,"
+        ));
+        // The wall-clock `now()` helper may only exist for the compat
+        // `Service::poll` entry; `stack_round` itself must not sample it.
+        let service = include_str!("service.rs");
+        let round_start = service.find("fn stack_round(").unwrap();
+        let round_end = service.find("fn rx_slot_has_space_target").unwrap();
+        let round_src = &service[round_start..round_end];
+        assert!(!round_src.contains("now()"));
+    }
+
+    #[test]
+    fn task_26_service_poll_compat_still_samples_system_clock() {
+        let service = include_str!("service.rs");
+        assert!(
+            service.contains("pub fn poll(&mut self") || service.contains("pub(crate) fn poll(")
+        );
+        // The compat poll samples the system clock once at entry and passes
+        // the sampled Instant into the timestamped stack_round.
+        assert!(service.contains("self.stack_round(now(), owner, sockets)"));
+    }
+
+    #[test]
+    fn task_27_accept_refills_in_guard_without_stack_progress_or_wake() {
+        // Task 2.7 replan: `accept_with` refills an idle hidden listener
+        // inside the SocketSet-guard critical section but never calls
+        // `stack_round` / `poll_interfaces` and never wakes inside the
+        // guards; `TcpSocket::accept` publishes its wakes only after the
+        // SocketSet guard is dropped.
+        let listen_table = include_str!("listen_table.rs");
+        assert!(listen_table.contains("pub fn accept_with(&self, port: u16, sockets"));
+        let accept_src = &listen_table[listen_table.find("pub fn accept_with").unwrap()..];
+        assert!(!accept_src.contains("stack_round"));
+        assert!(!accept_src.contains("poll_interfaces"));
+        assert!(accept_src.contains("entry.refill(sockets)"));
+
+        let tcp = include_str!("tcp.rs");
+        let accept_src = &tcp[tcp.find("fn accept(&self)").unwrap()..tcp.find("fn send(").unwrap()];
+        assert!(accept_src.contains("SOCKET_SET.inner.lock()"));
+        assert!(accept_src.contains("LISTEN_TABLE.accept_with(bound_port, &mut sockets)"));
+        assert!(accept_src.contains("drop(sockets)"));
+        // The wake and software-work publish appear only after the guard
+        // drop inside the closure.
+        let wake_pos = accept_src
+            .find("self.readiness.wake(IoEvents::IN)")
+            .unwrap();
+        let drop_pos = accept_src.find("drop(sockets)").unwrap();
+        assert!(
+            drop_pos < wake_pos,
+            "accept must publish wakes only after the SocketSet guard drops"
+        );
+        assert!(!accept_src.contains("stack_round"));
+        assert!(!accept_src.contains("poll_interfaces"));
+    }
+
+    #[test]
+    fn task_26_r1_deferred_raw_handle_ownership_is_exclusive_and_atomic() {
+        // T2.6-R1 source/ownership witness: a deferred close entry's raw
+        // smoltcp slot is owned exclusively by the resident reaper while the
+        // entry lives. The ONLY production enqueue site is `TcpSocket::drop`
+        // (exactly one `queue_deferred_removal(` call), so no UDP / listener
+        // / wrapper path can create a deferred entry; the two `remove_raw`
+        // calls left in Drop are the no-Service fallback and the immediate
+        // branch, both entry-free in the same drop; and the reaper removes
+        // the raw handle and its deferred entry in the same guarded scope,
+// so a stale entry can never delete a same-type reused slot.
+        // Deterministic source scan; 100x matches the plan verification
+        // profile and guards against accidental import drift.
+        for _ in 0..100 {
+            let tcp = include_str!("tcp.rs");
+            assert_eq!(
+                tcp.matches("queue_deferred_removal(").count(),
+                1,
+                "only TcpSocket::drop may enqueue a TCP deferred close"
+            );
+            assert_eq!(
+                tcp.matches("remove_raw(").count(),
+                2,
+                "Drop removes raw only on the no-Service fallback and the \
+                 immediate branch, both entry-free in the same drop"
+            );
+            let udp = include_str!("udp.rs");
+            assert_eq!(
+                udp.matches("queue_deferred_removal(").count(),
+                1,
+                "UdpSocket::drop enqueues exactly one deferred close"
+            );
+            assert!(!include_str!("listen_table.rs").contains("queue_deferred_removal("));
+            assert!(!include_str!("general.rs").contains("queue_deferred_removal("));
+            assert!(!include_str!("wrapper.rs").contains("queue_deferred_removal("));
+            let service = include_str!("service.rs");
+            let reap_src = &service[service.find("fn reap_deferred_removals(").unwrap()..];
+            assert!(
+                reap_src.contains("sockets.remove(entry.handle)"),
+                "the reaper is the only raw remover for a live deferred slot"
+            );
+            assert!(
+                reap_src.contains("self.deferred_removals.swap_remove(idx)"),
+                "the reaper removes entry and raw handle in the same guarded scope"
+            );
+        }
+    }
+
+    #[test]
+    fn tcp_connect_acquires_service_before_socket_set() {
+        // Task 2.4 fixes the reverse lock edge: `get_service()` must run
+        // before `with_smol_socket` inside `connect`.
+        let source = include_str!("tcp.rs");
+        let connect = &source[source.find("fn connect(").unwrap()..];
+        let service_pos = connect.find("let mut service = get_service()").unwrap();
+        let set_pos = connect.find("self.with_smol_socket").unwrap();
+        assert!(service_pos < set_pos);
+    }
+
+    #[test]
+    fn software_publish_on_unregistered_event_is_safe() {
+        let event = StackEvent::new();
+        event.publish_software();
+        event.publish_software();
+        assert_eq!(event.generation(), 2);
+    }
+
+    #[test]
+    fn mutation_publishes_only_after_success_and_skip_read_only_paths() {
+        // send publishes only on success; recv skips PEEK; poll is quiet.
+        let tcp = include_str!("tcp.rs");
+        let udp = include_str!("udp.rs");
+        assert!(tcp.contains("if result.is_ok() {"));
+        let recv = &tcp[tcp.find("fn recv(").unwrap()..tcp.find("fn local_addr(").unwrap()];
+        assert!(recv.contains("!options.flags.contains(RecvFlags::PEEK)"));
+        let poll = &tcp[tcp.find("fn poll(&self)").unwrap()..tcp.find("fn register(").unwrap()];
+        assert!(!poll.contains("publish_software_work"));
+        let poll_udp = &udp[udp.find("fn poll(&self)").unwrap()..udp.find("fn register(").unwrap()];
+        assert!(!poll_udp.contains("publish_software_work"));
+    }
+
+    #[test]
+    fn loopback_tx_making_rx_ready_self_wakes_to_drain() {
+        // MS01 regression: a loopback TX has no IRQ/event source, so the
+        // runner must continue immediately when the round reports `rx_ready`.
+        // Minimal valid IPv4 broadcast header (no route lookup needed).
+        let broadcast: [u8; 20] = [
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 2, 15, 255, 255, 255, 255,
+        ];
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        router.enqueue_tx_for_test(&broadcast);
+        let service = Box::leak(Box::new(spin::Mutex::new(Service::new(router, None))));
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let event: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+        let mut future = StackRunnerFuture::new(
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
+            lifecycle(RxTaskLifecycle::Active),
+            event,
+            StackClock::Injected(now),
+            telemetry,
+        );
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+        assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
+        // The dispatch made loopback RX ready: the round self-wakes instead
+        // of parking with an un-ingested frame.
+        assert_eq!(telemetry.progress_wake.load(Ordering::Relaxed), 1);
+        assert_eq!(telemetry.self_yield.load(Ordering::Relaxed), 0);
+        assert!(wakes.load(Ordering::Relaxed) >= 1);
+        assert_eq!(telemetry.rounds.load(Ordering::Relaxed), 1);
+        // The follow-up poll ingests the loopback frame into the Router RX path.
+        assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
+        assert!(telemetry.rounds.load(Ordering::Relaxed) >= 2);
+    }
+
+    #[test]
+    fn full_chain_loopback_handshake_and_accept_deliver_payload_within_bound() {
+        // Runs the REAL bounded stack round + Router loopback + smoltcp TCP +
+        // ListenTable hidden listener + ReadinessBridge with no production
+        // global and no forced socket state; smoltcp only moves through
+        // ordinary egress/ingress. 100 full chains witness no flakiness.
+        for _ in 0..100 {
+            let mut router = Router::new();
+            let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+            router.add_rule(Rule::new(
+                lo_ip.into(),
+                None,
+                lo_dev,
+                lo_ip.address().into(),
+            ));
+
+            let listen_table = Box::leak(Box::new(ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, listen_table);
+            service
+                .iface
+                .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+
+            let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+            let event = Box::leak(Box::new(StackEvent::new()));
+            let now = Box::leak(Box::new(AtomicI64::new(0)));
+            let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+            let accept = Arc::new(ReadinessBridge::new());
+            let accept_wakes = Arc::new(AtomicUsize::new(0));
+            accept.register(IoEvents::IN, &counting_waker(accept_wakes.clone()));
+            listen_table
+                .listen_with(
+                    smoltcp::wire::IpListenEndpoint {
+                        addr: None,
+                        port: FULL_CHAIN_PORT,
+                    },
+                    accept.clone(),
+                    &mut sockets.lock(),
+                )
+                .unwrap();
+
+            let client_bridge = Arc::new(ReadinessBridge::new());
+            let client_out = Arc::new(AtomicUsize::new(0));
+            client_bridge.register(IoEvents::OUT, &counting_waker(client_out.clone()));
+            let mut client_sock = new_tcp_socket();
+            let client_handle;
+            {
+                let mut sockets = sockets.lock();
+                client_sock.register_recv_waker(&client_bridge.recv_waker());
+                client_sock.register_send_waker(&client_bridge.send_waker());
+                let remote =
+                    IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+                let local =
+                    IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_LOCAL_PORT);
+                client_sock
+                    .connect(service.iface.context(), remote, local)
+                    .expect("client connect must be accepted by smoltcp");
+                client_handle = sockets.add(client_sock);
+            }
+
+            let data_bridge = Arc::new(ReadinessBridge::new());
+            let data_wakes = Arc::new(AtomicUsize::new(0));
+            data_bridge.register(IoEvents::IN, &counting_waker(data_wakes.clone()));
+            let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let waker = counting_waker(wakes.clone());
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+
+            let mut polls = 0usize;
+            // Executor loop: after every poll the runner either self-woke
+            // (progress) or parked, in which case only a timer can wake it,
+            // so the injected clock jumps to its deadline.
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "handshake stalled after {polls} polls (client state {})",
+                    sockets.lock().get::<Socket>(client_handle).state()
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if sockets.lock().get::<Socket>(client_handle).state() == State::Established
+                    && client_out.load(Ordering::Relaxed) >= 1
+                    && listen_table.can_accept(FULL_CHAIN_PORT) == Ok(true)
+                {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without a timer while the handshake is incomplete");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+
+            let accepted_handle = listen_table
+                .accept_with(FULL_CHAIN_PORT, &mut sockets.lock())
+                .unwrap();
+            assert!(matches!(
+                listen_table.accept_with(FULL_CHAIN_PORT, &mut sockets.lock()),
+                Err(axerrno::AxError::WouldBlock)
+            ));
+            // The listener IN counting waker must have been woken by the
+            // staged transition drain (bridge fan-out witness).
+            assert!(accept_wakes.load(Ordering::Relaxed) >= 1);
+
+            {
+                let mut sockets = sockets.lock();
+                sockets
+                    .get_mut::<Socket>(accepted_handle)
+                    .register_recv_waker(&data_bridge.recv_waker());
+                sockets
+                    .get_mut::<Socket>(client_handle)
+                    .send_slice(b"tcp-ms01")
+                    .expect("client send_slice");
+            }
+            event.publish_software();
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "payload delivery stalled after {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if data_wakes.load(Ordering::Relaxed) >= 1 {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without a timer while payload is outstanding");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            let mut buf = [0u8; 16];
+            let n = sockets
+                .lock()
+                .get_mut::<Socket>(accepted_handle)
+                .recv_slice(&mut buf)
+                .unwrap();
+            assert_eq!(&buf[..n], b"tcp-ms01");
+            assert!(polls <= POLL_BOUND);
+        }
+    }
+
+    #[test]
+    fn closing_socket_queued_tx_reaches_peer_before_removal() {
+        // Guest fork-mode regression (T2.5-R1 manual runs): a client that
+        // sends and then closes without yielding lost the queued payload,
+        // because TcpSocket::drop removed the smoltcp socket (and its
+        // un-dispatched TX buffer) before the resident runner dispatched it.
+        // This mirrors the public close path exactly: graceful close, then
+        // the bounded flush, then handle removal.
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        service
+            .iface
+            .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+        let accept = Arc::new(ReadinessBridge::new());
+        let accept_wakes = Arc::new(AtomicUsize::new(0));
+        accept.register(IoEvents::IN, &counting_waker(accept_wakes.clone()));
+        listen_table
+            .listen_with(
+                smoltcp::wire::IpListenEndpoint {
+                    addr: None,
+                    port: FULL_CHAIN_PORT,
+                },
+                accept.clone(),
+                &mut sockets.lock(),
+            )
+            .unwrap();
+
+        let client_bridge = Arc::new(ReadinessBridge::new());
+        let client_out = Arc::new(AtomicUsize::new(0));
+        client_bridge.register(IoEvents::OUT, &counting_waker(client_out.clone()));
+        let mut client_sock = new_tcp_socket();
+        let client_handle;
+        {
+            let mut sockets = sockets.lock();
+            client_sock.register_recv_waker(&client_bridge.recv_waker());
+            client_sock.register_send_waker(&client_bridge.send_waker());
+            let remote = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+            let local =
+                IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_LOCAL_PORT);
+            client_sock
+                .connect(service.iface.context(), remote, local)
+                .expect("client connect");
+            client_handle = sockets.add(client_sock);
+        }
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+        event.publish_software();
+        let mut future = StackRunnerFuture::new(
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
+            lifecycle(RxTaskLifecycle::Active),
+            event,
+            StackClock::Injected(now),
+            telemetry,
+        );
+
+        let mut polls = 0usize;
+        loop {
+            polls += 1;
+            assert!(
+                polls <= POLL_BOUND,
+                "handshake stalled after {polls} polls (client state {})",
+                sockets.lock().get::<Socket>(client_handle).state()
+            );
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            if sockets.lock().get::<Socket>(client_handle).state() == State::Established
+                && listen_table.can_accept(FULL_CHAIN_PORT) == Ok(true)
+            {
+                break;
+            }
+            if !self_woke {
+                let deadline = future
+                    .timer_deadline()
+                    .expect("runner parked without a timer while the handshake is incomplete");
+                now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+            }
+        }
+        let accepted_handle = listen_table
+            .accept_with(FULL_CHAIN_PORT, &mut sockets.lock())
+            .unwrap();
+
+        // T2.5-R2: mirror the public close path (TcpSocket::drop) without
+        // the public registry. Commit send+close under the SocketSet guard;
+        // decide defer-vs-immediate from the raw state; then enqueue the
+        // runner-owned retirement under the Service guard alone. The caller
+        // must run ZERO stack rounds, and an un-acknowledged FIN must keep
+        // the raw handle alive for the resident runner.
+        let rounds_before_close = telemetry.rounds.load(Ordering::Relaxed);
+        let post_close_state = {
+            let mut sockets = sockets.lock();
+            sockets
+                .get_mut::<Socket>(client_handle)
+                .send_slice(b"tcp-ms01")
+                .expect("client send_slice");
+            sockets.get_mut::<Socket>(client_handle).close();
+            sockets.get::<Socket>(client_handle).state()
+        };
+        match crate::tcp::close_kind(post_close_state) {
+            Some(kind) => service.lock().queue_deferred_removal(client_handle, kind),
+            None => {
+                let _ = sockets.lock().remove(client_handle);
+            }
+        }
+        event.publish_software();
+        assert_eq!(
+            telemetry.rounds.load(Ordering::Relaxed),
+            rounds_before_close,
+            "the close caller must not run any stack round"
+        );
+        assert_eq!(
+            sockets.lock().get::<Socket>(client_handle).state(),
+            post_close_state,
+            "the raw handle must stay for the runner while the FIN is un-acknowledged"
+        );
+
+        // Drive the runner until the peer receives the queued payload; the
+        // closing client handle must still be alive at that moment.
+        let mut polls = 0usize;
+        let mut received = false;
+        loop {
+            polls += 1;
+            assert!(
+                polls <= POLL_BOUND,
+                "payload delivery stalled after {polls} polls"
+            );
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            if sockets.lock().get::<Socket>(accepted_handle).can_recv() {
+                received = true;
+                break;
+            }
+            if !self_woke {
+                let Some(deadline) = future.timer_deadline() else {
+                    break;
+                };
+                now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+            }
+        }
+        let mut buf = [0u8; 16];
+        let n = if received {
+            sockets
+                .lock()
+                .get_mut::<Socket>(accepted_handle)
+                .recv_slice(&mut buf)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        assert!(received && n == 8, "queued TX payload lost on close");
+        assert_eq!(&buf[..8], b"tcp-ms01");
+        assert!(
+            sockets
+                .lock()
+                .iter()
+                .any(|(handle, _)| handle == client_handle),
+            "client raw handle was reclaimed before its payload reached the peer"
+        );
+        assert_eq!(
+            sockets.lock().get::<Socket>(client_handle).state(),
+            post_close_state,
+            "client raw handle must not be removed while its FIN is un-acknowledged"
+        );
+
+        // The peer observes EOF after the payload: the client's FIN must be
+        // delivered so a later recv returns 0 instead of blocking.
+        let mut eof_seen = false;
+        loop {
+            polls += 1;
+            assert!(polls <= POLL_BOUND, "peer EOF stalled after {polls} polls");
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            if !sockets.lock().get::<Socket>(accepted_handle).may_recv() {
+                eof_seen = true;
+                break;
+            }
+            if !self_woke {
+                let Some(deadline) = future.timer_deadline() else {
+                    break;
+                };
+                now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+            }
+        }
+        assert!(eof_seen, "peer never observed the closing FIN (EOF)");
+
+        // T2.5-R2 + Task 2.6 replan: deferred retirement holds the raw
+        // handle while the close is un-acknowledged, then the resident
+        // runner's injected clock drives the peer delayed-ACK to a confirmed
+        // terminal state and reclaims the handle exactly once. With the
+        // single sampled timestamp, the loopback FinWait1 -> FinWait2
+        // transition is reachable inside the poll bound (the double-clock
+        // blocker that made 003-replan necessary is gone).
+        let mut reclaimed_within_bound = false;
+        for _ in 0..POLL_BOUND {
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            match future.timer_deadline() {
+                Some(deadline) if !self_woke => {
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+                None if self_woke => {
+                    now.fetch_add(10_000, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+            if !sockets
+                .lock()
+                .iter()
+                .any(|(handle, _)| handle == client_handle)
+            {
+                reclaimed_within_bound = true;
+                break;
+            }
+        }
+        // The raw handle is reclaimed only after the injected-clock FIN
+        // confirmation, never while the close is un-acknowledged.
+        assert!(
+            reclaimed_within_bound,
+            "the deferred raw handle must be reclaimed once the injected clock confirms the FIN"
+        );
+    }
+
+    #[test]
+    fn task_27_accept_refills_idle_listener_no_reconcile_needed() {
+        // Task 2.7 replan (exact-512 scale witness): a real 512-slot hidden
+        // backlog and no idle listener means `accept_with` must restore a
+        // LISTEN socket inside the same `SOCKET_SET -> entry` critical
+        // section, so an immediate reconnect completes on the same runner
+        // with no caller-side reconcile. The pre-T2.7-R1 witness built only
+        // ONE backlog slot (`let _ = LISTEN_QUEUE_SIZE`); this one asserts
+        // exactly `LISTEN_QUEUE_SIZE` slots before accept and keeps
+        // queue.len() <= 512 after the reconnect. 100x in both feature
+        // profiles witness no flakiness. The leaked infrastructure is
+        // shared across iterations (the seed seam tears down its own hidden
+        // sockets); per-iteration client sockets are reclaimed below so a
+        // 100x run leaks neither 512-slot sets nor accumulated clients.
+        use crate::consts::LISTEN_QUEUE_SIZE;
+
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        service
+            .iface
+            .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+        let accept = Arc::new(ReadinessBridge::new());
+        listen_table
+            .listen_with(
+                smoltcp::wire::IpListenEndpoint {
+                    addr: None,
+                    port: FULL_CHAIN_PORT,
+                },
+                accept.clone(),
+                &mut sockets.lock(),
+            )
+            .unwrap();
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+        let client2_bridge = Arc::new(ReadinessBridge::new());
+
+        for _ in 0..100 {
+            // Seed a real exact-512 queue (one Ready, the rest Pending), no
+            // idle listener; the seam tears down the previous iteration's
+            // hidden sockets, so one SocketSet is reused.
+            let seeded_ready =
+                listen_table.test_seed_full_queue(FULL_CHAIN_PORT, &mut sockets.lock());
+            // Gate 3: the backlog must be exactly full before accept — the
+            // pre-T2.7-R1 single-slot witness fails this assertion.
+            assert_eq!(
+                listen_table.test_queue_len(FULL_CHAIN_PORT),
+                LISTEN_QUEUE_SIZE,
+                "backlog must be exactly full before accept"
+            );
+            let accepted_handle = listen_table
+                .accept_with(FULL_CHAIN_PORT, &mut sockets.lock())
+                .unwrap();
+            assert_eq!(accepted_handle, seeded_ready);
+            assert!(
+                listen_table.test_idle_is_some(FULL_CHAIN_PORT),
+                "accept must restore an idle hidden listener before returning"
+            );
+            assert!(
+                listen_table.test_queue_len(FULL_CHAIN_PORT) <= LISTEN_QUEUE_SIZE,
+                "queue must never exceed LISTEN_QUEUE_SIZE after accept"
+            );
+
+            // Immediate reconnect: client2's SYN must reach the idle hidden
+            // LISTEN socket restored by the accept above — no reconcile
+            // is called anywhere. Ordered SERVICE -> SOCKET_SET like the
+            // production connect path.
+            let mut client2 = new_tcp_socket();
+            let client2_handle = {
+                let mut guard = service.lock();
+                let context = guard.iface.context();
+                let mut sockets = sockets.lock();
+                client2.register_recv_waker(&client2_bridge.recv_waker());
+                client2.register_send_waker(&client2_bridge.send_waker());
+                let remote =
+                    IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+                let local = IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_LOCAL_PORT + 1,
+                );
+                client2
+                    .connect(context, remote, local)
+                    .expect("client2 connect");
+                sockets.add(client2)
+            };
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "client2 reconnect stalled after {polls} polls (state {})",
+                    sockets.lock().get::<Socket>(client2_handle).state()
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if sockets.lock().get::<Socket>(client2_handle).state() == State::Established {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without a timer during reconnect");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            assert_eq!(
+                sockets.lock().get::<Socket>(client2_handle).state(),
+                State::Established,
+                "immediate reconnect after accept must find a refilled idle listener"
+            );
+            assert!(
+                listen_table.test_queue_len(FULL_CHAIN_PORT) <= LISTEN_QUEUE_SIZE,
+                "backlog must stay bounded at 512 through the reconnect"
+            );
+            // Reclaim this iteration's accepted + client raw handles so the
+            // shared leaked SocketSet does not accumulate across 100 runs.
+            {
+                let mut sockets = sockets.lock();
+                sockets.remove(accepted_handle);
+                sockets.remove(client2_handle);
+            }
+        }
+    }
+
+    #[test]
+    fn task_27_cleanup_storm_keeps_unrelated_udp_forward_progress() {
+        // Task 2.7 replan (T2.7-R2 combo witness): exactly 512 deferred TCP
+        // close entries and an unrelated UDP datagram share ONE runner /
+        // Service / SocketSet. Per poll the reaper examines at most 32
+        // entries (via deferred telemetry deltas); the UDP payload is
+        // delivered within the poll bound WHILE the deferred backlog is
+        // still non-empty; and the 512 confirmed handles then converge
+        // within the bounded sweep. After convergence the deferred stage
+        // cannot self-wake the runner. 100x in both feature profiles
+        // witness no flakiness. The leaked infrastructure is shared across
+        // iterations; the reaper itself reclaims all 512 raw handles, so
+        // teardown only drops the two UDP sockets.
+        use crate::service::CloseKind;
+
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        service
+            .iface
+            .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+
+        for _ in 0..100 {
+            // Exactly 512 confirmed deferred handles: a fresh Closed TCP
+            // socket confirms an Active close immediately.
+            {
+                let mut guard = service.lock();
+                for _ in 0..512 {
+                    let handle = sockets.lock().add(crate::tcp::new_tcp_socket());
+                    guard.queue_deferred_removal(handle, CloseKind::Active);
+                }
+            }
+            // One unrelated UDP pair over the same loopback router.
+            let udp_rx = {
+                let mut sockets = sockets.lock();
+                let mut rx = crate::udp::new_udp_socket();
+                rx.bind(IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_UDP_PORT,
+                ))
+                .expect("udp rx bind");
+                sockets.add(rx)
+            };
+            let udp_tx = {
+                let mut sockets = sockets.lock();
+                let mut tx = crate::udp::new_udp_socket();
+                tx.bind(IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_UDP_LOCAL_PORT,
+                ))
+                .expect("udp tx bind");
+                sockets.add(tx)
+            };
+            {
+                let mut sockets = sockets.lock();
+                sockets
+                    .get_mut::<smoltcp::socket::udp::Socket>(udp_tx)
+                    .send_slice(
+                        b"udp-ms01",
+                        smoltcp::socket::udp::UdpMetadata {
+                            endpoint: IpEndpoint::new(
+                                Ipv4Address::new(127, 0, 0, 1).into(),
+                                FULL_CHAIN_UDP_PORT,
+                            ),
+                            local_address: None,
+                            meta: smoltcp::phy::PacketMeta::default(),
+                        },
+                    )
+                    .expect("udp datagram send");
+            }
+            assert_eq!(service.lock().deferred_removals_len(), 512);
+            let checked_start = telemetry.deferred_checked.load(Ordering::Relaxed);
+            let reclaimed_start = telemetry.deferred_reclaimed.load(Ordering::Relaxed);
+
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+
+            // Deliver the UDP datagram within the bound, while the deferred
+            // backlog is still present; per-poll reaper checks never exceed
+            // STACK_STAGE_BUDGET.
+            let mut buf = [0u8; 16];
+            let mut last_checked = checked_start;
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "unrelated UDP delivery stalled after {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                let checked = telemetry.deferred_checked.load(Ordering::Relaxed);
+                assert!(
+                    checked - last_checked <= 32,
+                    "the reaper must check at most 32 deferred entries per round"
+                );
+                last_checked = checked;
+                if sockets
+                    .lock()
+                    .get_mut::<smoltcp::socket::udp::Socket>(udp_rx)
+                    .recv_slice(&mut buf)
+                    .is_ok()
+                {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without a timer while UDP is outstanding");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            assert_eq!(&buf[..8], b"udp-ms01");
+            assert!(
+                service.lock().deferred_removals_len() > 0,
+                "the unrelated UDP datagram must be delivered while the deferred backlog is still \
+                 non-empty"
+            );
+
+            // The 512 confirmed handles converge within the bounded sweep.
+            loop {
+                if service.lock().deferred_removals_len() == 0 {
+                    break;
+                }
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "512 deferred close entries did not converge within {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                let checked = telemetry.deferred_checked.load(Ordering::Relaxed);
+                assert!(
+                    checked - last_checked <= 32,
+                    "the reaper must check at most 32 deferred entries per round"
+                );
+                last_checked = checked;
+                if !self_woke {
+                    if let Some(deadline) = future.timer_deadline() {
+                        now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                    }
+                }
+            }
+            assert_eq!(
+                telemetry.deferred_checked.load(Ordering::Relaxed) - checked_start,
+                512,
+                "every confirmed deferred entry must be examined exactly once"
+            );
+            assert_eq!(
+                telemetry.deferred_reclaimed.load(Ordering::Relaxed) - reclaimed_start,
+                512,
+                "every confirmed deferred entry must be reclaimed exactly once"
+            );
+
+            // Quiet: after convergence the deferred stage must not keep the
+            // runner self-waking; a clock nudge past any deadline parks it.
+            let wakes_before_quiet = wakes.load(Ordering::Relaxed);
+            now.fetch_add(10_000, Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            assert!(
+                wakes.load(Ordering::Relaxed) <= wakes_before_quiet,
+                "a converged deferred stage must not self-wake the runner"
+            );
+
+            // Teardown: the reaper already reclaimed all 512 raw handles;
+            // only the two UDP sockets of this iteration remain.
+            {
+                let mut sockets = sockets.lock();
+                sockets.remove(udp_rx);
+                sockets.remove(udp_tx);
+            }
+        }
+    }
+
+    #[test]
+    fn task_27_r1_scale_tests_drive_progress_only_through_the_runner() {
+        // T2.7-R1 source assertions: the exact-512 and cleanup-storm scale
+        // witnesses build real scale through the cfg(test) seed seam (no
+        // `let _ = LISTEN_QUEUE_SIZE` placeholder), never call `reconcile`
+        // or a direct `stack_round` from the test body, and exercise a real
+        // UDP payload — the runner drives all protocol progress.
+        let src = include_str!("stack_runner.rs");
+        let accept_region = &src[src
+            .find("fn task_27_accept_refills_idle_listener_no_reconcile_needed")
+            .unwrap()
+            ..src.find("fn task_27_cleanup_storm").unwrap()];
+        assert!(!accept_region.contains("let _ = LISTEN_QUEUE_SIZE;"));
+        assert!(!accept_region.contains("stack_round("));
+        assert!(!accept_region.contains(".reconcile("));
+        assert!(accept_region.contains("test_seed_full_queue"));
+        let cleanup_region = &src[src.find("fn task_27_cleanup_storm").unwrap()
+            ..src.find("fn task_27_r1_scale_tests").unwrap()];
+        assert!(!cleanup_region.contains("stack_round("));
+        assert!(!cleanup_region.contains(".reconcile("));
+        assert!(cleanup_region.contains("send_slice"));
+        assert!(cleanup_region.contains("recv_slice"));
+        assert!(cleanup_region.contains("deferred_removals_len() == 0"));
+    }
+
+    #[test]
+    fn ms01_diagnostic_payloads_keep_markers_and_deadlines() {
+        // T2.5-R1: the loopback diagnostic must give every mode a fixed total
+        // deadline and unique START/phase/PASS|FAIL/END markers; the original
+        // MS01 payload must keep its 14 PASS markers and add the same
+        // failure boundary to its first case, never calling axnet internals.
+        let diagnostic = include_str!("../../../tests/ms01_loopback_diagnostic.c");
+        assert!(diagnostic.contains("MS01_LOOPBACK_DIAGNOSTIC_START"));
+        assert!(diagnostic.contains("MS01_LOOPBACK_DIAGNOSTIC_END"));
+        assert!(diagnostic.contains("DIAG_TOTAL_DEADLINE_US 15000000u"));
+        assert!(diagnostic.contains("PHASE:"));
+        assert!(diagnostic.contains("PASS:"));
+        assert!(diagnostic.contains("FAIL:"));
+        assert!(diagnostic.contains("single"));
+        assert!(diagnostic.contains("fork"));
+        assert!(!diagnostic.contains("poll_interfaces"));
+
+        let ms01 = include_str!("../../../tests/ms01_socket_baseline.c");
+        // 14 runtime PASS markers: 13 `PASS("...")` macro calls plus the
+        // bind-ephemeral child's direct fprintf.
+        assert_eq!(ms01.matches("PASS(\"").count(), 13);
+        assert!(ms01.contains("\"PASS: bind-ephemeral"));
+        assert!(ms01.contains("phase(\"tcp-accept"));
+        assert!(ms01.contains("TCP_ACCEPT_DEADLINE_US"));
+        assert!(ms01.contains("SO_SNDTIMEO"));
+        assert!(ms01.contains("SO_RCVTIMEO"));
+        assert!(!ms01.contains("poll_interfaces"));
     }
 
     #[test]
@@ -951,6 +2093,7 @@ mod tests {
         telemetry.rounds.store(9, Ordering::Relaxed);
         telemetry.work.store(33, Ordering::Relaxed);
         telemetry.self_yield.store(2, Ordering::Relaxed);
+        telemetry.progress_wake.store(3, Ordering::Relaxed);
         telemetry.fallback_poll.store(4, Ordering::Relaxed);
 
         let snapshot = stack_snapshot_impl(&lifecycle, &event, &telemetry);
@@ -960,6 +2103,870 @@ mod tests {
         assert_eq!(snapshot.rounds, 9);
         assert_eq!(snapshot.work, 33);
         assert_eq!(snapshot.self_yield, 2);
+        assert_eq!(snapshot.progress_wake, 3);
         assert_eq!(snapshot.fallback_poll, 4);
+    }
+
+    #[test]
+    fn task_26_injected_clock_confirms_delayed_ack_and_reclaims_raw_handle() {
+        // Task 2.6 replan: the runner's sampled Instant must flow into the
+        // Service round and into smoltcp's timers. Driving the injected clock
+        // to the peer delayed-ACK deadline must make the loopback FIN/ACK
+        // reach a confirmed state and reclaim the client raw handle — without
+        // waiting on the wall clock (which the current Service::stack_round
+        // re-reads, making the close never observable under an injected
+        // clock). RED on the double-clock baseline.
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        service
+            .iface
+            .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+        let accept = Arc::new(ReadinessBridge::new());
+        listen_table
+            .listen_with(
+                smoltcp::wire::IpListenEndpoint {
+                    addr: None,
+                    port: FULL_CHAIN_PORT,
+                },
+                accept,
+                &mut sockets.lock(),
+            )
+            .unwrap();
+
+        let client_bridge = Arc::new(ReadinessBridge::new());
+        let mut client_sock = new_tcp_socket();
+        let client_handle;
+        {
+            let mut sockets = sockets.lock();
+            client_sock.register_recv_waker(&client_bridge.recv_waker());
+            client_sock.register_send_waker(&client_bridge.send_waker());
+            let remote = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+            let local =
+                IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_LOCAL_PORT);
+            client_sock
+                .connect(service.iface.context(), remote, local)
+                .expect("client connect");
+            client_handle = sockets.add(client_sock);
+        }
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+        event.publish_software();
+        let mut future = StackRunnerFuture::new(
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
+            lifecycle(RxTaskLifecycle::Active),
+            event,
+            StackClock::Injected(now),
+            telemetry,
+        );
+
+        let mut polls = 0usize;
+        loop {
+            polls += 1;
+            assert!(
+                polls <= POLL_BOUND,
+                "handshake stalled after {polls} polls (client state {})",
+                sockets.lock().get::<Socket>(client_handle).state()
+            );
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            if sockets.lock().get::<Socket>(client_handle).state() == State::Established
+                && listen_table.can_accept(FULL_CHAIN_PORT) == Ok(true)
+            {
+                break;
+            }
+            if !self_woke {
+                let deadline = future.timer_deadline().expect("handshake without timer");
+                now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+            }
+        }
+        let accepted_handle = listen_table
+            .accept_with(FULL_CHAIN_PORT, &mut sockets.lock())
+            .unwrap();
+
+        // Mirror the public close path: payload+FIN committed, Active kind
+        // deferred to the runner under the Service guard alone.
+        {
+            let mut sockets = sockets.lock();
+            sockets
+                .get_mut::<Socket>(client_handle)
+                .send_slice(b"tcp-ms01")
+                .expect("client send_slice");
+            sockets.get_mut::<Socket>(client_handle).close();
+        }
+        let post_close_state = sockets.lock().get::<Socket>(client_handle).state();
+        match crate::tcp::close_kind(post_close_state) {
+            Some(kind) => service.lock().queue_deferred_removal(client_handle, kind),
+            None => {
+                let _ = sockets.lock().remove(client_handle);
+            }
+        }
+        event.publish_software();
+        assert_eq!(
+            sockets.lock().get::<Socket>(client_handle).state(),
+            post_close_state,
+            "raw handle must stay for the runner while the FIN is un-acknowledged"
+        );
+
+        // Drive the injected clock into the protocol: each parked poll hops
+        // to the runner's own deadline (the same timestamp the Service round
+        // now observes). Delayed ACK must confirm the FIN, moving the client
+        // out of FinWait1, and the reaper must reclaim the handle exactly
+        // once after that confirmation.
+        let mut polls = 0usize;
+        loop {
+            polls += 1;
+            assert!(
+                polls <= POLL_BOUND,
+                "delayed-ACK confirmation stalled after {polls} polls (client {})",
+                sockets.lock().get::<Socket>(client_handle).state()
+            );
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            if !sockets
+                .lock()
+                .iter()
+                .any(|(handle, _)| handle == client_handle)
+            {
+                break;
+            }
+            if !self_woke {
+                if let Some(deadline) = future.timer_deadline() {
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+        }
+        // The client raw handle is reclaimed only after the injected clock
+        // confirmed the FIN; the peer still observes EOF afterwards.
+        assert!(
+            !sockets
+                .lock()
+                .iter()
+                .any(|(handle, _)| handle == client_handle),
+            "client raw handle must be reclaimed after injected-clock FIN confirmation"
+        );
+        let mut buf = [0u8; 16];
+        let n = sockets
+            .lock()
+            .get_mut::<Socket>(accepted_handle)
+            .recv_slice(&mut buf)
+            .unwrap_or(0);
+        if n > 0 {
+            assert_eq!(&buf[..n], b"tcp-ms01");
+        }
+    }
+
+    #[test]
+    fn task_26_incomplete_deferred_sweep_self_wakes_then_parks() {
+        // Task 2.6 replan: a deferred sweep that does not fit in one 32-entry
+        // stage must self-wake to finish it (bounded progress), but a full
+        // sweep of all-unconfirmed entries must not keep self-waking once it
+        // is complete: only a protocol event or `poll_at` deadline may wake
+        // the runner again. RED on the unbounded baseline, which cannot
+        // report sweep-progress at all.
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        service
+            .iface
+            .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+        // Inject 33 non-confirmed (Listen) close handles into the SAME
+        // SocketSet the runner's Injected access uses: one 32-entry sweep
+        // round plus one continuation round, then quiet (no busy loop).
+        let mut handles = alloc::vec::Vec::new();
+        for i in 0..33 {
+            let mut socket = new_tcp_socket();
+            socket
+                .listen(smoltcp::wire::IpListenEndpoint {
+                    addr: None,
+                    port: 21000 + i as u16,
+                })
+                .expect("listen");
+            let handle = sockets.lock().add(socket);
+            handles.push(handle);
+        }
+        {
+            let mut injected = service;
+            for handle in &handles {
+                injected.queue_deferred_removal(*handle, crate::service::CloseKind::Active);
+            }
+            service = injected;
+        }
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+        let mut future = StackRunnerFuture::new(
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
+            lifecycle(RxTaskLifecycle::Active),
+            event,
+            StackClock::Injected(now),
+            telemetry,
+        );
+
+        // The whole sweep needs 2 polls; after it completes with nothing
+        // reclaimable, a third poll must not self-wake again.
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+        assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
+        let wakes_after_sweep_round = wakes.load(Ordering::Relaxed);
+        assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
+        let wakes_after_continuation = wakes.load(Ordering::Relaxed);
+        let rounds_after_sweep = telemetry.rounds.load(Ordering::Relaxed);
+        now.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
+        let wakes_after_quiet = wakes.load(Ordering::Relaxed);
+        assert!(
+            wakes_after_quiet <= wakes_after_continuation,
+            "quiet sweep must not keep self-waking (wakes {wakes_after_quiet} vs \
+             {wakes_after_continuation})"
+        );
+        assert!(rounds_after_sweep >= 2, "sweep must span two rounds");
+        assert_eq!(handles.len(), 33);
+        let _ = wakes_after_sweep_round;
+    }
+
+    #[test]
+    fn task_27_repro_guest_512_recovery_sequence() {
+        // Fresh-QEMU MS01 tcp-512-capacity repro at ONE iteration: 512 REAL
+        // loopback handshakes fill the listener backlog, the 513th overflow
+        // connect must not corrupt the full listener, accept#1 consumes one
+        // Ready slot and refills the idle, the accepted + client#0 close
+        // with un-acknowledged FINs (deferred), then an immediate recovery
+        // connect must reach the refilled idle listener. The guest gets
+        // `connect: Connection refused` at this exact step: the host model
+        // either reproduces it (RED to fix) or proves the divergence is
+        // scheduling-only (GREEN; the missing layer is the axtask runner).
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        service
+            .iface
+            .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+        let accept = Arc::new(ReadinessBridge::new());
+        listen_table
+            .listen_with(
+                smoltcp::wire::IpListenEndpoint {
+                    addr: None,
+                    port: FULL_CHAIN_PORT,
+                },
+                accept,
+                &mut sockets.lock(),
+            )
+            .unwrap();
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let waker = counting_waker(wakes.clone());
+        event.publish_software();
+        let mut future = StackRunnerFuture::new(
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
+            lifecycle(RxTaskLifecycle::Active),
+            event,
+            StackClock::Injected(now),
+            telemetry,
+        );
+
+        // Five-hundred-twelve sequential real handshakes (blocking-connect
+        // semantics: drive the runner until each client is Established).
+        let mut clients: alloc::vec::Vec<(SocketHandle, Arc<ReadinessBridge>)> =
+            alloc::vec::Vec::new();
+        for i in 0..512 {
+            let bridge = Arc::new(ReadinessBridge::new());
+            let handle = {
+                let mut guard = service.lock();
+                let context = guard.iface.context();
+                let mut sockets = sockets.lock();
+                let mut sock = new_tcp_socket();
+                sock.register_recv_waker(&bridge.recv_waker());
+                sock.register_send_waker(&bridge.send_waker());
+                let remote =
+                    IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+                let local = IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_LOCAL_PORT + 0x400 + i as u16,
+                );
+                sock.connect(context, remote, local)
+                    .expect("repro client connect");
+                sockets.add(sock)
+            };
+            clients.push((handle, bridge));
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "repro client {i} stalled after {polls} polls (state {})",
+                    sockets.lock().get::<Socket>(handle).state()
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if sockets.lock().get::<Socket>(handle).state() == State::Established {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without a timer during repro handshake");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+        }
+        let overflow_bridge = Arc::new(ReadinessBridge::new());
+        let overflow_handle = {
+            let mut guard = service.lock();
+            let context = guard.iface.context();
+            let mut sockets = sockets.lock();
+            let mut sock = new_tcp_socket();
+            sock.register_recv_waker(&overflow_bridge.recv_waker());
+            sock.register_send_waker(&overflow_bridge.send_waker());
+            let remote =
+                IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+            let local = IpEndpoint::new(
+                Ipv4Address::new(127, 0, 0, 1).into(),
+                FULL_CHAIN_LOCAL_PORT + 0x400 + 512,
+            );
+            sock.connect(context, remote, local)
+                .expect("repro overflow connect");
+            sockets.add(sock)
+        };
+        // The overflow must not become Established (backlog full, no idle).
+        for _ in 0..8 {
+            let _ = poll_once(&mut future, &waker);
+        }
+        assert_ne!(
+            sockets.lock().get::<Socket>(overflow_handle).state(),
+            State::Established,
+            "the 513th overflow connect must not corrupt the full listener"
+        );
+        // accept#1 consumes the first Ready slot; the idle listener must be
+        // refilled before accept returns.
+        let first = listen_table
+            .accept_with(FULL_CHAIN_PORT, &mut sockets.lock())
+            .unwrap();
+        assert!(
+            listen_table.test_idle_is_some(FULL_CHAIN_PORT),
+            "accept must refill an idle hidden listener"
+        );
+        // Mirror the public close path for the accepted (server-side)
+        // connection AND client#0: un-acknowledged FINs become deferred
+        // entries; no caller stack round runs.
+        {
+            let state = sockets.lock().get::<Socket>(first).state();
+            sockets.lock().get_mut::<Socket>(first).close();
+            let _ = state;
+            match crate::tcp::close_kind(sockets.lock().get::<Socket>(first).state()) {
+                Some(kind) => service.lock().queue_deferred_removal(first, kind),
+                None => {
+                    sockets.lock().remove(first);
+                }
+            }
+        }
+        {
+            let client0_handle = clients[0].0;
+            sockets.lock().get_mut::<Socket>(client0_handle).close();
+            match crate::tcp::close_kind(sockets.lock().get::<Socket>(client0_handle).state()) {
+                Some(kind) => service.lock().queue_deferred_removal(client0_handle, kind),
+                None => {
+                    sockets.lock().remove(client0_handle);
+                }
+            }
+        }
+        event.publish_software();
+
+        // The money step: an immediate recovery connect must reach the
+        // refilled idle listener — the guest gets `Connection refused` here.
+        let recovery_bridge = Arc::new(ReadinessBridge::new());
+        let recovery_handle = {
+            let mut guard = service.lock();
+            let context = guard.iface.context();
+            let mut sockets = sockets.lock();
+            let mut sock = new_tcp_socket();
+            sock.register_recv_waker(&recovery_bridge.recv_waker());
+            sock.register_send_waker(&recovery_bridge.send_waker());
+            let remote =
+                IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+            let local = IpEndpoint::new(
+                Ipv4Address::new(127, 0, 0, 1).into(),
+                FULL_CHAIN_LOCAL_PORT + 0x400 + 513,
+            );
+            sock.connect(context, remote, local)
+                .expect("repro recovery connect");
+            sockets.add(sock)
+        };
+        let mut polls = 0usize;
+        loop {
+            polls += 1;
+            assert!(
+                polls <= POLL_BOUND,
+                "recovery connect stalled/refused after {polls} polls (state {})",
+                sockets.lock().get::<Socket>(recovery_handle).state()
+            );
+            let before = wakes.load(Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            let state = sockets.lock().get::<Socket>(recovery_handle).state();
+            if state == State::Established {
+                break;
+            }
+            if !self_woke {
+                let deadline = future
+                    .timer_deadline()
+                    .expect("runner parked without a timer during recovery connect");
+                now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(
+            sockets.lock().get::<Socket>(recovery_handle).state(),
+            State::Established,
+            "immediate recovery connect after accept+close must succeed — \
+             the guest sees Connection refused at this step"
+        );
+        let _ = (overflow_bridge, first, clients);
+    }
+
+    #[test]
+    fn task_27_repro_guest_udp_bidirectional() {
+        // Fresh-QEMU MS01 udp-bidirectional hang: the responder parks on a
+        // bridge whose recv waker is the smoltcp one-shot slot; ingress
+        // delivery in a runner round must wake it. The responder's echo must
+        // then wake the initiator the same way. The guest hangs here with no
+        // marker. The host model either reproduces the hang (RED to fix) or
+        // proves the blocking-wake chain is sound (GREEN; divergence is in
+        // the axtask scheduling layer).
+        for _ in 0..100 {
+            let mut router = Router::new();
+            let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+            router.add_rule(Rule::new(
+                lo_ip.into(),
+                None,
+                lo_dev,
+                lo_ip.address().into(),
+            ));
+            let listen_table = Box::leak(Box::new(ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, listen_table);
+            service
+                .iface
+                .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+            let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+            let event = Box::leak(Box::new(StackEvent::new()));
+            let now = Box::leak(Box::new(AtomicI64::new(0)));
+            let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+            let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+            // Responder (bound) and initiator (bound elsewhere), each parked
+            // on its own bridge recv waker like a blocking recvfrom.
+            let responder_wakes = Arc::new(AtomicUsize::new(0));
+            let responder_bridge = Arc::new(ReadinessBridge::new());
+            responder_bridge.register(IoEvents::IN, &counting_waker(responder_wakes.clone()));
+            let udp_rx = {
+                let mut sockets = sockets.lock();
+                let mut rx = crate::udp::new_udp_socket();
+                rx.bind(IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_UDP_PORT,
+                ))
+                .expect("udp rx bind");
+                rx.register_recv_waker(&responder_bridge.recv_waker());
+                sockets.add(rx)
+            };
+            let initiator_wakes = Arc::new(AtomicUsize::new(0));
+            let initiator_bridge = Arc::new(ReadinessBridge::new());
+            initiator_bridge.register(IoEvents::IN, &counting_waker(initiator_wakes.clone()));
+            let udp_tx = {
+                let mut sockets = sockets.lock();
+                let mut tx = crate::udp::new_udp_socket();
+                tx.bind(IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_UDP_LOCAL_PORT,
+                ))
+                .expect("udp tx bind");
+                tx.register_recv_waker(&initiator_bridge.recv_waker());
+                sockets.add(tx)
+            };
+
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let waker = counting_waker(wakes.clone());
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+
+            // Initiator -> responder datagram; the responder's blocking
+            // recvfrom must be woken by the ingress round.
+            let peer = IpEndpoint::new(
+                Ipv4Address::new(127, 0, 0, 1).into(),
+                FULL_CHAIN_UDP_PORT,
+            );
+            {
+                let mut sockets = sockets.lock();
+                sockets
+                    .get_mut::<smoltcp::socket::udp::Socket>(udp_tx)
+                    .send_slice(
+                        b"udp-ms01",
+                        smoltcp::socket::udp::UdpMetadata {
+                            endpoint: peer,
+                            local_address: None,
+                            meta: smoltcp::phy::PacketMeta::default(),
+                        },
+                    )
+                    .expect("initiator send");
+            }
+            event.publish_software();
+            let mut buf = [0u8; 16];
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "responder recvfrom sleep never woke after {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if responder_wakes.load(Ordering::Relaxed) >= 1 {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without timer while responder waits");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            let (n, _) = sockets
+                .lock()
+                .get_mut::<smoltcp::socket::udp::Socket>(udp_rx)
+                .recv_slice(&mut buf)
+                .expect("responder recv");
+            assert_eq!(&buf[..n], b"udp-ms01");
+
+            // Responder echo -> initiator; the initiator's blocking recvfrom
+            // must be woken the same way.
+            let initiator_local = IpEndpoint::new(
+                Ipv4Address::new(127, 0, 0, 1).into(),
+                FULL_CHAIN_UDP_LOCAL_PORT,
+            );
+            {
+                let mut sockets = sockets.lock();
+                sockets
+                    .get_mut::<smoltcp::socket::udp::Socket>(udp_rx)
+                    .send_slice(
+                        b"echo-udp-ms01",
+                        smoltcp::socket::udp::UdpMetadata {
+                            endpoint: initiator_local,
+                            local_address: None,
+                            meta: smoltcp::phy::PacketMeta::default(),
+                        },
+                    )
+                    .expect("responder echo");
+            }
+            event.publish_software();
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "initiator recvfrom never woke after {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if initiator_wakes.load(Ordering::Relaxed) >= 1 {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without timer while initiator waits");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            let (n, _) = sockets
+                .lock()
+                .get_mut::<smoltcp::socket::udp::Socket>(udp_tx)
+                .recv_slice(&mut buf)
+                .expect("initiator recv");
+            assert_eq!(&buf[..n], b"echo-udp-ms01");
+        }
+    }
+
+    #[test]
+    fn task_27_r2_udp_drop_source_deferrals_and_reaper_arm() {
+        // T2.7: the production `UdpSocket::drop` must defer the raw removal
+        // when the TX buffer still holds an undispatched datagram (smoltcp
+        // `close()` resets the TX buffer and would drop it), and the reaper
+        // must own a UDP-specific verdict (Keep while `can_send()`, Reap
+        // once drained) instead of treating the UDP slot as stale.
+        let udp = include_str!("udp.rs");
+        let drop_start = udp.find("impl Drop for UdpSocket").unwrap();
+        let drop_end = udp.find("fn get_ephemeral_port").unwrap();
+        let drop_src = &udp[drop_start..drop_end];
+        assert!(drop_src.contains("can_send()"));
+        assert!(drop_src.contains("queue_deferred_removal"));
+        assert!(drop_src.contains("UdpQueued"));
+        assert!(drop_src.contains("retire_public"));
+        assert!(drop_src.contains("publish_software_work"));
+        let service = include_str!("service.rs");
+        let reap = &service[service.find("fn reap_deferred_removals(").unwrap()..];
+        assert!(reap.contains("CloseKind::UdpQueued"));
+        assert!(reap.contains("socket.can_send()"));
+    }
+
+    #[test]
+    fn task_27_repro_udp_child_close_keeps_queued_echo() {
+        // T2.7 (guest udp-bidirectional): the forked responder receives the
+        // datagram, queues its echo, and closes/exits BEFORE the runner
+        // dispatches it. The close must keep the raw socket alive until the
+        // runner's egress dispatches the queued datagram (the reaper reclaims
+        // it once the TX drained), so the initiator's blocking recvfrom still
+        // receives the echo. The pre-fix `UdpSocket::drop` reset the TX
+        // buffer (smoltcp `close()`) and removed the socket, silently
+        // dropping the echo — the guest hangs with no marker.
+        for _ in 0..100 {
+            let mut router = Router::new();
+            let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+            router.add_rule(Rule::new(
+                lo_ip.into(),
+                None,
+                lo_dev,
+                lo_ip.address().into(),
+            ));
+            let listen_table = Box::leak(Box::new(ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, listen_table);
+            service
+                .iface
+                .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+            let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+            let event = Box::leak(Box::new(StackEvent::new()));
+            let now = Box::leak(Box::new(AtomicI64::new(0)));
+            let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+            let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+            let responder_wakes = Arc::new(AtomicUsize::new(0));
+            let responder_bridge = Arc::new(ReadinessBridge::new());
+            responder_bridge.register(IoEvents::IN, &counting_waker(responder_wakes.clone()));
+            let udp_rx = {
+                let mut sockets = sockets.lock();
+                let mut rx = crate::udp::new_udp_socket();
+                rx.bind(IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_UDP_PORT,
+                ))
+                .expect("udp rx bind");
+                rx.register_recv_waker(&responder_bridge.recv_waker());
+                sockets.add(rx)
+            };
+            let initiator_wakes = Arc::new(AtomicUsize::new(0));
+            let initiator_bridge = Arc::new(ReadinessBridge::new());
+            initiator_bridge.register(IoEvents::IN, &counting_waker(initiator_wakes.clone()));
+            let udp_tx = {
+                let mut sockets = sockets.lock();
+                let mut tx = crate::udp::new_udp_socket();
+                tx.bind(IpEndpoint::new(
+                    Ipv4Address::new(127, 0, 0, 1).into(),
+                    FULL_CHAIN_UDP_LOCAL_PORT,
+                ))
+                .expect("udp tx bind");
+                tx.register_recv_waker(&initiator_bridge.recv_waker());
+                sockets.add(tx)
+            };
+
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let waker = counting_waker(wakes.clone());
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+
+            // Initiator -> responder; the responder receives the datagram.
+            let peer = IpEndpoint::new(
+                Ipv4Address::new(127, 0, 0, 1).into(),
+                FULL_CHAIN_UDP_PORT,
+            );
+            {
+                let mut sockets = sockets.lock();
+                sockets
+                    .get_mut::<smoltcp::socket::udp::Socket>(udp_tx)
+                    .send_slice(
+                        b"udp-ms01",
+                        smoltcp::socket::udp::UdpMetadata {
+                            endpoint: peer,
+                            local_address: None,
+                            meta: smoltcp::phy::PacketMeta::default(),
+                        },
+                    )
+                    .expect("initiator send");
+            }
+            event.publish_software();
+            let mut buf = [0u8; 16];
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "responder recvfrom never woke after {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if responder_wakes.load(Ordering::Relaxed) >= 1 {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without timer while responder waits");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            let (n, _) = sockets
+                .lock()
+                .get_mut::<smoltcp::socket::udp::Socket>(udp_rx)
+                .recv_slice(&mut buf)
+                .expect("responder recv");
+            assert_eq!(&buf[..n], b"udp-ms01");
+
+            // The responder queues its echo and "closes" WITHOUT dispatching:
+            // mirror the fixed `UdpSocket::drop` — while the TX is queued the
+            // raw socket stays in the set (only public metadata retires) and
+            // the runner dispatches + the reaper reclaims it.
+            let initiator_local = IpEndpoint::new(
+                Ipv4Address::new(127, 0, 0, 1).into(),
+                FULL_CHAIN_UDP_LOCAL_PORT,
+            );
+            {
+                let mut sockets = sockets.lock();
+                sockets
+                    .get_mut::<smoltcp::socket::udp::Socket>(udp_rx)
+                    .send_slice(
+                        b"echo-udp-ms01",
+                        smoltcp::socket::udp::UdpMetadata {
+                            endpoint: initiator_local,
+                            local_address: None,
+                            meta: smoltcp::phy::PacketMeta::default(),
+                        },
+                    )
+                    .expect("responder echo");
+            }
+            assert!(
+                sockets.lock().get::<smoltcp::socket::udp::Socket>(udp_rx).can_send(),
+                "the echo must be queued (undispatched) at close time"
+            );
+            // Defer the raw removal (the fixed drop): retire public metadata
+            // + enqueue the runner-owned retirement; never close()/remove.
+            service
+                .lock()
+                .queue_deferred_removal(udp_rx, crate::service::CloseKind::UdpQueued);
+            event.publish_software();
+            assert!(
+                sockets.lock().get::<smoltcp::socket::udp::Socket>(udp_rx).can_send(),
+                "the raw socket must survive the close while the echo is queued"
+            );
+
+            // The initiator's blocking recvfrom must receive the echo.
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "initiator recvfrom never woke after {polls} polls — queued echo lost"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if initiator_wakes.load(Ordering::Relaxed) >= 1 {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without timer while initiator waits");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            let (n, _) = sockets
+                .lock()
+                .get_mut::<smoltcp::socket::udp::Socket>(udp_tx)
+                .recv_slice(&mut buf)
+                .expect("initiator recv");
+            assert_eq!(&buf[..n], b"echo-udp-ms01");
+            // The reaper reclaimed the deferred responder socket exactly once.
+            assert!(
+                !sockets
+                    .lock()
+                    .iter()
+                    .any(|(h, _)| h == udp_rx),
+                "the deferred responder raw handle must be reaped once its TX drained"
+            );
+        }
     }
 }

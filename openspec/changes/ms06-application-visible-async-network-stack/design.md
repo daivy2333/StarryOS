@@ -92,7 +92,7 @@ runner 每次 poll 执行：
 
 ### D3：runner 独占 timer ownership
 
-**Decision**：从 `Service` 移除每 waiter覆盖的 `timeout` future与 `register_waker()` timer职责。runner 在每轮持有 Service+SocketSet 时读取 `Interface::poll_at`，释放锁后维护一个 deadline和一个 `sleep_until` future。deadline 变化时替换旧 future；迟到旧 wake只导致一次 spurious bounded round。
+**Decision**：从 `Service` 移除每 waiter覆盖的 `timeout` future与 `register_waker()` timer职责。runner 每轮只采样一次时钟，并把同一个 `Instant` 传给 Service 的 Router、maintenance、ingress、egress、dispatch 和 `Interface::poll_at`；释放锁后用该时间戳维护一个 deadline和一个 `sleep_until` future。deadline 变化时替换旧 future；迟到旧 wake只导致一次 spurious bounded round。host/model 的 injected clock 必须沿同一路径传入 Service，不能只控制 runner timer 而让协议栈继续读取另一时钟。
 
 fallback deadline按以下顺序决定：
 
@@ -115,13 +115,13 @@ fallback deadline按以下顺序决定：
 
 ### D4：每 stage 固定 budget，全部 stage 每轮都有机会
 
-**Decision**：首版使用与 queue task一致的 `STACK_STAGE_BUDGET = 32`，分别约束 Router RX、smoltcp ingress、smoltcp egress和 Router dispatch。maintenance和 ListenTable reconcile各执行一次；所有 stage 按固定顺序执行，即使前一 stage耗尽 budget也不跳过后一 stage。任一 stage返回“仍可立即推进”时，runner在释放锁后 self-wake。
+**Decision**：首版使用与 queue task一致的 `STACK_STAGE_BUDGET = 32`，分别约束 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、ListenTable pending reconciliation 和 deferred socket retirement。maintenance每轮执行一次；listener reconciliation只在各网络 stage 之后执行一个有界批次，不得在每个 ingress step 后重复全表扫描。ListenTable在active ports与各entry slots之间保存全局持久cursor，所有listener共享每轮32次slot检查预算，且不得每轮clone完整active-port列表；deferred retirement使用独立cursor与32-entry预算。未变化或未确认entry不能让下一轮重新从列表头扫描。任一stage返回“仍可立即推进”时，runner在释放锁后self-wake。
 
 `Router::poll` 和 `Router::dispatch` 拆出单步/有界 API；Router RX 保存 round-robin device cursor，避免 loopback backlog永久挡住 target NIC。结果结构显式返回 processed count、socket state change、backlog、RX-space release、TX enqueue 和 stable fault，不用 bool 同时表达多个含义。
 
 **Reason**：当前 Router和Service中的多个 while-loop都可能在持续流量下独占 CPU。分 stage budget比一个全局 budget更容易证明 ingress/egress双方都获得机会，并与 MS05 queue budgets形成一致诊断模型。
 
-**Impact**：`router.rs`、`service.rs`增加round outcome和31/32/33边界 tests；telemetry至少记录 runner polls、各 stage work、budget hit、self-yield、device/software/timer wake和fallback tick。
+**Impact**：`router.rs`、`service.rs`和`listen_table.rs`增加round outcome和31/32/33边界tests；telemetry至少记录runner polls、各stage work、budget hit、self-yield、device/software/timer wake和fallback tick。listener reconciliation与deferred retirement的检查数、剩余backlog和回收数进入同一outcome/test seam，使512 backlog或close storm不能隐藏在既有stage budget之外。
 
 **Alternatives**：
 
@@ -172,13 +172,15 @@ runner观察稳定全局fault后从registry取得Arc快照，释放registry lock
 
 ### D7：listener由ListenTable独立桥接
 
-**Decision**：public `TcpSocket`进入Listening时把自己的accept `Arc<PollSet>`交给 `ListenTableEntryInner`。entry在创建idle socket、refill、reconcile和public register时，把同一个bridge waker登记到所有idle/pending隐藏smoltcp socket的recv/send slot。状态从Pending变为Ready/Reset时先更新queue，再wake accept set。unlisten/cleanup在移除hidden handles后wake waiters，使其观察HUP/error。
+**Decision**：public `TcpSocket`进入Listening时把自己的accept `Arc<PollSet>`交给 `ListenTableEntryInner`。entry在创建idle socket、refill、reconcile和public register时，把同一个bridge waker登记到所有idle/pending隐藏smoltcp socket的recv/send slot。状态从Pending变为Ready/Reset时先更新queue，再wake accept set。被动打开在`SynReceived`收到RST并回到`Listen`时，该pending slot不构成连接：entry在没有idle时把它恢复为idle，已有idle时移除冗余hidden socket，不能把它永久留在pending queue。满backlog的accept消费一个Ready/Reset slot时，在同一`SOCKET_SET → ListenTable entry`临界区恢复一个idle hidden listener，再释放guard和发布software wake。
+
+满backlog验证把两个网络事件分开：额外overflow connect必须先达到成功、拒绝或超时等可判定终态，之后才释放headroom并发起recovery connect。已经在runner ingress中排队的旧SYN可以合法占用稍后释放的slot，不能用这种竞态证明atomic refill失败。host/model另行覆盖overflow RST后hidden socket返回`Listen`的恢复路径；QEMU recovery场景只证明headroom提交后新的connect不依赖额外caller-driven progress。
 
 注册顺序为application PollSet register → 取得SocketSet和entry → hidden socket bridge register → entry readiness recheck → 解锁后必要wake，遵循D5。
 
 **Reason**：public listener自己的smoltcp handle不接收SYN；只给它注册waker永远不会得到accept transition。隐藏socket在每次wake后还必须重臂单槽waker。
 
-**Impact**：ListenTable entry增加accept bridge但固定512 backlog语义不变；Ready connection仍只交付一次，Reset继续由accept返回`ConnectionReset`。
+**Impact**：ListenTable entry增加accept bridge与pending cursor，但固定512 backlog语义不变；Ready connection仍只交付一次，Reset继续由accept返回`ConnectionReset`。accept/refill helper接收现有SocketSet guard，只做hidden socket生命周期提交，不调用smoltcp progress，也不取得Service guard。MS01 payload保留14个marker，但不再让未判定的overflow SYN与recovery SYN竞争同一个新headroom。
 
 **Alternatives**：
 
@@ -242,6 +244,22 @@ QEMU runtime原始命令和marker写入Act Response；本计划默认 `Persisted
 - 只运行已有MS01 poll：拒绝，它不证明多waiter、overflow、idle或caller-independent progress。
 - 只依赖QEMU计数器：拒绝，无法稳定制造所有register交错。
 
+### D11：UDP drop按真实pending TX延迟raw handle回收
+
+**Decision**：本地smoltcp UDP socket提供一个只读`has_pending_tx()`查询，语义仅为“TX packet buffer非空”。`can_send()`继续表示“TX buffer未满”，不得用于判断是否存在待派发datagram。public UDP drop先在SocketSet guard内读取`has_pending_tx()`：没有pending TX时沿用立即close/remove；存在pending TX且runner可用时，只退役public metadata并提交`UdpQueued` deferred entry，由唯一runner完成egress，待`has_pending_tx()`变为false后在同一guarded commit中移除raw handle和entry。
+
+UDP deferred verdict必须先按`CloseKind::UdpQueued`与实际socket类型匹配，再进入通用TCP分支；stale或retyped entry只删除deferred记录，不触碰新socket。每次成功UDP egress、fresh enqueue或未完成sweep都可启动下一次有界检查；空队列和完整quiet sweep不能持续self-wake。
+
+**Reason**：guest日志证明fork child在`sendto`后立即drop，现有`close()`清空smoltcp TX buffer并丢失echo。`can_send()`只检查buffer是否未满，空buffer和含一个datagram的buffer通常都返回true，无法形成正确的drop或reap判定。axnet侧影子计数无法在不新增dispatch回调和第二份ownership状态的情况下可靠观察dequeue。
+
+**Impact**：修改本地`crates/smoltcp/src/socket/udp.rs`的只读API及unit test，并修改axnet UDP drop、deferred verdict和host witnesses；不改变UDP发送、队列容量、dispatch、错误或wire语义。该本地依赖变化需要用户批准后才能执行。
+
+**Alternatives**：
+
+- drop内同步派发一个datagram：拒绝，因为socket caller会成为第二个协议栈推进者并可能形成反向锁序。
+- 所有UDP drop无条件延迟一轮：拒绝，因为仍缺少可靠完成判定，空socket会增加不必要生命周期并可能泄漏raw handle。
+- axnet维护pending计数：拒绝，因为send enqueue可计数，但smoltcp dequeue没有现成的axnet回调；复制状态会引入新的失配和恢复问题。
+
 ## Risks / Trade-offs
 
 - [每stage budget仍可能使一次runner poll较长] → 每个stage独立限制32，固定执行顺序并记录work/budget-hit；若自动Gate显示调度延迟不可接受，先调小常量而不改变contract。
@@ -258,7 +276,8 @@ QEMU runtime原始命令和marker写入Act Response；本计划默认 `Persisted
 2. 在`init_network`启动runner，加入software mutation wake；确认Active quiet和Polling fallback后，删除TCP/UDP产品路径中的主动`poll_interfaces()`调用。
 3. 加入per-socket bridge registry和普通TCP/UDP recv/send waker重臂，先关闭read/write多waiter。
 4. 加入listener accept bridge、terminal snapshot、fault广播和close/error映射。
-5. 运行完整自动Gate和单hartQEMU acceptance；发现回归时保持runner lifecycle可诊断，不以重新启用socket内同步poll作为修复。
+5. 在Iteration 001收口前统一runner/Service round timestamp，把deferred retirement纳入固定budget，并让满backlog accept在返回前恢复hidden listener headroom。
+6. 运行完整自动Gate和单hartQEMU acceptance；发现回归时保持runner lifecycle可诊断，不以重新启用socket内同步poll作为修复。
 
 回滚只能按Iteration稳定边界进行：Iteration 000未被后续依赖前可回到caller-driven基线；一旦Iteration 001切除产品inline poll，回滚必须同时恢复所有调用点和旧timer ownership，不能形成“无runner且无caller poll”的混合状态。
 

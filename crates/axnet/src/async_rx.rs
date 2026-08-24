@@ -47,7 +47,6 @@ use crate::{
 /// order only the control state; counters are `Relaxed`.
 pub(crate) struct QueueEvent {
     queue_waker: AtomicWaker,
-    stack_waker: AtomicWaker,
     waiting: AtomicBool,
     generation: AtomicU64,
 }
@@ -56,7 +55,6 @@ impl QueueEvent {
     pub(crate) const fn new() -> Self {
         Self {
             queue_waker: AtomicWaker::new(),
-            stack_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(0),
         }
@@ -66,21 +64,15 @@ impl QueueEvent {
     fn with_generation(generation: u64) -> Self {
         Self {
             queue_waker: AtomicWaker::new(),
-            stack_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(generation),
         }
     }
 
     /// Registers the queue-owner task waker. Callable without the Service
-    /// lock.
+    /// lock. The stack role lives in `StackEvent` (Iteration 000).
     pub(crate) fn register_queue(&self, waker: &Waker) {
         self.queue_waker.register(waker);
-    }
-
-    /// Registers the stack-progress waker. Callable without the Service lock.
-    pub(crate) fn register_stack(&self, waker: &Waker) {
-        self.stack_waker.register(waker);
     }
 
     /// Publishes the waiting bit. Only called inside the Service guard after a
@@ -101,11 +93,10 @@ impl QueueEvent {
     }
 
     /// Publishes a queue event: wrapping Release increment of the shared
-    /// generation, then wakes both roles. Called by the ISR path.
+    /// generation, then wakes the queue owner. Called by the ISR path.
     pub(crate) fn publish_event(&self) {
         self.generation.fetch_add(1, Ordering::Release);
         self.queue_waker.wake();
-        self.stack_waker.wake();
         RX_TELEMETRY.queue_wake.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -121,11 +112,10 @@ impl QueueEvent {
     }
 
     /// Publishes a stack-progress hint: bumps the shared generation so the
-    /// queue wait protocol observes the change, and wakes only the stack role.
-    /// Called after slot RX-ready, TX-slot space or a fatal event.
+    /// queue wait protocol observes the change. The stack-wake role lives in
+    /// `StackEvent`; here only the generation carries the hint.
     pub(crate) fn publish_progress(&self) {
         self.generation.fetch_add(1, Ordering::Release);
-        self.stack_waker.wake();
     }
 
     /// Acquire snapshot of the event generation.
@@ -1718,89 +1708,61 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 
-    // ---- T3.1: dual-role QueueEvent and bidirectional activation ----
+    // ---- QueueEvent: queue-owner role (stack role lives in StackEvent) ----
 
     #[test]
-    fn event_queue_and_stack_wakers_are_independent() {
+    fn queue_event_publish_wakes_queue_role_and_bumps_generation() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
-
-        // A queue event wakes both roles.
-        event.publish_event();
-        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
-
-        // A stack-progress hint wakes only the stack role.
-        event.publish_progress();
-        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn event_queue_register_does_not_overwrite_stack_waker() {
-        let event = super::QueueEvent::new();
-        let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        event.register_stack(&counting_waker(stack_count.clone()));
+        let before = event.generation();
         event.register_queue(&counting_waker(queue_count.clone()));
         event.publish_event();
+        assert_eq!(event.generation(), before + 1);
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_stack_register_does_not_overwrite_queue_waker() {
+    fn queue_register_does_not_lose_generation_change() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
         event.publish_progress();
-        assert_eq!(queue_count.load(Ordering::Relaxed), 0);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.publish_queue_work();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_generation_wraps_and_wakes_both() {
+    fn queue_generation_wraps() {
         let event = super::QueueEvent::with_generation(u64::MAX);
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
         event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
         event.publish_event();
         assert_eq!(event.generation(), 0);
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_space_wait_wakes_only_queue_role() {
+    fn space_wait_wakes_queue_role_but_progress_hint_does_not() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
         event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
         event.publish_waiting();
         assert!(event.wake_if_space(true));
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 0);
+        event.publish_progress();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_dual_role_wait_decision_retries_on_any_generation_change() {
+    fn wait_decision_retries_on_any_generation_change() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
         let before = event.generation();
         let decision = event.wait_decision(&counting_waker(queue_count.clone()), || {
-            event.register_stack(&counting_waker(stack_count.clone()));
             event.publish_progress();
             Ok(ArmObservation::Quiescent)
         });
-        // The queue wait observes the stack-role generation change and retries.
+        // The queue wait observes the generation change and retries.
         assert!(matches!(decision, WaitDecision::Retry));
         assert_eq!(before, event.generation() - 1);
     }
@@ -2510,6 +2472,29 @@ mod tests {
         (lifecycle, fut)
     }
 
+    fn leaked_future_with_stack(
+        service_mutex: &'static spin::Mutex<Service>,
+        notify: &'static QueueEvent,
+        stack_notify: &'static StackEvent,
+    ) -> (&'static RxLifecycle, RxRxFuture) {
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
+        let fut = RxRxFuture {
+            service: ServiceAccess::Injected(service_mutex),
+            lifecycle,
+            notify,
+            stack_notify,
+            stack_progress_pending: false,
+            telemetry,
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
+        };
+        (lifecycle, fut)
+    }
+
     fn poll_once(fut: &mut RxRxFuture, count: Arc<AtomicUsize>) -> Poll<()> {
         let waker = counting_waker(count.clone());
         let mut cx = Context::from_waker(&waker);
@@ -2719,25 +2704,6 @@ mod tests {
         assert_eq!(copy_calls.load(Ordering::Relaxed), 2);
         assert_eq!(control.arm_calls.load(Ordering::Relaxed), 2);
         assert!(mutex.try_lock().is_some());
-    }
-
-    #[test]
-    fn future_rx_copy_publishes_stack_progress() {
-        // Task 3.3: a successful RX copy fills the fixed RX slot, which is
-        // stack-progress — the socket role must be woken so smoltcp
-        // re-evaluates readiness. The queue-owner waker is untouched.
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (mutex, ..) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
-        let (_, mut fut) = leaked_future(mutex, notify);
-        let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        notify.register_queue(&counting_waker(queue_count.clone()));
-        notify.register_stack(&counting_waker(stack_count.clone()));
-        let _ = poll_once(&mut fut, Arc::new(AtomicUsize::new(0)));
-        // The RX copy published a stack-progress hint; the queue role was
-        // not woken by it (the task itself drives the next round).
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
-        assert_eq!(queue_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -2999,13 +2965,14 @@ mod tests {
     fn fatal_wakes_stack_progress() {
         // Task 3.5: a terminal fault must publish stack-progress so waiting
         // socket callers observe the stable fault (D4/D5), not just the
-        // queue-owner role.
+        // queue-owner role. The stack wake now lands on `StackEvent`.
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.arm_error.store(true, Ordering::Relaxed);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
         let stack_count = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&counting_waker(stack_count.clone()));
-        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        stack_notify.register(&counting_waker(stack_count.clone()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -3013,6 +2980,7 @@ mod tests {
         ));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
         assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_notify.generation(), 1);
     }
 
     #[test]
@@ -3022,12 +2990,13 @@ mod tests {
         // observer samples the lifecycle inside the wake callback, so the old
         // publish-before-transition order observes `Active` and fails here.
         let (mutex, ..) = leaked_service(vec![RxStep::Fault(DevError::Io)], true);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         lifecycle.preflight(true).unwrap();
         let observed = Arc::new(AtomicU8::new(u8::MAX));
         let woken = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&lifecycle_observing_waker(
+        stack_notify.register(&lifecycle_observing_waker(
             lifecycle,
             observed.clone(),
             woken.clone(),
@@ -3053,11 +3022,12 @@ mod tests {
         // commit Faulted before publishing the stack wake.
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.arm_error.store(true, Ordering::Relaxed);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         let observed = Arc::new(AtomicU8::new(u8::MAX));
         let woken = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&lifecycle_observing_waker(
+        stack_notify.register(&lifecycle_observing_waker(
             lifecycle,
             observed.clone(),
             woken.clone(),
@@ -3466,18 +3436,20 @@ mod tests {
 
     #[test]
     fn illegal_fatal_transition_publishes_no_progress() {
-        // Task 3.7: an illegal Active->Faulted transition must record the
-        // LIFECYCLE diagnostic but never publish a fake terminal stack wake.
+        // Task 3.7: an illegal Active->Faulted transition records the
+        // LIFECYCLE diagnostic but never publishes a fake terminal stack wake.
         let (mutex, ..) = leaked_service(vec![], true);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
         let stack_count = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&counting_waker(stack_count.clone()));
-        let (lifecycle, fut) = leaked_future(mutex, notify);
+        stack_notify.register(&counting_waker(stack_count.clone()));
+        let (lifecycle, fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
 
         fut.publish_fatal();
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
         assert_eq!(stack_count.load(Ordering::Relaxed), 0);
+        assert_eq!(stack_notify.generation(), 0);
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
         assert_eq!(
             fut.telemetry.last_error(),

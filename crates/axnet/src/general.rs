@@ -1,6 +1,5 @@
 use core::{
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-    task::Waker,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -8,10 +7,7 @@ use axerrno::AxResult;
 use axpoll::{IoEvents, Pollable};
 use axtask::future::{block_on, poll_io, timeout};
 
-use crate::{
-    get_service,
-    options::{Configurable, GetSocketOption, SetSocketOption},
-};
+use crate::options::{Configurable, GetSocketOption, SetSocketOption};
 
 /// General options for all sockets.
 pub(crate) struct GeneralOptions {
@@ -22,8 +18,6 @@ pub(crate) struct GeneralOptions {
 
     send_timeout_nanos: AtomicU64,
     recv_timeout_nanos: AtomicU64,
-
-    device_mask: AtomicU32,
 }
 impl Default for GeneralOptions {
     fn default() -> Self {
@@ -38,8 +32,6 @@ impl GeneralOptions {
 
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
-
-            device_mask: AtomicU32::new(0),
         }
     }
 
@@ -59,18 +51,6 @@ impl GeneralOptions {
     pub fn recv_timeout(&self) -> Option<Duration> {
         let nanos = self.recv_timeout_nanos.load(Ordering::Relaxed);
         (nanos > 0).then(|| Duration::from_nanos(nanos))
-    }
-
-    pub fn set_device_mask(&self, mask: u32) {
-        self.device_mask.store(mask, Ordering::Release);
-    }
-
-    pub fn device_mask(&self) -> u32 {
-        self.device_mask.load(Ordering::Acquire)
-    }
-
-    pub fn register_waker(&self, waker: &Waker) {
-        get_service().register_waker(self.device_mask(), waker);
     }
 
     pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(

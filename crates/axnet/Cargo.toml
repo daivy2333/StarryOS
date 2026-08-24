@@ -94,10 +94,6 @@ version = "0.3"
 version = "0.6.2"
 default-features = false
 
-[dependencies.event-listener]
-version = "5.4"
-default-features = false
-
 [dependencies.hashbrown]
 version = "0.16"
 
