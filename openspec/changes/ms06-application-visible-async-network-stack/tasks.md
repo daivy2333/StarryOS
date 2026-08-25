@@ -13,8 +13,9 @@
 - [x] 2.3 在 `crates/axnet/src/listen_table.rs` 和 `tcp.rs` 建立public listener accept bridge，对idle/pending隐藏socket在refill、reconcile和register时重臂，并保持512 backlog和唯一accept。WHY 是public TcpSocket handle不是真正SYN接收者；HOW 是先写hidden socket ready/reset、多个accept waiter、full→accept→refill、unlisten/drop和register race RED tests，再按SocketSet→entry顺序注册同一accept Arc；EXPECTED 是Ready唤醒并只交付一次，Reset报告error，cleanup唤醒遗留waiter且不泄漏handle。运行listener兼容和multiwaiter tests；若需要周期扫描listener或改变backlog语义，停止返回Plan。
 - [x] 2.4 在 `service.rs`、`general.rs`、`wrapper.rs`、`tcp.rs`、`udp.rs` 完成 `SERVICE → SOCKET_SET → ListenTable entry` helper、post-commit software wake和产品cutover：移除仓库TCP/UDP/listener对同步 `poll_interfaces()` 与Service-owned socket timeout/global stack waker的依赖。WHY 是resident runner与现有TCP connect反向锁序会死锁，caller-driven path也违反MS06目标；HOW 是先加source assertions与并发RED tests定位全部mutation和`with_smol_socket`内`get_service`，再把connect放入有序临界区、状态提交后解锁publish、timer归runner；EXPECTED 是产品调用点为零、任何guard不跨wake/await/Pending，single-waiter与nonblocking行为不回归。运行100×runner/socket竞争、source guard、axnet两组tests和kernel QEMU check；若必须message passing、SO_ERROR新契约或恢复inline poll才能通过，停止返回Plan。
 - [x] 2.5 在 `tcp.rs`、`udp.rs` 和readiness tests统一普通数据/EOF/writable snapshot：TCP buffered data=`IN`、peer EOF=`IN|RDHUP`、可实际send=`OUT`、双向终止=`HUP`；UDP按完整datagram `IN/OUT`、关闭=`HUP`。WHY 是当前`!may_send`伪报OUT且RDHUP只观察本地flag；HOW 是先对每个状态写poll→紧随I/O RED matrix、并发winner例外和poll/select/epoll 1/2/64/65 waiter tests，再让poll与I/O复用同一snapshot判定；EXPECTED 是普通readiness与下一I/O一致，spurious wake只重检，不改变TCP short-write或UDP原子性。运行MS01 socket baseline self-tests和axnet TCP/UDP tests；若正常EOF必须被当成ERR或现有应用依赖closed-as-OUT，停止返回Plan。
-- [ ] 2.6 在`stack_runner.rs`、`service.rs`和`listen_table.rs`保持单轮timestamp与32-entry deferred retirement，并把listener pending reconciliation改为每round一次、跨active ports共享固定32-entry budget的持久cursor。WHY 是Cycle 004虽关闭deferred全表扫描，但实际`Service::stack_round`仍在每个ingress step后扫描最多512个hidden slots，fresh guest出现重复`refill blocked`和约0.7ms round；`SynReceived → Listen`的RST路径还会永久滞留pending slot。HOW 是先写单/多listener的31/32/33/512 pending、changed-tail、port/slot cursor、RST-to-Listen复用、其他stage仍运行和quiet RED tests，再让reconcile返回checked/changed/backlog outcome并只在固定stage位置运行；EXPECTED 是所有listener合计每轮检查不超过32，active-port列表不被每轮完整clone，回到Listen的slot恢复idle或安全移除，不因完整queue反复self-wake。运行ordinary/qemu-diagnostics targeted 100×和full suites；若必须周期轮询、改变512上限或让hidden waker直接取得Service/SocketSet，停止返回Plan。
-- [ ] 2.7 在本地`crates/smoltcp/src/socket/udp.rs`、axnet `udp.rs`/`service.rs`/`stack_runner.rs`和MS01 payload关闭guest兼容缺口。WHY 是`can_send()`表示TX未满而非pending TX，当前UDP drop/reaper会丢包或泄漏；MS01又让尚未判定的overflow SYN与recovery SYN竞争同一个新headroom，不能单独证明atomic refill。HOW 是先为smoltcp增加只读`has_pending_tx()`及空/单包/dispatch RED→GREEN tests，再让UDP drop只在真实pending TX时提交`UdpQueued`、修正verdict顺序和egress后有界重检；host/model分别证明send→drop→peer receive→reap、stale/retyped安全、overflow RST后listener恢复。MS01保留14 markers，但先闭合overflow终态再执行full→accept→immediate recovery。EXPECTED 是UDP echo不因child exit丢失且raw handle恰好回收，backlog仍为512，recovery不依赖caller-driven progress，fresh QEMU diagnostic single/fork与MS01 14/14全部通过。若需要同步drop派发、axnet影子TX ledger、scheduler修改、SO_LINGER或reset/cancellation语义，停止返回Plan。
+- [x] 2.6 在`stack_runner.rs`、`service.rs`和`listen_table.rs`保持单轮timestamp与32-entry deferred retirement，并把listener pending reconciliation改为每round一次、跨active ports共享固定32-entry budget的持久cursor。WHY 是Cycle 004虽关闭deferred全表扫描，但实际`Service::stack_round`仍在每个ingress step后扫描最多512个hidden slots，fresh guest出现重复`refill blocked`和约0.7ms round；`SynReceived → Listen`的RST路径还会永久滞留pending slot。HOW 是先写单/多listener的31/32/33/512 pending、changed-tail、port/slot cursor、RST-to-Listen复用、active sweep期间accept少量删除前缀但queue仍长于cursor、其他stage仍运行和quiet RED tests，再让reconcile返回checked/changed/backlog outcome并只在固定stage位置运行；listener增删和accept queue删除必须通过结构generation使cursor从安全位置继续，不依赖新的protocol progress。EXPECTED 是所有listener合计每轮检查不超过32，active-port列表不被每轮完整clone，queue结构变化后不漏扫live slot，回到Listen的slot恢复idle或安全移除，不因完整queue反复self-wake。运行ordinary/qemu-diagnostics targeted 100×和full suites；若必须周期轮询、改变512上限或让hidden waker直接取得Service/SocketSet，停止返回Plan。
+- [ ] 2.7 在本地`crates/smoltcp/src/socket/udp.rs`和axnet `udp.rs`/`service.rs`/`stack_runner.rs`闭合UDP queued-TX drain ownership。WHY 是`can_send()`表示TX未满而非pending TX，当前UDP drop/reaper会丢包或泄漏。HOW 是先为smoltcp增加只读`has_pending_tx()`及空/单包/dispatch RED→GREEN tests，再让UDP drop只在真实pending TX时提交`UdpQueued`、修正verdict顺序和egress后有界重检；host/model证明send→drop→peer receive→reap、empty drop立即回收和stale/retyped安全。EXPECTED 是已提交datagram由唯一runner派发，raw handle在drain后恰好回收一次，quiet sweep不busy-wake。若需要同步drop派发、axnet影子TX ledger、修改smoltcp dequeue/wire语义、scheduler、SO_LINGER或reset/cancellation，停止返回Plan。
+- [ ] 2.8 在stack-runner host/model tests与`tests/ms01_socket_baseline.c::test_tcp_512_capacity`建立确定性的backlog overflow/recovery兼容证据。WHY 是尚未判定的overflow SYN会与recovery SYN竞争accept释放的新headroom，现有guest顺序不能单独证明atomic refill。HOW 是host/model先证明overflow RST后listener恢复和exact-512 accept→立即reconnect；MS01保留14 markers，并在overflow达到可判定终态后才释放headroom，若guest API不能可靠取得该终态则删除guest额外overflow刺激、由host/model承担overflow安全见证。EXPECTED 是backlog仍为512，overflow与recovery分项判定，fresh single-hart QEMU diagnostic single/fork及MS01 14/14+END全部通过。若需要提高backlog、sleep掩盖竞态、caller-driven poll、scheduler修改或新reset/cancellation契约，停止返回Plan。
 
 ## 3. Terminal readiness 与单 hart QEMU 验收
 
@@ -33,9 +34,9 @@
 | R4 锁序与guard生命周期 | D5,D9 | 1.3,1.4,2.4 | Service/SocketSet/connect/listener helpers | 100×竞争、source assertions、no-guard-across-Pending | Covered |
 | R5 per-socket multi-waiter bridge | D6 | 2.1,2.2,2.5 | `readiness.rs`, `wrapper.rs`, TCP/UDP register | 1/2/64/65、register races、remove wake | Covered |
 | R6 listener/close/error一致 | D7,D8,D9 | 2.3,2.5,3.1 | ListenTable、terminal snapshot、fault registry | accept/reset、EOF/RDHUP/HUP/ERR、fatal ordering | Covered |
-| R3/R6 规模化close与listener前进 | D3,D4,D7,D9,D11 | 2.6,2.7 | `stack_runner.rs`、`service.rs`、`listen_table.rs`、`tcp.rs`、`udp.rs`、smoltcp UDP | 单轮时钟、listener/deferred 31/32/33/512、overflow终态、accept→立即reconnect、send→drop→peer receive | Covered |
-| R7 MS06验证边界 | D10 | 3.2,3.3,3.4 | guest probe、scripts、QEMU product paths | host seam、automatic gates、single-hart runtime | Covered |
-| network-stack-baseline readiness | D3-D9 | 2.1-2.7,3.1 | TCP/UDP/listener/pollable | poll→I/O matrix、多waiter、512 recovery/close storm、stable fault | Covered |
+| R3/R6 规模化close与listener前进 | D3,D4,D7,D9,D11 | 2.6,2.7,2.8 | `stack_runner.rs`、`service.rs`、`listen_table.rs`、`tcp.rs`、`udp.rs`、smoltcp UDP、MS01 payload | listener/deferred 31/32/33/512、send→drop→peer receive、overflow终态、accept→立即reconnect | Covered |
+| R7 MS06验证边界 | D10 | 2.8,3.2,3.3,3.4 | MS01 payload、guest probe、scripts、QEMU product paths | 分层兼容、host seam、automatic gates、single-hart runtime | Covered |
+| network-stack-baseline readiness | D3-D9 | 2.1-2.8,3.1 | TCP/UDP/listener/pollable | poll→I/O matrix、多waiter、512 recovery/close storm、stable fault | Covered |
 | MS05 slot consumer/owner保持 | D2,D4,D10 | 1.2,1.3,3.3,3.4 | Router、Service、queue event/slots | MS05 Full/flush/ownership regression | Covered |
 
 没有 Missing、未批准 Simplified 或依赖后续MS07/MS08才能满足的当前Requirement。
@@ -53,17 +54,35 @@
 
 ### Iteration 001: socket-and-listener-readiness-bridge
 
-- Tasks: 2.1-2.7
+- Tasks: 2.1-2.6
 - Depends on: Iteration 000 accepted
-- Stable baseline: 产品TCP/UDP/listener不再主动推进协议栈；普通data/EOF/writable readiness经per-socket PollSet支持多waiter、overflow和listener accept；单轮时间戳一致，listener reconciliation与deferred socket retirement有界，UDP send后立即drop不丢已提交datagram，512 backlog释放与close storm下仍保持poll→I/O和无关UDP前进。
-- Verification boundary: handle/bridge生命周期、smoltcp重臂、1/2/64/65 waiters、listener hidden sockets、全锁序、post-commit wake、caller-driven调用点为零、listener/deferred 31/32/33/512 budget、overflow终态与recovery分证据、UDP send→drop→peer receive→reap以及MS01 14/14兼容全部通过。
-- Diagnostic boundary: 失败限制在readiness registry、TCP/UDP bridge、ListenTable bridge/cursor、锁序、software wake、round timestamp、deferred retirement、UDP TX lifecycle或普通readiness mapping。
-- Non-goals: device-wide terminal fault广播、完整close/error matrix、MS06 guest probe和最终QEMU acceptance。
+- Stable baseline: 产品TCP/UDP/listener不再主动推进协议栈；普通data/EOF/writable readiness支持多waiter与listener accept；listener reconciliation跨全部active ports共享每round 32-entry budget，passive RST后的hidden socket不滞留pending。
+- Verification boundary: Tasks 2.1–2.5既有GREEN保持；单/多listener 31/32/33/512、port/slot cursor、RST-to-Listen恢复、其他stage前进和quiet path由host/model tests独立证明。
+- Diagnostic boundary: 失败限制在readiness registry、TCP/UDP bridge、ListenTable bridge/cursor、锁序、software wake、round timestamp或普通readiness mapping。
+- Non-goals: UDP queued-TX lifecycle、MS01 backlog兼容、device-wide terminal fault广播、完整close/error matrix和最终QEMU acceptance。
 
-### Iteration 002: terminal-readiness-and-qemu-acceptance
+### Iteration 002: udp-queued-tx-drain-ownership
+
+- Tasks: 2.7
+- Depends on: Iteration 001 accepted
+- Stable baseline: UDP public handle drop不清除已提交datagram；唯一runner派发后，raw handle和deferred entry恰好回收一次，empty/stale/retyped路径不泄漏或误删。
+- Verification boundary: smoltcp pending-TX三态、axnet drop/reaper verdict、send→drop→peer receive→reap、empty drop、stale/retyped和quiet sweep均由host/model tests覆盖，两profile full suites通过。
+- Diagnostic boundary: 失败限制在本地smoltcp只读观察、UDP public/raw ownership、deferred verdict顺序、egress后重检或runner software work。
+- Non-goals: MS01 payload、manual QEMU、backlog overflow/recovery、terminal fault广播和最终application probe。
+
+### Iteration 003: backlog-and-ms01-runtime-compatibility
+
+- Tasks: 2.8
+- Depends on: Iteration 002 accepted
+- Stable baseline: exact-512 accept/refill、overflow安全和headroom recovery由互不混淆的场景证明；受影响MS01在single-hart QEMU保持14/14兼容。
+- Verification boundary: host/model overflow RST与immediate recovery先通过；随后fresh QEMU diagnostic single/fork和MS01 14/14+START/END通过，无FAIL、timeout、missing marker或panic。
+- Diagnostic boundary: 失败限制在listener backlog状态、guest workload事件排序、QEMU调度链或既有MS01兼容面。
+- Non-goals: MS06新guest probe、terminal fault广播、SMP、真板和性能结论。
+
+### Iteration 004: terminal-readiness-and-qemu-acceptance
 
 - Tasks: 3.1-3.4
-- Depends on: Iteration 001 accepted
+- Depends on: Iteration 003 accepted
 - Stable baseline: close、EOF、half-close、connect/listener错误和stable data-plane fault均唤醒全部相关waiter；单hartQEMU证明应用无需主动poll即可通过TCP/UDP/listener与poll/select/epoll验收。
 - Verification boundary: terminal/fault-before-wake host matrix、probe seam、全部自动Gate、MS01/MS04/MS05回归和fixed-deadline QEMU分项marker通过，最终full diff无Critical/Important finding。
 - Diagnostic boundary: 失败限制在terminal snapshot/error映射、fault registry广播、syscall waiter链、guest probe或QEMU环境/调度链。
@@ -71,11 +90,10 @@
 
 ## Current Cycle
 
-- Current Iteration: `001-socket-and-listener-readiness-bridge`
-- Cycle: `005-replan.md`
+- Current Iteration: `002-udp-queued-tx-drain-ownership`
+- Cycle: `000-initial.md`
 - Persisted Evidence: none
-- Gate 2: PASS；用户于2026-08-24显式批准（原话：“批准”）本地smoltcp只读pending-TX accessor及
-  MS01 overflow/recovery分层取证；Cycle为`ready`，等待显式`openspec-act`调用。
-- Parent Cycle: `004-replan.md` Review Result = `replan-required`。Cycle 004关闭了ownership与两个
-  512 host组合witness，但fresh QEMU暴露UDP queued-TX drop和overflow SYN/recovery竞态；实际代码
-  仍有3个RED tests。Iteration 002继续等待本Iteration accepted。
+- Gate 2: PASS；用户于 2026-08-25 批准当前 Cycle，并明确要求“但是先不自动调用act”。Cycle 已 `ready`，
+  等待后续单独的 `$openspec-act` 指令。
+- Previous Iteration: Iteration 001 Cycle `009-replan.md` Review Result = `accepted`。Tasks 2.1–2.6 已闭合；
+  当前 Cycle 只执行 Task 2.7，不包含 MS01/QEMU、terminal readiness 或后续 Iteration。

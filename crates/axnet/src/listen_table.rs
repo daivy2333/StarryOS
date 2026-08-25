@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use axerrno::{AxError, AxResult};
 use axpoll::IoEvents;
@@ -10,7 +11,8 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET, consts::LISTEN_QUEUE_SIZE, readiness::ReadinessBridge, tcp::new_tcp_socket,
+    SOCKET_SET, consts::LISTEN_QUEUE_SIZE, readiness::ReadinessBridge, service::STACK_STAGE_BUDGET,
+    tcp::new_tcp_socket,
 };
 
 const PORT_NUM: usize = 65536;
@@ -25,6 +27,53 @@ enum SlotState {
 struct ListenSlot {
     handle: Option<SocketHandle>,
     state: SlotState,
+}
+
+/// Task 2.6 replan: per-position verdict of `examine_slot`.
+enum SlotExamine {
+    /// Slot stays in the queue (Ready/Reset committed, or still Pending).
+    Advance { changed: bool },
+    /// Slot was removed (Listen recovery): the slot that shifted into `k`
+    /// must be examined instead of skipping ahead.
+    Stay,
+}
+
+/// Task 2.6 replan: observable result of one bounded listener-reconcile
+/// stage, mirroring the deferred-retirement budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ListenerReconcileOutcome {
+    /// Budget tokens consumed this round (at most `STACK_STAGE_BUDGET`): one
+    /// active-port head visit or one queue-slot visit of any state. Every
+    /// position — Pending, Ready or Reset — costs exactly one token.
+    pub(crate) checked: usize,
+    /// True only while a listener sweep is unfinished because the round hit
+    /// its budget or a later pass is due; the runner may self-wake once
+    /// to continue it. False after a quiet complete pass.
+    pub(crate) sweep_incomplete: bool,
+}
+
+/// Task 2.6 replan: bounded pass state of the listener reconciliation sweep.
+/// One budget token is one active-port head visit or one queue-slot visit,
+/// regardless of Pending/Ready/Reset state. A topology generation
+/// invalidates the running pass on every listen/unlisten so no live listener
+/// is skipped, and any protocol progress observed while a pass is active is
+/// latched into one further bounded pass before a quiet complete pass parks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ReconcileCursor {
+    /// Next active-port index to visit.
+    port: usize,
+    /// Next queue-slot index within that port's entry.
+    slot: usize,
+    /// True once the current port's head has been visited this pass.
+    head_visited: bool,
+    /// Topology generation observed when the pass began; a listen/unlisten
+    /// mismatch restarts the pass from index 0.
+    generation: u64,
+    /// True while a pass is in progress.
+    sweeping: bool,
+    /// Protocol progress arrived while the pass was active: run one further
+    /// bounded pass when the current pass completes.
+    rescan: bool,
 }
 
 struct ListenTableEntryInner {
@@ -78,38 +127,12 @@ impl ListenTableEntryInner {
         );
     }
 
-    /// Returns whether any hidden socket changed state this round; the caller
-    /// stages an accept-bridge wake for the port after its network guards release.
-    fn reconcile(&mut self, sockets: &mut SocketSet<'_>) -> bool {
+    /// Task 2.6 replan: O(1) head position of one listener — transitions the
+    /// idle hidden socket (if it left `Listen`), refills a missing idle, and
+    /// re-arms the accept bridge on the idle socket. Mirrors the old
+    /// unconditional idle/refill block of `reconcile`.
+    fn reconcile_head(&mut self, sockets: &mut SocketSet<'_>) -> bool {
         let mut changed = false;
-        for slot in &mut self.queue {
-            if slot.state != SlotState::Pending {
-                continue;
-            }
-            let handle = slot.handle.expect("pending listener slot without handle");
-            slot.state = match sockets.get::<Socket>(handle).state() {
-                State::Listen | State::SynReceived => SlotState::Pending,
-                State::Closed => {
-                    sockets.remove(handle);
-                    slot.handle = None;
-                    changed = true;
-                    info!(
-                        "listen {}: slot {} aborted -> Reset",
-                        self.listen_endpoint.port, handle
-                    );
-                    SlotState::Reset
-                }
-                _ => {
-                    changed = true;
-                    info!(
-                        "listen {}: slot {} -> Ready",
-                        self.listen_endpoint.port, handle
-                    );
-                    SlotState::Ready
-                }
-            };
-        }
-
         if let Some(handle) = self.idle {
             let state = sockets.get::<Socket>(handle).state();
             if state != State::Listen {
@@ -138,22 +161,73 @@ impl ListenTableEntryInner {
         if self.idle.is_none() {
             self.refill(sockets);
         }
-        // The one-shot recv slot of every live hidden socket clears on its
-        // first transition; reconcile always reconnects it to the accept
-        // bridge, even while the idle socket is still LISTEN.
         if let Some(handle) = self.idle {
             sockets
                 .get_mut::<Socket>(handle)
                 .register_recv_waker(&self.accept.recv_waker());
         }
-        for slot in &self.queue {
-            if let Some(handle) = slot.handle {
+        changed
+    }
+
+    /// Task 2.6 replan: O(1) examination of one queue slot at `k`. Pending
+    /// slots read the live socket state and commit Ready/Reset, or recover a
+    /// `SynReceived -> Listen` revert (restore as idle / remove the
+    /// redundant raw socket). Committed slots are skipped. Every visited
+    /// live socket is re-armed to the accept bridge (its one-shot recv slot
+    /// cleared on the last transition).
+    fn examine_slot(&mut self, sockets: &mut SocketSet<'_>, k: usize) -> SlotExamine {
+        let slot = &mut self.queue[k];
+        if slot.state != SlotState::Pending {
+            return SlotExamine::Advance { changed: false };
+        }
+        let handle = slot.handle.expect("pending listener slot without handle");
+        match sockets.get::<Socket>(handle).state() {
+            State::Listen => {
+                // A SynReceived socket reset back to Listen no longer owns a
+                // backlog slot: restore it as the idle listener, or remove
+                // the redundant raw socket when an idle already exists.
+                let redundant = self.idle.is_some();
+                if redundant {
+                    sockets.remove(handle);
+                    debug!(
+                        "listen {}: redundant {} removed",
+                        self.listen_endpoint.port, handle
+                    );
+                } else {
+                    self.idle = Some(handle);
+                    debug!(
+                        "listen {}: {} restored as idle",
+                        self.listen_endpoint.port, handle
+                    );
+                }
+                self.queue.remove(k);
+                SlotExamine::Stay
+            }
+            State::SynReceived => {
                 sockets
                     .get_mut::<Socket>(handle)
                     .register_recv_waker(&self.accept.recv_waker());
+                SlotExamine::Advance { changed: false }
+            }
+            State::Closed => {
+                sockets.remove(handle);
+                slot.handle = None;
+                slot.state = SlotState::Reset;
+                debug!(
+                    "listen {}: slot {} aborted -> Reset",
+                    self.listen_endpoint.port, handle
+                );
+                SlotExamine::Advance { changed: true }
+            }
+            _ => {
+                slot.state = SlotState::Ready;
+                debug!(
+                    "listen {}: slot {} -> Ready",
+                    self.listen_endpoint.port, handle
+                );
+                SlotExamine::Advance { changed: true }
             }
         }
-        changed
     }
 
     fn cleanup(self, sockets: &mut SocketSet<'_>) {
@@ -176,6 +250,13 @@ pub struct ListenTable {
     /// Ports whose entry committed a hidden-socket transition during a stack
     /// round; drained by the runner after all network guards release.
     pending_accept_wakes: Mutex<Vec<u16>>,
+    /// Task 2.6 replan: cross-round rotating cursor of the bounded listener
+    /// reconciliation sweep (port index, queue-slot index, sweep flag).
+    reconcile_cursor: Mutex<ReconcileCursor>,
+    /// Listener structure generation bumped by listen/unlisten and external
+    /// queue removals, so a running sweep restarts from a safe position
+    /// instead of trusting stale port or slot indices.
+    structure_generation: AtomicU64,
 }
 
 impl ListenTable {
@@ -191,6 +272,8 @@ impl ListenTable {
             tcp,
             active_ports: Mutex::new(Vec::new()),
             pending_accept_wakes: Mutex::new(Vec::new()),
+            reconcile_cursor: Mutex::new(ReconcileCursor::default()),
+            structure_generation: AtomicU64::new(0),
         }
     }
 
@@ -219,6 +302,7 @@ impl ListenTable {
         )));
         drop(entry);
         self.active_ports.lock().push(port);
+        self.structure_generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -252,6 +336,19 @@ impl ListenTable {
         }
         drop(sockets);
         self.active_ports.lock().retain(|&active| active != port);
+        self.structure_generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// Test-only seam: unregisters a listener whose hidden sockets live in the
+    /// caller-owned `SocketSet` instead of the production global, mirroring
+    /// [`Self::listen_with`].
+    #[cfg(test)]
+    pub(crate) fn unlisten_with(&self, port: u16, sockets: &mut SocketSet<'_>) {
+        if let Some(entry) = self.tcp[port as usize].lock().take() {
+            entry.cleanup(sockets);
+        }
+        self.active_ports.lock().retain(|&active| active != port);
+        self.structure_generation.fetch_add(1, Ordering::Release);
     }
 
     fn listen_entry(&self, port: u16) -> Arc<Mutex<Option<Box<ListenTableEntryInner>>>> {
@@ -260,18 +357,153 @@ impl ListenTable {
 
     /// Commits hidden transitions under Service + SocketSet guards; staged
     /// wakes drain only after those guards release.
-    pub fn reconcile(&self, sockets: &mut SocketSet<'_>) {
-        let active_ports = self.active_ports.lock().clone();
+    ///
+    /// Task 2.6 replan: one bounded reconciliation stage per runner round. A
+    /// cross-round pass cursor walks at most `STACK_STAGE_BUDGET` budget
+    /// tokens per round, where one token is an active-port head visit or one
+    /// queue-slot visit of any state (Pending, Ready or Reset). There is no
+    /// full active-port count/clone/lock pre-pass: the pass starts and
+    /// resumes from cursor state alone. A listen/unlisten bumps
+    /// `structure_generation`, restarting the running pass from a safe
+    /// position after listener topology or external queue mutation; protocol
+    /// progress seen while a pass is active — primary or later — requests one
+    /// further bounded pass so a transition observed outside the pass's
+    /// snapshot is reconciled before the runner parks.
+    pub(crate) fn reconcile(
+        &self,
+        sockets: &mut SocketSet<'_>,
+        protocol_progressed: bool,
+    ) -> ListenerReconcileOutcome {
         let mut staged = Vec::new();
-        for port in active_ports {
-            if let Some(entry) = self.listen_entry(port).lock().as_mut() {
-                if entry.reconcile(sockets) {
-                    staged.push(port);
+        let mut checked = 0usize;
+        {
+            let mut cursor = self.reconcile_cursor.lock();
+            if cursor.sweeping && protocol_progressed {
+                // Progress seen while a pass is unfinished is latched instead
+                // of dropped: it may mark a transition outside this pass's
+                // snapshot.
+                if !cursor.rescan {
+                    cursor.rescan = true;
+                }
+                // A new observation is also a reason to re-serve the current
+                // port's head on this same round (idle transition + refill)
+                // instead of only trailing the slot walk: under a connect
+                // storm the inbound SYN rate outruns a multi-round
+                // committed-slot pass, and a stale busy idle would leave no
+                // `Listen` socket to accept the next SYN. Quiet continuations
+                // never reach here, so the 513-token quiet-pass accounting is
+                // unchanged.
+                cursor.head_visited = false;
+            }
+            let ports = self.active_ports.lock();
+            if ports.is_empty() {
+                cursor.sweeping = false;
+                return ListenerReconcileOutcome::default();
+            }
+            // A listen/unlisten or external queue removal since the pass began
+            // invalidates its port/slot indices: restart from a safe position
+            // (bounded duplicate visits are fine, skipping a live slot is not).
+            let generation = self.structure_generation.load(Ordering::Acquire);
+            if cursor.generation != generation {
+                cursor.generation = generation;
+                cursor.port = 0;
+                cursor.slot = 0;
+                cursor.head_visited = false;
+            }
+            // Start a fresh pass only when there is a reason: a latched
+            // rescan or protocol progress. A quiet idle table parks.
+            if !cursor.sweeping {
+                if !cursor.rescan && !protocol_progressed {
+                    return ListenerReconcileOutcome::default();
+                }
+                cursor.sweeping = true;
+                cursor.rescan = false;
+                cursor.port = 0;
+                cursor.slot = 0;
+                cursor.head_visited = false;
+                cursor.generation = generation;
+            }
+            while checked < STACK_STAGE_BUDGET {
+                if cursor.port >= ports.len() {
+                    break;
+                }
+                let port = ports[cursor.port];
+                match self.tcp[port as usize].lock().as_mut() {
+                    None => {
+                        // Port unlistened between rounds: advance without a
+                        // token; the next call's generation check restarts.
+                        cursor.port += 1;
+                        cursor.slot = 0;
+                        cursor.head_visited = false;
+                    }
+                    Some(entry) => {
+                        if !cursor.head_visited {
+                            // Token: the port's head (idle transition + refill
+                            // + accept rearm), once per pass.
+                            if entry.reconcile_head(sockets) {
+                                staged.push(port);
+                            }
+                            cursor.head_visited = true;
+                            checked += 1;
+                        } else {
+                            // A queue that shrunk below the cursor (accept or
+                            // recovery removal) must not skip a shifted
+                            // pending slot: re-scan the live region.
+                            if cursor.slot > entry.queue.len() {
+                                cursor.slot = 0;
+                            }
+                            if cursor.slot >= entry.queue.len() {
+                                // The port's live positions are covered:
+                                // advance without a token.
+                                cursor.port += 1;
+                                cursor.slot = 0;
+                                cursor.head_visited = false;
+                            } else {
+                                // One queue-slot visit costs one token for
+                                // every state: committed Ready/Reset slots
+                                // yield a static `Advance` verdict instead of
+                                // an unbudgeted inline skip.
+                                let changed = match entry.examine_slot(sockets, cursor.slot) {
+                                    // Recovery removed the slot; the shifted
+                                    // slot stays at the same index.
+                                    SlotExamine::Stay => true,
+                                    SlotExamine::Advance { changed } => {
+                                        cursor.slot += 1;
+                                        changed
+                                    }
+                                };
+                                if changed {
+                                    staged.push(port);
+                                }
+                                checked += 1;
+                            }
+                        }
+                    }
                 }
             }
-        }
-        if !staged.is_empty() {
-            self.pending_accept_wakes.lock().extend(staged);
+            // A pass parks only after it completes without newer progress or
+            // a topology change. Progress observed during any active pass —
+            // primary or later — requests one further bounded pass, so a
+            // transition is never dropped based on which pass is running.
+            if cursor.port >= ports.len() {
+                if cursor.rescan {
+                    cursor.rescan = false;
+                    cursor.port = 0;
+                    cursor.slot = 0;
+                    cursor.head_visited = false;
+                    cursor.generation = self.structure_generation.load(Ordering::Acquire);
+                } else {
+                    cursor.sweeping = false;
+                }
+            }
+            if !staged.is_empty() {
+                self.pending_accept_wakes.lock().extend(staged);
+            }
+            let sweep_incomplete = cursor.sweeping;
+            ListenerReconcileOutcome {
+                checked,
+                sweep_incomplete,
+            }
         }
     }
 
@@ -331,6 +563,10 @@ impl ListenTable {
             );
         }
         let slot = entry.queue.swap_remove_front(idx).unwrap();
+        // The active reconcile cursor indexes this queue. Publish the shape
+        // change without taking the cursor lock; the next bounded stage uses
+        // the generation mismatch to restart from a safe position.
+        self.structure_generation.fetch_add(1, Ordering::Release);
         // Consuming one slot frees headroom: restore an idle hidden listener
         // before returning so an immediate reconnect finds a LISTEN socket
         // without waiting for the runner's next reconcile.
@@ -417,6 +653,46 @@ impl ListenTable {
             .lock()
             .as_ref()
             .is_some_and(|entry| entry.idle.is_some())
+    }
+
+    /// Task 2.6 replan test seam: appends `count` real hidden sockets (fresh
+    /// `Closed`-state TCP sockets, instantly committable Reset commits) as
+    /// Pending-marked queue slots, so the bounded reconcile budget is
+    /// observable without a real handshake.
+    #[cfg(test)]
+    pub(crate) fn test_seed_closed_slots(
+        &self,
+        port: u16,
+        sockets: &mut SocketSet<'_>,
+        count: usize,
+    ) {
+        let entry_lock = self.listen_entry(port);
+        let mut guard = entry_lock.lock();
+        let entry = guard.as_mut().expect("test listener registered");
+        for _ in 0..count {
+            let handle = sockets.add(new_tcp_socket());
+            entry.queue.push_back(ListenSlot {
+                handle: Some(handle),
+                state: SlotState::Pending,
+            });
+        }
+    }
+
+    /// Task 2.6 replan test seam: moves the entry's current idle hidden
+    /// socket into the queue as a Pending-marked slot (its live state stays
+    /// `Listen`), so `reconcile` must exercise the SynReceived->Listen
+    /// recovery ownership paths. Returns the moved handle.
+    #[cfg(test)]
+    pub(crate) fn test_park_idle_as_pending_slot(&self, port: u16) -> SocketHandle {
+        let entry_lock = self.listen_entry(port);
+        let mut guard = entry_lock.lock();
+        let entry = guard.as_mut().expect("test listener registered");
+        let idle = entry.idle.take().expect("test listener needs an idle");
+        entry.queue.push_back(ListenSlot {
+            handle: Some(idle),
+            state: SlotState::Pending,
+        });
+        idle
     }
 }
 
@@ -508,7 +784,7 @@ mod tests {
         // with no waiter registered; the staged drain is now the only path
         // that can wake a waiter registered after the transition.
         assert!(close_idle(&table, 18081, &mut sockets));
-        table.reconcile(&mut sockets);
+        table.reconcile(&mut sockets, true);
 
         let count = Arc::new(AtomicUsize::new(0));
         bridge.register(IoEvents::IN, &counting_waker(count.clone()));
@@ -521,7 +797,7 @@ mod tests {
 
         let second = Arc::new(AtomicUsize::new(0));
         bridge.register(IoEvents::IN, &counting_waker(second.clone()));
-        table.reconcile(&mut sockets);
+        table.reconcile(&mut sockets, true);
         table.drain_accept_wakes();
         assert_eq!(second.load(Ordering::Relaxed), 0);
     }
@@ -530,7 +806,7 @@ mod tests {
     fn reset_transition_removes_hidden_handle_and_reconcile_rearms_idle() {
         let (table, mut sockets, bridge) = session(18082);
         assert!(close_idle(&table, 18082, &mut sockets));
-        table.reconcile(&mut sockets);
+        table.reconcile(&mut sockets, true);
         table.drain_accept_wakes();
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -539,7 +815,7 @@ mod tests {
         // Reconcile rearms the fresh idle hidden socket; closing it wakes the
         // accept bridge again (one-shot slot restored).
         assert!(close_idle(&table, 18082, &mut sockets));
-        table.reconcile(&mut sockets);
+        table.reconcile(&mut sockets, true);
         table.drain_accept_wakes();
         assert_eq!(count.load(Ordering::Relaxed), 1);
 
@@ -667,11 +943,581 @@ mod tests {
             .collect();
 
         close_idle(&table, 18086, &mut sockets);
-        table.reconcile(&mut sockets);
+        table.reconcile(&mut sockets, true);
         table.drain_accept_wakes();
 
         for counter in &waiters {
             assert_eq!(counter.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    // ── Task 2.6 replan: bounded listener reconciliation ───────────────
+
+    #[test]
+    fn reconcile_checks_at_most_32_positions_per_round_and_converges() {
+        // Task 2.6 replan (S1): 31/32/33/512 pending-slot workloads must
+        // examine at most STACK_STAGE_BUDGET positions per round and
+        // converge over later rounds; the last round parks the sweep.
+        use crate::service::STACK_STAGE_BUDGET;
+
+        for _ in 0..100 {
+            for count in [31usize, 32, 33, 512] {
+                let (table, mut sockets, _) = session(18200);
+                table.test_seed_closed_slots(18200, &mut sockets, count);
+                let mut total_checked = 0usize;
+                let mut rounds = 0usize;
+                loop {
+                    rounds += 1;
+                    assert!(
+                        rounds <= 20,
+                        "count {count}: no convergence after {rounds} rounds"
+                    );
+                    // T2.6-R4: `true` models the observed progress that starts
+                    // the pass; later rounds are quiet self-wake continuations.
+                    let outcome = table.reconcile(&mut sockets, rounds == 1);
+                    assert!(
+                        outcome.checked <= STACK_STAGE_BUDGET,
+                        "count {count} round {rounds}: checked {} > {STACK_STAGE_BUDGET}",
+                        outcome.checked
+                    );
+                    total_checked += outcome.checked;
+                    if !outcome.sweep_incomplete {
+                        break;
+                    }
+                }
+                // Every seeded closed socket was examined (committed to Reset)
+                // at least once; the head position of the port was also counted.
+                assert!(
+                    total_checked >= count,
+                    "count {count}: only {total_checked} positions examined"
+                );
+                let entry = table.tcp[18200].lock();
+                let entry = entry.as_ref().unwrap();
+                assert_eq!(entry.queue.len(), count, "count {count}: Reset markers");
+                assert!(
+                    entry
+                        .queue
+                        .iter()
+                        .all(|slot| slot.state == SlotState::Reset),
+                    "count {count}: every seeded slot must have been committed"
+                );
+                assert!(
+                    sockets.iter().count() <= 1,
+                    "count {count}: only the idle stays"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reconcile_rotates_across_multiple_listeners_fairly() {
+        // Task 2.6 replan (S2): two listeners with pending backlogs are
+        // served by the cross-round rotating cursor without port starvation;
+        // both queues converge to fully-committed slots over the same sweep.
+        for _ in 0..100 {
+            let table = ListenTable::new();
+            let mut sockets = SocketSet::new(vec![]);
+            let b1 = Arc::new(ReadinessBridge::new());
+            let b2 = Arc::new(ReadinessBridge::new());
+            *table.tcp[18204usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                endpoint(18204),
+                b1,
+                &mut sockets,
+            )));
+            *table.tcp[18205usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                endpoint(18205),
+                b2,
+                &mut sockets,
+            )));
+            table.active_ports.lock().extend([18204u16, 18205]);
+            table.test_seed_closed_slots(18204, &mut sockets, 48);
+            table.test_seed_closed_slots(18205, &mut sockets, 48);
+
+            let mut rounds = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 6, "multi-listener sweep did not converge");
+                let outcome = table.reconcile(&mut sockets, rounds == 1);
+                assert!(outcome.checked <= 32);
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            for port in [18204u16, 18205] {
+                let entry = table.tcp[port as usize].lock();
+                let entry = entry.as_ref().unwrap();
+                assert_eq!(entry.queue.len(), 48, "port {port}: Reset markers");
+                assert!(
+                    entry
+                        .queue
+                        .iter()
+                        .all(|slot| slot.state == SlotState::Reset),
+                    "port {port}: every seeded slot committed"
+                );
+                assert!(entry.idle.is_some(), "port {port}: idle survives");
+            }
+        }
+    }
+
+    #[test]
+    fn reconcile_cursor_survives_accept_removal_between_rounds() {
+        // Task 2.6 replan (S3): removing slots between rounds (accept
+        // consuming committed slots) must keep the rotating cursor clamped;
+        // the sweep still converges and never re-examines a removed slot.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18201);
+            table.test_seed_closed_slots(18201, &mut sockets, 33);
+
+            let first = table.reconcile(&mut sockets, true);
+            assert_eq!(first.checked, 32);
+            assert!(first.sweep_incomplete);
+
+            // Consume committed Reset/Ready slots like accept does (ConnectionReset).
+            for _ in 0..4 {
+                assert!(matches!(
+                    table.accept_with(18201, &mut sockets),
+                    Err(axerrno::AxError::ConnectionReset)
+                ));
+            }
+            let mut total_checked = first.checked;
+            for _round in 0..8 {
+                let outcome = table.reconcile(&mut sockets, false);
+                total_checked += outcome.checked;
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            assert!(
+                total_checked >= 33,
+                "the remaining seeded slots must all be examined"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_cursor_survives_small_accept_removal_with_large_queue() {
+        // Cycle 009 S1/S5: a small front removal must invalidate an active
+        // pass even while the remaining queue is still longer than the
+        // numeric cursor. The following quiet rounds model the software-only
+        // runner wake after accept; they provide no fabricated protocol
+        // transition that could hide a skipped slot.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18217);
+            table.test_seed_closed_slots(18217, &mut sockets, 64);
+
+            let first = table.reconcile(&mut sockets, true);
+            assert_eq!(first.checked, crate::service::STACK_STAGE_BUDGET);
+            assert!(first.sweep_incomplete);
+
+            assert!(matches!(
+                table.accept_with(18217, &mut sockets),
+                Err(axerrno::AxError::ConnectionReset)
+            ));
+            assert_eq!(table.test_queue_len(18217), 63);
+
+            let mut rounds = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 4, "mutated sweep did not converge");
+                let outcome = table.reconcile(&mut sockets, false);
+                assert!(outcome.checked <= crate::service::STACK_STAGE_BUDGET);
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+
+            let entry = table.tcp[18217].lock();
+            let entry = entry.as_ref().unwrap();
+            assert_eq!(entry.queue.len(), 63);
+            assert!(
+                entry
+                    .queue
+                    .iter()
+                    .all(|slot| slot.state == SlotState::Reset),
+                "accept shifted an unvisited live slot behind the cursor"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_recovers_listen_slot_as_idle_when_none_exists() {
+        // Task 2.6 replan (S4, unit): a Pending slot whose live socket
+        // reverted from SynReceived to Listen — and no idle listener exists —
+        // must be restored as the idle hidden socket and removed from the
+        // backlog, so pending counts do not leak and accept keeps working.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18202);
+            let parked = table.test_park_idle_as_pending_slot(18202);
+            // Full queue: the head's refill is blocked, so reconciliation must
+            // restore the parked Listen socket as the idle instead of creating
+            // a fresh one (the promote path).
+            table.test_seed_closed_slots(18202, &mut sockets, LISTEN_QUEUE_SIZE - 1);
+            assert_eq!(table.test_queue_len(18202), LISTEN_QUEUE_SIZE);
+            assert!(!table.test_idle_is_some(18202));
+
+            let outcome = table.reconcile(&mut sockets, true);
+
+            assert_eq!(table.test_queue_len(18202), LISTEN_QUEUE_SIZE - 1);
+            assert!(table.test_idle_is_some(18202));
+            let entry = table.tcp[18202].lock();
+            assert_eq!(entry.as_ref().unwrap().idle, Some(parked));
+            drop(entry);
+            assert!(outcome.checked >= 1);
+        }
+    }
+
+    #[test]
+    fn reconcile_recovers_listen_slot_by_removing_redundant_socket() {
+        // Task 2.6 replan (S4, unit): with an idle listener present, a
+        // Pending slot whose socket reverted to Listen is redundant: the raw
+        // socket is removed from the set together with its slot, and the
+        // existing idle survives.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18203);
+            let redundant = {
+                let socket = {
+                    let mut socket = new_tcp_socket();
+                    socket.listen(endpoint(18203)).unwrap();
+                    socket
+                };
+                sockets.add(socket)
+            };
+            {
+                let mut guard = table.tcp[18203].lock();
+                guard.as_mut().unwrap().queue.push_back(ListenSlot {
+                    handle: Some(redundant),
+                    state: SlotState::Pending,
+                });
+            }
+            assert!(
+                table.test_idle_is_some(18203),
+                "session starts with an idle"
+            );
+
+            let _ = table.reconcile(&mut sockets, true);
+
+            assert!(
+                !sockets.iter().any(|(h, _)| h == redundant),
+                "the redundant revert socket must be removed from the set"
+            );
+            assert_eq!(table.test_queue_len(18203), 0);
+            assert!(table.test_idle_is_some(18203));
+        }
+    }
+
+    #[test]
+    fn reconcile_latches_progress_during_sweep_into_follow_up_pass() {
+        // T2.6-R1 (S7): protocol progress arriving while a listener sweep is
+        // unfinished is latched into a bounded follow-up pass instead of being
+        // discarded: the current pass still finishes, the follow-up re-covers
+        // the table, and only a quiet complete pass parks. The Cycle 006
+        // cursor dropped in-flight progress — it parked as soon as its
+        // snapshot count hit zero, so a transition observed outside the
+        // snapshot could miss reconciliation until the next protocol event.
+        // Cycle 008 makes the latch pass-independent (T2.6-R4) and charges
+        // every slot state one token (T2.6-R3), so the quiet continuation of
+        // the follow-up traversal itself is bounded and parks only after a
+        // clean pass.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18210);
+            table.test_seed_closed_slots(18210, &mut sockets, 33);
+            // Round 1: the head + 31 slots (32 positions); the sweep is
+            // unfinished.
+            let first = table.reconcile(&mut sockets, true);
+            assert_eq!(first.checked, 32);
+            assert!(first.sweep_incomplete);
+
+            // Round 2: protocol progress while the sweep is active must arm a
+            // follow-up pass (the Cycle 006 cursor ignored it and parked).
+            let second = table.reconcile(&mut sockets, true);
+            assert!(
+                second.sweep_incomplete,
+                "progress during an unfinished sweep must arm a bounded follow-up pass"
+            );
+
+            // Quiet continuation: the follow-up traversal re-covers each
+            // committed slot for one token and parks only after a clean pass.
+            let mut rounds = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 6, "no convergence after {rounds} rounds");
+                let outcome = table.reconcile(&mut sockets, false);
+                assert!(
+                    outcome.checked <= crate::service::STACK_STAGE_BUDGET,
+                    "quiet continuation must stay bounded"
+                );
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            let entry = table.tcp[18210].lock();
+            let entry = entry.as_ref().unwrap();
+            assert_eq!(entry.queue.len(), 33, "all seeded slots stay committed");
+            assert!(
+                entry
+                    .queue
+                    .iter()
+                    .all(|slot| slot.state == SlotState::Reset),
+                "every seeded slot must be committed"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_charges_one_token_per_committed_slot_and_head() {
+        // T2.6-R3 (S1): every queue position — Pending, Ready or Reset — costs
+        // exactly one budget token. A listener with 512 committed Reset slots
+        // plus its head completes one quiet pass in exactly 513 tokens across
+        // 17 bounded rounds (32 per round), with no unbudgeted inline skip.
+        // The Cycle 007 cursor read all 512 committed slots inside one free
+        // `while` loop, so this witness fails there (1 token / 1 round).
+        use crate::service::STACK_STAGE_BUDGET;
+
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18215);
+            {
+                let mut entry = table.tcp[18215].lock();
+                let entry = entry.as_mut().unwrap();
+                for _ in 0..LISTEN_QUEUE_SIZE {
+                    entry.queue.push_back(ListenSlot {
+                        handle: None,
+                        state: SlotState::Reset,
+                    });
+                }
+            }
+            let mut rounds = 0usize;
+            let mut total = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 20, "no convergence after {rounds} rounds");
+                // The first call starts the pass on the observed progress;
+                // continuations are quiet self-wakes of the in-flight sweep.
+                let outcome = table.reconcile(&mut sockets, rounds == 1);
+                assert!(
+                    outcome.checked <= STACK_STAGE_BUDGET,
+                    "round {rounds}: checked {} > {STACK_STAGE_BUDGET}",
+                    outcome.checked
+                );
+                total += outcome.checked;
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            assert_eq!(
+                total,
+                LISTEN_QUEUE_SIZE + 1,
+                "head + 512 committed positions must cost exactly 513 tokens"
+            );
+            assert_eq!(
+                rounds, 17,
+                "513 tokens at 32 per round span exactly 17 rounds"
+            );
+            // Committed state is final: the pass must not mutate the queue.
+            let entry = table.tcp[18215].lock();
+            let entry = entry.as_ref().unwrap();
+            assert_eq!(entry.queue.len(), LISTEN_QUEUE_SIZE);
+            assert!(
+                entry
+                    .queue
+                    .iter()
+                    .all(|slot| slot.state == SlotState::Reset),
+                "the sweep must never touch committed slots"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_retains_progress_observed_during_later_traversal_pass() {
+        // T2.6-R4 (S2): a new progress observation during a SECOND/LATER
+        // traversal pass — not just the primary pass — must also arm a
+        // subsequent bounded pass. Cycle 007's `!follow_up` immunity dropped
+        // in-flight progress during the follow-up pass, letting it park with
+        // a possibly-unreconciled transition.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18216);
+            table.test_seed_closed_slots(18216, &mut sockets, 33);
+
+            // Round 1: start the primary pass (head + 31 slots = 32 positions).
+            let first = table.reconcile(&mut sockets, true);
+            assert_eq!(first.checked, 32);
+            assert!(first.sweep_incomplete);
+
+            // Round 2: progress while the primary pass is active arms the
+            // follow-up traversal.
+            let second = table.reconcile(&mut sockets, true);
+            assert!(second.sweep_incomplete);
+
+            // Round 3: the follow-up traversal is now running. New progress
+            // observed during IT must arm yet another pass. RED witness:
+            // Cycle 007 parks here (`!follow_up` suppressed the latch and the
+            // committed-slot skip finished the pass in one round).
+            let third = table.reconcile(&mut sockets, true);
+            assert!(
+                third.sweep_incomplete,
+                "a progress observation during a later traversal pass must arm a subsequent pass"
+            );
+
+            // New-code witness: quiet continuation keeps every pass bounded
+            // and eventually parks after a clean pass.
+            let mut rounds = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 8, "no convergence after {rounds} rounds");
+                let outcome = table.reconcile(&mut sockets, false);
+                assert!(
+                    outcome.checked <= crate::service::STACK_STAGE_BUDGET,
+                    "quiet continuation must stay bounded"
+                );
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            let entry = table.tcp[18216].lock();
+            let entry = entry.as_ref().unwrap();
+            assert_eq!(entry.queue.len(), 33);
+            assert!(
+                entry
+                    .queue
+                    .iter()
+                    .all(|slot| slot.state == SlotState::Reset),
+                "every seeded slot must be committed"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_visits_listener_added_mid_sweep() {
+        // T2.6-R1 (S8): a listener registered while a sweep is running must
+        // not be permanently skipped. The Cycle 006 sweep computed its
+        // position snapshot once; a port added afterwards was never visited
+        // before the sweep parked, so its hidden transitions stayed
+        // unreconciled. A topology generation invalidates the running pass
+        // and restarts it from a safe position.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18211);
+            table.test_seed_closed_slots(18211, &mut sockets, 33);
+            let first = table.reconcile(&mut sockets, true);
+            assert_eq!(first.checked, 32);
+            assert!(first.sweep_incomplete);
+
+            // Mid-sweep: register a second listener, then close its idle
+            // hidden socket. The transition must be reconciled by the running
+            // sweep before it parks.
+            let accept = Arc::new(ReadinessBridge::new());
+            table
+                .listen_with(endpoint(18212), accept, &mut sockets)
+                .unwrap();
+            assert!(close_idle(&table, 18212, &mut sockets));
+
+            let _ = table.reconcile(&mut sockets, true);
+            let _ = table.reconcile(&mut sockets, false);
+            assert_eq!(
+                table.test_queue_len(18212),
+                1,
+                "a listener added mid-sweep must be reconciled before parking"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_bounded_33_active_listeners_without_pre_pass() {
+        // T2.6-R1 (S9): a round is bounded by position count even with more
+        // active listeners than the budget: 33 listeners cost exactly 33 head
+        // positions, split 32 + 1 across two rounds, with no full active-port
+        // count/clone/lock pre-pass outside the budget. Each round reports at
+        // most `STACK_STAGE_BUDGET` checked positions and the sweep parks only
+        // after every live listener was visited.
+        for _ in 0..100 {
+            let table = ListenTable::new();
+            let mut sockets = SocketSet::new(vec![]);
+            for i in 0..33u16 {
+                let port = 18230 + i;
+                *table.tcp[port as usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                    endpoint(port),
+                    Arc::new(ReadinessBridge::new()),
+                    &mut sockets,
+                )));
+                table.active_ports.lock().push(port);
+            }
+
+            let mut total_checked = 0usize;
+            let mut rounds = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 4, "no convergence after {rounds} rounds");
+                let outcome = table.reconcile(&mut sockets, rounds == 1);
+                assert!(
+                    outcome.checked <= crate::service::STACK_STAGE_BUDGET,
+                    "round {rounds}: checked {} > budget",
+                    outcome.checked
+                );
+                total_checked += outcome.checked;
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            assert!(
+                total_checked >= 33,
+                "every active listener's head position is visited at least once"
+            );
+            assert_eq!(
+                total_checked % 33,
+                0,
+                "each covered pass pays exactly one head token per listener"
+            );
+            assert!(rounds >= 2, "a 33-port pass must span a round boundary");
+        }
+    }
+
+    #[test]
+    fn reconcile_cursor_survives_listener_removed_mid_sweep() {
+        // T2.6-R1 (S10): removing a listener mid-sweep must not leave a stale
+        // handle in cursor state or starve a live listener; the sweep
+        // converges over the survivors and commits every remaining slot.
+        for _ in 0..100 {
+            let table = ListenTable::new();
+            let mut sockets = SocketSet::new(vec![]);
+            *table.tcp[18213usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                endpoint(18213),
+                Arc::new(ReadinessBridge::new()),
+                &mut sockets,
+            )));
+            *table.tcp[18214usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                endpoint(18214),
+                Arc::new(ReadinessBridge::new()),
+                &mut sockets,
+            )));
+            table.active_ports.lock().extend([18213u16, 18214]);
+            table.test_seed_closed_slots(18213, &mut sockets, 33);
+
+            let first = table.reconcile(&mut sockets, true);
+            assert_eq!(first.checked, 32);
+            assert!(first.sweep_incomplete);
+
+            // Remove the second listener mid-sweep.
+            table.unlisten_with(18214, &mut sockets);
+
+            let mut rounds = 0usize;
+            loop {
+                rounds += 1;
+                assert!(rounds <= 8, "sweep did not converge after removal");
+                let outcome = table.reconcile(&mut sockets, false);
+                if !outcome.sweep_incomplete {
+                    break;
+                }
+            }
+            {
+                let entry = table.tcp[18213].lock();
+                let entry = entry.as_ref().unwrap();
+                assert!(
+                    entry
+                        .queue
+                        .iter()
+                        .all(|slot| slot.state == SlotState::Reset),
+                    "every surviving listener slot was committed"
+                );
+            }
+            assert_eq!(table.active_ports.lock().len(), 1);
         }
     }
 }

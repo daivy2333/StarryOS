@@ -118,3 +118,17 @@ MS05 已建立唯一双向 queue service 和有界 packet slots，但 smoltcp �
   `iterations/001-socket-and-listener-readiness-bridge/003-replan.md`。
 - User Approval: PASS。用户于2026-08-24回复“批准”；Cycle 003已由`draft`更新为`ready`，
   等待显式`openspec-act`调用。
+
+## Cycle 005 重新平衡审计
+
+- Status: replan-required。
+- Trigger: 用户于2026-08-24指出当前Cycle任务过重并要求重新审计、拆分工作；Cycle 005尚未调用Act，
+  没有该Cycle产生的产品代码或验证结果。
+- Requirements and Scope: Gate 1不变；不增加、不裁剪用户可见Requirement，也不改变D4、D7、D10、
+  D11的行为契约。
+- Iteration balance: 原Cycle把listener cursor、UDP raw-handle drain ownership和QEMU/guest事件排序放入
+  同一次Act，跨越三个可独立验收的故障域。修订后17个tasks分配到5个依赖有序Iteration：Iteration
+  001仅收口Task 2.6，Iteration 002执行Task 2.7，Iteration 003执行Task 2.8，原terminal/QEMU最终验收
+  顺延为Iteration 004。
+- User Approval: PASS。用户于2026-08-24回复“已经拆分完了么，认可你的思路”，批准修订后的
+  Iteration Map与Cycle 006范围；Cycle 006已更新为`ready`。该批准不构成自动Act授权。

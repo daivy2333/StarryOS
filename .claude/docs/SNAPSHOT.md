@@ -2,9 +2,9 @@
 
 > Sync status: current
 > Updated: 2026-08-24
-> Revision: `fb87c8d36b7c62e8d7156598defa08bce0db32d4`
+> Revision: `0acc08137a5df9d3e1ebce709f3760e6d4471d2d`
 > Branch: `net-k3`
-> Worktree: modified (2 local commits ahead of `origin/net-k3`, staged changes pending)
+> Worktree: modified (3 local commits ahead of `origin/net-k3`, working tree clean)
 
 ## 项目身份
 
@@ -47,8 +47,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `fb87c8d36b7c62e8d7156598defa08bce0db32d4`。
-- 工作树领先 `origin/net-k3` 两个未推送 commit，并含已 staged 的 MS06 Iteration 001 实现与 002-rework.md 文档。
+- 当前 revision 为 `0acc08137a5df9d3e1ebce709f3760e6d4471d2d`。
+- 工作树领先 `origin/net-k3` 三个未推送 commit（`MS06:第一次提交`、`MS06:第二次提交`、`MS06:第三次提交`），工作树当前 clean。
 
 ## 权威入口
 

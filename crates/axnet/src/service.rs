@@ -78,6 +78,11 @@ pub(crate) struct StackRoundOutcome {
     /// runner may self-wake once to finish it. After a complete sweep it is
     /// false regardless of the deferred list length.
     pub(crate) deferred_sweep_incomplete: bool,
+    /// Task 2.6 replan: listener hidden-slot positions examined this round
+    /// (≤ `STACK_STAGE_BUDGET`) and whether the bounded listener sweep still
+    /// has more to examine.
+    pub(crate) listener_checked: usize,
+    pub(crate) listener_sweep_incomplete: bool,
 }
 
 /// Which half of a deferred TCP close still needs peer acknowledgment
@@ -436,7 +441,6 @@ impl Service {
             .non_ip_consumed
             .fetch_add(self.router.take_rx_consumed_delta(), Ordering::Relaxed);
         self.iface.poll_maintenance(timestamp);
-        self.listen_table().reconcile(sockets);
         let ingress = run_bounded_stage(|| {
             let step = match self
                 .iface
@@ -446,9 +450,6 @@ impl Service {
                 PollIngressSingleResult::PacketProcessed => StageStep::Processed,
                 PollIngressSingleResult::SocketStateChanged => StageStep::SocketStateChanged,
             };
-            if !matches!(step, StageStep::Idle) {
-                self.listen_table().reconcile(sockets);
-            }
             step
         });
         let egress = run_bounded_stage(|| {
@@ -457,7 +458,13 @@ impl Service {
                 PollResult::SocketStateChanged => StageStep::SocketStateChanged,
             }
         });
-        self.listen_table().reconcile(sockets);
+        // Task 2.6 replan: ONE bounded listener reconcile stage per round,
+        // after ingress/egress so their socket transitions are visible to
+        // it. A cross-round cursor limits the stage to `STACK_STAGE_BUDGET`
+        // positions; a budget-exhausted stage requests a continuation.
+        let listener = self
+            .listen_table()
+            .reconcile(sockets, ingress.socket_changed || egress.socket_changed);
         // Waking the queue task is a release of the resource it is blocked
         // on. The waiting bit is published only for a full RX slot (Task 3.2
         // slot-mode copy); Router-buffer space is drained by the stack itself
@@ -518,6 +525,8 @@ impl Service {
             deferred_checked: deferred.checked,
             deferred_reclaimed: deferred.reclaimed,
             deferred_sweep_incomplete: deferred.sweep_incomplete,
+            listener_checked: listener.checked,
+            listener_sweep_incomplete: listener.sweep_incomplete,
         }
     }
 
@@ -1412,6 +1421,60 @@ mod tests {
     }
 
     #[test]
+    fn listener_stage_budget_does_not_steal_router_or_deferred_stage_budget() {
+        // Task 2.6 replan (S5): a >32-pending listener backlog sharing one
+        // round with 33 Router RX items and 33 deferred entries must not
+        // starve any stage: every stage gets its own 32-entry budget in the
+        // same round, and a budget-hit listener stage requests a continuation
+        // instead of swallowing the round.
+        use crate::service::STACK_STAGE_BUDGET;
+
+        for _ in 0..100 {
+            let mut router = Router::new();
+            router.add_device(Box::new(CountingRxDevice { remaining: 33 }));
+            let table: &'static crate::listen_table::ListenTable =
+                Box::leak(Box::new(crate::listen_table::ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, table);
+            let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+            let accept = Arc::new(crate::readiness::ReadinessBridge::new());
+            table
+                .listen_with(
+                    smoltcp::wire::IpListenEndpoint {
+                        addr: None,
+                        port: 18300,
+                    },
+                    accept,
+                    &mut sockets,
+                )
+                .unwrap();
+            // Seed 64 pending slots and start the sweep directly: the round's
+            // listener stage must hit its 32-position budget while the Router RX
+            // and deferred stages run their own budgets in the same round.
+            table.test_seed_closed_slots(18300, &mut sockets, 64);
+            assert!(table.reconcile(&mut sockets, true).sweep_incomplete);
+            for _ in 0..33 {
+                let handle = sockets.add(crate::tcp::new_tcp_socket());
+                service.queue_deferred_removal(handle, CloseKind::Active);
+            }
+
+            let outcome = service.stack_round(
+                Instant::from_millis_const(0),
+                RxOwnerView::PollingOwned,
+                &mut sockets,
+            );
+
+            assert_eq!(outcome.work, 32, "Router RX consumed its own 32 budget");
+            assert!(outcome.backlog);
+            assert!(outcome.listener_sweep_incomplete, "listener must continue");
+            assert_eq!(
+                outcome.listener_checked, STACK_STAGE_BUDGET,
+                "the listener stage consumed exactly its own 32-position budget"
+            );
+            assert_eq!(service.deferred_removals_len(), 1);
+        }
+    }
+
+    #[test]
     fn deferred_retirement_udp_queued_tx_wait_for_drain_before_reap() {
         // T2.7: a dropped UDP socket whose TX buffer still holds an
         // undispatched datagram is kept until the datagram is dispatched
@@ -1466,7 +1529,9 @@ mod tests {
         // once (raw handle + entry in one commit). `close()` resets the TX
         // buffer, mechanically matching a dispatched + drained socket for the
         // reaper's `can_send()` condition.
-        sockets.get_mut::<smoltcp::socket::udp::Socket>(handle).close();
+        sockets
+            .get_mut::<smoltcp::socket::udp::Socket>(handle)
+            .close();
         let _ = service.stack_round(
             Instant::from_millis_const(0),
             RxOwnerView::PollingOwned,

@@ -351,4 +351,66 @@ None
 
 ## Plan Review
 
-- Status: pending
+- Status: completed
+
+**Review Result**
+
+replan-required
+
+**Findings**
+
+1. **Blocking — Cycle 005聚合了三个可独立验收的故障域。** Task 2.6修改ListenTable cursor和
+   Service固定stage；Task 2.7同时要求本地smoltcp API、UDP public/raw handle lifecycle、guest workload
+   事件排序和manual QEMU。任一部分失败都不能由同一诊断边界定位，且host机制与外部runtime Gate没有
+   共同的最小稳定基线。
+2. **Blocking — 原Iteration平衡审计不成立。** listener budget可以由host/model独立验收；UDP drain
+   ownership依赖listener稳定基线但不依赖guest workload；MS01 compatibility又依赖前两项GREEN。把三者
+   保留在一个Cycle会让Act跨机制、依赖API和运行环境连续实施，违反“一个Iteration形成内聚、可独立验证
+   与排障的阶段结果”。
+3. **Non-blocking — 没有Cycle 005实施需要保留或回滚。** Act Response仍为`pending`，Implemented、
+   Changed Files and Symbols、Verification Evidence均为None；本次Review没有按Cycle 005修改产品代码。
+
+**Deviation Classification**
+
+- PLAN-INVALID：Cycle 005的Iteration Plan和Cycle Scope未通过重新平衡审计。
+- NEW-EVIDENCE：用户于2026-08-24明确指出当前Cycle任务过重并要求重新审计、拆分工作。
+
+**Acceptance Gaps**
+
+- Acceptance 1–6均未按Cycle 005执行；既有3个UDP RED、listener重复scan与QEMU/MS01失败基线不变。
+- Acceptance 7是范围限定，不构成已完成产品验收。
+
+**Convergence**
+
+`unchanged`。Cycle 005未进入Act，没有新的实现或测试结果；本次只把既有gap按依赖和验证边界拆分。
+
+**Evidence**
+
+- `Act Response: pending`，且Cycle 005的Implemented、Changed Files、Verification Evidence均为None。
+- 实际计划面：Task 2.6涉及`listen_table.rs`与`service.rs::stack_round`；Task 2.7原范围同时涉及本地
+  smoltcp UDP、axnet drop/reaper、MS01 payload和manual QEMU。
+- `openspec validate ms06-application-visible-async-network-stack --strict`：valid，exit 0。
+- `git diff --check HEAD`：无输出，exit 0。
+- 产品验证SKIPPED：Cycle 005未执行且本次只改计划；不以重跑UDP RED或QEMU证明Iteration平衡。
+
+**Follow-up Decision**
+
+停止Cycle 005并创建同一Iteration的`006-replan.md`。Cycle 006只执行Task 2.6，先形成有界listener
+reconciliation稳定基线；Task 2.7的UDP drain ownership和Task 2.8的backlog/MS01 runtime compatibility
+分别进入后续Iteration。新Cycle须由用户批准后才能交给Act。
+
+**Iteration Plan Update**
+
+- Iteration 001改为Tasks 2.1–2.6，只收口listener reconciliation与RST-to-Listen恢复。
+- 新Iteration 002包含Task 2.7，只处理smoltcp pending-TX观察和UDP raw-handle drain ownership。
+- 新Iteration 003包含Task 2.8，只处理overflow/recovery分层证据与MS01 single-hart QEMU兼容。
+- 原terminal readiness和最终QEMU acceptance保持Tasks 3.1–3.4，顺延为Iteration 004。
+- Requirement和设计行为不变；没有新增或裁剪用户可见Acceptance。
+
+**Next Cycle**
+
+`006-replan.md`（draft，等待用户批准）。
+
+**Next Iteration**
+
+None; expand Iteration 002 only after `006-replan.md` is accepted.

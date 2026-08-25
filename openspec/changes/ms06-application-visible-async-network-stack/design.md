@@ -115,7 +115,7 @@ fallback deadline按以下顺序决定：
 
 ### D4：每 stage 固定 budget，全部 stage 每轮都有机会
 
-**Decision**：首版使用与 queue task一致的 `STACK_STAGE_BUDGET = 32`，分别约束 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、ListenTable pending reconciliation 和 deferred socket retirement。maintenance每轮执行一次；listener reconciliation只在各网络 stage 之后执行一个有界批次，不得在每个 ingress step 后重复全表扫描。ListenTable在active ports与各entry slots之间保存全局持久cursor，所有listener共享每轮32次slot检查预算，且不得每轮clone完整active-port列表；deferred retirement使用独立cursor与32-entry预算。未变化或未确认entry不能让下一轮重新从列表头扫描。任一stage返回“仍可立即推进”时，runner在释放锁后self-wake。
+**Decision**：首版使用与 queue task一致的 `STACK_STAGE_BUDGET = 32`，分别约束 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、ListenTable pending reconciliation 和 deferred socket retirement。maintenance每轮执行一次；listener reconciliation只在各网络 stage 之后执行一个有界批次，不得在每个 ingress step 后重复全表扫描。ListenTable在active ports与各entry slots之间保存全局持久cursor，所有listener共享每轮32次slot检查预算，且不得每轮clone完整active-port列表；deferred retirement使用独立cursor与32-entry预算。listener增删或`accept`移除queue slot必须推进结构generation；active sweep观察generation变化后从安全位置有界重启，不能仅用`cursor > len`判断收缩，也不能依赖ingress/egress再次报告protocol progress。没有结构变化或未确认entry时不得让下一轮重新从列表头扫描。任一stage返回“仍可立即推进”时，runner在释放锁后self-wake。
 
 `Router::poll` 和 `Router::dispatch` 拆出单步/有界 API；Router RX 保存 round-robin device cursor，避免 loopback backlog永久挡住 target NIC。结果结构显式返回 processed count、socket state change、backlog、RX-space release、TX enqueue 和 stable fault，不用 bool 同时表达多个含义。
 
@@ -276,8 +276,9 @@ UDP deferred verdict必须先按`CloseKind::UdpQueued`与实际socket类型匹�
 2. 在`init_network`启动runner，加入software mutation wake；确认Active quiet和Polling fallback后，删除TCP/UDP产品路径中的主动`poll_interfaces()`调用。
 3. 加入per-socket bridge registry和普通TCP/UDP recv/send waker重臂，先关闭read/write多waiter。
 4. 加入listener accept bridge、terminal snapshot、fault广播和close/error映射。
-5. 在Iteration 001收口前统一runner/Service round timestamp，把deferred retirement纳入固定budget，并让满backlog accept在返回前恢复hidden listener headroom。
-6. 运行完整自动Gate和单hartQEMU acceptance；发现回归时保持runner lifecycle可诊断，不以重新启用socket内同步poll作为修复。
+5. 在Iteration 001收口listener reconciliation：统一runner/Service round timestamp，跨active listeners共享固定budget，并恢复passive RST后回到Listen的hidden socket ownership。
+6. 在Iteration 002单独闭合UDP queued-TX drain ownership；host/model GREEN后，Iteration 003再分开验证overflow终态、exact-512 recovery和MS01 single-hart QEMU兼容。
+7. 在Iteration 004完成terminal readiness、完整自动Gate和单hartQEMU application acceptance；发现回归时保持runner lifecycle可诊断，不以重新启用socket内同步poll作为修复。
 
 回滚只能按Iteration稳定边界进行：Iteration 000未被后续依赖前可回到caller-driven基线；一旦Iteration 001切除产品inline poll，回滚必须同时恢复所有调用点和旧timer ownership，不能形成“无runner且无caller poll”的混合状态。
 

@@ -202,6 +202,9 @@ pub(crate) struct StackTelemetry {
     /// bounded retirement stage (cumulative; observation-only).
     deferred_checked: AtomicU64,
     deferred_reclaimed: AtomicU64,
+    /// Task 2.6 replan: listener hidden-slot positions examined by the
+    /// bounded reconciliation stage (cumulative; observation-only).
+    listener_checked: AtomicU64,
 }
 
 impl StackTelemetry {
@@ -221,6 +224,7 @@ impl StackTelemetry {
             tx_enqueue: AtomicU64::new(0),
             deferred_checked: AtomicU64::new(0),
             deferred_reclaimed: AtomicU64::new(0),
+            listener_checked: AtomicU64::new(0),
         }
     }
 }
@@ -247,6 +251,8 @@ pub struct StackSnapshot {
     /// Task 2.6 replan: deferred-close entries examined / reclaimed so far.
     pub deferred_checked: u64,
     pub deferred_reclaimed: u64,
+    /// Task 2.6 replan: listener hidden-slot positions examined so far.
+    pub listener_checked: u64,
 }
 
 fn stack_snapshot_impl(
@@ -271,6 +277,7 @@ fn stack_snapshot_impl(
         tx_enqueue: telemetry.tx_enqueue.load(Ordering::Relaxed),
         deferred_checked: telemetry.deferred_checked.load(Ordering::Relaxed),
         deferred_reclaimed: telemetry.deferred_reclaimed.load(Ordering::Relaxed),
+        listener_checked: telemetry.listener_checked.load(Ordering::Relaxed),
     }
 }
 
@@ -415,6 +422,9 @@ impl Future for StackRunnerFuture {
         this.telemetry
             .deferred_reclaimed
             .fetch_add(outcome.deferred_reclaimed as u64, Ordering::Relaxed);
+        this.telemetry
+            .listener_checked
+            .fetch_add(outcome.listener_checked as u64, Ordering::Relaxed);
         if outcome.backlog {
             this.telemetry.backlog_round.fetch_add(1, Ordering::Relaxed);
         }
@@ -431,12 +441,13 @@ impl Future for StackRunnerFuture {
         // A round must continue immediately when more work is reachable without a
         // new event: budget exhaust (`self_yield`), a loopback/non-IRQ TX that
         // made RX ready (`rx_ready`), a protocol state transition
-        // (`socket_changed`), or an unfinished bounded deferred sweep
-        // (`deferred_sweep_incomplete`, Task 2.6 replan) — mirroring
-        // `Service::poll`'s drain condition. Once the deferred sweep is
-        // complete with nothing reclaimable, the runner parks and relies on a
-        // new protocol event or the `poll_at` deadline; a non-empty deferred
-        // list alone never self-wakes it.
+        // (`socket_changed`), an unfinished bounded deferred sweep
+        // (`deferred_sweep_incomplete`, Task 2.6 replan), or an unfinished
+        // bounded listener sweep (`listener_sweep_incomplete`, Task 2.6
+        // replan) — mirroring `Service::poll`'s drain condition. Once the
+        // sweeps are complete with nothing reclaimable, the runner parks and
+        // relies on a new protocol event or the `poll_at` deadline; a
+        // non-empty deferred/listener list alone never self-wakes it.
         if outcome.socket_changed {
             debug!("stack round: socket state changed (ingress/egress)");
         }
@@ -444,6 +455,7 @@ impl Future for StackRunnerFuture {
             || outcome.rx_ready
             || outcome.socket_changed
             || outcome.deferred_sweep_incomplete
+            || outcome.listener_sweep_incomplete
         {
             this.cancel_timer();
             if outcome.self_yield {
@@ -1156,7 +1168,7 @@ mod tests {
         // calls left in Drop are the no-Service fallback and the immediate
         // branch, both entry-free in the same drop; and the reaper removes
         // the raw handle and its deferred entry in the same guarded scope,
-// so a stale entry can never delete a same-type reused slot.
+        // so a stale entry can never delete a same-type reused slot.
         // Deterministic source scan; 100x matches the plan verification
         // profile and guards against accidental import drift.
         for _ in 0..100 {
@@ -1169,8 +1181,8 @@ mod tests {
             assert_eq!(
                 tcp.matches("remove_raw(").count(),
                 2,
-                "Drop removes raw only on the no-Service fallback and the \
-                 immediate branch, both entry-free in the same drop"
+                "Drop removes raw only on the no-Service fallback and the immediate branch, both \
+                 entry-free in the same drop"
             );
             let udp = include_str!("udp.rs");
             assert_eq!(
@@ -2472,8 +2484,7 @@ mod tests {
             let mut sock = new_tcp_socket();
             sock.register_recv_waker(&overflow_bridge.recv_waker());
             sock.register_send_waker(&overflow_bridge.send_waker());
-            let remote =
-                IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+            let remote = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
             let local = IpEndpoint::new(
                 Ipv4Address::new(127, 0, 0, 1).into(),
                 FULL_CHAIN_LOCAL_PORT + 0x400 + 512,
@@ -2536,8 +2547,7 @@ mod tests {
             let mut sock = new_tcp_socket();
             sock.register_recv_waker(&recovery_bridge.recv_waker());
             sock.register_send_waker(&recovery_bridge.send_waker());
-            let remote =
-                IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+            let remote = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
             let local = IpEndpoint::new(
                 Ipv4Address::new(127, 0, 0, 1).into(),
                 FULL_CHAIN_LOCAL_PORT + 0x400 + 513,
@@ -2571,8 +2581,8 @@ mod tests {
         assert_eq!(
             sockets.lock().get::<Socket>(recovery_handle).state(),
             State::Established,
-            "immediate recovery connect after accept+close must succeed — \
-             the guest sees Connection refused at this step"
+            "immediate recovery connect after accept+close must succeed — the guest sees \
+             Connection refused at this step"
         );
         let _ = (overflow_bridge, first, clients);
     }
@@ -2655,10 +2665,7 @@ mod tests {
 
             // Initiator -> responder datagram; the responder's blocking
             // recvfrom must be woken by the ingress round.
-            let peer = IpEndpoint::new(
-                Ipv4Address::new(127, 0, 0, 1).into(),
-                FULL_CHAIN_UDP_PORT,
-            );
+            let peer = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_UDP_PORT);
             {
                 let mut sockets = sockets.lock();
                 sockets
@@ -2748,6 +2755,298 @@ mod tests {
                 .recv_slice(&mut buf)
                 .expect("initiator recv");
             assert_eq!(&buf[..n], b"echo-udp-ms01");
+        }
+    }
+
+    #[test]
+    fn task_26_listener_sweep_self_wakes_to_finish_then_parks() {
+        // Task 2.6 replan (S6): a listener sweep of 33 pending slots spans a
+        // bounded self-wake cascade (32 per round), then a fully-swept table
+        // must park: a clock nudge with no new event must not self-wake.
+        // 100x in both feature profiles witness no flakiness.
+        for _ in 0..100 {
+            let mut router = Router::new();
+            let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+            router.add_rule(Rule::new(
+                lo_ip.into(),
+                None,
+                lo_dev,
+                lo_ip.address().into(),
+            ));
+            let listen_table = Box::leak(Box::new(ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, listen_table);
+            service
+                .iface
+                .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+            let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+            let event = Box::leak(Box::new(StackEvent::new()));
+            let now = Box::leak(Box::new(AtomicI64::new(0)));
+            let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+            let accept = Arc::new(ReadinessBridge::new());
+            listen_table
+                .listen_with(
+                    smoltcp::wire::IpListenEndpoint {
+                        addr: None,
+                        port: FULL_CHAIN_PORT,
+                    },
+                    accept,
+                    &mut sockets.lock(),
+                )
+                .unwrap();
+            listen_table.test_seed_closed_slots(FULL_CHAIN_PORT, &mut sockets.lock(), 33);
+            // Start the sweep directly: a runner round only continues an
+            // in-progress sweep without a protocol event.
+            let first = listen_table.reconcile(&mut sockets.lock(), true);
+            assert_eq!(first.checked, 32);
+            assert!(first.sweep_incomplete);
+            let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let waker = counting_waker(wakes.clone());
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+
+            // First poll: the runner continues the sweep (remaining 2 positions:
+            // the last slot + the head), then the sweep completes.
+            assert_eq!(poll_once(&mut future, &waker), Poll::Pending);
+            assert_eq!(
+                telemetry.listener_checked.load(Ordering::Relaxed),
+                2,
+                "the runner must finish the remaining listener positions"
+            );
+            let checked_start = telemetry.listener_checked.load(Ordering::Relaxed);
+
+            // Quiet: a nudge with no protocol event must not self-wake again.
+            let wakes_before_quiet = wakes.load(Ordering::Relaxed);
+            now.fetch_add(10_000, Ordering::Relaxed);
+            let _ = poll_once(&mut future, &waker);
+            let _ = poll_once(&mut future, &waker);
+            assert!(
+                wakes.load(Ordering::Relaxed) <= wakes_before_quiet,
+                "a fully-swept listener table must not keep self-waking"
+            );
+            assert_eq!(
+                telemetry.listener_checked.load(Ordering::Relaxed),
+                checked_start,
+                "no new listener positions after the sweep completed"
+            );
+        }
+    }
+
+    #[test]
+    fn task_26_passive_rst_returns_hidden_socket_to_listen_and_recovers() {
+        // Task 2.6 replan (S4, runtime): a real passive-open hidden socket
+        // that receives an RST while SynReceived reverts to Listen (smoltcp).
+        // The bounded reconcile must recover it — no Pending leak, no lost
+        // idle — leaving the listener ready for the next connection.
+        // 100x in both feature profiles witness no flakiness.
+        for _ in 0..100 {
+            let mut router = Router::new();
+            let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+            router.add_rule(Rule::new(
+                lo_ip.into(),
+                None,
+                lo_dev,
+                lo_ip.address().into(),
+            ));
+            let listen_table = Box::leak(Box::new(ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, listen_table);
+            service
+                .iface
+                .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+            let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+            let event = Box::leak(Box::new(StackEvent::new()));
+            let now = Box::leak(Box::new(AtomicI64::new(0)));
+            let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+            let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+            let accept = Arc::new(ReadinessBridge::new());
+            listen_table
+                .listen_with(
+                    smoltcp::wire::IpListenEndpoint {
+                        addr: None,
+                        port: FULL_CHAIN_PORT,
+                    },
+                    accept,
+                    &mut sockets.lock(),
+                )
+                .unwrap();
+
+            let client_bridge = Arc::new(ReadinessBridge::new());
+            let mut client_sock = new_tcp_socket();
+            let client_handle;
+            {
+                let mut guard = service.lock();
+                let context = guard.iface.context();
+                let mut sockets = sockets.lock();
+                client_sock.register_recv_waker(&client_bridge.recv_waker());
+                client_sock.register_send_waker(&client_bridge.send_waker());
+                let remote =
+                    IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+                let local =
+                    IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_LOCAL_PORT);
+                client_sock
+                    .connect(context, remote, local)
+                    .expect("client connect");
+                client_handle = sockets.add(client_sock);
+            }
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let waker = counting_waker(wakes.clone());
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+            // Drive until the SYN is promoted: one Pending hidden slot exists and
+            // the hidden socket is still SynReceived (the client's ACK is not yet
+            // dispatched, so a later RST reverts it to Listen instead of closing
+            // an Established connection).
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "SYN promotion stalled after {polls} polls (client {})",
+                    sockets.lock().get::<Socket>(client_handle).state()
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if listen_table.test_queue_len(FULL_CHAIN_PORT) == 1 {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future
+                        .timer_deadline()
+                        .expect("runner parked without a timer during handshake");
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+            assert_eq!(listen_table.test_queue_len(FULL_CHAIN_PORT), 1);
+            assert!(
+                matches!(
+                    sockets.lock().get::<Socket>(client_handle).state(),
+                    State::SynSent | State::Established
+                ),
+                "the client must still be mid-handshake when the SYN is promoted"
+            );
+
+            // Abort the client while the hidden socket is still SynReceived: its
+            // RST reverts the hidden socket to Listen (smoltcp), which the
+            // bounded reconcile must recover without leaking the slot.
+            sockets.lock().get_mut::<Socket>(client_handle).abort();
+            event.publish_software();
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "RST recovery stalled after {polls} polls"
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                let queue_len = listen_table.test_queue_len(FULL_CHAIN_PORT);
+                if queue_len == 0 {
+                    break;
+                }
+                if queue_len != 1 {
+                    panic!("listener queue grew to {queue_len} after RST");
+                }
+                if !self_woke {
+                    if let Some(deadline) = future.timer_deadline() {
+                        now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                    }
+                }
+            }
+            assert_eq!(listen_table.test_queue_len(FULL_CHAIN_PORT), 0);
+            assert!(
+                listen_table.test_idle_is_some(FULL_CHAIN_PORT),
+                "the listener must keep an idle hidden socket after RST recovery"
+            );
+            // The reverted socket was not leaked into the set.
+            assert_eq!(sockets.lock().iter().count(), 2, "client + idle remain");
+            {
+                let mut sockets = sockets.lock();
+                sockets.remove(client_handle);
+            }
+        }
+    }
+
+    #[test]
+    fn task_26_listener_stage_is_single_bounded_call_without_guard_wake() {
+        // Task 2.6 replan source witness: `stack_round` runs exactly ONE
+        // listener reconciliation stage per round (the in-ingress and
+        // pre-maintenance calls are gone); the stage is budget-constrained and
+        // performs no full active-port snapshot pre-pass (the Cycle 006
+        // `remaining = ports.iter().map(...).sum()` is gone); the topology
+        // generation restart and the progress-during-sweep latch exist; and
+        // `reconcile` never wakes accept bridges inside the Service /
+        // SocketSet guards — only the drain after guard release does.
+        for _ in 0..100 {
+            let service = include_str!("service.rs");
+            let round_src = &service[service.find("fn stack_round(").unwrap()
+                ..service.find("fn rx_slot_has_space_target").unwrap()];
+            assert_eq!(
+                round_src.matches(".reconcile(").count(),
+                1,
+                "exactly one bounded listener stage per round"
+            );
+            let listen_table = include_str!("listen_table.rs");
+            let reconcile_src = &listen_table[listen_table.find("fn reconcile(").unwrap()
+                ..listen_table.find("fn drain_accept_wakes").unwrap()];
+            assert!(reconcile_src.contains("STACK_STAGE_BUDGET"));
+            assert!(reconcile_src.contains("reconcile_cursor"));
+            assert!(
+                !reconcile_src.contains("remaining"),
+                "no snapshot-total active-port pre-pass outside the budget"
+            );
+            assert!(
+                reconcile_src.contains("structure_generation"),
+                "listener topology or queue mutation must invalidate the running pass"
+            );
+            let accept_src = &listen_table[listen_table.find("pub fn accept_with").unwrap()
+                ..listen_table
+                    .find("pub(crate) fn test_seed_full_queue")
+                    .unwrap()];
+            assert!(
+                accept_src.contains("structure_generation.fetch_add"),
+                "successful accept must invalidate an active listener cursor"
+            );
+            assert!(
+                !accept_src.contains("reconcile_cursor.lock"),
+                "accept must not reverse the cursor-to-entry lock order"
+            );
+            assert!(
+                reconcile_src.contains("rescan"),
+                "progress during an unfinished pass must be latched"
+            );
+            let entry_src = &listen_table[listen_table.find("fn reconcile_head").unwrap()
+                ..listen_table.find("fn cleanup").unwrap()];
+            assert!(
+                !entry_src.contains(".wake("),
+                "no accept bridge wake inside any reconcile guard"
+            );
         }
     }
 
@@ -2849,10 +3148,7 @@ mod tests {
             );
 
             // Initiator -> responder; the responder receives the datagram.
-            let peer = IpEndpoint::new(
-                Ipv4Address::new(127, 0, 0, 1).into(),
-                FULL_CHAIN_UDP_PORT,
-            );
+            let peer = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_UDP_PORT);
             {
                 let mut sockets = sockets.lock();
                 sockets
@@ -2919,7 +3215,10 @@ mod tests {
                     .expect("responder echo");
             }
             assert!(
-                sockets.lock().get::<smoltcp::socket::udp::Socket>(udp_rx).can_send(),
+                sockets
+                    .lock()
+                    .get::<smoltcp::socket::udp::Socket>(udp_rx)
+                    .can_send(),
                 "the echo must be queued (undispatched) at close time"
             );
             // Defer the raw removal (the fixed drop): retire public metadata
@@ -2929,7 +3228,10 @@ mod tests {
                 .queue_deferred_removal(udp_rx, crate::service::CloseKind::UdpQueued);
             event.publish_software();
             assert!(
-                sockets.lock().get::<smoltcp::socket::udp::Socket>(udp_rx).can_send(),
+                sockets
+                    .lock()
+                    .get::<smoltcp::socket::udp::Socket>(udp_rx)
+                    .can_send(),
                 "the raw socket must survive the close while the echo is queued"
             );
 
@@ -2961,10 +3263,7 @@ mod tests {
             assert_eq!(&buf[..n], b"echo-udp-ms01");
             // The reaper reclaimed the deferred responder socket exactly once.
             assert!(
-                !sockets
-                    .lock()
-                    .iter()
-                    .any(|(h, _)| h == udp_rx),
+                !sockets.lock().iter().any(|(h, _)| h == udp_rx),
                 "the deferred responder raw handle must be reaped once its TX drained"
             );
         }

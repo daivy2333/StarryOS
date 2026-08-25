@@ -78,6 +78,12 @@ stack runner MUST 通过一个独立的 generation + single-runner waker 入口�
 - **THEN** 每个runner poll检查的pending slot数 MUST 不超过固定budget，并从持久cursor继续
 - **AND** 同一round MUST NOT 在每个ingress step后重新扫描完整listener queue
 
+#### Scenario: Listener queue在有界pass中收缩
+
+- **WHEN** listener reconciliation pass尚未完成，应用accept从已访问前缀移除Ready或Reset slot，且剩余queue长度仍大于当前cursor
+- **THEN** queue结构变化 MUST 使runner从安全位置继续或有界重启，quiet park前仍须访问每个剩余live slot
+- **AND** software wake MUST NOT 因本轮没有新的ingress/egress state change而丢失该结构变化
+
 #### Scenario: 活跃 IRQ 设备空闲
 
 - **WHEN** queue lifecycle 为 Active、无 stack event、无 socket work 且 `poll_at` 无 deadline
