@@ -14,7 +14,7 @@
 - [x] 2.4 在 `service.rs`、`general.rs`、`wrapper.rs`、`tcp.rs`、`udp.rs` 完成 `SERVICE → SOCKET_SET → ListenTable entry` helper、post-commit software wake和产品cutover：移除仓库TCP/UDP/listener对同步 `poll_interfaces()` 与Service-owned socket timeout/global stack waker的依赖。WHY 是resident runner与现有TCP connect反向锁序会死锁，caller-driven path也违反MS06目标；HOW 是先加source assertions与并发RED tests定位全部mutation和`with_smol_socket`内`get_service`，再把connect放入有序临界区、状态提交后解锁publish、timer归runner；EXPECTED 是产品调用点为零、任何guard不跨wake/await/Pending，single-waiter与nonblocking行为不回归。运行100×runner/socket竞争、source guard、axnet两组tests和kernel QEMU check；若必须message passing、SO_ERROR新契约或恢复inline poll才能通过，停止返回Plan。
 - [x] 2.5 在 `tcp.rs`、`udp.rs` 和readiness tests统一普通数据/EOF/writable snapshot：TCP buffered data=`IN`、peer EOF=`IN|RDHUP`、可实际send=`OUT`、双向终止=`HUP`；UDP按完整datagram `IN/OUT`、关闭=`HUP`。WHY 是当前`!may_send`伪报OUT且RDHUP只观察本地flag；HOW 是先对每个状态写poll→紧随I/O RED matrix、并发winner例外和poll/select/epoll 1/2/64/65 waiter tests，再让poll与I/O复用同一snapshot判定；EXPECTED 是普通readiness与下一I/O一致，spurious wake只重检，不改变TCP short-write或UDP原子性。运行MS01 socket baseline self-tests和axnet TCP/UDP tests；若正常EOF必须被当成ERR或现有应用依赖closed-as-OUT，停止返回Plan。
 - [x] 2.6 在`stack_runner.rs`、`service.rs`和`listen_table.rs`保持单轮timestamp与32-entry deferred retirement，并把listener pending reconciliation改为每round一次、跨active ports共享固定32-entry budget的持久cursor。WHY 是Cycle 004虽关闭deferred全表扫描，但实际`Service::stack_round`仍在每个ingress step后扫描最多512个hidden slots，fresh guest出现重复`refill blocked`和约0.7ms round；`SynReceived → Listen`的RST路径还会永久滞留pending slot。HOW 是先写单/多listener的31/32/33/512 pending、changed-tail、port/slot cursor、RST-to-Listen复用、active sweep期间accept少量删除前缀但queue仍长于cursor、其他stage仍运行和quiet RED tests，再让reconcile返回checked/changed/backlog outcome并只在固定stage位置运行；listener增删和accept queue删除必须通过结构generation使cursor从安全位置继续，不依赖新的protocol progress。EXPECTED 是所有listener合计每轮检查不超过32，active-port列表不被每轮完整clone，queue结构变化后不漏扫live slot，回到Listen的slot恢复idle或安全移除，不因完整queue反复self-wake。运行ordinary/qemu-diagnostics targeted 100×和full suites；若必须周期轮询、改变512上限或让hidden waker直接取得Service/SocketSet，停止返回Plan。
-- [ ] 2.7 在本地`crates/smoltcp/src/socket/udp.rs`和axnet `udp.rs`/`service.rs`/`stack_runner.rs`闭合UDP queued-TX drain ownership。WHY 是`can_send()`表示TX未满而非pending TX，当前UDP drop/reaper会丢包或泄漏。HOW 是先为smoltcp增加只读`has_pending_tx()`及空/单包/dispatch RED→GREEN tests，再让UDP drop只在真实pending TX时提交`UdpQueued`、修正verdict顺序和egress后有界重检；host/model证明send→drop→peer receive→reap、empty drop立即回收和stale/retyped安全。EXPECTED 是已提交datagram由唯一runner派发，raw handle在drain后恰好回收一次，quiet sweep不busy-wake。若需要同步drop派发、axnet影子TX ledger、修改smoltcp dequeue/wire语义、scheduler、SO_LINGER或reset/cancellation，停止返回Plan。
+- [x] 2.7 在本地`crates/smoltcp/src/socket/udp.rs`和axnet `udp.rs`/`service.rs`/`stack_runner.rs`闭合UDP queued-TX drain ownership。WHY 是`can_send()`表示TX未满而非pending TX，当前UDP drop/reaper会丢包或泄漏。HOW 是先为smoltcp增加只读`has_pending_tx()`及空/单包/dispatch RED→GREEN tests，再让UDP drop只在真实pending TX时提交`UdpQueued`、修正verdict顺序和egress后有界重检；host/model证明send→drop→peer receive→reap、empty drop立即回收和stale/retyped安全。EXPECTED 是已提交datagram由唯一runner派发，raw handle在drain后恰好回收一次，quiet sweep不busy-wake。若需要同步drop派发、axnet影子TX ledger、修改smoltcp dequeue/wire语义、scheduler、SO_LINGER或reset/cancellation，停止返回Plan。
 - [ ] 2.8 在stack-runner host/model tests与`tests/ms01_socket_baseline.c::test_tcp_512_capacity`建立确定性的backlog overflow/recovery兼容证据。WHY 是尚未判定的overflow SYN会与recovery SYN竞争accept释放的新headroom，现有guest顺序不能单独证明atomic refill。HOW 是host/model先证明overflow RST后listener恢复和exact-512 accept→立即reconnect；MS01保留14 markers，并在overflow达到可判定终态后才释放headroom，若guest API不能可靠取得该终态则删除guest额外overflow刺激、由host/model承担overflow安全见证。EXPECTED 是backlog仍为512，overflow与recovery分项判定，fresh single-hart QEMU diagnostic single/fork及MS01 14/14+END全部通过。若需要提高backlog、sleep掩盖竞态、caller-driven poll、scheduler修改或新reset/cancellation契约，停止返回Plan。
 
 ## 3. Terminal readiness 与单 hart QEMU 验收
@@ -90,10 +90,10 @@
 
 ## Current Cycle
 
-- Current Iteration: `002-udp-queued-tx-drain-ownership`
+- Current Iteration: `003-backlog-and-ms01-runtime-compatibility`
 - Cycle: `000-initial.md`
 - Persisted Evidence: none
-- Gate 2: PASS；用户于 2026-08-25 批准当前 Cycle，并明确要求“但是先不自动调用act”。Cycle 已 `ready`，
-  等待后续单独的 `$openspec-act` 指令。
-- Previous Iteration: Iteration 001 Cycle `009-replan.md` Review Result = `accepted`。Tasks 2.1–2.6 已闭合；
-  当前 Cycle 只执行 Task 2.7，不包含 MS01/QEMU、terminal readiness 或后续 Iteration。
+- Gate 2: BLOCKED；当前 Cycle 计划已展开，但仍等待用户批准，并等待用户在可写 Git 环境把
+  `crates/smoltcp` 从 mode `160000` gitlink 转为父仓库普通受管目录。
+- Previous Iteration: Iteration 002 Cycle `000-initial.md` Review Result = `accepted`。Task 2.7 已闭合；
+  当前 Cycle 只执行 Task 2.8，不包含 terminal readiness、SMP、真板或性能范围。

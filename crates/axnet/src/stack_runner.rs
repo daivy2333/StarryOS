@@ -3055,21 +3055,27 @@ mod tests {
         // T2.7: the production `UdpSocket::drop` must defer the raw removal
         // when the TX buffer still holds an undispatched datagram (smoltcp
         // `close()` resets the TX buffer and would drop it), and the reaper
-        // must own a UDP-specific verdict (Keep while `can_send()`, Reap
-        // once drained) instead of treating the UDP slot as stale.
+        // must own a UDP-specific verdict (Keep while `has_pending_tx()`,
+        // Reap once drained) instead of treating the UDP slot as stale. Both
+        // decisions must use the occupancy accessor, never `can_send()`
+        // (capacity-not-full), which would reap a full queue and keep an
+        // empty one.
         let udp = include_str!("udp.rs");
         let drop_start = udp.find("impl Drop for UdpSocket").unwrap();
         let drop_end = udp.find("fn get_ephemeral_port").unwrap();
         let drop_src = &udp[drop_start..drop_end];
-        assert!(drop_src.contains("can_send()"));
+        assert!(drop_src.contains(".has_pending_tx()"));
+        assert!(!drop_src.contains(".can_send()"));
         assert!(drop_src.contains("queue_deferred_removal"));
         assert!(drop_src.contains("UdpQueued"));
         assert!(drop_src.contains("retire_public"));
         assert!(drop_src.contains("publish_software_work"));
         let service = include_str!("service.rs");
-        let reap = &service[service.find("fn reap_deferred_removals(").unwrap()..];
+        let reap = &service[service.find("fn reap_deferred_removals(").unwrap()
+            ..service.find("fn deferred_removals_len(").unwrap()];
         assert!(reap.contains("CloseKind::UdpQueued"));
-        assert!(reap.contains("socket.can_send()"));
+        assert!(reap.contains("socket.has_pending_tx()"));
+        assert!(!reap.contains(".can_send()"));
     }
 
     #[test]
@@ -3218,7 +3224,7 @@ mod tests {
                 sockets
                     .lock()
                     .get::<smoltcp::socket::udp::Socket>(udp_rx)
-                    .can_send(),
+                    .has_pending_tx(),
                 "the echo must be queued (undispatched) at close time"
             );
             // Defer the raw removal (the fixed drop): retire public metadata
@@ -3231,7 +3237,7 @@ mod tests {
                 sockets
                     .lock()
                     .get::<smoltcp::socket::udp::Socket>(udp_rx)
-                    .can_send(),
+                    .has_pending_tx(),
                 "the raw socket must survive the close while the echo is queued"
             );
 

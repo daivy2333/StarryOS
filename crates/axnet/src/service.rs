@@ -337,6 +337,14 @@ impl Service {
             // (reaped, cleanly removed elsewhere, or slot reused by another
             // type), and smoltcp's `get`/`remove` panic on invalid handles.
             let verdict = match sockets.iter().find(|(handle, _)| *handle == entry.handle) {
+                // A UDPQueued entry whose slot is now a TCP socket is a
+                // re-typed slot: drop the entry, keep the socket. Checked
+                // before the generic TCP arms so `Keep` cannot swallow it.
+                Some((_, smoltcp::socket::Socket::Tcp(_)))
+                    if entry.kind == CloseKind::UdpQueued =>
+                {
+                    DeferredVerdict::Drop
+                }
                 Some((_, smoltcp::socket::Socket::Tcp(socket)))
                     if entry.kind.is_confirmed(socket.state()) =>
                 {
@@ -345,23 +353,17 @@ impl Service {
                 Some((_, smoltcp::socket::Socket::Tcp(_))) => DeferredVerdict::Keep,
                 // T2.7: a dropped UDP socket with a queued (undispatched)
                 // datagram is reclaimed only once its TX buffer drained
-                // through the runner's egress rounds; dropping it while
-                // `can_send()` would lose the datagram.
+                // through the runner's egress rounds; `has_pending_tx()`
+                // reads actual occupancy, unlike `can_send()` (capacity-not-
+                // full) which would reap a full queue and keep an empty one.
                 Some((_, smoltcp::socket::Socket::Udp(socket)))
                     if entry.kind == CloseKind::UdpQueued =>
                 {
-                    if socket.can_send() {
+                    if socket.has_pending_tx() {
                         DeferredVerdict::Keep
                     } else {
                         DeferredVerdict::Reap
                     }
-                }
-                Some((_, smoltcp::socket::Socket::Tcp(_)))
-                    if entry.kind == CloseKind::UdpQueued =>
-                {
-                    // A UDPQueued entry whose slot is now a TCP socket is a
-                    // re-typed slot: drop the entry, keep the socket.
-                    DeferredVerdict::Drop
                 }
                 // Stale (handle gone) or re-typed entry: the entry cannot
                 // own a close protocol anymore; drop it without touching the
@@ -1511,12 +1513,10 @@ mod tests {
             .unwrap();
         service.queue_deferred_removal(handle, CloseKind::UdpQueued);
 
-        // The datagram is still queued: the reaper must Keep (not drop it).
-        let _ = service.stack_round(
-            Instant::from_millis_const(0),
-            RxOwnerView::PollingOwned,
-            &mut sockets,
-        );
+        // A directly-invoked sweep (no egress round) observes the datagram
+        // still queued: the reaper must Keep (not drop it). A full round
+        // would let egress dispatch it first, hiding the pending state.
+        let _ = service.reap_deferred_removals(&mut sockets, true);
         assert_eq!(service.deferred_removals_len(), 1);
         assert!(sockets.iter().any(|(h, _)| h == handle));
         assert!(
@@ -1525,13 +1525,9 @@ mod tests {
                 .any(|(_, s)| matches!(s, smoltcp::socket::Socket::Udp(_)))
         );
 
-        // Once the TX is dispatched by egress, the next sweep reaps exactly
-        // once (raw handle + entry in one commit). `close()` resets the TX
-        // buffer, mechanically matching a dispatched + drained socket for the
-        // reaper's `can_send()` condition.
-        sockets
-            .get_mut::<smoltcp::socket::udp::Socket>(handle)
-            .close();
+        // Once the resident runner's egress dispatches the datagram (TX
+        // drains), the same bounded reaper removes raw handle + deferred
+        // entry in one guarded commit.
         let _ = service.stack_round(
             Instant::from_millis_const(0),
             RxOwnerView::PollingOwned,

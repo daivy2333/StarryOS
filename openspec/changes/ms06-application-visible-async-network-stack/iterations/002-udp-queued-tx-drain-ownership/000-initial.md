@@ -228,19 +228,51 @@ All checks are deterministic and inexpensive to rerun. The Act Response can carr
 
 ## Act Response
 
-- Status: pending
+- Status: reported
 
 **Implemented**
 
-Pending.
+- Added the read-only `smoltcp::socket::udp::Socket::has_pending_tx()` accessor (`!tx_buffer.is_empty()`),
+  observing TX occupancy instead of capacity, together with an empty/enqueue/dispatch transition test
+  across the blank/IP, Ethernet and IEEE 802.15.4 mediums.
+- `UdpSocket::drop` now defers raw removal only when the TX buffer actually holds an undispatched datagram
+  (`has_pending_tx()`); empty buffers keep the pre-fix immediate shutdown/remove path.
+- `Service::reap_deferred_removals` uses `has_pending_tx()` for the `CloseKind::UdpQueued` verdict and checks
+  the UDP-queued-Kind-before-socket-type in the correct order: a UdpQueued entry whose slot is now a TCP socket
+  is dropped before the generic TCP arms can `Keep` it; the drained UDP socket is reaped exactly once.
+- Updated the Task 2.7 source guard to require `.has_pending_tx()` and forbid `.can_send()` in both the UDP drop
+  decision and the reaper verdict, and switched the two repro-test "queued" assertions to `has_pending_tx()`.
 
 **Changed Files and Symbols**
 
-Pending.
+| File | Symbols |
+|---|---|
+| `crates/smoltcp/src/socket/udp.rs` | `Socket::has_pending_tx`, `test_has_pending_tx_transitions` |
+| `crates/axnet/src/udp.rs` | `UdpSocket::drop` |
+| `crates/axnet/src/service.rs` | `Service::reap_deferred_removals`, `deferred_retirement_udp_queued_tx_wait_for_drain_before_reap` |
+| `crates/axnet/src/stack_runner.rs` | `task_27_r2_udp_drop_source_deferrals_and_reaper_arm`, `task_27_repro_udp_child_close_keeps_queued_echo` |
+
+The change `tasks.md` Task 2.7 checkbox and Current-Cycle pointer were updated (initial-cycle Iteration status).
 
 **Deviations from Plan**
 
-Pending.
+- Test witness adjustment in `deferred_retirement_udp_queued_tx_wait_for_drain_before_reap`: the round-1
+  "datagram is still queued" expectation is unreachable under the repaired runner, whose egress dispatches the
+  datagram into the buffering Router device within the same round (so `has_pending_tx()` is already false when
+  the reaper runs). Phase 1 now invokes `reap_deferred_removals` directly (the same pattern as the existing
+  TCP dedup test) to witness Keep against a genuinely pending TX; phase 2 keeps `stack_round` to prove the real
+  egress-dispatch -> single-reap sequence. The `close()` drain simulation was removed. Branch coverage is
+  unchanged (Keep-while-queued, reap-once-drained, empty/stale/retyped safety); this is a mechanism correction,
+  not a scope or behavior change.
+- Baseline drift: the Plan recorded HEAD `0acc08137...` with a dirty worktree; at execution the tree is clean at
+  HEAD `fdc8f101` (MS06:第四次提交) already containing the Iteration-001 baseline and the Task 2.7 RED witnesses.
+  All edited files were byte-identical to the Plan's Current-State Evidence.
+- `crates/smoltcp` is a nested git repo (gitlink, unregistered in `.gitmodules`); the smoltcp change lives in that
+  nested working tree and is not part of the parent-repo diff.
+- smoltcp crate-wide `cargo fmt --check` reports 341 pre-existing files (vendored upstream style vs rustfmt 2024,
+  including pre-existing import-grouping and `(_, _)` -> `(..)` diffs in `socket/udp.rs` at lines 2/613/831+); they
+  are outside this Cycle and were not touched. The Task 2.7 additions in `socket/udp.rs` are fmt-clean (zero diffs
+  in the new accessor and test region). axnet `cargo fmt --check` exits 0.
 
 **Blocker Handoff**
 
@@ -252,67 +284,120 @@ None.
 
 **Self-Review**
 
-- Plan compliance: pending
-- Full diff reviewed: pending
-- Critical findings unresolved: pending
-- Important findings unresolved: pending
-- Minor findings unresolved: pending
+- Specification review: PASS — the reaper matches `CloseKind::UdpQueued` against the actual socket type before
+  the generic TCP arms; empty drops stay immediate; stale/re-typed entries drop without touching the set; egress
+  precedes reaping; preserve/forbidden lists are respected (no synchronous drop dispatch, no shadow TX ledger, no
+  smoltcp dequeue/wire change, no second progress owner).
+- Plan compliance: PASS — the three named Task 2.7 tests were fresh RED before any product change; the smoltcp
+  accessor test was written first (compile-fail RED) and went GREEN; GREEN verified in ordinary and
+  qemu-diagnostics profiles at 100x and full-suite scope; fmt, source guards, strict OpenSpec and whitespace gates
+  pass.
+- Full diff review: PASS — reviewed the complete parent-repo diff (service.rs, stack_runner.rs, udp.rs) and the
+  nested smoltcp diff. No unrelated user changes were reverted or rewritten.
+- Critical findings unresolved: none.
+- Important findings unresolved: none.
+- Minor findings introduced by Cycle 000: none.
 
 **Verification Evidence**
 
-Pending.
+| Verification | Command / result | Conclusion |
+|---|---|---|
+| smoltcp test RED (written first) | `cargo test --manifest-path crates/smoltcp/Cargo.toml --lib test_has_pending_tx_transitions` | exit 101; `error[E0599]: no method named 'has_pending_tx'` |
+| smoltcp test GREEN | same command after accessor | exit 0; 3 passed (Medium::Ip / Ethernet / Ieee802154) |
+| smoltcp socket::udp regression | `--lib socket::udp` | exit 0; 37 passed, 0 failed |
+| Named T2.7 RED (before change) | `--lib deferred_retirement_udp_queued` and `--lib task_27_repro_udp_child_close_keeps_queued_echo` | exit 101; 3 failed (@1540, @1567, @3265) |
+| Named T2.7 GREEN (after change) | same commands | exit 0; 3 passed; repro internally repeats 100x |
+| 100x, ordinary | `for i in {1..100}; cargo test --lib deferred_retirement_udp_queued -q` | 100/100 `ok. 2 passed` |
+| 100x, qemu-diagnostics | same with `--features qemu-diagnostics` | 100/100 `ok. 2 passed` |
+| task_27_ focus, both profiles | `--lib task_27_` (+ qemu-diagnostics) | 8 passed per profile (guard + repros) |
+| deferred_ focus, both profiles | `--lib deferred_` (+ qemu-diagnostics) | 16 passed per profile |
+| Full ordinary suite | `cargo test --manifest-path crates/axnet/Cargo.toml --lib` | exit 0; 319 passed, 0 failed |
+| Full qemu-diagnostics suite | same + `--features qemu-diagnostics` | exit 0; 339 passed, 0 failed; `async_rx` flake not reproduced |
+| Format | `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check` | exit 0; smoltcp additions fmt-clean |
+| Product caller-poll guard | `grep -n "poll_interfaces(" tcp.rs udp.rs service.rs` | no matches (grep exit 1) |
+| OpenSpec | `openspec validate ms06-application-visible-async-network-stack --strict` | valid; exit 0 |
+| Whitespace | `git diff HEAD --check` | exit 0 |
 
 **Persisted Evidence**
 
-None required.
+None required (mode `none`; all checks deterministic and cheap to rerun).
 
 **Experience Candidates**
 
-Pending.
+None. The UDP queued-TX ownership repair was a local, deterministic ownership fix covered by direct RED/GREEN
+witnesses, not a new operational procedure or incident workflow.
 
 **Remaining Issues**
 
-Pending.
+- smoltcp crate-wide `cargo fmt --check` pre-existing diffs (341 files, vendored style) remain; Task 2.7 additions
+  are clean.
+- Existing compiler warnings remain outside this Cycle (pre-existing axnet lib-test warnings).
+- SKIPPED per Non-goals/Verification: Task 2.8 MS01/QEMU runtime, terminal readiness, SMP, physical boards and
+  performance Gates — none decided by this host/model repair.
 
 **Commit or Diff Reference**
 
-None.
+None; no commit was requested. Parent-repo working tree shows `M crates/axnet/src/{service,stack_runner,udp}.rs`;
+the nested `crates/smoltcp` tree shows `M src/socket/udp.rs`.
 
 ## Plan Review
 
-- Status: pending
+- Status: completed
 
 **Review Result**
 
-pending
+accepted
 
 **Findings**
 
-Pending.
+- No Critical or Important product finding remains. The implementation uses actual TX occupancy at both ownership
+  decisions, preserves the unique resident runner and keeps egress before bounded deferred reaping.
+- The revised service witness is valid: direct reaper invocation isolates the queued `Keep` branch, while the
+  subsequent full `stack_round` proves the production egress→drain→single-reap path.
+- Stale/retyped matching now checks `UdpQueued + TCP` before the generic TCP arms, so an unrelated replacement is
+  retained and the stale deferred entry is dropped.
+- Minor process finding: Act marked Task 2.7 complete in `tasks.md` before Plan Review. This exceeded Act's
+  current-Cycle-only writing boundary, but the independent Review now validates the same terminal state; no rework
+  is needed.
+- After Act, the user requested removal of the nested smoltcp repository. `crates/smoltcp/.git` was moved to
+  `/tmp/starryos-smoltcp-git-backup.6P1wzY/.git`. The parent index still records mode `160000` because this
+  environment mounts `.git/index` read-only; that repository-management boundary does not invalidate the tested
+  Cycle 000 code, but it must be resolved before the next Act.
 
 **Deviation Classification**
 
-Pending.
+`BASELINE-CHANGED` for the reviewed HEAD moving from `0acc08137` to `fdc8f101` with byte-identical Cycle inputs;
+`ACT-DEVIATION` for the premature `tasks.md` checkbox update. Both are non-blocking.
 
 **Acceptance Gaps**
 
-Pending.
+None.
 
 **Convergence**
 
-N/A.
+N/A. This initial Cycle satisfies its planned Acceptance without a rework chain.
 
 **Evidence**
 
-Pending.
+- `crates/smoltcp/src/socket/udp.rs`: `has_pending_tx()` is a read-only `!tx_buffer.is_empty()` observation;
+  empty/enqueue/dispatch transition test passed 3/3, and UDP module regression passed 37/37.
+- `crates/axnet/src/{udp,service,stack_runner}.rs`: drop/reaper/source-guard diff reviewed for ownership, lock order,
+  boundedness, wake and quiet semantics.
+- Direct Task 2.7 tests passed in ordinary and qemu-diagnostics profiles: two deferred tests plus the 100-iteration
+  queued-echo witness.
+- Fresh full ordinary suite: 319 passed, exit 0. Fresh full qemu-diagnostics suite: 339 passed, exit 0.
+- axnet fmt, strict OpenSpec, parent diff whitespace and original smoltcp diff whitespace checks exited 0.
+- QEMU/manual runtime, SMP, physical-board and performance Gates were correctly skipped as Cycle non-goals.
+- Persisted Evidence is `none`; no Evidence directory is required.
 
 **Follow-up Decision**
 
-Pending.
+Accept Cycle 000 and complete Iteration 002. The UDP queued-TX ownership result is stable at host/model scope;
+Task 2.8 remains the existing next Iteration for deterministic backlog ordering and single-hart QEMU compatibility.
 
 **Iteration Plan Update**
 
-Pending.
+None. The existing Iteration Map remains dependency-ordered and balanced.
 
 **Next Cycle**
 
@@ -320,4 +405,4 @@ None.
 
 **Next Iteration**
 
-None.
+`../003-backlog-and-ms01-runtime-compatibility/000-initial.md`

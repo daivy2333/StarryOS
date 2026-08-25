@@ -363,9 +363,11 @@ impl Drop for UdpSocket {
         // resident runner dispatches the queued datagram in its egress
         // rounds and the reaper reclaims the raw handle once the TX drained
         // (guest MS01 udp-bidirectional lost the fork child's echo otherwise).
+        // `has_pending_tx()` observes actual occupancy; `can_send()`
+        // (capacity-not-full) would misclassify an empty buffer as queued.
         let has_queued_tx = {
             let sockets = crate::SOCKET_SET.inner.lock();
-            sockets.get::<smol::Socket>(self.handle).can_send()
+            sockets.get::<smol::Socket>(self.handle).has_pending_tx()
         };
         if has_queued_tx {
             if let Some(service) = crate::SERVICE.get() {
