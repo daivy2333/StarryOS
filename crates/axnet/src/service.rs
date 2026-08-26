@@ -83,6 +83,9 @@ pub(crate) struct StackRoundOutcome {
     /// has more to examine.
     pub(crate) listener_checked: usize,
     pub(crate) listener_sweep_incomplete: bool,
+    /// T2.8-R1: exact head micro-repairs executed after processed ingress
+    /// packets this round (≤ processed ingress ≤ `STACK_STAGE_BUDGET`).
+    pub(crate) listener_head_repairs: usize,
 }
 
 /// Which half of a deferred TCP close still needs peer acknowledgment
@@ -443,6 +446,7 @@ impl Service {
             .non_ip_consumed
             .fetch_add(self.router.take_rx_consumed_delta(), Ordering::Relaxed);
         self.iface.poll_maintenance(timestamp);
+        let mut listener_head_repairs = 0usize;
         let ingress = run_bounded_stage(|| {
             let step = match self
                 .iface
@@ -452,6 +456,13 @@ impl Service {
                 PollIngressSingleResult::PacketProcessed => StageStep::Processed,
                 PollIngressSingleResult::SocketStateChanged => StageStep::SocketStateChanged,
             };
+            // T2.8-R1: after each processed ingress packet, repair at most one
+            // exactly signaled listener head so the next same-batch packet
+            // finds a Listen socket; bounded by the processed-packet count.
+            if !matches!(step, StageStep::Idle) && self.listen_table().consume_head_signal(sockets)
+            {
+                listener_head_repairs += 1;
+            }
             step
         });
         let egress = run_bounded_stage(|| {
@@ -529,6 +540,7 @@ impl Service {
             deferred_sweep_incomplete: deferred.sweep_incomplete,
             listener_checked: listener.checked,
             listener_sweep_incomplete: listener.sweep_incomplete,
+            listener_head_repairs,
         }
     }
 

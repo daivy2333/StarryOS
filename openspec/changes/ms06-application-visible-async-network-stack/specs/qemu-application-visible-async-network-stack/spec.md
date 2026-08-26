@@ -52,7 +52,7 @@ stack runner MUST 通过一个独立的 generation + single-runner waker 入口�
 
 ### Requirement: 有界推进、公平性与 quiet path
 
-每个 stack runner poll MUST 分别限制 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、listener pending reconciliation 和 deferred socket retirement 的工作量，并在一次轮次中为每个 stage 提供运行机会。达到 budget 且仍有可立即推进工作时 runner MUST self-wake 后返回 `Pending`；无工作、无到期 timer 且 IRQ-backed queue 已激活时 MUST 保持休眠。
+每个 stack runner poll MUST 分别限制 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、listener pending reconciliation 和 deferred socket retirement 的工作量，并在一次轮次中为每个 stage 提供运行机会。隐藏listener由ingress触发的精确head repair MUST 与active-port/pending-queue sweep分开计数：每个已处理ingress packet至多消费一个O(1) head signal，每轮不得超过ingress budget，且不得扫描active ports或pending queue。达到 budget 且仍有可立即推进工作时 runner MUST self-wake 后返回 `Pending`；无工作、无到期 timer 且 IRQ-backed queue 已激活时 MUST 保持休眠。
 
 #### Scenario: 精确 budget 边界
 
@@ -76,7 +76,7 @@ stack runner MUST 通过一个独立的 generation + single-runner waker 入口�
 
 - **WHEN** listener queue含31、32、33或512个pending hidden slots，且其中任意位置发生Ready、Reset或`SynReceived → Listen`转换
 - **THEN** 每个runner poll检查的pending slot数 MUST 不超过固定budget，并从持久cursor继续
-- **AND** 同一round MUST NOT 在每个ingress step后重新扫描完整listener queue
+- **AND** 同一round MUST NOT 在每个ingress step后重新扫描active ports或完整listener queue；只允许消费由hidden waker精确标识且按ingress packet一对一计费的O(1) head signal
 
 #### Scenario: Listener queue在有界pass中收缩
 
@@ -149,6 +149,12 @@ TCP listener MUST 为其隐藏 smoltcp listener sockets 维护独立 accept brid
 - **WHEN** idle 或 pending 隐藏 listener socket 变为可接受连接
 - **THEN** public listener 的 accept PollSet MUST 唤醒全部 waiter并报告 `IN`
 - **AND** 紧随其后的 accept MUST 返回唯一连接或在并发 winner 已消费时返回 `WouldBlock`
+
+#### Scenario: 同一 ingress batch 的相邻 SYN
+
+- **WHEN** 同一listener仍有backlog headroom，两个或最多一个ingress budget内的多个不同client SYN在同一runner round连续到达
+- **THEN** 每个已消费SYN触发的精确listener-head signal MUST 在下一packet处理前提交idle transition并补充一个Listen-state hidden socket，使后续SYN不因瞬时无idle而收到RST
+- **AND** 每轮head repair次数 MUST 不超过已处理ingress packet数和ingress budget，不得预分配idle socket池、执行active-port/full-queue扫描或改变512 backlog上限
 
 #### Scenario: 满 backlog 释放后立即恢复容量
 

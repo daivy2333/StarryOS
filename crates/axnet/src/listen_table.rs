@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering},
+    task::Waker,
+};
 
 use axerrno::{AxError, AxResult};
 use axpoll::IoEvents;
@@ -81,12 +84,114 @@ struct ListenTableEntryInner {
     accept: Arc<ReadinessBridge>,
     idle: Option<SocketHandle>,
     queue: VecDeque<ListenSlot>,
+    /// T2.8-R1: exact head-signal target armed on this entry's idle hidden
+    /// socket, so its transition identifies the entry without any scan.
+    head_signal: Arc<HeadSignalWaker>,
+}
+
+/// T2.8-R1: pre-reserved exact-head-signal state shared by every listener
+/// entry's hidden-socket waker (producer) and the runner-side consumer.
+/// Lossless by construction: the per-port dedup bit keeps at most one queued
+/// instance per port, so ring capacity `PORT_NUM` can never overflow.
+struct HeadSignals {
+    /// Dedup bitmap indexed by port: bit set while that port has an
+    /// unconsumed signal in the ring.
+    pending: Box<[AtomicU64]>,
+    /// FIFO ring of signaled ports (`0` unused; listeners assert nonzero).
+    slots: Box<[AtomicU16]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+impl HeadSignals {
+    fn new() -> Self {
+        Self {
+            pending: (0..PORT_NUM / 64).map(|_| AtomicU64::new(0)).collect(),
+            slots: (0..PORT_NUM).map(|_| AtomicU16::new(0)).collect(),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+        }
+    }
+
+    fn signal(&self, port: u16) {
+        debug_assert_ne!(port, 0);
+        let idx = port as usize;
+        let mask = 1u64 << (idx % 64);
+        if self.pending[idx / 64].fetch_or(mask, Ordering::AcqRel) & mask != 0 {
+            return;
+        }
+        self.enqueue(port);
+    }
+
+    /// Single-producer enqueue. Producers are serialized: a hidden-socket
+    /// waker only fires while its mutator holds the global SocketSet guard,
+    /// so Lamport SPSC reserve-then-publish ordering suffices.
+    fn enqueue(&self, port: u16) {
+        let tail = self.tail.load(Ordering::Relaxed);
+        debug_assert!(
+            tail.wrapping_sub(self.head.load(Ordering::Relaxed)) < PORT_NUM,
+            "deduplicated signals cannot exceed one slot per port"
+        );
+        self.slots[tail & (PORT_NUM - 1)].store(port, Ordering::Release);
+        self.tail.store(tail.wrapping_add(1), Ordering::Release);
+    }
+
+    fn pop(&self) -> Option<u16> {
+        let head = self.head.load(Ordering::Relaxed);
+        if head == self.tail.load(Ordering::Acquire) {
+            return None;
+        }
+        let port = self.slots[head & (PORT_NUM - 1)].load(Ordering::Acquire);
+        self.head.store(head.wrapping_add(1), Ordering::Release);
+        Some(port)
+    }
+
+    /// Clears the dedup bit; called by the consumer BEFORE repairing so a
+    /// transition observed during or after the repair re-signals cleanly.
+    fn clear_pending(&self, port: u16) {
+        let idx = port as usize;
+        self.pending[idx / 64].fetch_and(!(1u64 << (idx % 64)), Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tail
+            .load(Ordering::Relaxed)
+            .wrapping_sub(self.head.load(Ordering::Relaxed))
+    }
+}
+
+/// T2.8-R1: one-shot recv target of exactly ONE listener's idle hidden
+/// socket. Waking records a bounded deduplicated signal only: it never
+/// allocates, never takes an entry/SocketSet/Service lock and never wakes
+/// application accept waiters — the staged drain after the committed repair
+/// does that.
+struct HeadSignalWaker {
+    port: u16,
+    signals: Arc<HeadSignals>,
+}
+
+impl HeadSignalWaker {
+    fn waker(self: &Arc<Self>) -> Waker {
+        Waker::from(self.clone())
+    }
+}
+
+impl alloc::task::Wake for HeadSignalWaker {
+    fn wake(self: Arc<Self>) {
+        self.signals.signal(self.port);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.signals.signal(self.port);
+    }
 }
 
 impl ListenTableEntryInner {
     fn new(
         listen_endpoint: IpListenEndpoint,
         accept: Arc<ReadinessBridge>,
+        signals: &Arc<HeadSignals>,
         sockets: &mut SocketSet<'_>,
     ) -> Self {
         let mut entry = Self {
@@ -94,6 +199,10 @@ impl ListenTableEntryInner {
             accept,
             idle: None,
             queue: VecDeque::with_capacity(LISTEN_QUEUE_SIZE),
+            head_signal: Arc::new(HeadSignalWaker {
+                port: listen_endpoint.port,
+                signals: signals.clone(),
+            }),
         };
         entry.refill(sockets);
         entry
@@ -114,12 +223,12 @@ impl ListenTableEntryInner {
             .listen(self.listen_endpoint)
             .expect("validated nonzero TCP listen endpoint");
         let handle = sockets.add(socket);
-        // Task 2.3: the hidden socket's one-shot recv slot carries the public
-        // accept bridge, so any hidden state transition directly reaches the
-        // accept waiters.
+        // Task 2.3 + T2.8-R1: the idle hidden socket's one-shot recv slot
+        // records an exact head signal instead of waking the accept bridge,
+        // so application wake stays staged until the transition commits.
         sockets
             .get_mut::<Socket>(handle)
-            .register_recv_waker(&self.accept.recv_waker());
+            .register_recv_waker(&self.head_signal.waker());
         self.idle = Some(handle);
         info!(
             "listen {}: refilled idle hidden socket {}",
@@ -164,7 +273,7 @@ impl ListenTableEntryInner {
         if let Some(handle) = self.idle {
             sockets
                 .get_mut::<Socket>(handle)
-                .register_recv_waker(&self.accept.recv_waker());
+                .register_recv_waker(&self.head_signal.waker());
         }
         changed
     }
@@ -257,6 +366,9 @@ pub struct ListenTable {
     /// queue removals, so a running sweep restarts from a safe position
     /// instead of trusting stale port or slot indices.
     structure_generation: AtomicU64,
+    /// T2.8-R1: pre-reserved exact-head-signal ring shared by every entry's
+    /// hidden-socket waker; consumed by the runner after each ingress packet.
+    head_signals: Arc<HeadSignals>,
 }
 
 impl ListenTable {
@@ -274,6 +386,7 @@ impl ListenTable {
             pending_accept_wakes: Mutex::new(Vec::new()),
             reconcile_cursor: Mutex::new(ReconcileCursor::default()),
             structure_generation: AtomicU64::new(0),
+            head_signals: Arc::new(HeadSignals::new()),
         }
     }
 
@@ -298,6 +411,7 @@ impl ListenTable {
         *entry = Some(Box::new(ListenTableEntryInner::new(
             listen_endpoint,
             accept,
+            &self.head_signals,
             sockets,
         )));
         drop(entry);
@@ -523,6 +637,29 @@ impl ListenTable {
         }
     }
 
+    /// T2.8-R1: consumes at most one exact head signal and runs only that
+    /// entry's O(1) `reconcile_head` under the caller's Service + SocketSet
+    /// guards (the runner's fixed order). A stale identifier — the port was
+    /// unlistened between signal and consume — is safely discarded, and a
+    /// repaired transition stages its accept wake like any other committed
+    /// change. Returns whether a repair ran.
+    pub(crate) fn consume_head_signal(&self, sockets: &mut SocketSet<'_>) -> bool {
+        let Some(port) = self.head_signals.pop() else {
+            return false;
+        };
+        // Clear the dedup bit before repairing: a transition observed during
+        // or after this repair must be able to enqueue a fresh signal.
+        self.head_signals.clear_pending(port);
+        let changed = match self.listen_entry(port).lock().as_mut() {
+            Some(entry) => entry.reconcile_head(sockets),
+            None => false,
+        };
+        if changed {
+            self.pending_accept_wakes.lock().push(port);
+        }
+        changed
+    }
+
     pub fn can_accept(&self, port: u16) -> AxResult<bool> {
         if let Some(entry) = self.listen_entry(port).lock().as_ref() {
             Ok(entry
@@ -646,6 +783,36 @@ impl ListenTable {
             .map_or(0, |entry| entry.queue.len())
     }
 
+    /// T2.8-R1 test seam: records a head signal for `port` exactly like the
+    /// hidden-socket waker would (unit-level signal injection).
+    #[cfg(test)]
+    pub(crate) fn test_signal_head(&self, port: u16) {
+        self.head_signals.signal(port);
+    }
+
+    /// T2.8-R1 test seam: number of signals currently queued (inspection
+    /// only; proves dedup coalescing and losslessness).
+    #[cfg(test)]
+    pub(crate) fn test_pending_head_signals(&self) -> usize {
+        self.head_signals.len()
+    }
+
+    /// T2.8-R1 test seam: closes the entry's idle hidden socket under the
+    /// caller's SocketSet guard (a real head transition), mirroring the
+    /// module-internal unit helper.
+    #[cfg(test)]
+    pub(crate) fn test_close_idle(&self, port: u16, sockets: &mut SocketSet<'_>) -> bool {
+        let idle = match self.listen_entry(port).lock().as_ref() {
+            Some(entry) => entry.idle,
+            None => return false,
+        };
+        let Some(idle) = idle else {
+            return false;
+        };
+        sockets.get_mut::<Socket>(idle).close();
+        true
+    }
+
     /// T2.7-R1 test seam: whether an idle hidden listener is present.
     #[cfg(test)]
     pub(crate) fn test_idle_is_some(&self, port: u16) -> bool {
@@ -742,6 +909,7 @@ mod tests {
         *table.tcp[port as usize].lock() = Some(Box::new(ListenTableEntryInner::new(
             endpoint(port),
             bridge.clone(),
+            &table.head_signals,
             &mut sockets,
         )));
         table.active_ports.lock().push(port);
@@ -766,15 +934,137 @@ mod tests {
     }
 
     #[test]
-    fn hidden_socket_creation_arms_accept_bridge_recv_slot() {
+    fn closing_idle_records_head_signal_and_stages_accept_wake() {
+        // T2.8-R1: the idle hidden socket's one-shot recv slot carries the
+        // exact head-signal waker instead of the accept bridge — a transition
+        // must never wake application accept waiters before its repair
+        // commits. The staged drain after commit remains the only wake path.
         let (table, mut sockets, bridge) = session(18080);
         let count = Arc::new(AtomicUsize::new(0));
         bridge.register(IoEvents::IN, &counting_waker(count.clone()));
 
-        close_idle(&table, 18080, &mut sockets);
+        assert!(close_idle(&table, 18080, &mut sockets));
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            0,
+            "no direct accept wake from an uncommitted transition"
+        );
+        assert_eq!(table.test_pending_head_signals(), 1);
 
-        // The closing hidden socket wakes its armed recv slot → accept bridge.
-        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert!(table.consume_head_signal(&mut sockets));
+        assert_eq!(table.test_pending_head_signals(), 0);
+        table.drain_accept_wakes();
+        assert_eq!(count.load(Ordering::Relaxed), 1, "staged accept wake");
+    }
+
+    #[test]
+    fn duplicate_head_signals_coalesce_into_one_repair() {
+        // T2.8-R1 (S3): repeated wakes of one listener dedup to a single
+        // queued signal; consuming it once empties the ring and a further
+        // consume is a quiet no-op. The natural close-time wake plus two
+        // injected duplicates still produce exactly one real repair.
+        let (table, mut sockets, _) = session(18302);
+        assert!(close_idle(&table, 18302, &mut sockets));
+        table.test_signal_head(18302);
+        table.test_signal_head(18302);
+        assert_eq!(table.test_pending_head_signals(), 1);
+
+        let sockets_before = sockets.iter().count();
+        assert!(table.consume_head_signal(&mut sockets));
+        assert_eq!(table.test_pending_head_signals(), 0);
+        assert!(!table.consume_head_signal(&mut sockets));
+        // One committed transition: closed idle removed, Reset slot queued,
+        // fresh idle refilled — the set size is unchanged.
+        assert_eq!(table.test_queue_len(18302), 1);
+        assert!(table.test_idle_is_some(18302));
+        assert_eq!(sockets.iter().count(), sockets_before);
+    }
+
+    #[test]
+    fn head_signal_repairs_only_the_signaled_listener() {
+        // T2.8-R1 (S2): a signal identifies its exact entry. Consuming it
+        // must repair that entry and leave every other listener's state and
+        // cursors untouched (no active-port scan, no wrong-entry repair).
+        for _ in 0..100 {
+            let table = ListenTable::new();
+            let mut sockets = SocketSet::new(vec![]);
+            *table.tcp[18300usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                endpoint(18300),
+                Arc::new(ReadinessBridge::new()),
+                &table.head_signals,
+                &mut sockets,
+            )));
+            *table.tcp[18301usize].lock() = Some(Box::new(ListenTableEntryInner::new(
+                endpoint(18301),
+                Arc::new(ReadinessBridge::new()),
+                &table.head_signals,
+                &mut sockets,
+            )));
+            table.active_ports.lock().extend([18300u16, 18301]);
+
+            let untouched_idle = {
+                let entry = table.tcp[18301].lock();
+                entry.as_ref().unwrap().idle
+            };
+            assert!(close_idle(&table, 18300, &mut sockets));
+            assert_eq!(table.test_pending_head_signals(), 1);
+
+            assert!(table.consume_head_signal(&mut sockets));
+            assert_eq!(table.test_queue_len(18300), 1);
+            assert!(table.test_idle_is_some(18300));
+
+            let entry = table.tcp[18301].lock();
+            assert_eq!(
+                entry.as_ref().unwrap().idle,
+                untouched_idle,
+                "the unsignaled listener must not be touched"
+            );
+            drop(entry);
+            assert_eq!(table.test_queue_len(18301), 0);
+            assert_eq!(table.test_pending_head_signals(), 0);
+        }
+    }
+
+    #[test]
+    fn stale_head_signal_after_unlisten_is_discarded_safely() {
+        // T2.8-R1 (S3): an unlisten race leaves a stale identifier; consuming
+        // it must be a harmless discard with no panic and no state change,
+        // and re-listening on the same port keeps working.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18303);
+            assert!(close_idle(&table, 18303, &mut sockets));
+            assert_eq!(table.test_pending_head_signals(), 1);
+
+            table.unlisten_with(18303, &mut sockets);
+            assert!(!table.consume_head_signal(&mut sockets));
+            assert_eq!(table.test_pending_head_signals(), 0);
+            assert_eq!(sockets.iter().count(), 0, "cleanup removed all handles");
+
+            let accept = Arc::new(ReadinessBridge::new());
+            table
+                .listen_with(endpoint(18303), accept, &mut sockets)
+                .expect("re-listen after stale signal");
+            assert!(table.test_idle_is_some(18303));
+        }
+    }
+
+    #[test]
+    fn quiet_listener_table_consumes_nothing_and_repairs_nothing() {
+        // T2.8-R1 (S3): without signals the micro-step is a quiet no-op —
+        // no repair, no allocation of work, no change to the entry.
+        for _ in 0..100 {
+            let (table, mut sockets, _) = session(18304);
+            let idle_before = {
+                let entry = table.tcp[18304].lock();
+                entry.as_ref().unwrap().idle
+            };
+            for _ in 0..32 {
+                assert!(!table.consume_head_signal(&mut sockets));
+            }
+            let entry = table.tcp[18304].lock();
+            assert_eq!(entry.as_ref().unwrap().idle, idle_before);
+            assert_eq!(entry.as_ref().unwrap().queue.len(), 0);
+        }
     }
 
     #[test]
@@ -1022,11 +1312,13 @@ mod tests {
             *table.tcp[18204usize].lock() = Some(Box::new(ListenTableEntryInner::new(
                 endpoint(18204),
                 b1,
+                &table.head_signals,
                 &mut sockets,
             )));
             *table.tcp[18205usize].lock() = Some(Box::new(ListenTableEntryInner::new(
                 endpoint(18205),
                 b2,
+                &table.head_signals,
                 &mut sockets,
             )));
             table.active_ports.lock().extend([18204u16, 18205]);
@@ -1435,6 +1727,7 @@ mod tests {
                 *table.tcp[port as usize].lock() = Some(Box::new(ListenTableEntryInner::new(
                     endpoint(port),
                     Arc::new(ReadinessBridge::new()),
+                    &table.head_signals,
                     &mut sockets,
                 )));
                 table.active_ports.lock().push(port);
@@ -1480,11 +1773,13 @@ mod tests {
             *table.tcp[18213usize].lock() = Some(Box::new(ListenTableEntryInner::new(
                 endpoint(18213),
                 Arc::new(ReadinessBridge::new()),
+                &table.head_signals,
                 &mut sockets,
             )));
             *table.tcp[18214usize].lock() = Some(Box::new(ListenTableEntryInner::new(
                 endpoint(18214),
                 Arc::new(ReadinessBridge::new()),
+                &table.head_signals,
                 &mut sockets,
             )));
             table.active_ports.lock().extend([18213u16, 18214]);

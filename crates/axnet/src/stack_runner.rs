@@ -205,6 +205,9 @@ pub(crate) struct StackTelemetry {
     /// Task 2.6 replan: listener hidden-slot positions examined by the
     /// bounded reconciliation stage (cumulative; observation-only).
     listener_checked: AtomicU64,
+    /// T2.8-R1: exact head micro-repairs executed after processed ingress
+    /// packets (cumulative; observation-only).
+    listener_head_repairs: AtomicU64,
 }
 
 impl StackTelemetry {
@@ -225,6 +228,7 @@ impl StackTelemetry {
             deferred_checked: AtomicU64::new(0),
             deferred_reclaimed: AtomicU64::new(0),
             listener_checked: AtomicU64::new(0),
+            listener_head_repairs: AtomicU64::new(0),
         }
     }
 }
@@ -253,6 +257,8 @@ pub struct StackSnapshot {
     pub deferred_reclaimed: u64,
     /// Task 2.6 replan: listener hidden-slot positions examined so far.
     pub listener_checked: u64,
+    /// T2.8-R1: exact head micro-repairs so far.
+    pub listener_head_repairs: u64,
 }
 
 fn stack_snapshot_impl(
@@ -278,6 +284,7 @@ fn stack_snapshot_impl(
         deferred_checked: telemetry.deferred_checked.load(Ordering::Relaxed),
         deferred_reclaimed: telemetry.deferred_reclaimed.load(Ordering::Relaxed),
         listener_checked: telemetry.listener_checked.load(Ordering::Relaxed),
+        listener_head_repairs: telemetry.listener_head_repairs.load(Ordering::Relaxed),
     }
 }
 
@@ -425,6 +432,9 @@ impl Future for StackRunnerFuture {
         this.telemetry
             .listener_checked
             .fetch_add(outcome.listener_checked as u64, Ordering::Relaxed);
+        this.telemetry
+            .listener_head_repairs
+            .fetch_add(outcome.listener_head_repairs as u64, Ordering::Relaxed);
         if outcome.backlog {
             this.telemetry.backlog_round.fetch_add(1, Ordering::Relaxed);
         }
@@ -1444,6 +1454,232 @@ mod tests {
     }
 
     #[test]
+    fn same_batch_adjacent_syns_both_establish_and_are_accepted() {
+        // T2.8-R1 (S1) RED witness: two clients whose SYNs are processed
+        // consecutively within ONE ingress batch must both establish while
+        // backlog headroom exists, without sleep, caller polling or an
+        // unrelated runner round. The pre-fix code only repaired the listener
+        // head once per round (after ingress + egress), so the second
+        // same-batch SYN found no Listen socket and smoltcp answered RST —
+        // this test is RED exactly when client B becomes refused/Closed.
+        for _ in 0..100 {
+            let mut router = Router::new();
+            let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+            let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+            router.add_rule(Rule::new(
+                lo_ip.into(),
+                None,
+                lo_dev,
+                lo_ip.address().into(),
+            ));
+
+            let listen_table = Box::leak(Box::new(ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, listen_table);
+            service
+                .iface
+                .update_ip_addrs(|addrs| addrs.push(lo_ip.into()).unwrap());
+
+            let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+            let event = Box::leak(Box::new(StackEvent::new()));
+            let now = Box::leak(Box::new(AtomicI64::new(0)));
+            let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+            let accept = Arc::new(ReadinessBridge::new());
+            listen_table
+                .listen_with(
+                    smoltcp::wire::IpListenEndpoint {
+                        addr: None,
+                        port: FULL_CHAIN_PORT,
+                    },
+                    accept,
+                    &mut sockets.lock(),
+                )
+                .unwrap();
+
+            // Both clients connect BEFORE the first runner round so their
+            // SYNs sit in adjacent loopback frames and are ingested inside
+            // one bounded batch (ingress budget 32 ≫ 2).
+            let client_out = Arc::new(AtomicUsize::new(0));
+            let mut clients = alloc::vec::Vec::new();
+            for local_port in [FULL_CHAIN_LOCAL_PORT, FULL_CHAIN_LOCAL_PORT + 1] {
+                let bridge = Arc::new(ReadinessBridge::new());
+                bridge.register(IoEvents::OUT, &counting_waker(client_out.clone()));
+                let mut sock = new_tcp_socket();
+                {
+                    let mut sockets = sockets.lock();
+                    sock.register_recv_waker(&bridge.recv_waker());
+                    sock.register_send_waker(&bridge.send_waker());
+                    let remote =
+                        IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), FULL_CHAIN_PORT);
+                    let local = IpEndpoint::new(Ipv4Address::new(127, 0, 0, 1).into(), local_port);
+                    sock.connect(service.iface.context(), remote, local)
+                        .expect("adjacent-SYN client connect must be accepted by smoltcp");
+                    clients.push(sockets.add(sock));
+                }
+            }
+            let service = Box::leak(Box::new(spin::Mutex::new(service)));
+
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let waker = counting_waker(wakes.clone());
+            event.publish_software();
+            let mut future = StackRunnerFuture::new(
+                StackAccess::Injected {
+                    service,
+                    sockets,
+                    listen_table,
+                },
+                lifecycle(RxTaskLifecycle::Active),
+                event,
+                StackClock::Injected(now),
+                telemetry,
+            );
+
+            let state = |handle: SocketHandle| sockets.lock().get::<Socket>(handle).state();
+            let mut polls = 0usize;
+            loop {
+                polls += 1;
+                assert!(
+                    polls <= POLL_BOUND,
+                    "same-batch handshake stalled after {polls} polls (client A {}, client B {})",
+                    state(clients[0]),
+                    state(clients[1]),
+                );
+                // RED criterion: the second same-batch SYN is falsely refused.
+                assert_ne!(
+                    state(clients[1]),
+                    State::Closed,
+                    "second same-batch SYN was refused (client A {}) despite backlog headroom",
+                    state(clients[0]),
+                );
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if state(clients[0]) == State::Established
+                    && state(clients[1]) == State::Established
+                    && listen_table.can_accept(FULL_CHAIN_PORT) == Ok(true)
+                {
+                    break;
+                }
+                if !self_woke {
+                    let deadline = future.timer_deadline().expect(
+                        "runner parked without a timer while a same-batch handshake is incomplete",
+                    );
+                    now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                }
+            }
+
+            // Both connections must be acceptable; neither needs a later
+            // unrelated round to become visible.
+            let first = listen_table.accept_with(FULL_CHAIN_PORT, &mut sockets.lock());
+            assert!(first.is_ok(), "first adjacent connection must be accepted");
+            let second = loop {
+                polls += 1;
+                assert!(polls <= POLL_BOUND, "second accept stalled");
+                if listen_table.can_accept(FULL_CHAIN_PORT) == Ok(true) {
+                    break listen_table.accept_with(FULL_CHAIN_PORT, &mut sockets.lock());
+                }
+                let before = wakes.load(Ordering::Relaxed);
+                let _ = poll_once(&mut future, &waker);
+                let self_woke = wakes.load(Ordering::Relaxed) > before;
+                if !self_woke {
+                    if let Some(deadline) = future.timer_deadline() {
+                        now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+                    }
+                }
+            };
+            assert!(
+                second.is_ok(),
+                "second adjacent connection must be accepted without any caller-driven polling"
+            );
+        }
+    }
+
+    #[test]
+    fn task_28_ingress_packet_count_bounds_head_repairs_without_loss() {
+        // T2.8-R1 (R3/S3) runtime bound: with 33 signaled listeners but only
+        // 3 real loopback frames, the round that INGESTS them runs exactly 3
+        // head micro-repairs (one per processed packet), every consumed
+        // signal maps to exactly one committed repair (all idles really left
+        // Listen), and unconsumed signals stay queued losslessly for later
+        // packets/rounds. The frames are enqueued via Router TX, so the first
+        // poll only dispatches them; polling continues until ingestion has
+        // actually consumed signals — a zero-repair vacuous pass fails here.
+        let frame: [u8; 20] = [
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 2, 15, 255, 255, 255, 255,
+        ];
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        for _ in 0..3 {
+            router.enqueue_tx_for_test(&frame);
+        }
+
+        let listen_table = Box::leak(Box::new(ListenTable::new()));
+        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let event = Box::leak(Box::new(StackEvent::new()));
+        let now = Box::leak(Box::new(AtomicI64::new(0)));
+        let telemetry = Box::leak(Box::new(StackTelemetry::new()));
+
+        const LISTENERS: usize = 33;
+        for i in 0..LISTENERS as u16 {
+            let port = 19600 + i;
+            listen_table
+                .listen_with(
+                    smoltcp::wire::IpListenEndpoint { addr: None, port },
+                    Arc::new(ReadinessBridge::new()),
+                    &mut sockets.lock(),
+                )
+                .unwrap();
+            // A real transition: each closed idle records its own natural
+            // signal, so every consume must produce a committed repair.
+            assert!(listen_table.test_close_idle(port, &mut sockets.lock()));
+        }
+        assert_eq!(listen_table.test_pending_head_signals(), LISTENERS);
+
+        let service = Box::leak(Box::new(spin::Mutex::new(service)));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        event.publish_software();
+        let mut future = StackRunnerFuture::new(
+            StackAccess::Injected {
+                service,
+                sockets,
+                listen_table,
+            },
+            lifecycle(RxTaskLifecycle::Active),
+            event,
+            StackClock::Injected(now),
+            telemetry,
+        );
+        // Drive until the frames were ingested and signals were consumed;
+        // the dispatch-only first poll must not satisfy this loop.
+        for polls in 1..=POLL_BOUND {
+            let _ = poll_once(&mut future, &counting_waker(wakes.clone()));
+            if listen_table.test_pending_head_signals() < LISTENERS {
+                assert!(
+                    telemetry.listener_head_repairs.load(Ordering::Relaxed) > 0,
+                    "poll {polls}: signals consumed without any recorded repair"
+                );
+                break;
+            }
+            assert!(polls < POLL_BOUND, "frames never reached ingress");
+        }
+
+        // All 3 frames were ingested within one batch: exactly one repair per
+        // processed packet, never more, with the remaining 30 signals intact.
+        let repairs = telemetry.listener_head_repairs.load(Ordering::Relaxed);
+        assert_eq!(
+            repairs, 3,
+            "each of the 3 processed ingress packets must cause exactly one head repair"
+        );
+        let consumed = LISTENERS as u64 - listen_table.test_pending_head_signals() as u64;
+        assert_eq!(
+            consumed, repairs,
+            "every consumed signal of a live transition must repair exactly once"
+        );
+        assert_eq!(listen_table.test_pending_head_signals(), LISTENERS - 3);
+    }
+
+    #[test]
     fn closing_socket_queued_tx_reaches_peer_before_removal() {
         // Guest fork-mode regression (T2.5-R1 manual runs): a client that
         // sends and then closes without yielding lost the queued payload,
@@ -2092,6 +2328,16 @@ mod tests {
         assert!(ms01.contains("TCP_ACCEPT_DEADLINE_US"));
         assert!(ms01.contains("SO_SNDTIMEO"));
         assert!(ms01.contains("SO_RCVTIMEO"));
+        // Task 2.8: overflow safety belongs to the host/model witnesses; the
+        // guest must not inject an unobservable fire-and-close overflow and
+        // its capacity case must carry fixed phase/deadline failure bounds.
+        assert!(!ms01.contains("SOCK_NONBLOCK"));
+        assert!(ms01.contains("TCP_512CAP_DEADLINE_US"));
+        assert!(ms01.contains("phase(\"tcp-512cap listen\")"));
+        assert!(ms01.contains("phase(\"tcp-512cap connect\")"));
+        assert!(ms01.contains("phase(\"tcp-512cap accept-refill\")"));
+        assert!(ms01.contains("phase(\"tcp-512-recovery connect\")"));
+        assert!(ms01.contains("phase(\"tcp-512cap drain\")"));
         assert!(!ms01.contains("poll_interfaces"));
     }
 
@@ -2493,15 +2739,35 @@ mod tests {
                 .expect("repro overflow connect");
             sockets.add(sock)
         };
-        // The overflow must not become Established (backlog full, no idle).
-        for _ in 0..8 {
+        // The overflow must reach a deterministic refused/closed terminal
+        // state while the backlog remains full and before any headroom is
+        // released; a merely pending socket is not evidence.
+        let mut polls = 0usize;
+        loop {
+            let state = sockets.lock().get::<Socket>(overflow_handle).state();
+            assert_ne!(
+                state,
+                State::Established,
+                "the 513th overflow connect must not corrupt the full listener"
+            );
+            if state == State::Closed {
+                break;
+            }
+            polls += 1;
+            assert!(
+                polls <= POLL_BOUND,
+                "overflow connect stayed pending after {polls} polls (state {state})"
+            );
+            let before = wakes.load(Ordering::Relaxed);
             let _ = poll_once(&mut future, &waker);
+            let self_woke = wakes.load(Ordering::Relaxed) > before;
+            if !self_woke {
+                let deadline = future
+                    .timer_deadline()
+                    .expect("runner parked without a timer during overflow termination");
+                now.store(deadline.total_micros() as i64, Ordering::Relaxed);
+            }
         }
-        assert_ne!(
-            sockets.lock().get::<Socket>(overflow_handle).state(),
-            State::Established,
-            "the 513th overflow connect must not corrupt the full listener"
-        );
         // accept#1 consumes the first Ready slot; the idle listener must be
         // refilled before accept returns.
         let first = listen_table
@@ -3047,6 +3313,56 @@ mod tests {
                 !entry_src.contains(".wake("),
                 "no accept bridge wake inside any reconcile guard"
             );
+        }
+    }
+
+    #[test]
+    fn task_28_head_micro_step_is_exact_bounded_and_lock_free() {
+        // T2.8-R1 source witness: the exact head micro-step runs at exactly
+        // one site inside the ingress stage (after processed packets, before
+        // egress — never a separate once-per-round scan); its signal ring is
+        // pre-reserved to `PORT_NUM` so dedup cannot overflow it; the waker
+        // and ring code acquire no locks and allocate nothing; and the
+        // consume body performs no loop over ports (O(1) by construction).
+        for _ in 0..100 {
+            let service = include_str!("service.rs");
+            let round_src = &service[service.find("fn stack_round(").unwrap()
+                ..service.find("fn rx_slot_has_space_target").unwrap()];
+            assert_eq!(
+                round_src.matches("consume_head_signal").count(),
+                1,
+                "exactly one head micro-step site per round"
+            );
+            let ingress_at = round_src.find("poll_ingress_single").unwrap();
+            let consume_at = round_src.find("consume_head_signal").unwrap();
+            let egress_at = round_src.find("poll_egress").unwrap();
+            assert!(
+                ingress_at < consume_at && consume_at < egress_at,
+                "head consumption belongs to the ingress stage"
+            );
+
+            let listen_table = include_str!("listen_table.rs");
+            let signals_start = listen_table.find("struct HeadSignals").unwrap();
+            let signals_end = listen_table.find("impl ListenTableEntryInner").unwrap();
+            let signals_src = &listen_table[signals_start..signals_end];
+            assert!(
+                signals_src.contains("PORT_NUM"),
+                "ring capacity must be the pre-reserved port count"
+            );
+            assert!(
+                !signals_src.contains(".lock("),
+                "no mutex acquisition in waker or ring code"
+            );
+            assert!(
+                !signals_src.contains("Box::new(") && !signals_src.contains("Vec::new"),
+                "no allocation in waker or ring steady state"
+            );
+            let consume_src = &listen_table[listen_table
+                .find("pub(crate) fn consume_head_signal")
+                .unwrap()
+                ..listen_table.find("pub fn can_accept").unwrap()];
+            assert!(!consume_src.contains("active_ports"));
+            assert!(!consume_src.contains("while ") && !consume_src.contains("loop {"));
         }
     }
 

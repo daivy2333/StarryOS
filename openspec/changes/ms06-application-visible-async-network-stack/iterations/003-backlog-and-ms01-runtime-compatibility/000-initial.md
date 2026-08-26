@@ -2,7 +2,7 @@
 
 ## Plan Context
 
-- Status: draft
+- Status: ready
 - Iteration: 003-backlog-and-ms01-runtime-compatibility
 - Cycle: 000-initial
 - Cycle Type: initial
@@ -223,11 +223,10 @@ not requirement gaps.
 | Task Contract | PASS | RED, targets, behavior, preservation, forbidden scope, GREEN and stop conditions are self-contained |
 | Traceability | PASS | R3/R4/R6/R7 map to host, payload, build and manual QEMU witnesses with no Missing/Simplified |
 | Verification | PASS | automatic dependency gates precede fixed-marker manual QEMU; evidence classes remain separate |
-| Repository Tracking | BLOCKED | parent `.git/index` is read-only here; user must replace the smoltcp gitlink with ordinary files |
-| User Approval | BLOCKED | this expanded Cycle awaits explicit approval; no Act authorization is inferred |
+| Repository Tracking | PASS | parent index now tracks `crates/smoltcp` as ordinary mode `100644`/`100755` files; nested `.git` remains absent and `target/` remains ignored |
+| User Approval | PASS | user explicitly approved Cycle 003 and instructed Plan not to invoke Act automatically |
 
-Gate 2 remains BLOCKED on repository tracking and user approval. After both are resolved, Plan may set this Cycle
-to `ready`; the draft does not authorize Act.
+Gate 2 is PASS and this Cycle is `ready`. The approval authorizes the plan only; Act was not invoked.
 
 **Persisted Evidence**
 
@@ -249,19 +248,45 @@ not required unless a blocker would lose its decisive structure.
 
 ## Act Response
 
-- Status: pending
+- Status: reported
 
 **Implemented**
 
-Pending.
+- Strengthened `task_27_repro_guest_512_recovery_sequence`: the 513th overflow connect must reach a deterministic
+  refused/closed terminal state (`State::Closed`) within `POLL_BOUND = 128` bounded runner rounds BEFORE accept
+  releases any headroom. A merely pending socket no longer satisfies the witness; timer-deadline injection follows
+  the same loop idiom as the handshake and recovery loops.
+- Extended the `ms01_diagnostic_payloads_keep_markers_and_deadlines` source guard: forbid any guest overflow
+  stimulus (`SOCK_NONBLOCK`), require `TCP_512CAP_DEADLINE_US` and the five fixed phase markers of the capacity
+  case (`tcp-512cap listen/connect/accept-refill/drain`, `tcp-512-recovery connect`).
+- Rewrote the guest `test_tcp_512_capacity`: deleted the unobservable nonblocking 513th fire-and-close block; added
+  a fixed case budget (180 s) with per-phase failure attribution — deadline checks inside the connect loop,
+  poll-bounded first accept and drain accepts, `SO_SNDTIMEO` on the recovery connect, elapsed-time fields in FAIL
+  messages. The two PASS markers and the whole 14-marker payload ABI are byte-identical.
+- Aligned the pure validator seam `scripts/ms01-qemu-test.py::EXPECTED` to all 14 markers (adds the four bind-*
+  markers); `--self-test` extended coverage passes.
 
 **Changed Files and Symbols**
 
-Pending.
+| File | Symbols |
+|---|---|
+| `crates/axnet/src/stack_runner.rs` | `tests::task_27_repro_guest_512_recovery_sequence`, `tests::ms01_diagnostic_payloads_keep_markers_and_deadlines` |
+| `tests/ms01_socket_baseline.c` | `TCP_512CAP_DEADLINE_US`, `cap_expired`, `cap_remaining_ms`, `test_tcp_512_capacity`; rebuilt tracked payload binary |
+| `scripts/ms01-qemu-test.py` | `EXPECTED` |
+| change records | `tasks.md` (Task 2.8 closed, Current Cycle pointer), this Cycle file |
+
+No product source changed.
 
 **Deviations from Plan**
 
-Pending.
+- The host terminal witness went directly GREEN instead of RED: the product already terminates the overflow connect
+  deterministically (RST → `Closed`) under bounded rounds, so the defect was the weak assertion, not product code —
+  exactly the path the contract allows ("GREEN without product changes unless evidence locates an existing-product
+  defect"). Discriminating power is structural: the loop exits only on `Closed` and fails after 128 polls otherwise.
+- "Kernel QEMU check" is realized by `make ARCH=riscv64 build` (full qemu-virt release build plus objcopy, exit 0);
+  the Makefile defines no separate check target.
+- The baseline's cross-compiler `Bad system call` did not reproduce; both payloads compiled fresh, so no capability
+  blocker applies to compilation.
 
 **Blocker Handoff**
 
@@ -273,71 +298,176 @@ None.
 
 **Self-Review**
 
-- Plan compliance: pending
-- Full diff reviewed: pending
-- Critical findings unresolved: pending
-- Important findings unresolved: pending
-- Minor findings unresolved: pending
+- Specification review: PASS — host terminal-before-headroom ordering, guest stimulus removal with preserved
+  14-marker ABI, guard/validator alignment, fresh artifacts, and every Preserve/Forbidden item checked against the
+  Task Contract; Acceptance 1–4 and 6 are evidenced below, Acceptance 5 is the Runbook manual handoff.
+- Code quality review: PASS — diff limited to planned files; the bounded loop mirrors sibling loop idiom; lock
+  scopes are statement-local with no guard across poll; C helpers mirror existing deadline-helper style; no new
+  warnings introduced; `cargo fmt --check` exit 0.
+- Full diff reviewed: PASS — reviewed the complete working-tree diff including the rebuilt tracked payload binary;
+  the only other changes are the pre-existing staged OpenSpec records from Plan. Post-report manual-QEMU audit
+  located a product regression OUTSIDE this Cycle's change surface (Remaining Issues); the Cycle diff itself
+  remains free of Critical or Important findings.
+- Critical findings unresolved: none.
+- Important findings unresolved: none.
+- Minor findings unresolved: none. Pre-existing compiler warnings and the acknowledged qemu-diagnostics `async_rx`
+  flake remain outside this Cycle; the flake did not reproduce in either full suite run.
 
 **Verification Evidence**
 
-Pending.
+| Verification | Command / result | Conclusion |
+|---|---|---|
+| Guard RED (before C edit) | `cargo test --lib ms01_diagnostic_payloads_keep_markers_and_deadlines` | exit 101; failed at `!ms01.contains("SOCK_NONBLOCK")` as required |
+| Focused host repro, ordinary | `cargo test --manifest-path crates/axnet/Cargo.toml --lib task_27_repro` | 3 passed, exit 0 |
+| Focused host repro, diagnostics | same + `--features qemu-diagnostics` | 3 passed, exit 0 |
+| Source/validator guard, both profiles | `cargo test --lib ms01_diagnostic...` ordinary + diagnostics | passed, exit 0 each |
+| Full ordinary axnet lib | `cargo test --manifest-path crates/axnet/Cargo.toml --lib` | 319 passed, 0 failed, exit 0 |
+| Full diagnostics axnet lib | same + `--features qemu-diagnostics` | 339 passed, 0 failed, exit 0 |
+| Validator self-test (14 markers) | `python3 scripts/ms01-qemu-test.py --self-test` | `PASS: harness-self-test`, exit 0 |
+| Payload builds | `riscv64-linux-musl-gcc -static -O2 -o ...` for ms01_socket_baseline and ms01_loopback_diagnostic | exit 0 each; static-pie RISC-V ELF, timestamps 2026-08-25 22:15 |
+| Fresh kernel image | `make ARCH=riscv64 build` | exit 0; `StarryOS_riscv64-qemu-virt.bin` timestamp 2026-08-25 22:16 |
+| Format | `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check` | exit 0 |
+| OpenSpec strict | `openspec validate ms06-application-visible-async-network-stack --strict` | valid, exit 0 |
+| Whitespace | `git diff HEAD --check` | exit 0 |
+| Manual QEMU diagnostics (user-run) | guest `/tmp/ms01_diag single` / `fork`, Runbook HTTP path | PASS + exit 0 each |
+| Manual QEMU MS01 (user-run) | guest `/tmp/ms01_test` on release image `18c8df70…bc17` | START + `PASS: tcp-accept`, then hung in tcp-adjacent (child B ECONNREFUSED at `axnet_ng::tcp:334`, t=57.563s); no END, interrupted by SIGINT |
+| Diagnostic rebuild + info rerun | `make LOG=info build` → image `bb1d24fc…7645`; serial log `/tmp/ms06-diag-serial-info.log` | reproduced; layer attribution completed (Remaining Issues) |
+
+**Manual QEMU Handoff (Acceptance 5, Runbook manual-only policy)**
+
+Executed manually by the user on 2026-08-25 with the fresh artifacts above, following
+`.claude/runbooks/qemu-network-testing.md`:
+
+- Diagnostic `single`: `MS01_LOOPBACK_DIAGNOSTIC_START single` … `PASS: single-loopback` … `END`, exit 0.
+- Diagnostic `fork`: `PASS: fork-loopback`, exit 0.
+- MS01 payload: `START`, `PASS: tcp-accept`, then **hung in `test_tcp_adjacent`**: guest child B's connect returned
+  ECONNREFUSED (`axnet_ng::tcp:334 [AxErrorKind::ConnectionRefused]` at t=57.563s), child B exited, the parent's
+  second blocking accept never returned, no further markers and no END; the run was interrupted by SIGINT.
+
+Acceptance 5 is therefore NOT met on source containing `fdc8f101`. A second run on a diagnostic image rebuilt with
+`make LOG=info build` (sha256 `bb1d24fc…7645`; release image frozen/restored as `18c8df70…bc17`) reproduced the same
+failure and provided the layer attribution recorded under Remaining Issues. The required-result criteria for a
+future passing batch are unchanged: diagnostic single/fork PASS, MS01 one START, 14 unique PASS, zero FAIL, one END,
+exit 0.
 
 **Persisted Evidence**
 
-None required.
+None required. All checks are deterministic and inexpensive to rerun; the Act Response carries decisive outputs.
 
 **Experience Candidates**
 
-Pending.
+None.
 
 **Remaining Issues**
 
-Pending.
+- **Blocking Acceptance 5 — concurrent-SYN regression introduced by `fdc8f101` (MS06 Iteration 001 Cycles 006–009,
+  Task 2.6 replan), not by this Cycle.** Mechanism, verified line-level against source and the info-level serial log
+  (`/tmp/ms06-diag-serial-info.log`):
+  1. The listener keeps exactly ONE Listen-state idle hidden socket; refill happens only in the listener reconcile
+     stage or at accept (`listen_table.rs` `refill`/`reconcile_head`/`accept_with`).
+  2. `fdc8f101` moved reconcile from "after EVERY non-idle ingress step" (old `0acc081`
+     `service.rs`: `reconcile()` inside the bounded ingress loop) to ONE stage per round AFTER ingress/egress. The
+     bounded ingress stage dispatches up to 32 packets back-to-back with no listener work between them.
+  3. Two guest connects 0.48 ms apart put both SYNs into one ingress batch: packet #1 matches the idle (Listen →
+     SynReceived); packet #2 finds ZERO Listen-state sockets and smoltcp answers RST from its unmatched-packet path
+     (`crates/smoltcp/src/iface/interface/tcp.rs` L38-52 `Socket::rst_reply`). Guest sees ECONNREFUSED
+     (`axnet tcp.rs:334`) despite `listen(srv, 5)` backlog > 1 — effective concurrent-SYN capacity is 1 regardless
+     of backlog.
+  4. MS01 `test_tcp_adjacent`: child B refused and exited, parent blocked forever on the second accept → payload
+     hang, no END. Decisive counter-evidence: `idle #4 -> SynReceived` never appears — B's SYN never matched any
+     socket. All lower layers (download, diagnostics single/fork, tcp-accept, deferred reap) are healthy.
+- Fix belongs to a Plan-authored rework/replan cycle; it touches listener/stage semantics and hits Task 2.8's stop
+  condition ("host terminal behavior requires a new backlog or TCP contract"). Candidate directions for Plan:
+  - per-non-idle-ingress-step O(1) `reconcile_head` (restores the old guarantee without resurrecting the removed
+    per-step FULL scans that caused ~0.7 ms rounds; must revisit the Cycle 009 "one listener stage" guard/D4);
+  - a small idle pool K = min(backlog, cap) maintained at listen/refill (listen/refill contract change; does not
+    touch the ingress path).
+  A naive rollback to per-step full scans is NOT acceptable. Suggested host/model RED witness for that cycle: two
+  clients whose SYNs land in ONE ingress batch, assert both reach Established — currently the second ends
+  RST-refused/Closed. This Cycle's strengthened overflow-terminal witness remains valid under both candidates
+  (a truly full backlog still refuses deterministically).
+- Pre-existing compiler warnings remain outside this Cycle. The acknowledged qemu-diagnostics `async_rx` flake did
+  not reproduce in this run's suites and remains outside this Cycle.
+- Runbook rollback applied after diagnosis: release image restored to frozen `18c8df70…bc17`; the LOG=info
+  diagnostic build `bb1d24fc…7645` was discarded.
 
 **Commit or Diff Reference**
 
-None.
+None; no commit was requested. Changes remain in the modified working tree (plus the pre-existing staged OpenSpec
+records).
 
 ## Plan Review
 
-- Status: pending
+- Status: completed
 
 **Review Result**
 
-pending
+replan-required
 
 **Findings**
 
-Pending.
+- This re-audit supersedes the earlier evidence-only conclusion because the Act Response now contains fresh manual
+  QEMU counter-evidence that was not present when `001-rework.md` was drafted.
+- Cycle 000's own changes are correct and remain useful: client 513 reaches `State::Closed` before headroom release,
+  the guest removes the ambiguous overflow attempt, and the 14-marker/deadline contract is preserved.
+- Blocking product finding: diagnostics single/fork pass, but MS01 stops after `PASS: tcp-accept`; child B in
+  `tcp-adjacent` receives `ECONNREFUSED`, the parent blocks on its second accept, and the payload emits no END.
+  A fresh info-level rebuild reproduced the same result.
+- The source and serial evidence identify the mechanism: one idle hidden Listen socket is consumed by the first SYN;
+  ingress can process 32 packets before the single listener stage; the next SYN in that batch finds no Listen-state
+  socket and smoltcp replies with RST. Backlog headroom therefore exists while effective concurrent-SYN capacity is
+  one.
+- This mechanism predates Cycle 000 and was introduced by the listener-stage change in `fdc8f101`, but Task 2.8 and
+  Acceptance 5 require the affected MS01 behavior to pass. It hits the Cycle's explicit stop condition requiring a
+  new listener/backlog contract, so an evidence-only rework cannot converge.
+- Minor, non-blocking finding: `validate_output()` accepts an additional unknown `PASS:` marker. The source guard
+  fixes the payload at 14 emit sites and the manual Gate requires an exact count.
 
 **Deviation Classification**
 
-Pending.
+`NEW-EVIDENCE` for the fresh manual QEMU failure and its reproduced info-level attribution;
+`PLAN-INVALID` because Cycle 000 assumed no product behavior change was required while the one-late-listener-stage
+design violates adjacent-SYN compatibility; `ACT-DEVIATION` for reporting Task 2.8 complete before Acceptance 5;
+`BASELINE-CHANGED` for HEAD moving from planned `fdc8f101` to `4396d264` before Review. The unrelated diagnostics
+flake passed isolation and retry and does not affect this result.
 
 **Acceptance Gaps**
 
-Pending.
+- Provide backlog-preserving headroom between adjacent SYN packets in the same ingress batch without restoring
+  per-packet full scans, preallocating an idle socket pool or changing the 512 backlog limit.
+- Add a host/model witness in which two SYNs for one listener are processed in one ingress batch and both establish.
+- After the repair and all automatic Gates, rerun fresh manual QEMU and obtain diagnostic single/fork PASS plus
+  MS01 one START, 14 unique PASS, zero FAIL, one END and exit 0.
 
 **Convergence**
 
-N/A.
+N/A. New runtime evidence expands the gap from missing evidence to a product mechanism defect, so convergence must
+restart from a revised Task 2.8 contract in the same Iteration.
 
 **Evidence**
 
-Pending.
+- `cargo test --manifest-path crates/axnet/Cargo.toml --lib task_27_repro`: 3 passed, exit 0.
+- The same focused command with `--features qemu-diagnostics`: 3 passed, exit 0.
+- Fresh ordinary full suite: 319 passed, exit 0.
+- Fresh diagnostics full suite: first run 338 passed / 1 known unrelated `async_rx` failure; the failing test passed
+  three isolated runs, then the full-suite retry passed 339/339, exit 0.
+- `python3 scripts/ms01-qemu-test.py --self-test`, fmt, strict OpenSpec and `git diff HEAD --check`: exit 0.
+- Manual QEMU: diagnostic single/fork PASS and exit 0; MS01 START + `PASS: tcp-accept`, then `tcp-adjacent` child B
+  `ECONNREFUSED` at t=57.563 s, no END, interrupted. A fresh info-level image reproduced the failure.
 
 **Follow-up Decision**
 
-Pending.
+Keep Iteration 003 open and replace the unapproved evidence-only Cycle with a replan Cycle. Repair the exact
+listener head between ingress packets through a bounded, listener-specific signal; retain the existing once-per-round
+pending sweep and Cycle 000 overflow/guest work. Do not fall back to an idle pool or full listener scan.
 
 **Iteration Plan Update**
 
-Pending.
+Task 2.8, D4/D7 and the listener fairness/compatibility scenarios are revised. The Iteration Map is unchanged.
 
 **Next Cycle**
 
-None.
+`001-replan.md`
 
 **Next Iteration**
 

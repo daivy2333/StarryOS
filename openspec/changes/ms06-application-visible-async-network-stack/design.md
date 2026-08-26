@@ -115,7 +115,9 @@ fallback deadline按以下顺序决定：
 
 ### D4：每 stage 固定 budget，全部 stage 每轮都有机会
 
-**Decision**：首版使用与 queue task一致的 `STACK_STAGE_BUDGET = 32`，分别约束 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、ListenTable pending reconciliation 和 deferred socket retirement。maintenance每轮执行一次；listener reconciliation只在各网络 stage 之后执行一个有界批次，不得在每个 ingress step 后重复全表扫描。ListenTable在active ports与各entry slots之间保存全局持久cursor，所有listener共享每轮32次slot检查预算，且不得每轮clone完整active-port列表；deferred retirement使用独立cursor与32-entry预算。listener增删或`accept`移除queue slot必须推进结构generation；active sweep观察generation变化后从安全位置有界重启，不能仅用`cursor > len`判断收缩，也不能依赖ingress/egress再次报告protocol progress。没有结构变化或未确认entry时不得让下一轮重新从列表头扫描。任一stage返回“仍可立即推进”时，runner在释放锁后self-wake。
+**Decision**：首版使用与 queue task一致的 `STACK_STAGE_BUDGET = 32`，分别约束 Router RX、smoltcp ingress、smoltcp egress、Router dispatch、ListenTable pending reconciliation 和 deferred socket retirement。maintenance每轮执行一次；listener queue 的主 reconciliation 只在各网络 stage 之后执行一个有界批次，不得在每个 ingress step 后重复全表扫描。ListenTable在active ports与各entry slots之间保存全局持久cursor，所有listener共享每轮32次slot检查预算，且不得每轮clone完整active-port列表；deferred retirement使用独立cursor与32-entry预算。listener增删或`accept`移除queue slot必须推进结构generation；active sweep观察generation变化后从安全位置有界重启，不能仅用`cursor > len`判断收缩，也不能依赖ingress/egress再次报告protocol progress。没有结构变化或未确认entry时不得让下一轮重新从列表头扫描。任一stage返回“仍可立即推进”时，runner在释放锁后self-wake。
+
+隐藏 listener 的 one-shot recv waker 另行登记精确的 listener-head signal。每个已处理 ingress packet 之后，Service 至多消费一个去重 signal，并只对该 entry 执行 O(1) idle transition/refill/rearm；这一 micro-step 不扫描active ports或pending queue，也不推进协议。其每轮次数不得超过本轮已处理的 ingress packet 数，因此上限同为32；主 reconciliation 仍独立保留32-token预算。signal queue在listener注册路径预留容量，waker路径不得分配内存、取得entry/SocketSet/Service锁或直接唤醒application；entry状态提交后沿既有staged wake路径唤醒accept waiter。
 
 `Router::poll` 和 `Router::dispatch` 拆出单步/有界 API；Router RX 保存 round-robin device cursor，避免 loopback backlog永久挡住 target NIC。结果结构显式返回 processed count、socket state change、backlog、RX-space release、TX enqueue 和 stable fault，不用 bool 同时表达多个含义。
 
@@ -172,7 +174,7 @@ runner观察稳定全局fault后从registry取得Arc快照，释放registry lock
 
 ### D7：listener由ListenTable独立桥接
 
-**Decision**：public `TcpSocket`进入Listening时把自己的accept `Arc<PollSet>`交给 `ListenTableEntryInner`。entry在创建idle socket、refill、reconcile和public register时，把同一个bridge waker登记到所有idle/pending隐藏smoltcp socket的recv/send slot。状态从Pending变为Ready/Reset时先更新queue，再wake accept set。被动打开在`SynReceived`收到RST并回到`Listen`时，该pending slot不构成连接：entry在没有idle时把它恢复为idle，已有idle时移除冗余hidden socket，不能把它永久留在pending queue。满backlog的accept消费一个Ready/Reset slot时，在同一`SOCKET_SET → ListenTable entry`临界区恢复一个idle hidden listener，再释放guard和发布software wake。
+**Decision**：public `TcpSocket`进入Listening时把自己的accept `Arc<PollSet>`交给 `ListenTableEntryInner`。entry为每个listener建立内部head signal；创建idle socket、refill和reconcile时，把该signal waker登记到隐藏smoltcp socket的recv slot。waker只把该listener的去重signal提交到预留queue，不读取或修改entry/socket，也不直接唤醒application。Service在同一ingress batch的下一个packet前消费signal，执行该entry的O(1) idle transition/refill/rearm；普通有界reconcile继续处理pending queue。状态从Pending变为Ready/Reset时先更新queue，再通过guard外staged wake唤醒accept set。被动打开在`SynReceived`收到RST并回到`Listen`时，该pending slot不构成连接：entry在没有idle时把它恢复为idle，已有idle时移除冗余hidden socket，不能把它永久留在pending queue。满backlog的accept消费一个Ready/Reset slot时，在同一`SOCKET_SET → ListenTable entry`临界区恢复一个idle hidden listener，再释放guard和发布software wake。
 
 满backlog验证把两个网络事件分开：额外overflow connect必须先达到成功、拒绝或超时等可判定终态，之后才释放headroom并发起recovery connect。已经在runner ingress中排队的旧SYN可以合法占用稍后释放的slot，不能用这种竞态证明atomic refill失败。host/model另行覆盖overflow RST后hidden socket返回`Listen`的恢复路径；QEMU recovery场景只证明headroom提交后新的connect不依赖额外caller-driven progress。
 
@@ -180,7 +182,7 @@ runner观察稳定全局fault后从registry取得Arc快照，释放registry lock
 
 **Reason**：public listener自己的smoltcp handle不接收SYN；只给它注册waker永远不会得到accept transition。隐藏socket在每次wake后还必须重臂单槽waker。
 
-**Impact**：ListenTable entry增加accept bridge与pending cursor，但固定512 backlog语义不变；Ready connection仍只交付一次，Reset继续由accept返回`ConnectionReset`。accept/refill helper接收现有SocketSet guard，只做hidden socket生命周期提交，不调用smoltcp progress，也不取得Service guard。MS01 payload保留14个marker，但不再让未判定的overflow SYN与recovery SYN竞争同一个新headroom。
+**Impact**：ListenTable entry增加accept bridge、内部head signal与pending cursor，但固定512 backlog语义不变；Ready connection仍只交付一次，Reset继续由accept返回`ConnectionReset`。head-signal/refill与accept/refill helper接收现有SocketSet guard，只做hidden socket生命周期提交，不调用smoltcp progress，也不反向取得Service guard。MS01 payload保留14个marker，但不再让相邻SYN因同一ingress batch内缺少Listen-state socket而被错误RST，也不让未判定的overflow SYN与recovery SYN竞争同一个新headroom。
 
 **Alternatives**：
 
