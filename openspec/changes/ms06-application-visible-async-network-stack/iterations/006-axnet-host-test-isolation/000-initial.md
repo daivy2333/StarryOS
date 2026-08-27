@@ -2,8 +2,8 @@
 
 ## Plan Context
 
-- Status: draft
-- Approval: pending — Gate 2 技术检查项已闭合，等待用户明确批准；本次 Plan 不构成 Act 授权
+- Status: ready
+- Approval: 用户于 2026-08-27 显式批准（原话："批准，更改gate状态，开始实施"）；Gate 2 通过，Act 获得执行授权
 - Iteration: 006-axnet-host-test-isolation
 - Cycle: 000-initial
 - Cycle Type: initial
@@ -172,7 +172,7 @@ diagnostic two-clock RED
 | Traceability | PASS | R57与Tasks 5.1/5.2映射到context、clock、target和默认并行Gate |
 | Verification | PASS | focused ×100、subset ×40、两profile连续三次，禁止串行/skip/retry masking |
 
-Gate 2技术检查项PASS；用户批准仍为BLOCKED，Plan Context保持`draft`。
+Gate 2技术检查项PASS；用户已于 2026-08-27 批准（原话："批准，更改gate状态，开始实施"），Plan Context 状态改为 `ready`，`openspec-act` 已授权执行。
 
 **Persisted Evidence**
 
@@ -189,19 +189,68 @@ Gate 2技术检查项PASS；用户批准仍为BLOCKED，Plan Context保持`draft
 
 ## Act Response
 
-- Status: pending
+- Status: reported
 
 **Implemented**
 
-Pending.
+- Task 5.1（per-test socket/listener 隔离）：
+  - `wrapper.rs` 新增 `#[cfg(test)] SocketTestContext`（socket + listen-table 注册表对，`leak_new()` 泄漏式 fixture），
+    R57 进程级共享 churn 前置条件的移除载体。
+  - `tcp.rs`：`TcpSocket` 新增 `#[cfg(test)] test_ctx` 字段、test-only `new_with_context` 构造器、
+    `sockets()`/`listen_table()` 上下文访问器（无 fixture 时回落到全局 singleton）；全部 SOCKET_SET/LISTEN_TABLE
+    访问点改走访问器；`new_connected` 重构为 `adopt_from(&self)`（accepted child 继承 listener 的 context）；
+    `get_ephemeral_port` 改为接收 `&ListenTable`。
+  - `udp.rs`：`UdpSocket` 同样新增 `test_ctx`/`new_with_context`/`sockets()`，bind/Drop/terminal 走访问器。
+  - `listen_table.rs`：合并 `listen`+`listen_with`、`unlisten`+`unlisten_with` 为显式 `sockets` 参数版本，
+    消除方法内部对全局 `SOCKET_SET` 的隐式获取（这是 fixture 隐藏 socket 真正进入 fixture 注册表的必要条件）；
+    更新 stack_runner/service/listen_table 约 14 个机械调用点。
+  - 迁移 tcp.rs 7 个、udp.rs 5 个既有测试到 fixture 构造器；新增 4 个隔离见证 + 1 个 source guard（tcp/udp）。
+  - `stack_runner.rs` 两个 source-guard 断言随新路由形式更新（结构性不变量未变）。
+
+- Task 5.2（per-test diagnostic clock 隔离）：
+  - `diag.rs` 新增 `#[cfg(test)] DiagTestClock`（独立泄漏 AtomicU64）；`set_test_now` 保留供原始
+    `diag_now()` 用户。
+  - `service.rs`：`Service` 新增 `#[cfg(all(test, feature="qemu-diagnostics"))] diag_test_clock` 字段 +
+    `attach_test_clock`；`diag_hold_tick` 与 `diagnostic_control_shared` 改读 `self.diag_now()`。
+  - `async_rx.rs`：`RxRxFuture` 新增同字段 + `diag_now()`；`arm_lease_deadline`/`lease_deadline_elapsed`
+    改读 fixture clock；7 处 struct literal 补字段。
+  - service.rs diag tests（8 个）从 `serialized_service`（SERIAL + 全局 TEST_NOW）迁移到 per-test
+    `test_service()`；新增 `two_fixture_clocks_hold_independent_leases` 与
+    `concurrent_fixture_clocks_never_leak_expiry_across_services` 两个 RED 见证。
+  - async_rx.rs 目标 flake test `reclaim_hold_drains...` 及 7 个 diag/hold/deadline 测试全部迁移到
+    fixture clock，移除 `SERIAL`/`set_test_now` 依赖；新增 `fixture_clock` 助手（同一 clock 同时挂到
+    Service 与 future，保证 lease-deadline 一致性）。
 
 **Changed Files and Symbols**
 
-Pending.
+- `crates/axnet/src/wrapper.rs`：`SocketTestContext`、`leak_new`。
+- `crates/axnet/src/tcp.rs`：`TcpSocket::{test_ctx, new_with_context, sockets, listen_table, adopt_from}`；
+  `with_smol_socket/terminal_code/bound_endpoint/bind/connect/listen/accept/shutdown/Drop` 路由；`get_ephemeral_port(&ListenTable)`；tests 迁移与新增见证。
+- `crates/axnet/src/udp.rs`：`UdpSocket::{test_ctx, new_with_context, sockets}`；`bind/Drop/terminal_code` 路由；tests 迁移与新增见证。
+- `crates/axnet/src/listen_table.rs`：`listen`/`unlisten` 合并为显式 sockets 参数；测试调用点同步。
+- `crates/axnet/src/stack_runner.rs`：两个 source-guard 断言更新；测试 `listen_with` 调用点同步。
+- `crates/axnet/src/diag.rs`：`DiagTestClock`。
+- `crates/axnet/src/service.rs`：`diag_test_clock`/`attach_test_clock`/`diag_now`；diag tests 迁移 + 2 个 RED 见证。
+- `crates/axnet/src/async_rx.rs`：`RxRxFuture::diag_test_clock`/`diag_now`；`arm_lease_deadline`/
+  `lease_deadline_elapsed`/`diagnostic_control_shared` 时钟路由；diag tests 迁移 + 目标 flake 迁移 + `fixture_clock`。
+- `openspec/changes/.../iterations/006-axnet-host-test-isolation/000-initial.md`：Plan Context status
+  draft→ready + Approval 记录（用户 2026-08-27 原话："批准，更改gate状态，开始实施"）；Act Response。
 
 **Deviations from Plan**
 
-None yet.
+- D1（Task 5.1，直接局部调整）：fixture 路由后发现 `ListenTable::listen`/`unlisten` 仍在方法内部获取进程级
+  `SOCKET_SET`（`listen_with`/`unlisten_with` 已具显式 sockets 形式）。为使 fixture 隐藏 socket 真正落在
+  fixture 注册表（"同一 socket 从 handle 创建到 Drop 只访问一个 context" 不变的必然要求），合并两对方法为
+  显式 sockets 参数版本，生产调用点（tcp.rs listen/shutdown）改经 `self.sockets()`；约 14 个测试调用点机械
+  更新。锁序（SOCKET_SET → entry）与语义不变。
+- D2（Task 5.1，见证形态）：smoltcp `SocketSet::get` 对陈旧句柄直接 panic 且返回 `&T`，fixture 见证改用
+  `iter().any(|(h, _)| h == handle)` 探测，避免在断言内触发 panic。
+- D3（Task 5.1，次要）：`new()` 在 test 构建下也初始化 `test_ctx: None`，source guard 相应断言
+  "new() 必须 route 全局"；`sockets()`/`listen_table()` 的 fixture 分支断言检查 `ctx.sockets`/`&*crate::SOCKET_SET` 文本。
+- D4（Task 5.2，见证形态）：并发 two-clock 测试的 `auto_release_failure` 断言原写死 1，实际跨迭代累加，
+  改为 `expected` 计数随循环递增。
+- D5（环境，符合 Plan 既有处理）：`/tmp/opencode/cc-nopie.sh` wrapper 缺失，按 Iteration 004 Cycle 000
+  记录内容重建。
 
 **Blocker Handoff**
 
@@ -213,55 +262,114 @@ None.
 
 **Self-Review**
 
-Pending.
+Spec review（对照 Contract 5.1/5.2 逐条）：requirement 与场景全覆盖——R57 前置条件消除、fixture 上下文贯穿
+create/bind/connect/listen/accept/send/recv/poll/Drop、accepted child 继承 context、production singleton
+与锁序不变（source guard 见证）、fixture clock 路由 `diag_hold_tick` 与 future deadline、目标测试脱离
+TEST_NOW/SERIAL、production 仍读 wall clock；Preserve/Forbidden 清单全部满足（无 skip/ignore/串行全套/
+扩大 SERIAL/修改 smoltcp handle 算法）。Code quality review：diff 无计划外修改（listen/unlisten 合并为
+隔离目标的必要后果）；错误/边界/生命周期正确（`bound_endpoint` 先于 inner guard 计算避免 re-entrant
+spin-lock 死锁；accept 的 inner guard 在 wake 前释放）；无新增警告（`SOCKET_SET` 未用 import 已清，
+`Configurable` 未用 import 在触碰行内顺带清理）；测试通过正当原因（RED→GREEN 均实证）。修复的发现：
+Task 5.1 初始实现遗留下的 ListenTable 全局获取（D1，跨 fixture 干扰根因）；Task 5.2 并发断言错误（D4）。
+遗留 Minor：无未解决项。
 
 **Verification Evidence**
 
-Pending.
+| 验证项 | 命令或操作 | 输出摘录 | 结论 |
+|---|---|---|---|
+| Task 5.1 RED | `cargo test --no-run`（新增 fixture 测试） | `error[E0432] unresolved import SocketTestContext`、`error[E0599] new_with_context not found`（exit 101） | RED 命中（缺 seam） |
+| Task 5.1 pre-fix R57 | 并行 global-churn 子集 | `panic in a destructor during cleanup` + `signal: 6, SIGABRT`（首次即复现） | RED 命中（竞争） |
+| R57 子集 ×40（ordinary） | `cargo test --lib -- tcp::tests::listener_reset... udp::tests::fatal... terminal_commit...` 循环 40 | 0 failed | PASS |
+| R57 子集 ×40（qemu-diagnostics） | 同上 + `--features qemu-diagnostics` | 0 failed | PASS |
+| 隔离见证 ×100（ordinary） | `fresh_fixtures... two_fixture_listeners... parallel_fixture_churn... udp_fixtures...` 循环 100 | 0 failed | PASS |
+| 隔离见证 ×100（qemu-diagnostics） | 同上 + features | 0 failed | PASS |
+| Task 5.2 RED | `cargo test --features qemu-diagnostics --no-run` | `error[E0433] cannot find DiagTestClock`、`error[E0599] attach_test_clock not found`（exit 101） | RED 命中（缺 seam） |
+| two-clock/interleave ×100 | `service::tests::diag::two_fixture_clocks... concurrent_fixture_clocks...` 循环 100 | 0 failed | PASS |
+| 目标 flake focused ×100 | `async_rx::tests::reclaim_hold_drains_to_real_driver_full_without_observing_again` 循环 100 | 0 failed | PASS |
+| deadline 兄弟集 ×60 | `hold_submit_lease_deadline... explicit_release... held_reclaim... reclaim_hold...` 循环 60 | 0 failed | PASS |
+| ordinary full ×3（当前树） | `RUSTFLAGS=...cc-nopie cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib` | `ok. 362 passed; 0 failed` ×3 | PASS |
+| diagnostics full ×3（当前树） | 同上 + `--features qemu-diagnostics` | `ok. 384 passed; 0 failed` ×3 | PASS |
+| 非 test 构建 | `cargo check --lib`（+`--features qemu-diagnostics`） | exit 0；仅既有 smoltcp 警告 | PASS |
+| fmt | `cargo fmt --check`（axnet） | exit 0 | PASS |
+| 全量 source guards | 两 profile 套件内（drop_guards、accept_refills、production_tcp_new 等） | 全部 ok | PASS |
+| diff 干净 | `git diff --check` | exit 0 | PASS |
+| OpenSpec | `openspec validate ms06-application-visible-async-network-stack` | `Change ... is valid` | PASS |
 
 **Persisted Evidence**
 
-None required.
+None required（结果可低成本重跑；命令、决定性输出、exit 与符号均在 Act Response 记录）。本 Cycle 未创建
+Evidence 目录。
 
 **Experience Candidates**
 
-None yet.
+None（R57 既有 Incident 中已登记 git stash 恢复 Runbook 候选与并行审批 Knowledge 候选；本 Cycle 为按
+Incident 建议实施根因修复的工程过程，无新增候选）。
 
 **Remaining Issues**
 
-Pending.
+- 未运行 QEMU runtime / MS01/MS04/MS05/MS06 runtime / root 全量产品资格：按 Iteration 006 的 Deferred
+  scope 分别属于 Iteration 007（自动资格 Task 6.1）与 008（QEMU 验收 Tasks 7.1-7.2）。
+- `reclaim_hold_drains...` 的 R57 伴随 flake 在本 Cycle 时钟隔离后未再复现（focused ×100、兄弟并行 ×60、
+  full ×6），以隔离消除前置条件处理；不声明修复 smoltcp 或证明根因（同 Incident 限制）。
 
 **Commit or Diff Reference**
 
-未提交；等待Act。
+未提交；改动在工作树。`git diff --stat`：9 files changed, 653 insertions(+), 177 deletions(-)。
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: rework-required
 
 **Findings**
 
-None yet.
+- [Important] Task 5.1 的 deferred-removal owner 没有随 test fixture context 迁移。`TcpSocket::drop`
+  在 FIN-WAIT-1/CLOSING/LAST-ACK 分支把 fixture-local `SocketHandle` 提交给进程级 `SERVICE`；
+  `UdpSocket::drop` 在存在 queued TX 时执行相同提交。该 Service 的 runner 最终用产品全局
+  `SOCKET_SET` 解释该数值 handle，因此 local/global 或两个 fixture 复用相同 handle 时，可能检查或回收
+  无关 socket。这直接违反“同一 socket 从创建到 Drop 只访问一个 context”和本 Cycle 的 Stop 条件。
+  新增 fixture tests 只覆盖 idle TCP 与无 queued-TX UDP Drop，未触达这两个 deferred 分支；full suite
+  全绿不能关闭该遗漏。
+- [Minor] 非 test build 新增 `diag.rs` 与 `wrapper.rs` 的未使用 `Box` import；test build 还报告
+  `set_test_now` dead code。它们与 Act Response 的“无新增警告”自检不一致，但不单独阻塞 Acceptance。
+- Task 5.2 的 fixture clock 路由与 focused 见证通过独立复核，未发现 Critical/Important finding；该任务
+  保持完成，不进入后继 Cycle。
 
 **Deviation Classification**
 
-None yet.
+Plan omission。Cycle 000 的 Change Surface 覆盖 socket/listener registry，却没有把 deferred-removal Service
+列为 socket context 的所有者；Act 按不完整契约迁移了直接 SocketSet 调用面。修复需要新的自包含 ownership
+契约和 deferred-path RED witness，不属于原 Cycle 内可直接定位的有限修补。
 
 **Acceptance Gaps**
 
-Tasks 5.1-5.2尚未实施或Review。
+- Acceptance 2 未满足：TCP deferred close 与 UDP queued-TX Drop 仍把 fixture-local handle 交给 global Service。
+- Acceptance 1/4 的 fixture witnesses 未覆盖 deferred enqueue、local reaper drain 及相同数值 handle 的
+  global/neighbor non-interference。
+- Acceptance 6 的 full diff Review 存在一个 Important finding；新增 warning 为非阻塞 Minor。
 
 **Convergence**
 
-N/A.
+部分收敛。Task 5.2 已闭合；Task 5.1 的直接 socket/listener 访问、accepted child 继承和普通 fixture churn
+已经完成，可原样保留。后继 Cycle 只补 deferred owner 配对及其见证，不重做 clock isolation，也不扩大到
+Iteration 007 automatic qualification。
 
 **Evidence**
 
-None yet.
+- 源码审查：`tcp.rs::Drop` 的 deferred close 与 `udp.rs::Drop` 的 queued-TX 分支调用
+  `crate::SERVICE.get().queue_deferred_removal(self.handle, ...)`；`Service` entry 只保存数值 handle，runner
+  以传入的 SocketSet 执行 verdict/reap。
+- 独立 focused：`fresh_fixtures_reuse_identical_numeric_handles_without_cross_access`、
+  `two_fixture_clocks_hold_independent_leases`、`concurrent_fixture_clocks_never_leak_expiry_across_services`、
+  `reclaim_hold_drains_to_real_driver_full_without_observing_again` 均通过；这些结果同时证明现有测试没有覆盖
+  上述 deferred owner 缺口。
+- `cargo check --features qemu-diagnostics` exit 0，但显示新增 test-only import warning；`git diff --check` 与
+  strict OpenSpec validation 通过。
+- Act 记录的 ordinary 362/362 ×3 与 diagnostics 384/384 ×3 保留为回归证据，但不能替代缺失分支见证。
 
 **Follow-up Decision**
 
-等待用户批准Gate 2后显式调用`openspec-act`。
+创建同一 Iteration 的 `001-rework.md`，只返工 Task 5.1。Cycle 000 终止，不授权继续 Act；新 Cycle 必须由
+用户另行批准 Gate 2。
 
 **Iteration Plan Update**
 
@@ -269,8 +377,8 @@ None.
 
 **Next Cycle**
 
-None.
+`001-rework.md`。
 
 **Next Iteration**
 
-None；Iteration 007保持map-only，直到Iteration 006 accepted。
+None；Iteration 007 保持 map-only，直到 Iteration 006 的后继 Cycle accepted。

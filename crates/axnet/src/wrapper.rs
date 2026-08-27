@@ -26,6 +26,51 @@ pub(crate) struct SocketSetWrapper<'a> {
     global_terminal: AtomicU64,
 }
 
+/// Task 5.1 (Iteration 006): test-only per-test socket/listener registry
+/// pair. A fixture owns an independent [`SocketSetWrapper`] and
+/// [`ListenTable`], so parallel host tests can reuse identical numeric
+/// handles without touching the process-global `SOCKET_SET`/`LISTEN_TABLE`
+/// (R57 stale-handle/SIGABRT race prerequisite).
+///
+/// Cycle 001 rework: the fixture also owns the [`Service`] paired with those
+/// registries, so deferred removals enqueued by a fixture Drop are reaped
+/// by a bounded local poll against this same `SocketSet` - the equal
+/// numeric handle in the global (or a neighbor) set is never consulted.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct SocketTestContext {
+    pub sockets: &'static SocketSetWrapper<'static>,
+    pub listen_table: &'static crate::listen_table::ListenTable,
+    pub service: &'static axsync::Mutex<crate::service::Service>,
+}
+
+#[cfg(test)]
+impl SocketTestContext {
+    /// Leaks a fresh independent registry pair plus the Service that owns
+    /// this fixture's deferred removals (built against the same
+    /// `ListenTable`, with a loopback-only Router so local egress can
+    /// dispatch fixture datagrams). One fixture per call; the `PORT_NUM`
+    /// port-indexed table makes each instance ~3 MiB, so callers reuse the
+    /// context across churn iterations instead of per socket.
+    pub(crate) fn leak_new() -> Self {
+        let sockets: &'static SocketSetWrapper<'static> =
+            Box::leak(Box::new(SocketSetWrapper::new()));
+        let listen_table: &'static crate::listen_table::ListenTable =
+            Box::leak(Box::new(crate::listen_table::ListenTable::new()));
+        let mut router = crate::router::Router::new();
+        router.add_device(Box::new(crate::device::LoopbackDevice::new()));
+        let service: &'static axsync::Mutex<crate::service::Service> =
+            Box::leak(Box::new(axsync::Mutex::new(
+                crate::service::Service::new_with_listen_table(router, None, listen_table),
+            )));
+        Self {
+            sockets,
+            listen_table,
+            service,
+        }
+    }
+}
+
 impl<'a> SocketSetWrapper<'a> {
     pub fn new() -> Self {
         Self {
@@ -596,5 +641,40 @@ mod tests {
             }
             assert_eq!(wrapper.global_terminal_code(), expected);
         }
+    }
+
+    // ── Task 5.1 Cycle 001: fixture-paired deferred removal owner ───────
+
+    use super::SocketTestContext;
+
+    #[test]
+    fn fixture_context_pairs_service_with_its_own_registries() {
+        // The three ownership units (sockets, listener table, deferred
+        // Service) are one context: independently leaked per fixture and
+        // never aliasing the production singletons.
+        let a = SocketTestContext::leak_new();
+        let b = SocketTestContext::leak_new();
+
+        assert!(!core::ptr::eq(a.sockets, b.sockets));
+        assert!(!core::ptr::eq(a.listen_table, b.listen_table));
+        assert!(!core::ptr::eq(a.service, b.service));
+
+        assert!(!core::ptr::eq(a.sockets, &*crate::SOCKET_SET));
+        assert!(!core::ptr::eq(a.listen_table, &*crate::LISTEN_TABLE));
+    }
+
+    #[test]
+    fn fixture_service_constructor_routes_the_local_registries_in_source() {
+        // Source guard: the fixture Service is built against this context's
+        // own listen table; the constructor never touches the production
+        // global Service or socket set.
+        let src = include_str!("wrapper.rs");
+        let start = src.find("pub(crate) fn leak_new").unwrap();
+        let end = src.find("impl<'a> SocketSetWrapper<'a>").unwrap();
+        let ctor = &src[start..end];
+        assert!(ctor.contains("new_with_listen_table"));
+        assert!(ctor.contains("listen_table"));
+        assert!(!ctor.contains("crate::SERVICE"));
+        assert!(!ctor.contains("SOCKET_SET"));
     }
 }

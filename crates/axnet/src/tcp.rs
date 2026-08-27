@@ -17,8 +17,7 @@ use smoltcp::{
 };
 
 use crate::{
-    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
-    SocketOps,
+    RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -44,6 +43,11 @@ pub struct TcpSocket {
     readiness: Arc<ReadinessBridge>,
     general: GeneralOptions,
     rx_closed: AtomicBool,
+    /// Task 5.1 (Iteration 006): test-only per-fixture registry pair.
+    /// `None` (production and default tests) routes every access through the
+    /// process-global `SOCKET_SET`/`LISTEN_TABLE`.
+    #[cfg(test)]
+    test_ctx: Option<crate::wrapper::SocketTestContext>,
 }
 
 unsafe impl Sync for TcpSocket {}
@@ -58,19 +62,87 @@ impl TcpSocket {
             readiness,
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
+            #[cfg(test)]
+            test_ctx: None,
         }
     }
 
-    /// Creates a new TCP socket that is already connected.
-    fn new_connected(handle: SocketHandle) -> Self {
+    /// Task 5.1 (Iteration 006): test-only constructor binding the fixture's
+    /// independent registry pair; the R57 global-churn race disappears
+    /// because no test fixture ever touches the process-global registries.
+    #[cfg(test)]
+    pub(crate) fn new_with_context(ctx: crate::wrapper::SocketTestContext) -> Self {
+        let (handle, readiness) = ctx.sockets.add_public(new_tcp_socket());
+        Self {
+            state: StateLock::new(State::Idle),
+            handle,
+            readiness,
+            general: GeneralOptions::new(),
+            rx_closed: AtomicBool::new(false),
+            test_ctx: Some(ctx),
+        }
+    }
+
+    /// The `SocketSetWrapper` this socket's raw smoltcp handle lives in: the
+    /// test-injected fixture context when present, else the production
+    /// singleton. Every access path routes through here so a socket never
+    /// crosses from its fixture into the global (or a neighbor's) registry.
+    fn sockets(&self) -> &'static crate::wrapper::SocketSetWrapper<'static> {
+        #[cfg(test)]
+        {
+            if let Some(ctx) = self.test_ctx {
+                return ctx.sockets;
+            }
+        }
+        &*crate::SOCKET_SET
+    }
+
+    /// The `ListenTable` this socket's listener registrations live in: the
+    /// fixture context when present, else the production singleton.
+    fn listen_table(&self) -> &'static crate::listen_table::ListenTable {
+        #[cfg(test)]
+        {
+            if let Some(ctx) = self.test_ctx {
+                return ctx.listen_table;
+            }
+        }
+        &*crate::LISTEN_TABLE
+    }
+
+    /// The Service that owns this socket's deferred removal: the fixture's
+    /// paired local Service when a test context is present, else the
+    /// production global. Task 5.1 Cycle 001 (rework): a fixture-local
+    /// handle must be retired by the fixture's own Service - the global
+    /// runner reaps with the global socket set and would misinterpret the
+    /// handle (or collide with an equal numeric handle there). Production
+    /// sockets keep the global route. The lock discipline is unchanged: the
+    /// Drop caller holds the Service guard alone (never together with the
+    /// socket-set guard).
+    fn deferred_service(&self) -> Option<&'static Mutex<crate::service::Service>> {
+        #[cfg(test)]
+        {
+            if let Some(ctx) = self.test_ctx {
+                return Some(ctx.service);
+            }
+        }
+        crate::SERVICE.get()
+    }
+
+    /// Accept-adoption: installs the readiness bridge for a raw handle that
+    /// already lives in this socket's SocketSet and returns the public socket.
+    /// The adopted socket inherits this socket's registry pair, so the happy
+    /// path never leaves the accepting listener's context.
+    fn adopt_from(&self, handle: SocketHandle) -> Self {
         let readiness = Arc::new(ReadinessBridge::new());
-        SOCKET_SET.install_readiness(handle, readiness.clone());
+        self.sockets().install_readiness(handle, readiness.clone());
         Self {
             state: StateLock::new(State::Connected),
             handle,
             readiness,
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
+            #[cfg(test)]
+            test_ctx: self.test_ctx,
         }
     }
 }
@@ -125,14 +197,15 @@ impl TcpSocket {
     }
 
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
-        SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+        self.sockets()
+            .with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
     /// Task 3.1: effective stable terminal code — the global data-plane
     /// fault takes precedence over the socket-local terminal.
     fn terminal_code(&self) -> u64 {
         effective_terminal_code(
-            SOCKET_SET.global_terminal_code(),
+            self.sockets().global_terminal_code(),
             self.readiness.terminal_code(),
         )
     }
@@ -158,7 +231,8 @@ impl TcpSocket {
     }
 
     fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
-        let endpoint = SOCKET_SET
+        let endpoint = self
+            .sockets()
             .tcp_bound_endpoint(self.handle)
             .or_else(|| {
                 self.with_smol_socket(|socket| socket.local_endpoint().map(IpListenEndpoint::from))
@@ -213,7 +287,7 @@ impl TcpSocket {
         // outcome; a queued Reset reports once as `IN|ERR` and never poisons
         // the listener.
         let port = self.bound_endpoint().unwrap().port;
-        match LISTEN_TABLE.accept_head_is_reset(port) {
+        match self.listen_table().accept_head_is_reset(port) {
             Some(true) => {
                 events.insert(IoEvents::IN);
                 events.insert(IoEvents::ERR);
@@ -292,13 +366,14 @@ impl SocketOps for TcpSocket {
             .transit(State::Idle, || {
                 // TODO: check addr is available
                 if local_addr.port() == 0 {
-                    local_addr.set_port(get_ephemeral_port()?);
+                    local_addr.set_port(get_ephemeral_port(self.listen_table())?);
                 }
                 if !self.general.reuse_address() {
-                    SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;
+                    self.sockets()
+                        .bind_check(local_addr.ip().into(), local_addr.port())?;
                 }
 
-                if SOCKET_SET.tcp_bound_endpoint(self.handle).is_some() {
+                if self.sockets().tcp_bound_endpoint(self.handle).is_some() {
                     return Err(AxError::InvalidInput);
                 }
                 let endpoint = IpListenEndpoint {
@@ -309,7 +384,7 @@ impl SocketOps for TcpSocket {
                     },
                     port: local_addr.port(),
                 };
-                SOCKET_SET.set_tcp_bound_endpoint(self.handle, endpoint);
+                self.sockets().set_tcp_bound_endpoint(self.handle, endpoint);
                 debug!("TCP socket {}: binding to {}", self.handle, local_addr);
                 Ok(())
             })?;
@@ -338,7 +413,8 @@ impl SocketOps for TcpSocket {
                 // TODO: check remote addr unreachable
                 // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
                 let remote_endpoint = IpEndpoint::from(remote_addr);
-                let mut bound_endpoint = SOCKET_SET
+                let mut bound_endpoint = self
+                    .sockets()
                     .tcp_bound_endpoint(self.handle)
                     .unwrap_or_default();
                 // Ordered `SERVICE -> SOCKET_SET` like the runner: resolve the
@@ -349,13 +425,14 @@ impl SocketOps for TcpSocket {
                     bound_endpoint.addr = Some(service.get_source_address(&remote_endpoint.addr));
                 }
                 if bound_endpoint.port == 0 {
-                    bound_endpoint.port = get_ephemeral_port()?;
+                    bound_endpoint.port = get_ephemeral_port(self.listen_table())?;
                 }
                 info!(
                     "TCP connection from {} to {}",
                     bound_endpoint, remote_endpoint
                 );
-                SOCKET_SET.set_tcp_bound_endpoint(self.handle, bound_endpoint);
+                self.sockets()
+                    .set_tcp_bound_endpoint(self.handle, bound_endpoint);
                 let context = service.iface.context();
                 self.with_smol_socket(|socket| {
                     socket
@@ -400,7 +477,10 @@ impl SocketOps for TcpSocket {
         if let Ok(guard) = self.state.lock(State::Idle) {
             guard.transit(State::Listening, || {
                 let bound_endpoint = self.bound_endpoint()?;
-                LISTEN_TABLE.listen(bound_endpoint, self.readiness.clone())?;
+                let mut sockets = self.sockets().inner.lock();
+                self.listen_table()
+                    .listen(bound_endpoint, self.readiness.clone(), &mut sockets)?;
+                drop(sockets);
                 debug!("listening on {}", bound_endpoint);
                 Ok(())
             })?;
@@ -431,8 +511,8 @@ impl SocketOps for TcpSocket {
             // ListenTable entry` critical section, so an immediate
             // reconnect after a full backlog never waits for the runner's
             // next reconcile. Wakes publish only after both guards drop.
-            let mut sockets = crate::SOCKET_SET.inner.lock();
-            let result = LISTEN_TABLE.accept_with(bound_port, &mut sockets);
+            let mut sockets = self.sockets().inner.lock();
+            let result = self.listen_table().accept_with(bound_port, &mut sockets);
             drop(sockets);
             match result {
                 Err(err @ AxError::WouldBlock) => Err(err),
@@ -442,7 +522,7 @@ impl SocketOps for TcpSocket {
                     // atomic accept+refill helper.
                     self.readiness.wake(IoEvents::IN);
                     crate::stack_runner::publish_software_work();
-                    let socket = TcpSocket::new_connected(handle);
+                    let socket = self.adopt_from(handle);
                     debug!(
                         "accepted connection from {}, {}",
                         handle,
@@ -582,7 +662,10 @@ impl SocketOps for TcpSocket {
         // listener
         if let Ok(guard) = self.state.lock(State::Listening) {
             guard.transit(State::Closed, || {
-                LISTEN_TABLE.unlisten(self.bound_endpoint()?.port);
+                let port = self.bound_endpoint()?.port;
+                let mut sockets = self.sockets().inner.lock();
+                self.listen_table().unlisten(port, &mut sockets);
+                drop(sockets);
                 // Leftover accept waiters recheck after the entry cleanup.
                 self.readiness.wake(IoEvents::IN);
                 crate::stack_runner::publish_software_work();
@@ -648,32 +731,34 @@ impl Drop for TcpSocket {
         }
         // Detach public metadata (bridge + bound endpoint) and wake leftover
         // waiters once; the raw smoltcp handle stays for the resident runner.
-        crate::SOCKET_SET.retire_public(self.handle);
+        self.sockets().retire_public(self.handle);
         // Decide defer-vs-immediate from the raw close state. The state read
         // holds the SocketSet guard alone; the Service enqueue below holds
         // the Service guard alone — Drop never holds both at the same time,
         // so it can never form the reverse `SocketSet -> Service` edge the
         // removed synchronous flush introduced.
         let defer = {
-            let sockets = crate::SOCKET_SET.inner.lock();
+            let sockets = self.sockets().inner.lock();
             let socket = sockets.get::<smol::Socket>(self.handle);
             close_kind(socket.state())
         };
         match defer {
             Some(kind) => {
-                if let Some(service) = crate::SERVICE.get() {
-                    // The runner owns the FIN/ACK progress and the final
-                    // raw-handle removal; this caller runs zero rounds.
+                // The Service owning this handle's deferred retirement: the
+                // socket's own context (test fixture) or the production
+                // global. The runner owns the FIN/ACK progress and the final
+                // raw-handle removal; this caller runs zero rounds.
+                if let Some(service) = self.deferred_service() {
                     service.lock().queue_deferred_removal(self.handle, kind);
                 } else {
                     // No Service installed -> no resident runner can reap;
                     // fall back to the safe immediate removal.
-                    crate::SOCKET_SET.remove_raw(self.handle);
+                    self.sockets().remove_raw(self.handle);
                 }
             }
             // No outstanding close protocol (idle/closed/confirmed state):
             // the raw handle is removed immediately.
-            None => crate::SOCKET_SET.remove_raw(self.handle),
+            None => self.sockets().remove_raw(self.handle),
         }
         // Kick the unique runner so the committed FIN and any deferred
         // retirement are progressed without this caller.
@@ -700,7 +785,7 @@ pub(crate) fn close_kind(state: smol::State) -> Option<crate::service::CloseKind
     }
 }
 
-fn get_ephemeral_port() -> AxResult<u16> {
+fn get_ephemeral_port(listen_table: &crate::listen_table::ListenTable) -> AxResult<u16> {
     const PORT_START: u16 = 0xc000;
     const PORT_END: u16 = 0xffff;
     static CURR: Mutex<u16> = Mutex::new(PORT_START);
@@ -715,7 +800,7 @@ fn get_ephemeral_port() -> AxResult<u16> {
         } else {
             *curr += 1;
         }
-        if LISTEN_TABLE.can_listen(port) {
+        if listen_table.can_listen(port) {
             return Ok(port);
         }
         tries += 1;
@@ -812,7 +897,13 @@ mod tests {
     use axpoll::Pollable;
 
     use super::TcpSocket;
-    use crate::{LISTEN_TABLE, SOCKET_SET, SocketAddrEx, SocketOps, readiness};
+    use crate::{SocketAddrEx, SocketOps, readiness, wrapper::SocketTestContext};
+
+    /// Task 5.1 (Iteration 006): leaked per-test fixture; removes the R57
+    /// global `SOCKET_SET`/`LISTEN_TABLE` churn prerequisite.
+    fn test_ctx() -> SocketTestContext {
+        SocketTestContext::leak_new()
+    }
 
     #[test]
     fn normal_close_reports_eof_hup_without_device_err() {
@@ -824,7 +915,7 @@ mod tests {
 
     #[test]
     fn connect_failure_commits_socket_local_terminal_before_reporting_out_err() {
-        let socket = TcpSocket::new();
+        let socket = TcpSocket::new_with_context(test_ctx());
         socket.state.set(State::Connecting);
         socket.with_smol_socket(|s| s.abort());
 
@@ -841,7 +932,7 @@ mod tests {
 
     #[test]
     fn terminal_guard_maps_committed_codes_for_io() {
-        let socket = TcpSocket::new();
+        let socket = TcpSocket::new_with_context(test_ctx());
         assert_eq!(socket.observe_terminal_error(), None);
 
         socket
@@ -862,7 +953,8 @@ mod tests {
     #[test]
     fn listener_reset_head_polls_in_err_until_accept_consumes_it_once() {
         const PORT: u16 = 18500;
-        let socket = TcpSocket::new();
+        let ctx = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
         SocketOps::bind(
             &socket,
             SocketAddrEx::Ip(SocketAddr::new(
@@ -875,7 +967,7 @@ mod tests {
 
         assert!(!Pollable::poll(&socket).contains(IoEvents::IN));
 
-        LISTEN_TABLE.test_push_reset_slot(PORT);
+        ctx.listen_table.test_push_reset_slot(PORT);
 
         let events = Pollable::poll(&socket);
         assert!(events.contains(IoEvents::IN));
@@ -883,9 +975,9 @@ mod tests {
 
         // Consuming the queued reset clears the one-shot `IN|ERR` report
         // without committing any listener or device terminal state.
-        let mut sockets = SOCKET_SET.inner.lock();
+        let mut sockets = ctx.sockets.inner.lock();
         assert!(matches!(
-            LISTEN_TABLE.accept_with(PORT, &mut sockets),
+            ctx.listen_table.accept_with(PORT, &mut sockets),
             Err(AxError::ConnectionReset)
         ));
         drop(sockets);
@@ -904,7 +996,7 @@ mod tests {
 
     #[test]
     fn tcp_connect_entry_reports_preexisting_terminal_without_protocol_submit() {
-        let socket = TcpSocket::new();
+        let socket = TcpSocket::new_with_context(test_ctx());
         socket
             .readiness
             .commit_terminal(readiness::TERMINAL_BAD_STATE);
@@ -927,7 +1019,7 @@ mod tests {
 
     #[test]
     fn tcp_accept_entry_reports_preexisting_terminal_before_state_checks() {
-        let socket = TcpSocket::new(); // not listening
+        let socket = TcpSocket::new_with_context(test_ctx()); // not listening
         socket.readiness.commit_terminal(readiness::TERMINAL_IO);
 
         let result = SocketOps::accept(&socket);
@@ -939,7 +1031,7 @@ mod tests {
 
     #[test]
     fn tcp_recv_entry_reports_preexisting_terminal_before_rxclosed() {
-        let socket = TcpSocket::new();
+        let socket = TcpSocket::new_with_context(test_ctx());
         socket.rx_closed.store(true, Ordering::Release);
         socket.readiness.commit_terminal(readiness::TERMINAL_IO);
 
@@ -955,7 +1047,8 @@ mod tests {
     #[test]
     fn preexisting_terminal_leaves_queued_listener_reset_intact() {
         const PORT: u16 = 18501;
-        let socket = TcpSocket::new();
+        let ctx = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
         SocketOps::bind(
             &socket,
             SocketAddrEx::Ip(SocketAddr::new(
@@ -965,7 +1058,7 @@ mod tests {
         )
         .unwrap();
         SocketOps::listen(&socket).unwrap();
-        LISTEN_TABLE.test_push_reset_slot(PORT);
+        ctx.listen_table.test_push_reset_slot(PORT);
         // A committed terminal (the same effective read a global fault
         // takes) must fail accept fast WITHOUT consuming the queued Reset.
         socket
@@ -978,14 +1071,333 @@ mod tests {
             "accept must fail fast with the terminal category"
         );
 
-        let mut sockets = SOCKET_SET.inner.lock();
+        let mut sockets = ctx.sockets.inner.lock();
         assert!(
             matches!(
-                LISTEN_TABLE.accept_with(PORT, &mut sockets),
+                ctx.listen_table.accept_with(PORT, &mut sockets),
                 Err(AxError::ConnectionReset)
             ),
             "the Reset slot survives the terminal-failed accept"
         );
         drop(sockets);
+    }
+
+    // ── Task 5.1 (Iteration 006): per-test socket/listener isolation ────
+
+    #[test]
+    fn fresh_fixtures_reuse_identical_numeric_handles_without_cross_access() {
+        // R57 prerequisite elimination: two fixtures both start from the
+        // same numeric handle; dropping through the public path in A must
+        // never invalidate B's identical-numeric raw socket.
+        for _ in 0..20u32 {
+            let ctx_a = test_ctx();
+            let ctx_b = test_ctx();
+            let a = TcpSocket::new_with_context(ctx_a);
+            let b = TcpSocket::new_with_context(ctx_b);
+            assert_eq!(a.handle, b.handle, "fresh fixtures share the start handle");
+
+            drop(a);
+            assert!(
+                ctx_b
+                    .sockets
+                    .inner
+                    .lock()
+                    .iter()
+                    .any(|(h, _)| h == b.handle),
+                "A dropping handle {} must not remove B's identical handle",
+                b.handle,
+            );
+            assert!(ctx_a.sockets.inner.lock().iter().next().is_none());
+            drop(b);
+            assert!(ctx_b.sockets.inner.lock().iter().next().is_none());
+        }
+    }
+
+    #[test]
+    fn two_fixture_listeners_on_the_same_port_accept_from_their_own_tables() {
+        // Same numeric port registered in two independent fixtures: a reset
+        // slot delivered to A's hidden queue must only surface on A; each
+        // fixture consumes exactly its own slot. The pre-fix global
+        // LISTEN_TABLE could not host two listeners on one port at all.
+        const PORT: u16 = 23999;
+        let ctx_a = test_ctx();
+        let ctx_b = test_ctx();
+        let a = TcpSocket::new_with_context(ctx_a);
+        let b = TcpSocket::new_with_context(ctx_b);
+        SocketOps::bind(
+            &a,
+            SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), PORT)),
+        )
+        .unwrap();
+        SocketOps::bind(
+            &b,
+            SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), PORT)),
+        )
+        .unwrap();
+        SocketOps::listen(&a).unwrap();
+        SocketOps::listen(&b).unwrap();
+
+        ctx_a.listen_table.test_push_reset_slot(PORT);
+
+        let events_a = Pollable::poll(&a);
+        assert!(events_a.contains(IoEvents::IN));
+        assert!(events_a.contains(IoEvents::ERR));
+        let events_b = Pollable::poll(&b);
+        assert!(
+            !events_b.contains(IoEvents::IN),
+            "B must not observe A's reset slot"
+        );
+
+        let mut sockets_a = ctx_a.sockets.inner.lock();
+        assert!(matches!(
+            ctx_a.listen_table.accept_with(PORT, &mut sockets_a),
+            Err(AxError::ConnectionReset)
+        ));
+        drop(sockets_a);
+        let mut sockets_b = ctx_b.sockets.inner.lock();
+        assert!(matches!(
+            ctx_b.listen_table.accept_with(PORT, &mut sockets_b),
+            Err(AxError::WouldBlock)
+        ));
+        drop(sockets_b);
+    }
+
+    #[test]
+    fn parallel_fixture_churn_never_touches_a_neighbors_registry() {
+        // Pre-fix, shared-global churn in this exact pattern dies with smoltcp
+        // stale-handle panics / hashbrown assertions / SIGABRT (R57, 17/40 and
+        // 10/25 attributions). Per-test fixtures give every thread an
+        // independent registry, so the full lifecycle from four threads runs
+        // without any cross-talk.
+        std::thread::scope(|scope| {
+            for port in [23800u16, 23801, 23802, 23803] {
+                scope.spawn(move || {
+                    let ctx = test_ctx();
+                    for _ in 0..40u32 {
+                        let s = TcpSocket::new_with_context(ctx);
+                        SocketOps::bind(
+                            &s,
+                            SocketAddrEx::Ip(SocketAddr::new(
+                                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                                port,
+                            )),
+                        )
+                        .unwrap();
+                        SocketOps::listen(&s).unwrap();
+                        assert!(!Pollable::poll(&s).contains(IoEvents::IN));
+                        drop(s);
+                    }
+                });
+            }
+        });
+    }
+
+    // ── Task 5.1 Cycle 001 (rework): fixture-local deferred removal ────
+
+    #[test]
+    fn tcp_deferred_close_enqueues_into_fixture_service() {
+        // S1: a fixture TCP socket whose raw close state still needs
+        // runner-owned progress (FIN-WAIT-1) must retire its public handle
+        // and enqueue into the fixture's paired Service; the raw handle
+        // stays for the local reaper instead of being removed immediately.
+        // Pre-fix RED: the Drop consults the process-global Service, so the
+        // local backlog stays 0 and the raw handle is torn down at once.
+        let ctx = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
+        let handle = socket.handle;
+        // FIN-WAIT-1 is unreachable through public operations without a
+        // live peer handshake; seed the raw close state directly
+        // (contract-authorized minimal test-only state seed).
+        socket.with_smol_socket(|s| s.seed_state_for_tests(smoltcp::socket::tcp::State::FinWait1));
+
+        drop(socket);
+
+        assert_eq!(
+            ctx.service.lock().deferred_removals_len(),
+            1,
+            "the deferred close must land in the fixture's own Service"
+        );
+        assert!(
+            ctx.sockets.inner.lock().iter().any(|(h, _)| h == handle),
+            "the raw handle stays for the local reaper"
+        );
+        assert!(
+            ctx.sockets.lookup_readiness(handle).is_none(),
+            "public metadata must be retired once"
+        );
+    }
+
+    #[test]
+    fn tcp_deferred_close_local_drain_reaps_only_the_owning_fixture() {
+        // S3 + local drain: with an equal numeric handle alive in a neighbor
+        // fixture, the fixture's own bounded round confirms and reaps the
+        // deferred close from the paired registry; the neighbor's identical
+        // numeric socket and its queue are untouched.
+        let ctx = test_ctx();
+        let neighbor = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
+        let neighbor_socket = TcpSocket::new_with_context(neighbor);
+        assert_eq!(
+            socket.handle, neighbor_socket.handle,
+            "fresh fixtures share the start handle"
+        );
+        let handle = socket.handle;
+        socket.with_smol_socket(|s| s.seed_state_for_tests(smoltcp::socket::tcp::State::LastAck));
+
+        drop(socket);
+
+        assert_eq!(ctx.service.lock().deferred_removals_len(), 1);
+        assert_eq!(neighbor.service.lock().deferred_removals_len(), 0);
+
+        // LAST-ACK -> CLOSED is the transition the peer ACK drives; seed it
+        // as the deterministic stand-in for that protocol progress.
+        ctx.sockets
+            .with_socket_mut::<smoltcp::socket::tcp::Socket, _, _>(handle, |s| {
+                s.seed_state_for_tests(smoltcp::socket::tcp::State::Closed)
+            });
+
+        // The fixture's own round reaps the confirmed close from the paired
+        // registry (runner lock order: Service first, then the socket set).
+        let mut service = ctx.service.lock();
+        let mut set = ctx.sockets.inner.lock();
+        let _ = service.poll(crate::router::RxOwnerView::PollingOwned, &mut set);
+        drop(set);
+        drop(service);
+
+        assert_eq!(
+            ctx.service.lock().deferred_removals_len(),
+            0,
+            "the confirmed close is reclaimed exactly once"
+        );
+        assert!(!ctx.sockets.inner.lock().iter().any(|(h, _)| h == handle));
+        assert!(
+            neighbor
+                .sockets
+                .inner
+                .lock()
+                .iter()
+                .any(|(h, _)| h == neighbor_socket.handle),
+            "the neighbor's identical-numeric raw socket must survive the local drain"
+        );
+        assert_eq!(neighbor.service.lock().deferred_removals_len(), 0);
+    }
+
+    #[test]
+    fn tcp_deferred_drop_routes_service_through_the_socket_context_in_source() {
+        // Source guard: the Drop body must never touch the global Service
+        // directly - the socket's context resolves the fixture-paired local
+        // Service first, and production sockets keep the global fallback
+        // inside `deferred_service`.
+        let src = include_str!("tcp.rs");
+        let drop_start = src.find("impl Drop for TcpSocket").unwrap();
+        let drop_end = src.find("pub(crate) fn close_kind").unwrap();
+        let drop_body = &src[drop_start..drop_end];
+        assert!(drop_body.contains("self.deferred_service()"));
+        assert!(
+            !drop_body.contains("crate::SERVICE"),
+            "the deferred Drop must resolve the Service through the socket's context"
+        );
+
+        let helper_start = src.find("fn deferred_service(&self)").unwrap();
+        let helper_end = src.find("fn adopt_from").unwrap();
+        let helper = &src[helper_start..helper_end];
+        assert!(
+            helper.find("ctx.service").unwrap() < helper.find("crate::SERVICE").unwrap(),
+            "the fixture branch must precede the global fallback"
+        );
+        assert!(helper.contains("crate::SERVICE.get()"));
+    }
+
+    #[test]
+    fn production_tcp_new_binds_global_but_fixture_routes_local_in_source() {
+        // Source guard: the production constructor must keep binding the
+        // process-global registry, fixture sockets route through the injected
+        // context, and the no-context fallback stays on the globals.
+        let src = include_str!("tcp.rs");
+        let new_region = &src[src.find("pub fn new() -> Self {").unwrap()
+            ..src.find("pub(crate) fn new_with_context").unwrap()];
+        assert!(new_region.contains("SOCKET_SET.add_public"));
+        assert!(
+            new_region.contains("test_ctx: None"),
+            "new() must route the global"
+        );
+        assert!(
+            !new_region.contains("SocketTestContext"),
+            "new() must not construct a fixture"
+        );
+        let sockets_start = src.find("fn sockets(&self)").unwrap();
+        let sockets_end = src.find("fn listen_table(&self)").unwrap();
+        let accessors = &src[sockets_start..sockets_end];
+        assert!(accessors.contains("ctx.sockets"), "fixture branch present");
+        assert!(
+            accessors.contains("&*crate::SOCKET_SET"),
+            "fallback is the global"
+        );
+        let listen_region = &src[sockets_end..sockets_end + 900];
+        assert!(listen_region.contains("&*crate::LISTEN_TABLE"));
+    }
+
+    #[test]
+    fn seed_state_api_is_compile_time_test_only_across_manifests() {
+        // Plan Review (Cycle 001, Important) fix: the TCP state seed must stay
+        // out of the ordinary smoltcp / product dependency graph. Guarded by
+        // smoltcp's NON-default `test-seeds` feature, enabled only from axnet
+        // dev-dependencies (product `--lib` builds never activate it).
+        let smoltcp_tcp = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../smoltcp/src/socket/tcp.rs"
+        ));
+        let def_start = smoltcp_tcp.find("pub fn seed_state_for_tests").unwrap();
+        let def_region = &smoltcp_tcp[..def_start];
+        assert!(
+            def_region
+                .trim_end()
+                .ends_with("#[cfg(feature = \"test-seeds\")]"),
+            "seed_state_for_tests must be cfg-gated behind smoltcp `test-seeds` on its own \
+             definition"
+        );
+
+        let smoltcp_manifest = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../smoltcp/Cargo.toml"
+        ));
+        assert!(
+            smoltcp_manifest
+                .lines()
+                .any(|l| l.trim_start() == "\"test-seeds\" = []"),
+            "smoltcp must declare a non-default `test-seeds` feature"
+        );
+        let default_start = smoltcp_manifest.find("default = [").unwrap();
+        let private_marker = smoltcp_manifest.find("# Private features").unwrap();
+        let default_region = &smoltcp_manifest[default_start..private_marker];
+        assert!(
+            !default_region.contains("test-seeds"),
+            "`test-seeds` must not be part of smoltcp's default feature set"
+        );
+
+        let axnet_manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let deps_start = axnet_manifest.find("[dependencies.smoltcp]").unwrap();
+        let deps_end = axnet_manifest.find("[dependencies.spin]").unwrap();
+        let deps_region = &axnet_manifest[deps_start..deps_end];
+        assert!(
+            !deps_region.contains("test-seeds"),
+            "the product dependency edge must not enable `test-seeds`"
+        );
+        let dev_start = axnet_manifest.find("[dev-dependencies.smoltcp]").unwrap();
+        let dev_section = &axnet_manifest[dev_start + 1..];
+        let dev_end = dev_section
+            .find("\n[")
+            .map(|p| dev_start + 1 + p)
+            .unwrap_or(axnet_manifest.len());
+        let dev_region = &axnet_manifest[dev_start..dev_end];
+        assert!(
+            dev_region.contains("test-seeds"),
+            "only the dev-dependencies edge may enable `test-seeds`"
+        );
+        assert!(
+            dev_region.contains("default-features = false"),
+            "the dev edge must close smoltcp defaults so the test graph adds only `test-seeds` \
+             over the product edge"
+        );
     }
 }

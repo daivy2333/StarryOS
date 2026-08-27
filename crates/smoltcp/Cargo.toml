@@ -98,6 +98,12 @@ defmt = ["dep:defmt", "heapless/defmt"]
 
 "async" = []
 
+# Test-only TCP state seed for host tests in dependent crates (axnet Iteration
+# 006, Plan Review Important fix). NOT in default: enables `Socket::seed_state_for_tests`
+# so a dependent crate's test build can force a deferred-close state without a live
+# peer. Product dependency edges must never enable it.
+"test-seeds" = []
+
 # Automatically reply on an ICMP echo request
 "auto-icmp-echo-reply" = []
 

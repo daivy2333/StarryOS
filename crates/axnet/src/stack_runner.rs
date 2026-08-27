@@ -1100,7 +1100,9 @@ mod tests {
         assert!(!drop_src.contains("flush_removal_tx"));
         assert!(!drop_src.contains("stack_round"));
         assert!(drop_src.contains("let defer = {"));
-        assert!(drop_src.contains("SOCKET_SET.inner.lock()"));
+        // Task 5.1 (Iteration 006): the SocketSet guard is acquired through
+        // the socket's own registry (`self.sockets()`), production = global.
+        assert!(drop_src.contains("self.sockets().inner.lock()"));
         assert!(drop_src.contains("queue_deferred_removal"));
     }
 
@@ -1155,8 +1157,10 @@ mod tests {
 
         let tcp = include_str!("tcp.rs");
         let accept_src = &tcp[tcp.find("fn accept(&self)").unwrap()..tcp.find("fn send(").unwrap()];
-        assert!(accept_src.contains("SOCKET_SET.inner.lock()"));
-        assert!(accept_src.contains("LISTEN_TABLE.accept_with(bound_port, &mut sockets)"));
+        // Task 5.1 (Iteration 006): the critical section acquires the
+        // socket's own registry (`self.sockets()`), production = global.
+        assert!(accept_src.contains("self.sockets().inner.lock()"));
+        assert!(accept_src.contains("self.listen_table().accept_with(bound_port, &mut sockets)"));
         assert!(accept_src.contains("drop(sockets)"));
         // The wake and software-work publish appear only after the guard
         // drop inside the closure.
@@ -1328,7 +1332,7 @@ mod tests {
             let accept_wakes = Arc::new(AtomicUsize::new(0));
             accept.register(IoEvents::IN, &counting_waker(accept_wakes.clone()));
             listen_table
-                .listen_with(
+                .listen(
                     smoltcp::wire::IpListenEndpoint {
                         addr: None,
                         port: FULL_CHAIN_PORT,
@@ -1490,7 +1494,7 @@ mod tests {
 
             let accept = Arc::new(ReadinessBridge::new());
             listen_table
-                .listen_with(
+                .listen(
                     smoltcp::wire::IpListenEndpoint {
                         addr: None,
                         port: FULL_CHAIN_PORT,
@@ -1628,7 +1632,7 @@ mod tests {
         for i in 0..LISTENERS as u16 {
             let port = 19600 + i;
             listen_table
-                .listen_with(
+                .listen(
                     smoltcp::wire::IpListenEndpoint { addr: None, port },
                     Arc::new(ReadinessBridge::new()),
                     &mut sockets.lock(),
@@ -1715,7 +1719,7 @@ mod tests {
         let accept_wakes = Arc::new(AtomicUsize::new(0));
         accept.register(IoEvents::IN, &counting_waker(accept_wakes.clone()));
         listen_table
-            .listen_with(
+            .listen(
                 smoltcp::wire::IpListenEndpoint {
                     addr: None,
                     port: FULL_CHAIN_PORT,
@@ -1966,7 +1970,7 @@ mod tests {
 
         let accept = Arc::new(ReadinessBridge::new());
         listen_table
-            .listen_with(
+            .listen(
                 smoltcp::wire::IpListenEndpoint {
                     addr: None,
                     port: FULL_CHAIN_PORT,
@@ -2400,7 +2404,7 @@ mod tests {
 
         let accept = Arc::new(ReadinessBridge::new());
         listen_table
-            .listen_with(
+            .listen(
                 smoltcp::wire::IpListenEndpoint {
                     addr: None,
                     port: FULL_CHAIN_PORT,
@@ -2655,7 +2659,7 @@ mod tests {
 
         let accept = Arc::new(ReadinessBridge::new());
         listen_table
-            .listen_with(
+            .listen(
                 smoltcp::wire::IpListenEndpoint {
                     addr: None,
                     port: FULL_CHAIN_PORT,
@@ -3056,7 +3060,7 @@ mod tests {
 
             let accept = Arc::new(ReadinessBridge::new());
             listen_table
-                .listen_with(
+                .listen(
                     smoltcp::wire::IpListenEndpoint {
                         addr: None,
                         port: FULL_CHAIN_PORT,
@@ -3145,7 +3149,7 @@ mod tests {
 
             let accept = Arc::new(ReadinessBridge::new());
             listen_table
-                .listen_with(
+                .listen(
                     smoltcp::wire::IpListenEndpoint {
                         addr: None,
                         port: FULL_CHAIN_PORT,

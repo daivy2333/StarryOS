@@ -1114,6 +1114,20 @@ impl<'a> Socket<'a> {
         self.set_state(State::Closed);
     }
 
+    /// Test-only state seed for host tests in dependent crates: force the
+    /// connection state so a deferred-close state (FIN-WAIT-1 / LAST-ACK)
+    /// is deterministically reachable without driving a live peer handshake.
+    /// Production code must never call this; it performs no packet exchange
+    /// and no state-machine transition of its own.
+    ///
+    /// Available only when the non-default `test-seeds` feature is enabled,
+    /// which axnet enables exclusively from its dev-dependencies; the
+    /// ordinary smoltcp / product dependency graph cannot see this method.
+    #[cfg(feature = "test-seeds")]
+    pub fn seed_state_for_tests(&mut self, state: State) {
+        self.set_state(state);
+    }
+
     /// Return whether the socket is passively listening for incoming connections.
     ///
     /// In terms of the TCP state machine, the socket must be in the `LISTEN` state.

@@ -189,6 +189,10 @@ pub struct Service {
     /// monotonic telemetry; not a synchronization primitive).
     #[cfg(feature = "qemu-diagnostics")]
     diag_auto_release_failure: u64,
+    /// Task 5.2 (Iteration 006): per-test fixture clock. `diag_hold_tick`
+    /// reads this when attached; production never sets it (wall clock).
+    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    diag_test_clock: Option<crate::diag::DiagTestClock>,
     /// Test-only local listener table so a full-chain witness can run
     /// `stack_round` against a caller-owned `ListenTable` whose hidden
     /// sockets live in the injected SocketSet instead of the production
@@ -235,6 +239,8 @@ impl Service {
             diag_lease_expiry_nanos: 0,
             #[cfg(feature = "qemu-diagnostics")]
             diag_auto_release_failure: 0,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(test)]
             listen_table: &*crate::LISTEN_TABLE,
             deferred_removals: alloc::vec::Vec::new(),
@@ -265,6 +271,14 @@ impl Service {
         let mut service = Self::new(router, target_dev);
         service.listen_table = listen_table;
         service
+    }
+
+    /// Task 5.2 (Iteration 006): attaches a per-test fixture clock so this
+    /// Service's lease deadline reads the fixture's time instead of the
+    /// process-global `diag::diag_now()`. Test-only; production never sets it.
+    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    pub(crate) fn attach_test_clock(&mut self, clock: crate::diag::DiagTestClock) {
+        self.diag_test_clock = Some(clock);
     }
 
     pub fn poll(&mut self, owner: RxOwnerView, sockets: &mut SocketSet) -> bool {
@@ -816,7 +830,9 @@ impl Service {
     /// Advances the Service-owned QEMU diagnostic lease and returns the
     /// active hold mode. The queue task calls this once per round under the
     /// Service guard (D9). The clock is the injectable `diag::diag_now()` so
-    /// host tests drive the lease deadline deterministically.
+    /// host tests drive the lease deadline deterministically; a per-test
+    /// fixture clock (Task 5.2) overrides it without sharing process-global
+    /// state.
     ///
     /// An expired lease is cleared and `auto_release_failure` saturating-
     /// incremented exactly once; no lease generation exists, so no identity
@@ -826,13 +842,26 @@ impl Service {
     pub(crate) fn diag_hold_tick(&mut self) -> u64 {
         if self.diag_hold_mode != crate::diag::HOLD_NONE
             && self.diag_lease_expiry_nanos != 0
-            && crate::diag::diag_now() >= self.diag_lease_expiry_nanos
+            && self.diag_now() >= self.diag_lease_expiry_nanos
         {
             self.diag_hold_mode = crate::diag::HOLD_NONE;
             self.diag_lease_expiry_nanos = 0;
             self.diag_auto_release_failure = self.diag_auto_release_failure.saturating_add(1);
         }
         self.diag_hold_mode
+    }
+
+    /// The clock used for lease-deadline decisions: the attached per-test
+    /// fixture clock when present, else `diag::diag_now()`.
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_now(&self) -> u64 {
+        #[cfg(test)]
+        {
+            if let Some(clock) = self.diag_test_clock {
+                return clock.load();
+            }
+        }
+        crate::diag::diag_now()
     }
 
     /// Applies one QEMU diagnostic control under the Service guard (C2).
@@ -1459,7 +1488,7 @@ mod tests {
             let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
             let accept = Arc::new(crate::readiness::ReadinessBridge::new());
             table
-                .listen_with(
+                .listen(
                     smoltcp::wire::IpListenEndpoint {
                         addr: None,
                         port: 18300,
@@ -1867,34 +1896,87 @@ mod tests {
             1_000_000_000_000
         }
 
-        /// Serialized Service + initialized fake clock: `diag_hold_tick`
-        /// reads the global `diag_now()`, so these tests must not share the
-        /// clock with a parallel sibling.
-        fn serialized_service() -> (spin::MutexGuard<'static, ()>, Service) {
-            let serial = crate::async_rx::SERIAL.lock();
-            crate::diag::set_test_now(now());
+        /// Task 5.2 (Iteration 006): per-fixture clock + Service pair. Each
+        /// test owns an independent fake clock, so advancing one fixture can
+        /// never change a sibling's hold mode/expiry/auto-release counter
+        /// (the R57 companion flake came from the process-global `TEST_NOW`).
+        fn test_service() -> (crate::diag::DiagTestClock, Service) {
+            let clock = crate::diag::DiagTestClock::new();
+            clock.store(now());
             let mut router = Router::new();
             router.add_device(Box::new(LoopbackDevice::new()));
-            (serial, Service::new(router, None))
+            let mut service = Service::new(router, None);
+            service.attach_test_clock(clock);
+            (clock, service)
+        }
+
+        #[test]
+        fn two_fixture_clocks_hold_independent_leases() {
+            // Fixture A holds a 100 ms submit lease, fixture B a 50 ms
+            // reclaim lease, both starting at `now()`. Advancing ONLY A past
+            // its deadline must release A exactly once and leave B's mode,
+            // expiry and counter untouched.
+            let (clock_a, mut a) = test_service();
+            let (clock_b, mut b) = test_service();
+            a.diag_control(OP_HOLD_TX_SUBMIT, 100, now()).unwrap();
+            b.diag_control(OP_HOLD_TX_RECLAIM, 50, now()).unwrap();
+
+            clock_a.store(now() + 100 * NS_PER_MS);
+            assert_eq!(a.diag_hold_tick(), HOLD_NONE);
+            assert_eq!(a.diag_auto_release_failure(), 1);
+            assert_eq!(b.diag_hold_mode(), HOLD_RECLAIM, "B's mode must not change");
+            assert_eq!(b.diag_lease_expiry(), now() + 50 * NS_PER_MS);
+            assert_eq!(b.diag_auto_release_failure(), 0);
+
+            // Advancing B's own clock releases B exactly once.
+            clock_b.store(now() + 50 * NS_PER_MS);
+            assert_eq!(b.diag_hold_tick(), HOLD_NONE);
+            assert_eq!(b.diag_auto_release_failure(), 1);
+            assert_eq!(a.diag_auto_release_failure(), 1);
+        }
+
+        #[test]
+        fn concurrent_fixture_clocks_never_leak_expiry_across_services() {
+            // Barrier-free concurrent churn: every thread drives its OWN
+            // Service + clock through commit/advance/release cycles. The
+            // pre-fix process-global `TEST_NOW` would let thread A's store
+            // auto-release thread B's held lease, failing the per-thread
+            // mode/counter assertions.
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    scope.spawn(|| {
+                        let (clock, mut s) = test_service();
+                        let mut expected = 0u64;
+                        for i in 0..50u64 {
+                            s.diag_control(OP_HOLD_TX_SUBMIT, 100, now() + i).unwrap();
+                            clock.store(now() + i + 100 * NS_PER_MS);
+                            assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+                            expected += 1;
+                            assert_eq!(s.diag_auto_release_failure(), expected);
+                            assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+                        }
+                    });
+                }
+            });
         }
 
         #[test]
         fn control_rejects_out_of_range_lease_and_bad_ops() {
-            let (_serial, mut s) = serialized_service();
+            let (clock, mut s) = test_service();
             assert!(matches!(
-                s.diag_control(OP_HOLD_TX_SUBMIT, 0, now()),
+                s.diag_control(OP_HOLD_TX_SUBMIT, 0, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert!(matches!(
-                s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS + 1, now()),
+                s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS + 1, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert!(matches!(
-                s.diag_control(OP_RELEASE, 1, now()),
+                s.diag_control(OP_RELEASE, 1, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert!(matches!(
-                s.diag_control(99, 10, now()),
+                s.diag_control(99, 10, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
@@ -1903,21 +1985,23 @@ mod tests {
 
         #[test]
         fn hold_submit_and_reclaim_set_modes_and_expiry() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 100, now()).unwrap();
+            let (clock, mut s) = test_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 100, clock.load())
+                .unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_SUBMIT);
-            assert_eq!(s.diag_lease_expiry(), now() + 100 * NS_PER_MS);
+            assert_eq!(s.diag_lease_expiry(), clock.load() + 100 * NS_PER_MS);
             assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
-            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now()).unwrap();
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, clock.load()).unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_RECLAIM);
-            assert_eq!(s.diag_lease_expiry(), now() + NS_PER_MS);
+            assert_eq!(s.diag_lease_expiry(), clock.load() + NS_PER_MS);
         }
 
         #[test]
         fn release_clears_hold_and_never_counts_failure() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 2000, now()).unwrap();
-            s.diag_control(OP_RELEASE, 0, now()).unwrap();
+            let (clock, mut s) = test_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 2000, clock.load())
+                .unwrap();
+            s.diag_control(OP_RELEASE, 0, clock.load()).unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
             assert_eq!(s.diag_lease_expiry(), 0);
             assert_eq!(s.diag_auto_release_failure(), 0);
@@ -1926,27 +2010,29 @@ mod tests {
 
         #[test]
         fn expired_lease_auto_releases_and_counts_failure() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 2, now()).unwrap();
-            crate::diag::set_test_now(now() + 2 * NS_PER_MS - 1);
+            let (clock, mut s) = test_service();
+            let t0 = clock.load();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 2, t0).unwrap();
+            clock.store(t0 + 2 * NS_PER_MS - 1);
             assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
-            crate::diag::set_test_now(now() + 2 * NS_PER_MS);
+            clock.store(t0 + 2 * NS_PER_MS);
             assert_eq!(s.diag_hold_tick(), HOLD_NONE);
             assert_eq!(s.diag_auto_release_failure(), 1);
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
             assert_eq!(s.diag_lease_expiry(), 0);
-            crate::diag::set_test_now(now() + 2 * NS_PER_MS + 1);
+            clock.store(t0 + 2 * NS_PER_MS + 1);
             assert_eq!(s.diag_hold_tick(), HOLD_NONE);
             assert_eq!(s.diag_auto_release_failure(), 1);
         }
 
         #[test]
         fn second_hold_after_expiry_reuses_the_state() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now()).unwrap();
-            crate::diag::set_test_now(now() + NS_PER_MS);
+            let (clock, mut s) = test_service();
+            let t0 = clock.load();
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, t0).unwrap();
+            clock.store(t0 + NS_PER_MS);
             assert_eq!(s.diag_hold_tick(), HOLD_NONE);
-            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now() + NS_PER_MS)
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, t0 + NS_PER_MS)
                 .unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_RECLAIM);
             assert_eq!(s.diag_auto_release_failure(), 1);
@@ -1954,8 +2040,8 @@ mod tests {
 
         #[test]
         fn hold_does_not_mutate_owner_or_completion_state() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 10, now()).unwrap();
+            let (clock, mut s) = test_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 10, clock.load()).unwrap();
             assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
             let _ = s.diag_hold_mode();
             let _ = s.diag_lease_expiry();
@@ -1967,7 +2053,7 @@ mod tests {
             // C2: `now + lease_ms * NS_PER_MS` is a checked add; an
             // overflowing deadline is rejected before any mutation and the
             // committed no-hold state survives.
-            let (_serial, mut s) = serialized_service();
+            let (clock, mut s) = test_service();
             let far_future = u64::MAX - 10;
             assert!(matches!(
                 s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS, far_future),
@@ -1976,6 +2062,7 @@ mod tests {
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
             assert_eq!(s.diag_lease_expiry(), 0);
             assert_eq!(s.diag_auto_release_failure(), 0);
+            assert_eq!(clock.load(), now());
         }
 
         #[test]
@@ -1983,11 +2070,11 @@ mod tests {
             // D9/C1: the Service lease carries no generation, so no identity
             // can exhaust. Every reachable Hold is releasable explicitly or
             // by expiry, even after many commit/release/expiry cycles.
-            let (_serial, mut s) = serialized_service();
+            let (clock, mut s) = test_service();
             for i in 0..200u64 {
                 s.diag_control(OP_HOLD_TX_SUBMIT, 2, now() + i).unwrap();
                 assert_eq!(s.diag_hold_mode(), HOLD_SUBMIT);
-                crate::diag::set_test_now(now() + i + 2 * NS_PER_MS);
+                clock.store(now() + i + 2 * NS_PER_MS);
                 assert_eq!(s.diag_hold_tick(), HOLD_NONE);
                 assert_eq!(s.diag_auto_release_failure(), i + 1);
                 s.diag_control(OP_HOLD_TX_RECLAIM, 1, now() + i).unwrap();

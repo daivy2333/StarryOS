@@ -30,8 +30,8 @@
 
 ## 5. Host 测试隔离与确定性
 
-- [ ] 5.1 依据R57 Incident定位并修复并行axnet测试共享进程级`SOCKET_SET`/`LISTEN_TABLE`产生的陈旧handle、hashbrown断言和SIGSEGV/SIGABRT。WHY 是当前并行full suite会制造假RED且存在host测试进程内存不安全，不能作为自动资格的可信前置；HOW 是先保持现有失败子集和Cycle 000产品对照建立确定性RED/归因，再优先把socket registry、listener table和fault sink改为per-test实例注入，只有能覆盖全部读写方时才允许统一串行边界；EXPECTED 是既有并行失败子集、add/remove/iterate churn和ordinary full suite重复运行均无invalid handle、panic或进程信号，同时产品static singleton、handle生命周期和锁序不变。若根因要求修改产品socket语义、PollSet容量、scheduler或reset/cancellation，停止返回Plan。
-- [ ] 5.2 将qemu-diagnostics的`reclaim_hold_drains_to_real_driver_full_without_observing_again`单独归因并消除flake，不预设其与Task 5.1同根。WHY 是该测试隔离运行恒过、并行full suite偶发失败，可能是diagnostic state、fake clock、telemetry或其他全局读写污染；HOW 是先用读写方矩阵和并行最小复现确定共享边，再优先注入每test独立`DiagnosticState`/clock/telemetry依赖，禁止通过skip、ignore、无限重跑或仅把full suite改为串行掩盖；EXPECTED 是ordinary和qemu-diagnostics默认并行full suites及focused交错重复稳定通过，失败时仍保留真实产品回归检测能力。若证据证明它与5.1同根可共享实现，但必须保留两套独立Acceptance见证。
+- [x] 5.1 依据R57 Incident定位并修复并行axnet测试共享进程级`SOCKET_SET`/`LISTEN_TABLE`产生的陈旧handle、hashbrown断言和SIGSEGV/SIGABRT。WHY 是当前并行full suite会制造假RED且存在host测试进程内存不安全，不能作为自动资格的可信前置；HOW 是先保持现有失败子集和Cycle 000产品对照建立确定性RED/归因，再优先把socket registry、listener table和fault sink改为per-test实例注入，只有能覆盖全部读写方时才允许统一串行边界；EXPECTED 是既有并行失败子集、add/remove/iterate churn和ordinary full suite重复运行均无invalid handle、panic或进程信号，同时产品static singleton、handle生命周期和锁序不变。若根因要求修改产品socket语义、PollSet容量、scheduler或reset/cancellation，停止返回Plan。完成于 Iteration 006 Cycles `000-initial`/`001-rework`（2026-08-27）：直接socket/listener context、accept child继承、fixture-paired deferred Service/SocketSet、TCP/UDP deferred Drop与等值handle local drain均闭合；test-only TCP state seed不进入normal产品图，测试图只新增`test-seeds`。focused/regression两profile各×100、ordinary 371/371 ×3、diagnostics 393/393 ×3通过；Cycle 001 Review `accepted`。
+- [x] 5.2 将qemu-diagnostics的`reclaim_hold_drains_to_real_driver_full_without_observing_again`单独归因并消除flake，不预设其与Task 5.1同根。WHY 是该测试隔离运行恒过、并行full suite偶发失败，可能是diagnostic state、fake clock、telemetry或其他全局读写污染；HOW 是先用读写方矩阵和并行最小复现确定共享边，再优先注入每test独立`DiagnosticState`/clock/telemetry依赖，禁止通过skip、ignore、无限重跑或仅把full suite改为串行掩盖；EXPECTED 是ordinary和qemu-diagnostics默认并行full suites及focused交错重复稳定通过，失败时仍保留真实产品回归检测能力。若证据证明它与5.1同根可共享实现，但必须保留两套独立Acceptance见证。完成于 Iteration 006 Cycle `000-initial`（2026-08-27）：每 fixture 独立 `DiagTestClock` 挂到 Service 与 Rx future，目标测试与全部 diag/hold/deadline 测试脱离 `TEST_NOW`/`SERIAL`；two-clock/interleave ×100、目标 focused ×100、deadline 兄弟集 ×60 全过，diagnostics full ×3 384/384，Act Response 见同上。
 
 ## 6. 自动集成资格
 
@@ -144,10 +144,10 @@
 
 ## Current Cycle
 
-- Current Iteration: `006-axnet-host-test-isolation`
+- Current Iteration: `007-automatic-integration-qualification`
 - Cycle: `000-initial.md`
 - Persisted Evidence: none
-- Previous Cycle: Iteration 005 `002-replan.md` Act `reported`，Plan Review `accepted`；validator与静态probe构造边界已闭合。
-- Gate 2: `000-initial.md` 技术检查项 PASS；Plan status `draft`，等待用户审计和明确批准，未授权 `openspec-act`。
-- Initial scope: Tasks 5.1-5.2；以per-test socket/listener context和diagnostic fixture clock消除R57共享状态前置条件，产品singleton与语义不变。
-- Deferred Iterations: 007 Task 6.1（自动资格）；008 Tasks 7.1-7.2（QEMU验收）。不得在本Iteration夹带全量产品资格或QEMU runtime。
+- Previous Cycle: Iteration 006 `001-rework.md` Act `reported`，Plan Review `accepted`；Tasks 5.1-5.2完成，host default-parallel Gate可信。
+- Gate 2: `000-initial.md` 技术检查项 PASS；Plan status `draft`，等待用户审计和明确批准，未授权`openspec-act`。
+- Initial scope: Task 6.1；运行自动功能/ownership/build/format/OpenSpec/full diff Gates并重建当前工作树匹配的QEMU与probe artifacts；不启动QEMU runtime。
+- Deferred Iterations: 008 Tasks 7.1-7.2（single-hart QEMU验收）。自动Gate任一失败都阻止进入runtime。

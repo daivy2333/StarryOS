@@ -14,7 +14,7 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET, consts::LISTEN_QUEUE_SIZE, readiness::ReadinessBridge, service::STACK_STAGE_BUDGET,
+    consts::LISTEN_QUEUE_SIZE, readiness::ReadinessBridge, service::STACK_STAGE_BUDGET,
     tcp::new_tcp_socket,
 };
 
@@ -420,20 +420,11 @@ impl ListenTable {
         Ok(())
     }
 
+    /// Registers a listener whose hidden sockets live in the caller-owned
+    /// `SocketSet`. Production callers pass the global registry (via
+    /// `TcpSocket::self.sockets()`); test fixtures pass their own registry,
+    /// so Task 5.1 parallel host tests never touch the process-global set.
     pub fn listen(
-        &self,
-        listen_endpoint: IpListenEndpoint,
-        accept: Arc<ReadinessBridge>,
-    ) -> AxResult {
-        let mut sockets = SOCKET_SET.inner.lock();
-        self.listen_to(listen_endpoint, accept, &mut sockets)
-    }
-
-    /// Test-only seam: registers a listener whose hidden sockets live in the
-    /// caller-owned `SocketSet` instead of the production global, so a
-    /// full-chain witness can drive `reconcile` over the injected set.
-    #[cfg(test)]
-    pub(crate) fn listen_with(
         &self,
         listen_endpoint: IpListenEndpoint,
         accept: Arc<ReadinessBridge>,
@@ -442,22 +433,10 @@ impl ListenTable {
         self.listen_to(listen_endpoint, accept, sockets)
     }
 
-    pub fn unlisten(&self, port: u16) {
+    /// Unregisters a listener whose hidden sockets live in the caller-owned
+    /// `SocketSet` (see [`Self::listen`]).
+    pub fn unlisten(&self, port: u16, sockets: &mut SocketSet<'_>) {
         debug!("TCP socket unlisten on {}", port);
-        let mut sockets = SOCKET_SET.inner.lock();
-        if let Some(entry) = self.tcp[port as usize].lock().take() {
-            entry.cleanup(&mut sockets);
-        }
-        drop(sockets);
-        self.active_ports.lock().retain(|&active| active != port);
-        self.structure_generation.fetch_add(1, Ordering::Release);
-    }
-
-    /// Test-only seam: unregisters a listener whose hidden sockets live in the
-    /// caller-owned `SocketSet` instead of the production global, mirroring
-    /// [`Self::listen_with`].
-    #[cfg(test)]
-    pub(crate) fn unlisten_with(&self, port: u16, sockets: &mut SocketSet<'_>) {
         if let Some(entry) = self.tcp[port as usize].lock().take() {
             entry.cleanup(sockets);
         }
@@ -1062,14 +1041,14 @@ mod tests {
             assert!(close_idle(&table, 18303, &mut sockets));
             assert_eq!(table.test_pending_head_signals(), 1);
 
-            table.unlisten_with(18303, &mut sockets);
+            table.unlisten(18303, &mut sockets);
             assert!(!table.consume_head_signal(&mut sockets));
             assert_eq!(table.test_pending_head_signals(), 0);
             assert_eq!(sockets.iter().count(), 0, "cleanup removed all handles");
 
             let accept = Arc::new(ReadinessBridge::new());
             table
-                .listen_with(endpoint(18303), accept, &mut sockets)
+                .listen(endpoint(18303), accept, &mut sockets)
                 .expect("re-listen after stale signal");
             assert!(table.test_idle_is_some(18303));
         }
@@ -1781,9 +1760,7 @@ mod tests {
             // hidden socket. The transition must be reconciled by the running
             // sweep before it parks.
             let accept = Arc::new(ReadinessBridge::new());
-            table
-                .listen_with(endpoint(18212), accept, &mut sockets)
-                .unwrap();
+            table.listen(endpoint(18212), accept, &mut sockets).unwrap();
             assert!(close_idle(&table, 18212, &mut sockets));
 
             let _ = table.reconcile(&mut sockets, true);
@@ -1875,7 +1852,7 @@ mod tests {
             assert!(first.sweep_incomplete);
 
             // Remove the second listener mid-sweep.
-            table.unlisten_with(18214, &mut sockets);
+            table.unlisten(18214, &mut sockets);
 
             let mut rounds = 0usize;
             loop {

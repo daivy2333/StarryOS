@@ -831,7 +831,8 @@ pub(crate) fn diagnostic_control_shared(
             ServiceGuard::Injected(mutex.try_lock().ok_or(DevError::ResourceBusy)?)
         }
     };
-    guard.diag_control(op, lease_ms, crate::diag::diag_now())?;
+    let now = guard.diag_now();
+    guard.diag_control(op, lease_ms, now)?;
     drop(guard);
     notify.publish_queue_work();
     Ok(())
@@ -860,6 +861,11 @@ pub(crate) struct RxRxFuture {
     /// lease decides whether to remain held and which deadline is rearmed.
     #[cfg(feature = "qemu-diagnostics")]
     lease_deadline: Option<u64>,
+    /// Task 5.2 (Iteration 006): per-test fixture clock shared with the
+    /// injected Service. `lease_deadline` decisions read this when attached;
+    /// production never sets it (wall clock).
+    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    diag_test_clock: Option<crate::diag::DiagTestClock>,
     /// C4: axtask timer that wakes the queue owner at `lease_deadline`.
     /// Production only; host tests drive the fake clock and re-poll instead.
     #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -1231,6 +1237,19 @@ impl RxRxFuture {
         }
     }
 
+    /// The clock used for lease-deadline decisions: the attached per-test
+    /// fixture clock when present, else `diag::diag_now()`.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn diag_now(&self) -> u64 {
+        #[cfg(test)]
+        {
+            if let Some(clock) = self.diag_test_clock {
+                return clock.load();
+            }
+        }
+        crate::diag::diag_now()
+    }
+
     /// C4: cancels any armed lease deadline and its timer.
     #[cfg(feature = "qemu-diagnostics")]
     fn cancel_lease_deadline(&mut self) {
@@ -1254,7 +1273,7 @@ impl RxRxFuture {
     /// whether to remain held and which deadline to rearm.
     #[cfg(feature = "qemu-diagnostics")]
     fn arm_lease_deadline(&mut self, cx: &mut Context<'_>, deadline: u64) {
-        if deadline == 0 || crate::diag::diag_now() >= deadline {
+        if deadline == 0 || self.diag_now() >= deadline {
             self.lease_deadline = None;
             self.cancel_lease_timer();
             return;
@@ -1311,7 +1330,7 @@ impl RxRxFuture {
         let Some(deadline) = self.lease_deadline else {
             return;
         };
-        if crate::diag::diag_now() >= deadline {
+        if self.diag_now() >= deadline {
             self.lease_deadline = None;
             self.cancel_lease_timer();
             cx.waker().wake_by_ref();
@@ -1420,6 +1439,8 @@ fn spawn_rx_task() {
                 fault_sink: &crate::SOCKET_SET,
                 #[cfg(feature = "qemu-diagnostics")]
                 lease_deadline: None,
+                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                diag_test_clock: None,
                 #[cfg(all(feature = "qemu-diagnostics", not(test)))]
                 lease_timer: None,
             })
@@ -2470,6 +2491,8 @@ mod tests {
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -2494,6 +2517,8 @@ mod tests {
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -2517,17 +2542,23 @@ mod tests {
         // `Again`. This proves the probe's `tx_again > held->tx_again` FULL
         // predicate is structurally unreachable and the driver-Full witness must
         // come from the conserved ledger instead.
-        crate::diag::set_test_now(1_000_000_000_000);
-        let _serial = SERIAL.lock();
+        //
+        // Task 5.2 (Iteration 006): a per-test fixture clock (not the
+        // process-global `TEST_NOW`) drives the lease, so this test no longer
+        // needs the suite-level `SERIAL`.
+        let clock = crate::diag::DiagTestClock::new();
+        clock.store(1_000_000_000_000);
         let (mutex, counters, _stats) = leaked_service_ledger(64, true);
+        mutex.lock().attach_test_clock(clock);
         counters.slots.store(64, Ordering::Relaxed);
         {
             let mut s = mutex.lock();
-            s.diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 1500, 1_000_000_000_000)
+            s.diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 1500, clock.load())
                 .unwrap();
             assert_eq!(s.diag_hold_mode(), crate::diag::HOLD_RECLAIM);
         }
         let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.diag_test_clock = Some(clock);
 
         // Drive service rounds: reclaim is held, submit advances 32/round. The
         // round self-wakes while TX slots remain, then sleeps on the lease once
@@ -2628,6 +2659,8 @@ mod tests {
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -2890,6 +2923,8 @@ mod tests {
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -3312,6 +3347,8 @@ mod tests {
             fault_sink: sink,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -3374,6 +3411,8 @@ mod tests {
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -3597,21 +3636,24 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_submit_pauses_submit_stage_but_not_reclaim_or_rx() {
-        let _serial = SERIAL.lock();
         // The QEMU diagnostic lease is Service-owned; a hold committed under
         // the injected Service guard only ever gates this owner, so parallel
-        // siblings servicing a round stay unaffected. The fake clock is fixed
-        // because `diag_hold_tick` reads the global `diag_now()`.
-        crate::diag::set_test_now(0);
-        let t0 = crate::diag::diag_now();
+        // siblings servicing a round stay unaffected.
+        //
+        // Task 5.2 (Iteration 006): a per-test fixture clock drives the
+        // lease; no process-global `TEST_NOW` and no suite `SERIAL`.
+        let clock = crate::diag::DiagTestClock::new();
+        let t0 = clock.load();
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Consumed, RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
             vec![],
             true,
         );
+        mutex.lock().attach_test_clock(clock);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        fut.diag_test_clock = Some(clock);
         let count = Arc::new(AtomicUsize::new(0));
 
         // Commit a long-lived submit hold (well under the 2 s max lease).
@@ -3645,21 +3687,21 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_reclaim_pauses_reclaim_stage_and_again_still_backpressures() {
-        let _serial = SERIAL.lock();
         // The QEMU diagnostic lease is Service-owned; a hold committed under
         // the injected Service guard only ever gates this owner, so parallel
-        // siblings servicing a round stay unaffected. The fake clock is fixed
-        // because `diag_hold_tick` reads the global `diag_now()`.
-        crate::diag::set_test_now(0);
-        let t0 = crate::diag::diag_now();
+        // siblings servicing a round stay unaffected.
+        let clock = crate::diag::DiagTestClock::new();
+        let t0 = clock.load();
         let (mutex, _, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             vec![TxSubmitStep::Full],
             (0..4).map(|_| TxReclaimStep::Reclaimed).collect(),
             true,
         );
+        mutex.lock().attach_test_clock(clock);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        fut.diag_test_clock = Some(clock);
         let count = Arc::new(AtomicUsize::new(0));
 
         mutex
@@ -3726,11 +3768,12 @@ mod tests {
         // Service and forces the Busy / validation-error / success event
         // ordering that the public entry cannot be driven through in a host
         // test (the production global `SERVICE` is never initialized here).
-        let _serial = SERIAL.lock();
+        let clock = crate::diag::DiagTestClock::new();
         let t0 = 1_000_000_000_000u64;
-        crate::diag::set_test_now(t0);
+        clock.store(t0);
         let (mutex, _copy_calls, _stats) =
             leaked_service_tx(vec![RxStep::Empty], vec![], vec![], true);
+        mutex.lock().attach_test_clock(clock);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
 
         // Busy: while the Service is held, the shared path must return
@@ -3809,7 +3852,7 @@ mod tests {
 
         // Overflow: a checked-deadline overflow fails closed before any
         // mutation or publication; the previous committed Hold survives.
-        crate::diag::set_test_now(u64::MAX - 10);
+        clock.store(u64::MAX - 10);
         let before = notify.generation();
         let err = super::diagnostic_control_shared(
             ServiceAccess::Injected(mutex),
@@ -3835,11 +3878,12 @@ mod tests {
         // Service guard, so a control or tick ordered on either side of the
         // acquisition can only expose the complete before or after committed
         // tuple — never a synthetic no-hold, torn pair or cross-state mix.
-        let _serial = SERIAL.lock();
+        let clock = crate::diag::DiagTestClock::new();
         let t0 = 1_000_000_000_000u64;
-        crate::diag::set_test_now(t0);
+        clock.store(t0);
         let (mutex, _copy_calls, _stats) =
             leaked_service_tx(vec![RxStep::Empty], vec![], vec![], true);
+        mutex.lock().attach_test_clock(clock);
         let base = super::rx_snapshot();
 
         // Before any control: only the committed no-hold tuple is observable.
@@ -3862,7 +3906,7 @@ mod tests {
         // Tick ordered AFTER the snapshot: the snapshot at A's deadline still
         // returns the complete held tuple (it never mutates); only the queue
         // owner's guarded tick commits the after-state.
-        crate::diag::set_test_now(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
         assert_eq!(snap.hold_mode, crate::diag::HOLD_SUBMIT);
         assert_eq!(snap.auto_release_failure, 0);
@@ -3935,22 +3979,30 @@ mod tests {
         );
     }
 
-    // ── RW-1: lease deadline drives the owner wake (fake clock) ─────────
+    // ── RW-1: lease deadline drives the owner wake (fixture clock) ──────
 
-    /// Advances the fake diagnostic clock for the RW-1 tests.
+    /// Task 5.2 (Iteration 006): per-test fixture clock attached to both the
+    /// injected Service and the future it drives, so lease-deadline decisions
+    /// never share process-global `TEST_NOW` across parallel tests.
     #[cfg(feature = "qemu-diagnostics")]
-    fn fake_clock(nanos: u64) {
-        crate::diag::set_test_now(nanos);
+    fn fixture_clock(
+        mutex: &'static spin::Mutex<Service>,
+        fut: &mut RxRxFuture,
+        nanos: u64,
+    ) -> crate::diag::DiagTestClock {
+        let clock = crate::diag::DiagTestClock::new();
+        clock.store(nanos);
+        mutex.lock().attach_test_clock(clock);
+        fut.diag_test_clock = Some(clock);
+        clock
     }
 
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_submit_lease_deadline_wakes_and_auto_releases_exactly_once() {
-        let _serial = SERIAL.lock();
         // Fake clock at T0: commit a 100 ms submit hold. Without an external
         // event, the only way the owner can wake is the lease deadline.
         let t0 = 1_000_000_000_000u64;
-        fake_clock(t0);
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
@@ -3959,6 +4011,7 @@ mod tests {
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = fixture_clock(mutex, &mut fut, t0);
         let count = Arc::new(AtomicUsize::new(0));
 
         mutex
@@ -3975,14 +4028,14 @@ mod tests {
         assert!(mutex.try_lock().is_some());
 
         // Just before the deadline: still sleeping, no wake, no auto-release.
-        fake_clock(t0 + 99 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 99 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(count.load(Ordering::Relaxed), 0, "no wake before deadline");
         assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
 
         // At the deadline the fake clock elapses: the future wakes exactly
         // once and the next round auto-releases the expired hold exactly once.
-        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(count.load(Ordering::Relaxed), 1, "deadline wake fires once");
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
@@ -4002,9 +4055,7 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn held_reclaim_visible_tx_completion_does_not_busy_loop_before_deadline() {
-        let _serial = SERIAL.lock();
         let t0 = 1_000_000_000_000u64;
-        fake_clock(t0);
         // A TX completion is visible, but the reclaim stage is held: the
         // completion can never advance, so the round must not self-wake into
         // a busy loop before the lease deadline.
@@ -4017,6 +4068,7 @@ mod tests {
         control.tx_completion_visible.store(true, Ordering::Relaxed);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = fixture_clock(mutex, &mut fut, t0);
         let count = Arc::new(AtomicUsize::new(0));
 
         mutex
@@ -4038,7 +4090,7 @@ mod tests {
         }
 
         // At the deadline the hold auto-releases exactly once.
-        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
@@ -4047,9 +4099,7 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn explicit_release_invalidates_stale_deadline_and_new_lease_is_not_released() {
-        let _serial = SERIAL.lock();
         let t0 = 1_000_000_000_000u64;
-        fake_clock(t0);
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
@@ -4058,6 +4108,7 @@ mod tests {
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = fixture_clock(mutex, &mut fut, t0);
         let count = Arc::new(AtomicUsize::new(0));
 
         // Hold A with a 100 ms lease.
@@ -4093,13 +4144,13 @@ mod tests {
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
 
         // Advance past hold A's old deadline: B must stay held.
-        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
         assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
 
         // Only B's own deadline releases it, exactly once.
-        fake_clock(t0 + 200 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 200 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);

@@ -42,6 +42,11 @@ pub struct UdpSocket {
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
 
     general: GeneralOptions,
+    /// Task 5.1 (Iteration 006): test-only per-fixture registry pair.
+    /// `None` (production and default tests) routes every access through the
+    /// process-global `SOCKET_SET`.
+    #[cfg(test)]
+    test_ctx: Option<crate::wrapper::SocketTestContext>,
 }
 
 impl UdpSocket {
@@ -58,11 +63,63 @@ impl UdpSocket {
             peer_addr: RwLock::new(None),
 
             general: GeneralOptions::new(),
+            #[cfg(test)]
+            test_ctx: None,
         }
     }
 
+    /// Task 5.1 (Iteration 006): test-only constructor binding the fixture's
+    /// independent registry; the R57 global-churn race disappears because no
+    /// test fixture ever touches the process-global registry.
+    #[cfg(test)]
+    pub(crate) fn new_with_context(ctx: crate::wrapper::SocketTestContext) -> Self {
+        let (handle, readiness) = ctx.sockets.add_public(new_udp_socket());
+        Self {
+            handle,
+            readiness,
+            local_addr: RwLock::new(None),
+            peer_addr: RwLock::new(None),
+            general: GeneralOptions::new(),
+            test_ctx: Some(ctx),
+        }
+    }
+
+    /// The `SocketSetWrapper` this socket's raw smoltcp handle lives in: the
+    /// test-injected fixture context when present, else the production
+    /// singleton. Every access path routes through here so a socket never
+    /// crosses from its fixture into the global (or a neighbor's) registry.
+    fn sockets(&self) -> &'static crate::wrapper::SocketSetWrapper<'static> {
+        #[cfg(test)]
+        {
+            if let Some(ctx) = self.test_ctx {
+                return ctx.sockets;
+            }
+        }
+        &*crate::SOCKET_SET
+    }
+
+    /// The Service that owns this socket's deferred removal: the fixture's
+    /// paired local Service when a test context is present, else the
+    /// production global. Task 5.1 Cycle 001 (rework): a fixture-local
+    /// handle must be retired by the fixture's own Service - the global
+    /// runner reaps with the global socket set and would misinterpret the
+    /// handle (or collide with an equal numeric handle there). Production
+    /// sockets keep the global route. The lock discipline is unchanged: the
+    /// Drop caller holds the Service guard alone (never together with the
+    /// socket-set guard).
+    fn deferred_service(&self) -> Option<&'static Mutex<crate::service::Service>> {
+        #[cfg(test)]
+        {
+            if let Some(ctx) = self.test_ctx {
+                return Some(ctx.service);
+            }
+        }
+        crate::SERVICE.get()
+    }
+
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
-        SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+        self.sockets()
+            .with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
     fn remote_endpoint(&self) -> AxResult<(IpEndpoint, IpAddress)> {
@@ -76,7 +133,7 @@ impl UdpSocket {
     /// fault takes precedence over the socket-local terminal.
     fn terminal_code(&self) -> u64 {
         effective_terminal_code(
-            SOCKET_SET.global_terminal_code(),
+            self.sockets().global_terminal_code(),
             self.readiness.terminal_code(),
         )
     }
@@ -270,7 +327,8 @@ impl SocketOps for UdpSocket {
 
         if !self.general.reuse_address() {
             // Check if the address is already in use
-            SOCKET_SET.bind_check(local_endpoint.addr, local_endpoint.port)?;
+            self.sockets()
+                .bind_check(local_endpoint.addr, local_endpoint.port)?;
         }
 
         self.with_smol_socket(|socket| {
@@ -445,12 +503,14 @@ impl Drop for UdpSocket {
         // `has_pending_tx()` observes actual occupancy; `can_send()`
         // (capacity-not-full) would misclassify an empty buffer as queued.
         let has_queued_tx = {
-            let sockets = crate::SOCKET_SET.inner.lock();
+            let sockets = self.sockets().inner.lock();
             sockets.get::<smol::Socket>(self.handle).has_pending_tx()
         };
         if has_queued_tx {
-            if let Some(service) = crate::SERVICE.get() {
-                crate::SOCKET_SET.retire_public(self.handle);
+            // The Service owning this handle's queued-TX retirement: the
+            // socket's own context (test fixture) or the production global.
+            if let Some(service) = self.deferred_service() {
+                self.sockets().retire_public(self.handle);
                 service
                     .lock()
                     .queue_deferred_removal(self.handle, crate::service::CloseKind::UdpQueued);
@@ -462,7 +522,7 @@ impl Drop for UdpSocket {
             // pre-fix close semantics when there is no runner to dispatch).
         }
         self.shutdown(Shutdown::Both).ok();
-        SOCKET_SET.remove(self.handle);
+        self.sockets().remove(self.handle);
     }
 }
 
@@ -541,10 +601,13 @@ mod tests {
     use axpoll::Pollable;
 
     use super::UdpSocket;
-    use crate::{
-        options::{Configurable, SetSocketOption},
-        readiness,
-    };
+    use crate::{readiness, wrapper::SocketTestContext};
+
+    /// Task 5.1 (Iteration 006): leaked per-test fixture; removes the R57
+    /// global `SOCKET_SET` churn prerequisite.
+    fn test_ctx() -> SocketTestContext {
+        SocketTestContext::leak_new()
+    }
 
     #[test]
     fn normal_udp_states_stay_free_of_device_err() {
@@ -561,7 +624,7 @@ mod tests {
 
     #[test]
     fn terminal_commit_surfaces_err_on_poll() {
-        let socket = UdpSocket::new();
+        let socket = UdpSocket::new_with_context(test_ctx());
         assert!(Pollable::poll(&socket).is_empty());
 
         socket
@@ -574,7 +637,7 @@ mod tests {
 
     #[test]
     fn terminal_guard_maps_committed_codes_for_udp_io() {
-        let socket = UdpSocket::new();
+        let socket = UdpSocket::new_with_context(test_ctx());
         assert_eq!(socket.observe_terminal_error(), None);
 
         socket
@@ -617,7 +680,7 @@ mod tests {
 
     #[test]
     fn fatal_between_attempts_makes_second_attempt_return_stable_error() {
-        let socket = UdpSocket::new();
+        let socket = UdpSocket::new_with_context(test_ctx());
         SocketOps::bind(
             &socket,
             SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9061)),
@@ -644,7 +707,7 @@ mod tests {
 
     #[test]
     fn send_entry_reports_preexisting_terminal_before_address_work() {
-        let socket = UdpSocket::new(); // unbound: address work would fail or bind implicitly
+        let socket = UdpSocket::new_with_context(test_ctx()); // unbound
         socket.readiness.commit_terminal(readiness::TERMINAL_IO);
 
         let err = SocketOps::send(&socket, &b"ab"[..], SendOptions::default()).unwrap_err();
@@ -657,7 +720,7 @@ mod tests {
 
     #[test]
     fn connect_entry_reports_preexisting_terminal_before_peer_commit() {
-        let socket = UdpSocket::new();
+        let socket = UdpSocket::new_with_context(test_ctx());
         socket
             .readiness
             .commit_terminal(readiness::TERMINAL_CONNECT_REFUSED);
@@ -674,6 +737,189 @@ mod tests {
         assert!(
             socket.peer_addr.write().is_none(),
             "peer endpoint must stay unset under a preexisting fatal"
+        );
+    }
+
+    // ── Task 5.1 (Iteration 006): per-test socket isolation ─────────────
+
+    #[test]
+    fn udp_fixtures_bind_the_same_ephemeral_port_and_drop_independently() {
+        for _ in 0..10u32 {
+            let ctx_a = test_ctx();
+            let ctx_b = test_ctx();
+            let a = UdpSocket::new_with_context(ctx_a);
+            let b = UdpSocket::new_with_context(ctx_b);
+            assert_eq!(a.handle, b.handle, "fresh fixtures share the start handle");
+
+            // The same numeric port binds in both independent registries.
+            SocketOps::bind(
+                &a,
+                SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 24242)),
+            )
+            .unwrap();
+            SocketOps::bind(
+                &b,
+                SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 24242)),
+            )
+            .unwrap();
+
+            // A's full public drop must not remove B's identical-numeric
+            // raw socket.
+            drop(a);
+            assert!(
+                ctx_b
+                    .sockets
+                    .inner
+                    .lock()
+                    .iter()
+                    .any(|(h, _)| h == b.handle),
+                "A dropping handle {} must not remove B's identical handle",
+                b.handle,
+            );
+            drop(b);
+            assert!(ctx_a.sockets.inner.lock().iter().next().is_none());
+            assert!(ctx_b.sockets.inner.lock().iter().next().is_none());
+        }
+    }
+
+    // ── Task 5.1 Cycle 001 (rework): fixture-local queued-TX removal ───
+
+    #[test]
+    fn udp_queued_tx_drop_enqueues_into_fixture_service() {
+        // S2: dropping a fixture UDP socket whose TX buffer still holds one
+        // undispatched datagram must enqueue into the fixture's paired
+        // Service exactly once and keep the raw handle for the local
+        // reaper; the queued datagram is not destroyed. Pre-fix RED: the
+        // Drop consults the process-global Service, tears the socket down
+        // immediately and the queued datagram is lost.
+        let ctx = test_ctx();
+        let neighbor = test_ctx();
+        let socket = UdpSocket::new_with_context(ctx);
+        let neighbor_socket = UdpSocket::new_with_context(neighbor);
+        assert_eq!(socket.handle, neighbor_socket.handle);
+        let handle = socket.handle;
+        socket.with_smol_socket(|s| {
+            s.bind(IpListenEndpoint {
+                addr: None,
+                port: 22300,
+            })
+            .unwrap();
+            s.send_slice(
+                b"queued",
+                smoltcp::socket::udp::UdpMetadata {
+                    endpoint: smoltcp::wire::IpEndpoint::new(
+                        smoltcp::wire::Ipv4Address::new(10, 0, 0, 2).into(),
+                        21235,
+                    ),
+                    local_address: Some(smoltcp::wire::Ipv4Address::new(10, 0, 0, 1).into()),
+                    meta: Default::default(),
+                },
+            )
+            .unwrap();
+        });
+
+        drop(socket);
+
+        assert_eq!(
+            ctx.service.lock().deferred_removals_len(),
+            1,
+            "the queued-TX retirement must land in the fixture's own Service"
+        );
+        assert!(ctx.sockets.inner.lock().iter().any(|(h, _)| h == handle));
+        // The neighbor's equal-numeric socket and queue are untouched.
+        assert!(
+            neighbor
+                .sockets
+                .inner
+                .lock()
+                .iter()
+                .any(|(h, _)| h == neighbor_socket.handle)
+        );
+        assert_eq!(neighbor.service.lock().deferred_removals_len(), 0);
+    }
+
+    #[test]
+    fn udp_queued_tx_local_drain_reaps_only_the_owning_fixture() {
+        // S2 + local drain: the fixture's own round dispatches the queued
+        // datagram through the fixture Router (egress to the loopback
+        // device), the reaper reclaims the raw handle exactly once, and the
+        // neighbor's equal numeric handle is untouched.
+        let ctx = test_ctx();
+        let neighbor = test_ctx();
+        let socket = UdpSocket::new_with_context(ctx);
+        let neighbor_socket = UdpSocket::new_with_context(neighbor);
+        assert_eq!(socket.handle, neighbor_socket.handle);
+        let handle = socket.handle;
+        socket.with_smol_socket(|s| {
+            s.bind(IpListenEndpoint {
+                addr: None,
+                port: 22400,
+            })
+            .unwrap();
+            s.send_slice(
+                b"queued",
+                smoltcp::socket::udp::UdpMetadata {
+                    endpoint: smoltcp::wire::IpEndpoint::new(
+                        smoltcp::wire::Ipv4Address::new(10, 0, 0, 2).into(),
+                        21236,
+                    ),
+                    local_address: Some(smoltcp::wire::Ipv4Address::new(10, 0, 0, 1).into()),
+                    meta: Default::default(),
+                },
+            )
+            .unwrap();
+        });
+
+        drop(socket);
+        assert_eq!(ctx.service.lock().deferred_removals_len(), 1);
+
+        // Runner lock order: the Service guard first, then the socket set.
+        let mut service = ctx.service.lock();
+        let mut set = ctx.sockets.inner.lock();
+        let _ = service.poll(crate::router::RxOwnerView::PollingOwned, &mut set);
+        drop(set);
+        drop(service);
+
+        assert_eq!(
+            ctx.service.lock().deferred_removals_len(),
+            0,
+            "the drained datagram retires the deferred entry exactly once"
+        );
+        assert!(!ctx.sockets.inner.lock().iter().any(|(h, _)| h == handle));
+        assert!(
+            neighbor
+                .sockets
+                .inner
+                .lock()
+                .iter()
+                .any(|(h, _)| h == neighbor_socket.handle),
+            "the neighbor's identical-numeric raw socket must survive the local drain"
+        );
+        assert_eq!(neighbor.service.lock().deferred_removals_len(), 0);
+    }
+
+    #[test]
+    fn udp_queued_tx_drop_routes_service_through_the_socket_context_in_source() {
+        // Source guard: the Drop body must never touch the global Service
+        // directly - the socket's context resolves the fixture-paired local
+        // Service first, and production sockets keep the global fallback
+        // inside `deferred_service`.
+        let src = include_str!("udp.rs");
+        let drop_start = src.find("impl Drop for UdpSocket").unwrap();
+        let drop_end = src.find("fn get_ephemeral_port").unwrap();
+        let drop_body = &src[drop_start..drop_end];
+        assert!(drop_body.contains("self.deferred_service()"));
+        assert!(
+            !drop_body.contains("crate::SERVICE"),
+            "the queued-TX Drop must resolve the Service through the socket's context"
+        );
+
+        let helper_start = src.find("fn deferred_service(&self)").unwrap();
+        let helper_end = src.find("fn with_smol_socket").unwrap();
+        let helper = &src[helper_start..helper_end];
+        assert!(
+            helper.find("ctx.service").unwrap() < helper.find("crate::SERVICE").unwrap(),
+            "the fixture branch must precede the global fallback"
         );
     }
 }
