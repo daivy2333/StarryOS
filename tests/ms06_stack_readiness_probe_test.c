@@ -316,6 +316,36 @@ static void test_exact_trigger_units_matrix(void)
     assert(!ms06_trigger_units_valid(0, 64));
 }
 
+/* ── Task 7.3 witness repairs ───────────────────────────────────────── */
+
+static void test_listener_reply_matches_byte_width(void)
+{
+    /* The wire carries one byte: a valid reply must match under byte
+     * semantics, never the 32-bit integer promotion of `~ident` that made
+     * every correct reply a runtime false negative. */
+    for (unsigned ident = 1; ident <= 4; ++ident) {
+        unsigned char reply = (unsigned char)~ident;
+        assert(ms06_listener_reply_matches(ident, reply));
+        assert(!ms06_listener_reply_matches(ident, (unsigned char)(reply ^ 0x5a)));
+    }
+    /* A neighbouring identity's reply must not be accepted. */
+    assert(!ms06_listener_reply_matches(1u, (unsigned char)~2u));
+}
+
+static void test_peer_fin_eof_valid_contract(void)
+{
+    /* Graceful peer FIN: IN|RDHUP readiness without a device fault and two
+     * stable zero-length reads. */
+    assert(ms06_peer_fin_eof_valid(MS06_EV_IN | MS06_EV_RDHUP, 0, 0));
+    /* A normal close surfaced as a device fault is never a valid witness. */
+    assert(!ms06_peer_fin_eof_valid(MS06_EV_IN | MS06_EV_RDHUP | MS06_EV_ERR, 0, 0));
+    /* Readiness without the EOF family is not a peer-FIN observation. */
+    assert(!ms06_peer_fin_eof_valid(MS06_EV_IN, 0, 0));
+    /* Unstable EOF (nonzero or failed read) is not a graceful close. */
+    assert(!ms06_peer_fin_eof_valid(MS06_EV_IN | MS06_EV_RDHUP, 0, 1));
+    assert(!ms06_peer_fin_eof_valid(MS06_EV_IN | MS06_EV_RDHUP, -1, 0));
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--print-cases") == 0) {
@@ -350,6 +380,8 @@ int main(int argc, char **argv)
     test_exact_mode_requires_epoll();
     test_exact_arms_complete_matrix();
     test_exact_trigger_units_matrix();
-    puts("ms06 probe decision tests: 26 passed");
+    test_listener_reply_matches_byte_width();
+    test_peer_fin_eof_valid_contract();
+    puts("ms06 probe decision tests: 28 passed");
     return 0;
 }

@@ -308,6 +308,24 @@ int ms06_trigger_units_valid(uint32_t units, uint32_t n_waiters)
     return units == n_waiters;
 }
 
+/* Listener identity echo: the wire carries one byte, so identity and reply
+ * are compared with unsigned-char semantics. Integer promotion of `~ident`
+ * to 32 bits made every valid reply a runtime false negative. */
+int ms06_listener_reply_matches(unsigned ident, unsigned char echo)
+{
+    return echo == (unsigned char)~ident;
+}
+
+/* Peer FIN closes only the receive half; the still-open local write half is
+ * not required to reach EPIPE. A valid graceful-close observation is
+ * IN|RDHUP readiness without device ERR plus two stable zero-length reads. */
+int ms06_peer_fin_eof_valid(uint32_t events, int recv1, int recv2)
+{
+    if ((events & MS06_EV_ERR) != 0) return 0;
+    if ((events & (MS06_EV_IN | MS06_EV_RDHUP)) != (MS06_EV_IN | MS06_EV_RDHUP)) return 0;
+    return recv1 == 0 && recv2 == 0;
+}
+
 /* ── Guest payload (excluded from the host seam harness) ────────────── */
 
 #ifndef MS06_STACK_READINESS_PROBE_TESTING
@@ -750,7 +768,8 @@ static int run_listener(void)
                 close(srv); close(up[0]);
                 if (send(c, &ident, 1, 0) != 1) _exit(2);
                 if (write_full(up[1], "C", 1) < 0) _exit(2);
-                if (recv(c, &echo, 1, 0) != 1 || (unsigned)(unsigned char)echo != ~ident) {
+                if (recv(c, &echo, 1, 0) != 1 ||
+                    !ms06_listener_reply_matches(ident, (unsigned char)echo)) {
                     _exit(3);
                 }
                 _exit(0);
@@ -1232,29 +1251,15 @@ static int run_close_error(void)
         r.events = ev;
 
         /* A graceful peer close is EOF-family readiness with stable zero
-         * reads and eventually-stable EPIPE writes. POLLERR here would mean
-         * a normal close was misclassified as a device fault. */
+         * reads; the still-open local write half is not required to reach
+         * EPIPE (peer FIN closes only the receive half). POLLERR here would
+         * mean a normal close was misclassified as a device fault. */
         char b;
-        if (recv(cfd, &b, 1, 0) != 0 || recv(cfd, &b, 1, 0) != 0) {
-            r.status = MS06_ST_IO_ERROR; /* EOF not stable across attempts */
+        int r1 = recv(cfd, &b, 1, 0);
+        int r2 = recv(cfd, &b, 1, 0);
+        if (!ms06_peer_fin_eof_valid(ev, r1, r2)) {
+            r.status = (r1 != 0 || r2 != 0) ? MS06_ST_IO_ERROR : MS06_ST_EVENT_MISMATCH;
             r.err = errno;
-            break;
-        }
-
-        int saw_epipe = 0;
-        for (int attempt = 0; attempt < 8 && !saw_epipe; ++attempt) {
-            if (ms06_deadline_expired(t0, now_us(), dl)) break;
-            ssize_t n = send(cfd, "Z", 1, 0);
-            if (n < 0 && errno == EPIPE) saw_epipe = 1;
-        }
-        if (!saw_epipe) {
-            r.status = MS06_ST_IO_ERROR; /* post-EOF write never reached EPIPE */
-            break;
-        }
-        errno = 0;
-        (void)send(cfd, "Z", 1, 0);
-        if (errno != EPIPE) {
-            r.status = MS06_ST_EVENT_MISMATCH; /* post-close error not stable */
             break;
         }
         if (recv(cfd, &b, 1, MSG_PEEK | MSG_DONTWAIT) != 0 &&

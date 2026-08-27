@@ -27,6 +27,7 @@ message names the first decisive difference.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 START = "MS06_STACK_READINESS_START"
@@ -34,6 +35,7 @@ END = "MS06_STACK_READINESS_END"
 REVISION_PREFIX = "MS06_REVISION:"
 ENVIRONMENT_PREFIX = "MS06_ENVIRONMENT:"
 EXIT_PREFIX = "MS06_HARNESS_EXIT:"
+FOREIGN_WORKLOAD_START = "MS01_SOCKET_BASELINE_START"
 
 # The exact 12 application-visible readiness cases of the MS06 probe, in the
 # order the probe must print them. There is no aggregate PASS: every case has
@@ -58,6 +60,17 @@ class InvalidTranscript(Exception):
     """Raised with the first decisive difference found in a transcript."""
 
 
+ANSI_CSI_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"          # CSI: ESC [ params/intermediates final
+    r"|\x1b[]PX^_][^\x1b\x07]*(?:\x07|\x1b\\)"  # OSC/APC/DCS/PM/SOS ... BEL|ST
+    r"|\x1b[@-_]"                       # other two-char ESC sequences
+)
+
+
+def _normalize(raw_line: str) -> str:
+    return ANSI_CSI_RE.sub("", raw_line).strip()
+
+
 def validate_output(
     output: str,
     *,
@@ -73,7 +86,7 @@ def validate_output(
     start_at: int | None = None
     end_at: int | None = None
     for index, raw_line in enumerate(lines):
-        line = raw_line.strip()
+        line = _normalize(raw_line)
         if line == START:
             if start_at is not None:
                 raise InvalidTranscript("start marker is duplicated")
@@ -90,7 +103,7 @@ def validate_output(
         raise InvalidTranscript("end marker appears before the start marker")
 
     for raw_line in lines[:start_at]:
-        line = raw_line.strip()
+        line = _normalize(raw_line)
         if line.startswith(("PASS:", "FAIL:", "MS06_")):
             raise InvalidTranscript(
                 f"protocol marker before the witness start marker: {line!r}"
@@ -106,7 +119,7 @@ def validate_output(
     phase = 0  # 0: awaiting REVISION; 1: awaiting ENVIRONMENT; 2+: awaiting PASS n
 
     for raw_line in body:
-        line = raw_line.strip()
+        line = _normalize(raw_line)
         if line.startswith("PASS:"):
             name = line[len("PASS:"):].strip()
             if phase < 2:
@@ -173,14 +186,31 @@ def validate_output(
         )
 
     exits: list[str] = []
+    foreign_tail = False
     for raw_line in tail:
-        line = raw_line.strip()
-        if line.startswith(EXIT_PREFIX):
+        line = _normalize(raw_line)
+        if line == FOREIGN_WORKLOAD_START:
+            if exits != ["0"]:
+                raise InvalidTranscript(
+                    "foreign workload started before the successful harness exit"
+                )
+            foreign_tail = True
+        elif line.startswith(EXIT_PREFIX):
+            if foreign_tail:
+                raise InvalidTranscript(
+                    f"protocol marker after foreign workload start: {line!r}"
+                )
             exits.append(line[len(EXIT_PREFIX):].strip())
-        elif line.startswith(("PASS:", "FAIL:", "MS06_")):
+        elif line.startswith(("FAIL:", "MS06_")):
             raise InvalidTranscript(
                 f"protocol marker after the end marker: {line!r}"
             )
+        elif line.startswith("PASS:"):
+            name = line[len("PASS:"):].strip()
+            if not foreign_tail or name in EXPECTED_CASES:
+                raise InvalidTranscript(
+                    f"protocol marker after the end marker: {line!r}"
+                )
 
     if not exits:
         raise InvalidTranscript("harness exit marker is missing")
@@ -405,6 +435,49 @@ def self_test() -> None:
         END,
     ])
     rejected(exit_before_end)
+
+    # Raw serial transcripts carry ANSI/CSI transport decoration (script
+    # records terminal control sequences). The validator must strip ONLY these
+    # control sequences — never printable text — and then run the same strict
+    # whole-line grammar. (Plan Review Cycle 000 gap: raw log returned
+    # "start marker is missing" because an ANSI reset prefix sits on the START
+    # physical line.)
+    ansi_good = _transcript().replace(
+        START + "\n", "\x1b[?2004h\x1b[?25l" + START + "\x1b[0m\n", 1
+    )
+    ansi_good = ansi_good.replace(
+        "PASS: tcp-timer\n", "\x1b[0mPASS: tcp-timer\n\x1b[0m", 1
+    )
+    validate_output(ansi_good)
+    validate_output(ansi_good, expect_revision="r0", expect_environment="qemu-virt")
+    # Printable prefix/suffix is never stripped: only ESC control sequences are.
+    rejected(_transcript().replace(START + "\n", "x" + START + "\n", 1))
+    rejected(_transcript().replace(END + "\n", END + "x\n", 1))
+
+    # Foreign workloads in the same manual session run after the MS06 witness,
+    # but only an explicit foreign-workload boundary may relax PASS handling.
+    # Before that boundary an unknown PASS remains an invalid MS06 marker.
+    rejected(_transcript().replace(
+        END + "\n", END + "\nPASS: unknown-ms06-case\n", 1
+    ))
+    rejected(_transcript().replace(
+        END + "\n", END + "\nMS01_SOCKET_BASELINE_START\n", 1
+    ))
+    foreign_tail = _transcript().replace(
+        f"{EXIT_PREFIX}0\n",
+        f"{EXIT_PREFIX}0\nMS01_SOCKET_BASELINE_START\nPASS: tcp-accept\n"
+        "PASS: bind-close-cleanup\nMS01_SOCKET_BASELINE_END\n"
+        "MS04 PASS mode=snapshot\nMS05 PASS mode=flush\n",
+        1,
+    )
+    validate_output(foreign_tail)
+    validate_output(foreign_tail, expect_revision="r0", expect_environment="qemu-virt")
+    rejected(_transcript().replace(END + "\n", END + "\nPASS: tcp-timer\n", 1))
+    rejected(foreign_tail.replace(
+        "MS01_SOCKET_BASELINE_START\n",
+        "MS01_SOCKET_BASELINE_START\nPASS: tcp-timer\n",
+        1,
+    ))
 
     print("PASS: ms06-validator-self-test")
 

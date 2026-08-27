@@ -239,13 +239,15 @@ smoltcp方向waker只提供状态变化后的recheck机会，不承载连接错�
 
 **Decision**：Iteration内先建立确定性host/model tests，再运行单hartQEMU。新增MS06 guest probe覆盖无需主动poll的timer/traffic progress、poll/select/epoll多waiter、64/65 overflow、listener、close/error和fixed deadline；复用MS01 socket payload与MS04/MS05 probe模式做回归，不扩建I16 benchmark。
 
+guest probe 的判据必须与公开 ABI 和 TCP 状态语义一致。listener 身份回包按线上的单字节宽度比较；peer FIN 证明 receive-half EOF、`IN|RDHUP` 和无设备 `ERR`，不得要求仍开放的本地 write half 立即或最终返回 `EPIPE`。完整 `script` 串口可能包含 ANSI/CSI 终端控制序列；validator 只可剥离控制序列后识别完整物理行，仍须拒绝带有可打印前后缀、重复、乱序或缺失的 protocol marker。
+
 `poll`、`select` 和 `epoll_wait` 的 replacement wake 在内核 `poll_io` 中只触发 readiness recheck；状态仍未 ready 时 syscall 重新注册并保持 Pending，不向用户态返回 empty event。因此 guest 不得等待 pre-data replacement notification。exact 64/65 场景改用每 waiter 独立 epoll instance：worker 完成同步 `epoll_ctl(ADD)` 后报告 arm，parent 收齐精确 64/65 个 arm 才发布与 waiter 数相同的 consumable units。第65次同步注册触发既有PollSet wake-on-replacement；host/model与 `Epoll::consume(NoEvent) → register_waker_only()` 证明no-event recheck/re-register，guest证明所有distinct waiter最终各完成一次。两类证据共同闭合容量边界，不把内核内部wake伪装为用户态事件。
 
 QEMU runtime原始命令和marker写入Act Response；本计划默认 `Persisted Evidence: none`，除非执行时发现运行不可低成本复现并经Plan重新批准。任何历史artifact只作基线参考，不能替代当前revision结果。
 
 **Reason**：host tests能穷举generation和budget交错，但不能证明axtask timer、VirtIO device-model IRQ、queue task、runner和syscall waiter的完整调度链。反过来，单次QEMU成功不能穷举lost-wakeup。
 
-**Impact**：验证分成三个后续Iteration。guest witness先独立闭合marker协议、核心socket场景、普通poll/select/epoll multiwaiter，以及epoll同步注册的64/65容量场景；自动资格随后运行ordinary/qemu-diagnostics axnet tests、kernel QEMU check、受支持root feature checks、probe self-tests、fmt、strict OpenSpec、source assertions和full diff review；最后才运行人工单hartQEMU。runtime结论只覆盖单hartQEMU。
+**Impact**：验证分成三个后续Iteration。guest witness先独立闭合marker协议、核心socket场景、普通poll/select/epoll multiwaiter，以及epoll同步注册的64/65容量场景；自动资格随后运行ordinary/qemu-diagnostics axnet tests、kernel QEMU check、受支持root feature checks、probe self-tests、fmt、strict OpenSpec、source assertions和full diff review；最后才运行人工单hartQEMU。runtime反例若证明 witness 判据无效，必须先修正host seam、validator和guest probe并重新生成artifact，不能把假阴性归为产品缺陷。runtime结论只覆盖单hartQEMU。
 
 **Alternatives**：
 

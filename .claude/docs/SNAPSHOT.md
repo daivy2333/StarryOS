@@ -1,10 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-26
-> Revision: `1ea51427d8692f5a12b87a0403b940e73d43fed3`
+> Updated: 2026-08-27
+> Revision: `1d0313ad8d0f36d918d1a101dd0ceda5c2ba336b`
 > Branch: `net-k3`
-> Worktree: modified（改动已暂存未提交：MS06 迭代 004 任务 3.1 实现与工程文档编辑）
+> Worktree: modified（MS06 最终实现、验证脚本、Evidence 与收尾文档尚未提交）
 
 ## 项目身份
 
@@ -37,9 +37,9 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 - QEMU virt 是仓库内可配置的虚拟平台交付形态。
 - QEMU virt 的单 hart VirtIO-MMIO 已具备 IRQ 唤醒、唯一双向 queue service、EVENT_IDX
   通知控制、固定容量 RX/TX packet slots、typed backpressure、TX completion/reclaim 和
-  ticketed C4 flush，并在此之上建立了常驻 stack runner 与 per-socket readiness bridge
-  （多 waiter、listener accept bridge、terminal fault 发布）的实现基线；reset、SMP、
-  真板与性能资格，以及 MS06 最终单 hart 应用可见验收不在该结论内。
+  ticketed C4 flush，并在此之上完成常驻 stack runner 与 per-socket readiness bridge
+  （多 waiter、listener accept bridge、terminal fault 发布）。MS06 单 hart QEMU 应用可见手工验收已接收；
+  host/QEMU 进程级留档不完整，由用户明确接受该证据风险。reset、SMP、真板与性能资格不在该结论内。
 - Lichee RV Dock D1 与 VisionFive 2 是仓库覆盖的 RISC-V 真实平台形态。
 - 当前异步 NIC 的最终目标板尚未在仓库中登记；VisionFive 2 支持和 ArceOS DWMAC 经验不构成目标板选择。
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2` 与 `smp` 等产品组装入口。
@@ -48,8 +48,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `1ea51427d8692f5a12b87a0403b940e73d43fed3`，与 `origin/net-k3` 同步（无未推送 commit）。
-- 工作树存在已暂存未提交的改动：MS06 迭代 004 任务 3.1 的实现（`crates/axnet`）与工程文档编辑；详细工作状态见 [`tasks.md`](tasks.md) 与活跃 change。
+- 当前 revision 为 `1d0313ad8d0f36d918d1a101dd0ceda5c2ba336b`，相对 `origin/net-k3` ahead 3。
+- 工作树存在尚未提交的 MS06 最终实现、验证脚本、Evidence、Runbook 与收尾文档；详细里程碑状态见 [`tasks.md`](tasks.md)。
 
 ## 权威入口
 

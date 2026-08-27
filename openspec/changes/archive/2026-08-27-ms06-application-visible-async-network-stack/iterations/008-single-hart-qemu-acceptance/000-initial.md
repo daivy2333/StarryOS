@@ -2,8 +2,8 @@
 
 ## Plan Context
 
-- Status: draft
-- Approval: pending；本Cycle尚未获得`openspec-act`授权
+- Status: ready
+- Approval: approved；用户于2026-08-27 回复"更新gate状态，开始实施"，显式批准 Gate 2 并授权本 Cycle 的 `openspec-act` 执行
 - Iteration: 008-single-hart-qemu-acceptance
 - Cycle: 000-initial
 - Cycle Type: initial
@@ -218,7 +218,7 @@ R56的15557。完整串口先保存在`/tmp`供Act/Plan审查；只有符合公�
 | Traceability | PASS | R1-R7与MS01/MS04/MS05边界映射到两task和六项Acceptance |
 | Verification | PASS | full transcript、validator、host results、artifact identity与diff Review完整 |
 
-Gate 2技术检查项PASS；状态保持`draft`，等待用户审计和明确批准。未授权`openspec-act`。
+Gate 2技术检查项PASS；用户于2026-08-27 显式批准（原话："更新gate状态，开始实施"），Plan Context 状态更新为 `ready`，授权执行本 Cycle。
 
 **Persisted Evidence**
 
@@ -246,87 +246,186 @@ Gate 2技术检查项PASS；状态保持`draft`，等待用户审计和明确批
 
 ## Act Response
 
-- Status: pending
+- Status: blocked
 
 **Implemented**
 
-None yet.
+- 按用户 2026-08-27 显式批准（原话："更新gate状态，开始实施"）将本 Cycle Plan Context 由
+  `draft` 更新为 `ready` 并登记 Approval；Gate 2 段落同步记录授权。
+- 建立本 Cycle EV 路径并采集 required Evidence（README + `qemu-runtime-markers.md` +
+  `host-runtime-results.md`）：冻结 artifact 身份、MS06/MS01/MS04/MS05 决定性 marker、
+  MS04/MS05 host stimulus 双边结果均已落盘。
+- 校验 `scripts/ms06-qemu-validate.py` 新鲜可用（self-test PASS），并对用户会话的 MS06
+  transcript 执行 validator 判定（FAIL，见 Verification Evidence）。
+- 按用户指示（原话："更新一下runbook……改成没有调试信息的，也就是make run就行了"，且
+  "不用纠结权限问题，直接更新runbook就行，我给暂时你豁免这个权限"）将手工 QEMU 串口采集
+  启动命令由裸 `qemu-system-riscv64 ...`（info 级调试刷屏）改为 `make run`（默认
+  `LOG=warn`，无调试信息）：R44 `qemu-network-testing.md` 启动段与 R58
+  `qemu-evidence-capture.md` 录制段已同步更新，并注明需要 info/debug 分层诊断时按 R55
+  显式构建诊断镜像（不当事采基线）。
 
 **Changed Files and Symbols**
 
-None expected outside Act Response and required Evidence.
+- `iterations/008-single-hart-qemu-acceptance/000-initial.md`：Plan Context Status/Approval、
+  Gate 2 段落、本 Act Response。
+- `evidence/008-single-hart-qemu-acceptance/000-initial/`：`README.md`（更新 Result）、
+  `qemu-runtime-markers.md`、`host-runtime-results.md`（新建）。
+- `.claude/runbooks/qemu-network-testing.md`（R44）、`.claude/runbooks/qemu-evidence-capture.md`
+  （R58）：QEMU 串口采集启动命令改为 `make ARCH=riscv64 run`（LOG=warn，无 info 调试输出），
+  参数表/要点同步改写。
 
 **Deviations from Plan**
 
-None yet.
-
-**Blocker Handoff**
-
-None yet.
+- 用户明确要求把 Runbook 采集命令改为 `make run`；该运行同时变更了 QEMU 启动方式，但属于
+  文档层运维调整（R44/R58），不改变本 Cycle 产品、测试、marker 协议或 artifact 追踪方式；
+  用户已显式授权并豁免权限。用户运行 `make run` 导致 boot bin mtime 更新（bytes 不变，
+  probe 四件未变），已记录于 EV README 与 markers 的 Artifact 身份表。
+- 用户会话的执行顺序越过 Plan 的"S1→S2→S3"串行约定（部分 host stimulus 晚于 guest 命令
+  启动），造成 MS05 数次 `reason=handshake` 重跑；均按 R56 归类为操作顺序问题，重跑后
+  闭合。首失败层按 MS06 FAIL 记录。
 
 **Blocker Resolution**
 
-None yet.
+- 原阻塞（用户手工 QEMU 会话未执行、required Evidence 不可采集）已解决：用户于 2026-08-27
+  完成 single-hart QEMU 会话并提供完整转录与 host stimulus 结果；随后按用户指示更新
+  R44/R58 Runbook（make run），并填写本 Act Response。该阻塞已解除。
+
+**Blocker Handoff**
+
+- Task/Step/Gate：Task 7.1 / Phase 3 EXECUTE / Gate 5（runtime acceptance）。
+- Plan 预期：MS06 probe 12 个 case 全部唯一 PASS，`MS06_HARNESS_EXIT: 0`，validator exit 0。
+- 实际情况：MS06 转录 10/12 PASS，2 个 FAIL——`listener backlog connections not accepted
+  uniquely inside deadline`、`close-error graceful close misclassified or unstable after
+  EOF`；`MS06_HARNESS_EXIT` 未发布（转录缺口），validator 决定性输出 exit 1。Task 7.1 的
+  GREEN 条件**未达成**，Acceptance 1 无法满足。
+- 影响：本 Cycle 是 change 的最终逻辑 Iteration；MS06 两个既有产品路径的 runtime 反例
+  阻止单 hart 应用可见验收收口。MS01 14/14、MS04 4/4、MS05 6/6 及 host 双边闭合全部 PASS，
+  该兼容/数据面层结论保留。
+- 已完成任务：Gate 状态更新、EV 三文件、validator 核对与判定、Manual Command Contract
+  交付、Runbook 更新（用户指示）、MS01/MS04/MS05 runtime 回归核对。
+- 未开始/未完成：Task 7.1（MS06 GREEN 未达成）；Task 7.2 的最终 diff Review（等待 Cycle
+  结果分类后执行）。
+- 修改文件与工作区：cycle 文档（M）、EV 三文件（untracked）、R44/R58 Runbook（M）；无
+  产品/测试代码改动。
+- 已通过 Gate：Gate 2（ready，用户批准）、Gate 5 部分（validator/回归/回滚项）；提交
+  Acceptance 依赖 MS06 修复后重跑。
+- Evidence：EV-008-000-01 Result=FAIL（保存首次失败现场），EV-008-000-02 Result=PASS。
+- 恢复条件：Plan Review 将 MS06 两 FAIL 分类（Plan 遗漏/Plan 错误/Act 偏离/基线变化/
+  新证据）并创建 rework/replan Cycle 修复 listener backlog 与 close-error 路径；修复后以
+  同一冻结/重建 artifact 重跑 Task 7.1-7.2。
 
 **Self-Review**
 
-None yet.
+- Spec compliance：本 Cycle 不修改产品/测试/marker/artifact（除用户指示的 Runbook 运维
+  变更），行为与 Non-goals 一致；Runbook 改动受用户显式授权与豁免，原话入档。
+- Code/quality：仅文档与 EV 文件变更；Runbook 命令与 make/qemu.mk 实际参数表核对一致
+  （`make ARCH=riscv64 run` → LOG=warn、-nographic、user-net、hostfwd 5555）；`git diff
+  --check` 三路全部 exit 0。
+- 未解决 Critical/Important：MS06 两 FAIL 是本次验收暴露的**产品层反例**，不属于本 Cycle
+  diff 质量问题，已完整记录于 Remaining Issues 与 EV；按 Act 边界（Non-goals：不得为追逐
+  PASS 修改产品）不在此 Cycle 内修复。
 
 **Verification Evidence**
 
-None yet.
+| 验证项 | 命令或操作 | 输出摘录 | 结论 |
+|---|---|---|---|
+| validator 新鲜 | `python3 scripts/ms06-qemu-validate.py --self-test` | `PASS: ms06-validator-self-test` exit 0 | PASS |
+| MS06 transcript | validation on user session（还原 transcript） | `FAIL: ms06-validator: payload reported a failure: FAIL: listener backlog connections not accepted uniquely inside deadline`，exit=1 | **FAIL**（Task 7.1 GREEN 未达成） |
+| MS01 runtime | user session | `MS01_SOCKET_BASELINE_START/END` 间 14 个唯一 PASS（tcp-accept … bind-close-cleanup） | PASS 14/14 |
+| MS04 runtime | user session | snapshot/idle/nudge/burst 各唯一 `MS04 PASS mode=…`；burst `reaped=refilled=delivered=96` 守恒、`budget=3 yield=2 fault=0` | PASS 4/4 |
+| MS05 runtime | user session + host stimulus | 六 mode 各唯一 `MS05 PASS mode=…`；host `received=96` 全部对齐（handshake 早期失败为操作顺序、重跑闭合） | PASS 6/6 |
+| diff check | `git diff --check` / `git diff --cached --check` / `git diff 1ea51427..HEAD --check` | 三路均无输出，exit 0 | PASS |
+| OpenSpec | `openspec validate --all` | `✓ change/ms06-application-visible-async-network-stack`；`✗ spec/improvements`（既有：I17/I18 缺 SHALL/MUST，与本 Cycle 无关） | PASS（change）；既有失败不归于本 Cycle |
 
 **Persisted Evidence**
 
-Required；按Plan Context白名单创建。
+- `evidence/008-single-hart-qemu-acceptance/000-initial/README.md`（已更新 Result）。
+- `qemu-runtime-markers.md`（EV-008-000-01）：MS06 10/12 + 2 FAIL（含首失败层原始行）、
+  MS01 14/14、MS04 4/4、MS05 6/6、artifact 身份对比与结论。
+- `host-runtime-results.md`（EV-008-000-02）：MS04 15556 与 MS05 15557 stimulus 的 literal
+  命令、received=96 记录与双边闭合说明。
 
 **Experience Candidates**
 
-None yet.
+None（本 Cycle 暴露的 MS06 两 FAIL 为产品反例，非可复用操作流程或运维故障；不满足 Runbook/
+Incident 候选条件）。
 
 **Remaining Issues**
 
-None yet.
+- **MS06 `listener` FAIL**：`listener backlog connections not accepted uniquely inside
+  deadline` —— Task 2.8 的 listener head-signal/backlog 路径在 single-hart guest runtime
+  未达到"backlog 内连接在 deadline 内被唯一接受"的应用可见契约；host/model 全绿未覆盖该
+  时序反例。属 Task 7.1 首要失败层。
+- **MS06 `close-error` FAIL**：`close-error graceful close misclassified or unstable after
+  EOF` —— Task 3.2 闭合的 terminal/EOF 映射在 runtime 出现误分类或 EOF 后状态不稳定；
+  需 Plan Review 分类（产品缺陷 vs 测试判定口径）。
+- **转录采集缺口**：用户会话未发布 `MS06_HARNESS_EXIT`、`MS01_HARNESS_EXIT` 与 MS04
+  snapshot 的 exit marker（后续 mode 已带）。失败结论由 probe 已打印 FAIL 决定，不依赖
+  exit；重跑修复 Cycle 时须补齐 exit marker。
+- **boot bin 身份变化**：用户 `make run` 触发重建（mtime 21:13:42、bytes 不变）；probe
+  四件与 re内嵌 revision 未变。修复 Cycle 重跑时应以全新构建的 artifact 重新 freeze。
+- `spec/improvements` 校验失败（I17/I18 缺 SHALL/MUST）为既有全局文档问题，不在本 Cycle
+  Executable scope，交由 `openspec-docs-maintainer` 后续处理。
 
 **Commit or Diff Reference**
 
-None yet.
+- 本轮工作树：`iterations/008-single-hart-qemu-acceptance/000-initial.md`（M）；
+  `evidence/008-single-hart-qemu-acceptance/000-initial/{README,qemu-runtime-markers,
+  host-runtime-results}.md`（untracked，新建）；`.claude/runbooks/qemu-network-testing.md`、
+  `.claude/runbooks/qemu-evidence-capture.md`（M，用户指示的 make run 改动）。
+- HEAD `1d0313ad8d0f36d918d1a101dd0ceda5c2ba336b`（net-k3）；未 commit。
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: replan-required
 
 **Findings**
 
-None yet.
+1. **Blocking — listener witness is a deterministic false negative.** `run_listener` sends and receives one identity byte, but the child compares `(unsigned)(unsigned char)echo` with the 32-bit value `~ident`. The raw serial shows all four hidden connections became Ready, all four accepts consumed unique queue entries, and every child then exited with code 3. For identities 1-4 the valid reply bytes are `0xfe`-`0xfb`, which cannot equal `0xfffffffe`-`0xfffffffb` after the existing promotions. This does not prove a listener product failure.
+2. **Blocking — close-error asserts an invalid peer-FIN contract.** The requirement only promises `IN|RDHUP`, stable zero-length reads and no device `ERR` after peer FIN. The probe additionally demands that the still-open local write half reach stable `EPIPE` within eight immediate sends. TCP peer FIN closes the receive half; a local send may remain valid. The observed FAIL therefore cannot distinguish a correct half-close from a product defect.
+3. **Blocking — the planned full-transcript validator cannot consume the captured input.** The literal command against `/tmp/ms06-iteration-008-qemu-serial.log` returns `FAIL: ... start marker is missing` because an ANSI reset sequence prefixes the START physical line. The manually extracted 17-line file reaches the payload FAIL but is not the required complete raw transcript. The validator needs bounded ANSI/CSI transport normalization without accepting printable marker prefixes or suffixes.
+4. **Blocking — Task 7.2 did not satisfy its dependency or evidence contract.** Act continued MS01/MS04/MS05 after Task 7.1 failed, although the Plan required failure-stop. MS01 and MS04 snapshot lack explicit harness exits; successful MS05 retries followed handshake failures; host results were not captured with the required `tee`/pipeline exits. These observations remain useful diagnostics but do not constitute Task 7.2 acceptance.
+5. **Blocking — frozen boot identity changed.** `make run` rebuilt `StarryOS_riscv64-qemu-virt.bin` from mtime 20:08:19 to 21:13:42. Equal bytes do not establish the Plan's pre/post exact-artifact condition. The next Cycle must build first, then freeze the post-build inputs before QEMU starts.
+6. **Evidence correction.** The raw serial does contain `MS06_HARNESS_EXIT: 1`; the Act Response and EV-008-000-01 incorrectly say it was missing. No `panic`, trap, illegal instruction, page fault or kernel fatal appears in the 949-line raw session. The terminal result is the probe's aggregated nonzero exit.
 
 **Deviation Classification**
 
-None yet.
+- `PLAN-INVALID`: listener byte-width, peer-FIN/EPIPE and raw ANSI/CSI transcript contracts can report false failure or reject the required input.
+- `ACT-DEVIATION`: execution crossed the Task 7.1 failure-stop boundary and characterized incomplete downstream evidence as Task 7.2 PASS.
+- `BASELINE-CHANGED`: `make run` rebuilt the boot image after the pre-session identity record.
+- `NEW-EVIDENCE`: the first real guest run exposed validation assumptions not exercised by the 26 host seam tests.
 
 **Acceptance Gaps**
 
-Tasks 7.1-7.2尚未执行或Review。
+- Acceptance 1 is not decidable from Cycle 000: MS06 reports 10/12 and exit 1, while both failing case predicates are invalid and the raw transcript cannot be audited directly.
+- Acceptances 2-4 remain incomplete because Task 7.2 ran after its dependency failed and lacks all required explicit guest/host exits.
+- Acceptance 5 fails because the boot image identity changed and the successful modes do not form the planned same-order, same-frozen-artifact session.
+- Acceptance 6 remains open; Act did not finish the final full diff Review and the witness defects are Critical to the runtime conclusion.
 
 **Convergence**
 
-N/A.
+Expanded from no known gap to three validation-contract defects, one execution-order deviation and incomplete final evidence. This is the first Review of Cycle 000.
 
 **Evidence**
 
-None yet.
+- `/tmp/ms06-iteration-008-qemu-serial.log`: 949 lines, 159,308 bytes; listener accepts at raw lines 237-240, child exits 3 at 242-250, close-error FAIL at 310, `MS06_HARNESS_EXIT: 1` at 941, QEMU termination without kernel fatal at 942-949.
+- `tests/ms06_stack_readiness_probe.c:724-839`: listener identity/echo path; the width mismatch is at the child comparison and the parent emits one byte.
+- `tests/ms06_stack_readiness_probe.c:1172-1291`: peer FIN, two zero reads and the unsupported EPIPE loop.
+- `scripts/ms06-qemu-validate.py::validate_output`: `.strip()` does not remove ANSI/CSI; literal validation of the raw serial exits 1 with missing START.
+- EV-008-000-01/02 and Act Response: useful bounded observations, with the exit-marker and Task 7.2 qualifications corrected by this Review.
+- Fresh checks: strict validation of this change, three diff checks and RISC-V static `ET_EXEC` artifact inspection passed before Plan edits; these do not satisfy runtime Acceptance.
 
 **Follow-up Decision**
 
-等待用户审计Gate 2后显式调用`openspec-act`。
+The verification contract and executable scope must change before another runtime attempt. Update the unfinished Iteration to add Task 7.3, create a replan Cycle, and require probe/validator RED→GREEN before rebuilding and rerunning. Do not modify axnet or kernel product code from these two FAIL lines. After user approval, `openspec-act` may execute `001-replan.md`; Cycle 000 is frozen.
 
 **Iteration Plan Update**
 
-None；Iteration Map保持不变。
+Iteration 008 remains the final logical Iteration, but its tasks become 7.3 → 7.1 → 7.2. The stable baseline and verification boundary now require a valid witness, direct raw-transcript validation, post-build artifact freeze and strict failure-stop ordering.
 
 **Next Cycle**
 
-None.
+`001-replan.md` in this Iteration.
 
 **Next Iteration**
 

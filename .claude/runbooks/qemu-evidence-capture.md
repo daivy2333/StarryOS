@@ -47,8 +47,7 @@ mkdir -p "$EV"
 ### 2. 录制 guest 完整串口：`script -q -e -f`
 
 ```bash
-script -q -e -f "$EV/qemu-serial.log" -c \
-'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0 -nographic'
+script -q -e -f "$EV/qemu-serial.log" -c 'make ARCH=riscv64 run'
 ```
 
 要点：
@@ -56,6 +55,8 @@ script -q -e -f "$EV/qemu-serial.log" -c \
 - `-q`：安静，不打印 `Script started/exit` 噪声；`-e`：传播QEMU子进程退出码；`-f`：实时
   flush，日志边录边写可见。
 - `-c '...'`：QEMU 命令行整体作为字符串传入；内部不再换行（避免多行拼接错误）。
+- 使用 `make run`（默认 `LOG=warn`）启动，串口不出现 info/debug 调试信息刷屏；需要
+  info/debug 分层诊断时单独按 R55 显式构建并恢复冻结镜像，不要把诊断镜像当采集基线。
 - 必须**从启动开始录制**：只录 workload 摘录不能补证 boot 签名。
 - QEMU 参数按各 Runbook 实际要求增删（hostfwd、filter-dump、tap 等），本模式只关心
   `script` 包裹方式，不固定 QEMU 参数内容。

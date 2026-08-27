@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-24 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS05 与 MS16 已归档。
+> 任务状态最后同步: 2026-08-27 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS06 与 MS16 已归档。
 
 ---
 
@@ -22,8 +22,8 @@
 | <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ✅ 完成（MS05） |
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
 | <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ✅ 完成（MS06 Iteration 000 `001-rework` accepted；Tasks 1.1–1.5 全部闭合） |
-| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | 🔄 进行中（MS06 Iteration 001；Tasks 2.1–2.5 已闭合；Tasks 2.6–2.7 仍 pending；当前 Cycle `005-replan.md` ready，Gate 2 PASS，用户于 2026-08-24 显式批准（原话："批准"）`has_pending_tx()` 与 MS01 overflow/recovery 分层取证范围，等显式 `openspec-act` 执行） |
-| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 等待 T10 |
+| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ✅ 完成（MS06；最终 Cycle `001-replan` accepted，单 hart QEMU 手工验收全过；host/QEMU 进程证据完整性按用户明确授权豁免） |
+| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 待 MS07 change 规划与批准 |
 | <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ⏳ 等待 T11 |
 | <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待 T12 |
 | <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ⏳ 等待 T13 |
@@ -153,7 +153,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS06：应用可见的异步网络栈
 
-- Status: planned
+- Status: completed — 2026-08-27；最终 Review accepted，缺失的 host/QEMU 进程级留档按用户明确授权豁免
 - Outcome: stack runner 和 socket readiness 让应用在无主动轮询依赖下使用异步网络。
 - Rationale: T09 单独只有协议栈内部推进，和 T10 合并后才形成应用可依赖的阶段成果。
 - Dependencies: MS05
@@ -164,7 +164,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 多 waiter、overflow、close、error 和三类 runner 唤醒均有见证。
 - Diagnostic boundary: 失败限制在 stack 推进、timer/software wake 或 socket event bridge。
 - Split signals: readiness bridge 需要替换 axpoll 并形成独立的多 waiter 子系统。
-- Related changes: `ms06-application-visible-async-network-stack`（位于 `openspec/changes/ms06-application-visible-async-network-stack/`；3 iterations 规划，16/16 tasks，RTM 全 Covered，Gate 1/2 已批准 2026-08-21；Iteration 000 `001-rework` accepted，Tasks 1.1–1.5 全部闭合；Iteration 001 Tasks 2.1–2.5 已闭合，2.6–2.7 仍 pending；当前 Cycle `005-replan.md` ready，Gate 2 PASS，用户于 2026-08-24 显式批准（原话："批准"），等显式 `openspec-act` 调用执行）
+- Related changes: `ms06-application-visible-async-network-stack`（归档于 `openspec/changes/archive/2026-08-27-ms06-application-visible-async-network-stack/`；9 iterations，全部 tasks 完成；最终 Iteration 008 Cycle `001-replan` Review accepted。MS06 12/12、MS01 14/14、MS04 4/4、MS05 六 mode guest runtime PASS；host/QEMU 进程级输出未完整留档，用户以逐步手工全过声明接受证据完整性风险）
 
 ### MS07：QEMU 单 hart 恢复语义
 
@@ -317,6 +317,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前活跃 change：`ms06-application-visible-async-network-stack`（MS06，T09–T10）。位于 `openspec/changes/ms06-application-visible-async-network-stack/`；3 个 Iteration 规划，10/16 tasks，RTM 全 Covered（Iteration 002 Tasks 3.1–3.4 待启动；Iteration 001 Tasks 2.6–2.7 仍 pending）；Gate 1 与 Gate 2 已于 2026-08-21 由用户批准；当前 Iteration `001-socket-and-listener-readiness-bridge` / Cycle `005-replan.md` ready，Gate 2 PASS，用户于 2026-08-24 显式批准（原话："批准"）`has_pending_tx()` 与 MS01 overflow/recovery 分层取证范围，等显式 `openspec-act` 调用执行；Cycle 003-replan/004-replan 已报告并推动至 005-replan 入口；Iteration 000 已通过 Cycle `001-rework` accepted，Tasks 1.1–1.5 全部闭合。Iteration 002 仍 pending，需 Iteration 001 accepted 后展开。
-
-MS05 已于 2026-08-19 归档并完成 T07–T08。
+当前无活跃 change。MS06 已于 2026-08-27 归档并完成 T09–T10；下一项为 MS07，仍需独立 Plan 和用户批准。

@@ -39,8 +39,9 @@
 
 ## 7. 单 hart QEMU 验收
 
-- [ ] 7.1 在单hart、单VirtIO-MMIO NIC QEMU中运行MS06 probe，逐项核对device/software/timer progress、Active quiet、continuous traffic、TCP/UDP/listener、nonblocking、poll/select/epoll、multiwaiter/overflow和close/error。每个mode必须有完整marker与exit 0；用户中断、timeout或partial marker记为未完成或失败。
-- [ ] 7.2 在同一新鲜artifact和环境中运行受影响MS01/MS04/MS05 runtime回归，核对START/PASS/END、telemetry和显式exit，随后执行最终full diff review。结论只覆盖single-hart QEMU VirtIO-MMIO，不扩大到reset、SMP、真板或性能。
+- [x] 7.3 修正runtime暴露的MS06 witness验证契约：listener echo按单字节宽度比较；close-error只验证peer FIN后的稳定EOF、`IN|RDHUP`和无设备`ERR`，不得要求仍开放的write half收敛到`EPIPE`；validator在剥离ANSI/CSI控制序列后仍按完整物理行识别marker。先为三个反例增加host RED witness，再修改probe/validator并通过seam、syntax、validator self-test和RISC-V static build；禁止修改axnet、kernel或marker case清单来追逐PASS。完成于 Iteration 008 Cycle `001-replan`：validator 的共享 session 放宽进一步收紧到成功 MS06 exit 后的显式 MS01 START 边界，未知尾随 PASS 真实 RED→GREEN。
+- [x] 7.1 在Task 7.3 GREEN并生成fresh artifact后，于单hart、单VirtIO-MMIO NIC QEMU中运行MS06 probe，逐项核对device/software/timer progress、Active quiet、continuous traffic、TCP/UDP/listener、nonblocking、poll/select/epoll、multiwaiter/overflow和close/error。完整原始串口必须由validator直接判定，12个mode各有唯一PASS并发布exit 0；用户中断、timeout、partial marker或人工重构transcript均记为未完成或失败。完成于 Iteration 008 Cycle `001-replan`：完整 raw 串口由修复后 validator 判定，MS06 12/12、END、guest exit 0。
+- [x] 7.2 在同一新鲜artifact和环境中运行受影响MS01/MS04/MS05 runtime回归，核对START/PASS/END、telemetry和显式exit，随后执行最终full diff review。结论只覆盖single-hart QEMU VirtIO-MMIO，不扩大到reset、SMP、真板或性能。完成于 Iteration 008 Cycle `001-replan`：guest runtime 全过；host/QEMU 进程级证据未完整留档，用户明确放弃补采并接受该残余风险。
 
 ## Requirement Traceability Matrix
 
@@ -53,7 +54,7 @@
 | R5 per-socket multi-waiter bridge | D6 | 2.1,2.2,2.5,3.1,4.3,7.1 | `readiness.rs`, `wrapper.rs`, TCP/UDP register、epoll kernel path、guest probe | 1/2/64/65、register races、global fault fan-out、host replacement/re-register + guest distinct completion | Covered |
 | R6 listener/close/error一致 | D6-D9 | 2.3,2.5,3.1,3.2 | ListenTable、terminal snapshot、fault registry、TCP/UDP I/O | accept/reset、EOF/RDHUP/HUP/ERR、fatal ordering、fault-during-wait | Covered |
 | R3/R6 规模化close与listener前进 | D3,D4,D7,D9,D11 | 2.6,2.7,2.8 | `stack_runner.rs`、`service.rs`、`listen_table.rs`、`tcp.rs`、`udp.rs`、smoltcp UDP、MS01 payload | listener/deferred 31/32/33/512、send→drop→peer receive、overflow终态、accept→立即reconnect | Covered |
-| R7 MS06验证边界 | D10 | 2.8,4.1-4.3,5.1-5.2,6.1,7.1-7.2 | MS01 payload、guest probe、validator、axnet host harness、QEMU product paths | 分层兼容、host seam、默认并行确定性、automatic gates、single-hart runtime | Covered |
+| R7 MS06验证边界 | D10 | 2.8,4.1-4.3,5.1-5.2,6.1,7.3,7.1-7.2 | MS01 payload、guest probe、validator、axnet host harness、QEMU product paths | witness反例、分层兼容、host seam、默认并行确定性、automatic gates、single-hart runtime | Covered |
 | network-stack-baseline readiness | D3-D9 | 2.1-2.8,3.1-3.2 | TCP/UDP/listener/pollable | poll→I/O matrix、多waiter、512 recovery/close storm、stable fault | Covered |
 | MS05 slot consumer/owner保持 | D2,D4,D10 | 1.2,1.3,6.1,7.2 | Router、Service、queue event/slots | MS05 Full/flush/ownership regression | Covered |
 
@@ -135,19 +136,19 @@
 
 ### Iteration 008: single-hart-qemu-acceptance
 
-- Tasks: 7.1-7.2
+- Tasks: 7.3, 7.1-7.2
 - Depends on: Iteration 007 accepted；用户可执行人工QEMU batch
-- Stable baseline: MS06应用可见probe与受影响MS01/MS04/MS05在同一新鲜single-hart VirtIO-MMIO环境全部通过，最终diff无Critical/Important finding。
-- Verification boundary: 每项runtime有环境、revision、命令、完整marker和exit 0；缺失、timeout、partial success或用户中断均不计通过。
-- Diagnostic boundary: 失败限制在QEMU boot/device model、guest payload、syscall waiter调度链、runner wake或既有runtime兼容面。
+- Stable baseline: MS06 witness判据与公开ABI/TCP语义一致；修订后的应用可见probe与受影响MS01/MS04/MS05在同一fresh single-hart VirtIO-MMIO环境全部通过，最终diff无Critical/Important finding。
+- Verification boundary: listener单字节echo、peer-FIN EOF和ANSI/CSI原始串口反例先有RED→GREEN；每项runtime有环境、revision、命令、完整marker和exit 0；缺失、timeout、partial success、人工重构transcript或用户中断均不计通过。
+- Diagnostic boundary: 失败先区分probe/validator判据与产品行为，再限制在QEMU boot/device model、guest payload、syscall waiter调度链、runner wake或既有runtime兼容面。
 - Non-goals: reset、SMP、multiqueue、多NIC、PCI/DWMAC、真板、DMA/cache和性能资格。
 
 ## Current Cycle
 
 - Current Iteration: `008-single-hart-qemu-acceptance`
-- Cycle: `000-initial.md`
+- Cycle: `001-replan.md`
 - Persisted Evidence: required（README + bounded runtime marker/host-result extracts；完整串口先作为人工输入审查，入库受公共500行/256 KiB限制）
-- Previous Cycle: Iteration 007 `000-initial.md` Act `reported`，Plan Review `accepted`；Task 6.1完成，残余SIGSEGV由用户明确豁免，fresh runtime artifacts已生成。
-- Gate 2: `000-initial.md` 技术检查项 PASS；Plan status `draft`，等待用户审计和明确批准，未授权`openspec-act`。
-- Initial scope: Tasks 7.1-7.2；按R44/R58由用户在single-hart、单VirtIO-MMIO NIC QEMU中手工运行MS06应用见证和MS01/MS04/MS05回归，随后由Act/Plan核对完整marker、exit、telemetry与最终diff。
+- Previous Cycle: Iteration 008 `000-initial.md` Act `blocked`，Plan Review `replan-required`；runtime暴露listener byte-width、peer-FIN/EPIPE和raw-serial validator三项验证契约错误，且下游执行越过失败即停边界。
+- Gate 2: `001-replan.md` 技术检查项 PASS；Plan status `draft`，等待用户审计和明确批准，未授权`openspec-act`。
+- Replan scope: Task 7.3先修正并见证probe/validator契约；生成fresh artifact后执行Task 7.1，只有12/12和exit 0才执行Task 7.2。产品axnet/kernel不在修订范围。
 - Deferred Iterations: None。

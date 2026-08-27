@@ -84,18 +84,22 @@ riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_sock
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
 EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
-script -q -e -f "$EV/qemu-serial.log" -c \
-'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
+script -q -e -f "$EV/qemu-serial.log" -c 'make ARCH=riscv64 run'
 ```
 
-对应手工参数展开（如需逐行粘贴到 `-c` 外）：
+日志等级说明：内核日志等级由编译参数固化（Makefile 默认 `LOG := warn`）。`make run` 以默认等级启动，串口不会出现 info/debug 调试信息刷屏；需要分层网络诊断（`LOG=info`/`debug` 显式构建、`-object filter-dump` 抓包）时改用 R55 `qemu-kernel-net-dataplane-debug.md`，诊断盘只用副本并恢复冻结镜像。
+
+对应 `make run` 的默认启动参数（`make/Makefile`、`make/qemu.mk` 展开，如需逐条核对）：
 
 | 参数 | 作用 |
 |------|------|
-| `-device virtio-net-device` | VirtIO-MMIO 网卡（D22/K32，当前主线） |
-| `-netdev user` | user-mode networking，guest 可通过 10.0.2.2 出站 |
-| `hostfwd=tcp::5555-:5555` | host 5555 → guest 5555 端口转发 |
-| `-nographic` | 串口连 stdio |
+| `-bios default -kernel <FINAL_IMG>` | 启动 kernel（默认 riscv64） |
+| `-m 1G` | 内存 1 GiB |
+| `-device virtio-blk-device` | VirtIO-MMIO 块设备（`BLK=y BUS=mmio`） |
+| `-device virtio-net-device` | VirtIO-MMIO 网卡（`NET=y BUS=mmio`；D22/K32） |
+| `-netdev user,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555` | user-mode networking，guest 可出站 10.0.2.2（`NET_DEV=user`） |
+| `-nographic` | 串口连 stdio（`GRAPHIC=n`） |
+| `-smp <n>` | 手动 `make run SMP=<n>` 控制 hart 数；默认单 hart |
 
 `script` 只录制完整串口（含 boot 与每次输入），用户仍逐条手动输入；串口保存在
 `$EV/qemu-serial.log`。Host 侧命令如需留档用 `tee`（见 `qemu-evidence-capture.md`）。
