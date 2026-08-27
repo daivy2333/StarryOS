@@ -1,7 +1,7 @@
 # MS02 VirtIO-MMIO 证据采集
 
 - Status: active
-- Last validated: 2026-08-03
+- Last validated: 2026-08-27（命令行更新为 EV+script/tee 采集模式；依据 `qemu-evidence-capture.md`、R44 证据精简原则）
 - Environment: WSL2 x86_64; Rust nightly-2026-02-25; offline Cargo; QEMU manual
 - Source: `openspec/changes/ms02-virtio-mmio-polling-baseline/iterations/003-policy-coverage-and-runtime-evidence.md` (Act Response: reported)
 
@@ -71,39 +71,38 @@ git diff --check
 cd /home/daivy/projects/serial/work/StarryOS
 riscv64-linux-musl-gcc -static -O2 \
   -o tests/ms02_guest_service tests/ms02_guest_service.c
-sha256sum tests/ms02_guest_service
+file tests/ms02_guest_service
 ```
 
-保存命令、exit、文件路径和 SHA-256 为 `payload-build.log`。
+`file` 输出应为 `ELF 64-bit LSB executable, UCB RISC-V, statically linked`。保存命令、exit 和输出为 `payload-build.log`。
 
 > 证据精简原则（2026-08-19，来源 R44）：不再强制记录 hash 值，也不收录几百个日志或
 > 几万行原始日志；以保证代码功能正确为准，只保存能证明行为的命令、关键输出和退出码。
-> 上述 SHA-256 步骤仅在明确需要 provenance 时保留。
+> 按新规范不再输出 SHA-256；仅在明确需要机器可审计 provenance 时保留。
 
 #### 步骤 2.2：无 Hostfwd QEMU（证明串口+MMIO probe 不依赖 hostfwd）
+
+先建立 evidence 目标目录与短变量（避免长路径被终端换行拆断），再录制：
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+```
 
 Terminal A（QEMU）：
 
 ```bash
-cd /home/daivy/projects/serial/work/StarryOS
-qemu-system-riscv64 \
-  -machine virt -bios default \
-  -kernel StarryOS_riscv64-qemu-virt.bin \
-  -m 1G -smp 1 \
-  -device virtio-blk-device,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=make/disk.img \
-  -device virtio-net-device,netdev=net0 \
-  -netdev user,id=net0 \
-  -nographic
+script -q -e -f "$EV/qemu-no-hostfwd.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0 -nographic'
 ```
 
-等 `starry:~#` 出现后，验证串口日志含：
+`script` 只录制完整串口；用户逐条手动输入。等 `starry:~#` 出现后，验证串口日志含：
 
 - `registered a new Net device ... "virtio-net"`
 - `registered a new Block device ... "virtio-blk"`
 - `eth0:` 段含 `mac:` 和 `ip: 10.0.2.15/24`
 
-保存完整串口输出为 `qemu-no-hostfwd.log`。
+串口即保存在 `$EV/qemu-no-hostfwd.log`（从启动开始录制，保留完整 boot 与输入）。
 
 #### 步骤 2.3：User-net QEMU（TCP/UDP 5555 + pcap）
 
@@ -114,21 +113,16 @@ cd /home/daivy/projects/serial/work/StarryOS/tests
 python3 -m http.server 18765 --bind 0.0.0.0
 ```
 
-Terminal B（QEMU）：
+Terminal B（QEMU，同样用 EV+script 录制）：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
-qemu-system-riscv64 \
-  -machine virt -bios default \
-  -kernel StarryOS_riscv64-qemu-virt.bin \
-  -m 1G -smp 1 \
-  -device virtio-blk-device,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=make/disk.img \
-  -device virtio-net-device,netdev=net0 \
-  -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
-  -object filter-dump,id=ms02user,netdev=net0,file=ms02-usernet.pcap \
-  -nographic
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+script -q -e -f "$EV/qemu-usernet.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -object filter-dump,id=ms02user,netdev=net0,file=ms02-usernet.pcap -nographic'
 ```
+
+`script` 输出即保存在 `$EV/qemu-usernet.log`；pcap 由 QEMU `filter-dump` 生成，收集后放入 `$EV/`。
 
 Terminal B（QEMU shell，等 `starry:~#` 后**一条一条**输入）：
 
@@ -159,7 +153,7 @@ echo "MS02_UDP_REQUEST" | nc -u -w1 127.0.0.1 5555
 - Host nc UDP 收到 `MS02_UDP_RESPONSE`
 - pcap 含 ARP request/reply、5555/TCP 握手和数据
 
-保存 Terminal B 串口输出为 `qemu-usernet.log`，pcap 为 `qemu-usernet.pcap`。
+保存 `$EV/qemu-usernet.log`（script 已录制），pcap 收集为 `$EV/qemu-usernet.pcap`。
 
 #### 步骤 2.4：TAP QEMU（ARP/ICMP 独立见证）
 
@@ -173,19 +167,13 @@ sudo ip link set tap-ms02 up
 sudo tcpdump -i tap-ms02 -nn -e -w ms02-tap.pcap
 ```
 
-Terminal B（TAP QEMU）：
+Terminal B（TAP QEMU，EV+script 录制）：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
-qemu-system-riscv64 \
-  -machine virt -bios default \
-  -kernel StarryOS_riscv64-qemu-virt.bin \
-  -m 1G -smp 1 \
-  -device virtio-blk-device,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=make/disk.img \
-  -device virtio-net-device,netdev=net0 \
-  -netdev tap,id=net0,ifname=tap-ms02,script=no,downscript=no \
-  -nographic
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+script -q -e -f "$EV/qemu-tap.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev tap,id=net0,ifname=tap-ms02,script=no,downscript=no -nographic'
 ```
 
 Terminal B（QEMU shell）：
@@ -212,7 +200,7 @@ ping -c 3 -W 2 10.0.2.15
 sudo ip link delete tap-ms02
 ```
 
-保存 Terminal B 串口输出为 `qemu-tap.log`，pcap 为 `qemu-tap.pcap`。
+保存 `$EV/qemu-tap.log`（script 已录制），pcap 收集为 `$EV/qemu-tap.pcap`。
 
 #### 步骤 2.5：空闲 CPU 采样
 
@@ -222,13 +210,14 @@ sudo ip link delete tap-ms02
 pgrep -f qemu-system-riscv64
 ```
 
-采样 30 秒：
+采样 30 秒（host 侧采集用 tee）：
 
 ```bash
-top -b -d 1 -n 30 -p <QEMU_PID> > idle-cpu.txt
+set -o pipefail
+top -b -d 1 -n 30 -p <QEMU_PID> | tee "$EV/idle-cpu.txt"
 ```
 
-保存为 `idle-cpu.txt`。**不设通过阈值**，只记录环境、方法和原始输出。
+`idle-cpu.txt` 保存在 `$EV/`。**不设通过阈值**，只记录环境、方法和原始输出。
 
 #### 步骤 2.6：MS01 Runtime Regression
 
@@ -241,22 +230,16 @@ cd /home/daivy/projects/serial/work/StarryOS/tests
 python3 -m http.server 18765 --bind 0.0.0.0
 ```
 
-Terminal B（编译 + QEMU）：
+Terminal B（编译 + QEMU + script 录制）：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
 riscv64-linux-musl-gcc -static -O2 \
   -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
 
-qemu-system-riscv64 \
-  -machine virt -bios default \
-  -kernel StarryOS_riscv64-qemu-virt.bin \
-  -m 1G -smp 1 \
-  -device virtio-blk-device,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=make/disk.img \
-  -device virtio-net-device,netdev=net0 \
-  -netdev user,id=net0 \
-  -nographic
+script -q -e -f "$EV/ms01-regression.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0 -nographic'
 ```
 
 Terminal B（QEMU shell，一条一条）：
@@ -269,7 +252,7 @@ chmod +x /tmp/ms01_test
 
 成功判据：14 个 `PASS:` 标记（tcp-accept、tcp-adjacent、tcp-512cap、tcp-512-recovery、tcp-relisten、udp-bidi、tcp-nonblock-accept、udp-nonblock、poll-readiness、udp-source、bind-getsockname、bind-ephemeral、bind-conflict、bind-close-cleanup），无 `FAIL:`。
 
-保存 Terminal B 串口输出为 `ms01-regression.log`。
+串口保存在 `$EV/ms01-regression.log`（script 已录制）。
 
 ## 验证
 
@@ -289,7 +272,7 @@ chmod +x /tmp/ms01_test
 
 | 步骤 | 通过条件 |
 |---|---|
-| 2.1 | `tests/ms02_guest_service` 存在，SHA-256 已记录 |
+| 2.1 | `tests/ms02_guest_service` 存在，`file` 为静态 RISC-V ELF |
 | 2.2 | 串口含 `virtio-net`、`virtio-blk`、`eth0` |
 | 2.3 | Guest `MS02_COMPLETE`，host nc 收到 `MS02_TCP_RESPONSE`/`MS02_UDP_RESPONSE`，pcap 含 ARP + TCP 5555 |
 | 2.4 | `ping` 0% loss，pcap 含 ARP + 3 组 ICMP echo |
@@ -314,7 +297,7 @@ chmod +x /tmp/ms01_test
 
 - QEMU guest 内命令无持久化，关闭 QEMU 即丢失；不需回滚
 - TAP 设备：`sudo ip link delete tap-ms02`
-- 进程残留：`pkill -f qemu-system-riscv64`
+- 进程残留：先用`pgrep -af qemu-system-riscv64`核对命令，再对确认的单个PID执行`kill <PID>`
 - Guest payload 删除：`rm tests/ms02_guest_service tests/ms01_socket_baseline`
 - 测试代码改动：保留 8/8 PASS 作为 refactor witness，不得回滚到 4/4 baseline
 
@@ -332,7 +315,7 @@ Revision：`efcf08124294d523ccab4d3569ea97fe31ed96c1`
 
 阶段 2 证据（user）：
 
-- `payload-build.log` — guest payload 编译 + SHA-256
+- `payload-build.log` — guest payload 编译 + `file` 类型判定
 - `qemu-no-hostfwd.log` — 串口+MMIO probe+eth0
 - `qemu-usernet.log` + `qemu-usernet.pcap` — TCP/UDP 5555 + ARP
 - `qemu-tap.log` + `qemu-tap.pcap` — ARP/ICMP 独立见证

@@ -1,7 +1,7 @@
 # MS04 QEMU 异步 RX 核心证据采集
 
 - Status: active
-- Last validated: 2026-08-12
+- Last validated: 2026-08-12；2026-08-27 命令行按 R44 证据精简原则清理强制 SHA-256（改为 size/mtime + 可选 hash）
 - Environment: WSL2 x86_64；QEMU 7.0.0；RISC-V `virt`；1 GiB；单 hart；单 VirtIO-MMIO NIC；user-net
 - Source: 已归档的 `2026-08-12-ms04-qemu-async-rx-queue-baseline` iteration 009 与
   `evidence/009-final-sandbox-rerun-and-qemu-runtime/`
@@ -22,14 +22,15 @@
   `Bad system call`，转到普通 shell 复跑同一命令并保留两次输出。
 - `tests/ms04_rx_probe.c` 必须显式包含 `<sys/time.h>`；宿主 libc 的间接包含不能作为
   musl payload 的编译见证。
-- 先为 kernel 和 payload 记录 byte size、mtime 与 SHA-256。启动 QEMU 后不得重建它们；
-  否则 exact-binary reproducibility 声明失效，需要全新会话和证据。
+- 启动 QEMU 前为 kernel 与 payload 记录 byte size 与 mtime；启动后不得重建它们。
+  按 R44 证据精简原则不再强制记录 SHA-256；仅当该 change 仍声明 exact-binary
+  reproducibility 且用户明确要求机器可审计 provenance 时才补 hash。
 
 为避免终端自动换行拆断长路径，每个终端先设置：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
-EV=openspec/changes/<change>/evidence/<iteration>
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
 ```
 
 ## 操作步骤
@@ -46,9 +47,6 @@ riscv64-linux-musl-gcc -static -O2 \
 file tests/ms03_irq_probe tests/ms04_rx_probe \
   tests/ms02_guest_service tests/ms01_socket_baseline
 stat -c '%y %s %n' StarryOS_riscv64-qemu-virt.bin \
-  tests/ms03_irq_probe tests/ms04_rx_probe \
-  tests/ms02_guest_service tests/ms01_socket_baseline
-sha256sum StarryOS_riscv64-qemu-virt.bin \
   tests/ms03_irq_probe tests/ms04_rx_probe \
   tests/ms02_guest_service tests/ms01_socket_baseline
 ```
@@ -68,8 +66,8 @@ Terminal B：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
-EV=openspec/changes/<change>/evidence/<iteration>
-script -q -f "$EV/qemu-serial.log" -c \
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+script -q -e -f "$EV/qemu-serial.log" -c \
 'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
 ```
 
@@ -124,16 +122,15 @@ MS04 iteration 009 的见证值为 budget/yield 各 2、Router full/space wake �
 
 ```bash
 rg -n 'MS04 (PASS|FAIL)|fault=|restore=|irq_entry=' "$EV/qemu-serial.log"
-sha256sum "$EV/qemu-serial.log"
 ```
 
-每个执行模式只能有一个终态 marker。原始串口、命令、环境、artifact hashes 和派生日志
-必须能互相追溯。若还要声明完整 compatibility，继续执行对应 change 明列的 R45/R48
+每个执行模式只能有一个终态 marker。原始串口、命令、环境、artifact size/mtime 和派生
+日志必须能互相追溯。若还要声明完整 compatibility，继续执行对应 change 明列的 R45/R48
 回归；未运行项写 `SKIPPED/WAIVED`，不得写 PASS。
 
 > 证据精简原则（2026-08-19，来源 R44）：不再强制记录 SHA-256/hash 值，也不收录
 > 几百个日志或几万行原始日志；以保证代码功能正确为准，只保存能证明行为的命令、
-> 关键输出和退出码。上述 hash 相关步骤仅在明确需要机器可审计 provenance 时保留。
+> 关键输出和退出码。仅当该 change 明确要求机器可审计 provenance 时才补 hash。
 
 ## 失败处理
 
@@ -145,14 +142,14 @@ sha256sum "$EV/qemu-serial.log"
 | nudge 修改 descriptor 或 IRQ | 产品失败；检查软件唤醒与 register-recheck 边界 |
 | burst 少于 96、回收不守恒或无 yield | 产品失败；保存 host/guest 原始日志，不进入 compatibility |
 | 任一 safety/fault 非零 | 产品失败；记录第一失败层，不用后续 PASS 覆盖 |
-| artifact 在 hash 后被重建 | 当前 session 不再支持 exact-binary 声明；重新 hash 并启动全新 QEMU session |
+| artifact 在记录 size/mtime 后被重建 | 当前 session 不再支持 exact-binary 声明；重新记录并启动全新 QEMU session |
 | 长路径被终端换行拆断 | 使用短变量 `$EV`；保留意外文件，核对内容后合并，避免重跑覆盖首次失败 |
 
 ## 回滚
 
 本流程只生成 payload、`/tmp` guest 文件和 change-local Evidence。退出 QEMU 使用
 `Ctrl-A X`，停止 host server 使用 `Ctrl-C`。Guest `/tmp` 随 QEMU 退出丢失。若需要清理
-host payload，应先确认 change Evidence 已记录 size/hash；Runbook 不自动删除文件。
+host payload，应先确认 change Evidence 已记录 size/mtime；Runbook 不自动删除文件。
 
 ## 证据
 

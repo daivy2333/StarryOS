@@ -1,7 +1,7 @@
 # MS03 VirtIO-MMIO 可诊断中断基线 — 证据采集
 
 - Status: active
-- Last validated: 2026-08-03
+- Last validated: 2026-08-27（命令行更新为 EV+script/tee 采集模式；依据 `qemu-evidence-capture.md`、R44 证据精简原则）
 - Environment: WSL2 x86_64; Rust nightly-2026-02-25; QEMU riscv64; single-hart
 - Source: `openspec/changes/ms03-virtio-mmio-diagnostic-irq-baseline/iterations/000-initial.md` (Act Response: reported)
 
@@ -84,11 +84,17 @@ sudo umount /mnt/starry-rootfs
 
 #### 步骤 2.3：启动 QEMU 并验证启动签名
 
-Terminal A（QEMU）：
+先建立 evidence 目标目录与短变量，再从启动开始录制完整串口：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
-make ARCH=riscv64 run
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+```
+
+Terminal A（QEMU）：
+
+```bash
+script -q -e -f "$EV/qemu-serial.log" -c 'make ARCH=riscv64 run'
 ```
 
 等 `starry:~#` 出现，检查内核日志（前 ~50 行）**必须**包含以下三行：
@@ -98,6 +104,8 @@ make ARCH=riscv64 run
 [NET IRQ] VirtIO-MMIO net validated: magic=0x74726976 version=1 device_id=1 at 0x10007000
 [NET IRQ] Diagnostic IRQ 7 handler registered; polling fallback active
 ```
+
+串口即保存在 `$EV/qemu-serial.log`（`script` 只录制，不从启动开始录制则不能补证 boot）。
 
 > 任一行缺失或显示 `magic mismatch` / `version too old` / `Not a network device` → 立即停止，保存串口日志。
 
@@ -152,21 +160,16 @@ cd /home/daivy/projects/serial/work/StarryOS/tests
 python3 -m http.server 18765 --bind 0.0.0.0
 ```
 
-编译 guest service 并启动 QEMU（或复用当前 QEMU session）：
+编译 guest service 并启动 QEMU（或复用当前 QEMU session；若新开 session 用 EV+script 录制到 `$EV/regression-ms02.log`）：
 
 ```bash
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
 riscv64-linux-musl-gcc -static -O2 \
   -o tests/ms02_guest_service tests/ms02_guest_service.c
 
-qemu-system-riscv64 \
-  -machine virt -bios default \
-  -kernel StarryOS_riscv64-qemu-virt.bin \
-  -m 1G -smp 1 \
-  -device virtio-blk-device,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=make/disk.img \
-  -device virtio-net-device,netdev=net0 \
-  -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
-  -nographic
+script -q -e -f "$EV/regression-ms02.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
 ```
 
 QEMU shell：
@@ -206,10 +209,12 @@ chmod +x /tmp/ms01_test
 ### 阶段 3：证据归档
 
 ```bash
-mkdir -p openspec/changes/ms03-virtio-mmio-diagnostic-irq-baseline/evidence/000-initial
-cp make/build.log evidence/000-initial/build.log
-# 保存完整 QEMU 串口输出（从 make run 开始到最后一个 probe 结束）
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+mkdir -p "$EV"
+cp make/build.log "$EV/build.log"
 ```
+
+`script` 已把串口写入 `$EV/qemu-serial.log`、`$EV/regression-ms02.log`、`$EV/ms01-regression.log`（MS01 回归也应在录制 session 内完成；若新开 session，用同样 EV+script 命令录制）。
 
 evidence 目录必须包含：
 - `README.md` — Gate 映射和结果判定
@@ -253,7 +258,7 @@ evidence 目录必须包含：
 
 - QEMU guest 内命令无持久化，关闭 QEMU 即丢失；不需回滚
 - Rootfs 挂载写入的 probe 在下一次 `make rootfs` 时覆盖
-- 进程残留：`pkill -f qemu-system-riscv64`
+- 进程残留：先用`pgrep -af qemu-system-riscv64`核对命令，再对确认的单个PID执行`kill <PID>`
 - TAP 设备（如果使用了 MS02 的 TAP 测试）：`sudo ip link delete tap-ms02`
 
 ## 证据

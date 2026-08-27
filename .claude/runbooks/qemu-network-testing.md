@@ -1,6 +1,6 @@
 # QEMU Network Testing Runbook
 
-> Status: active | Related: K31, K32, R55, R48 | Last updated: 2026-08-17
+> Status: active | Related: K31, K32, R55, R48, `qemu-evidence-capture.md` | Last updated: 2026-08-27
 > Verified: 2026-07-29 MS01 manual QEMU 10/10 PASS; 2026-08-09 build exit/artifact classification checked; 2026-08-17 offline-injection fallback path (R55/R48) added
 
 ## Purpose
@@ -77,19 +77,18 @@ cd /home/daivy/projects/serial/work/StarryOS
 riscv64-linux-musl-gcc -static -O2 -o tests/ms01_socket_baseline tests/ms01_socket_baseline.c
 ```
 
-### Terminal 2 — 启动 QEMU（编译完后）
+### Terminal 2 — 启动 QEMU（编译完后，录制完整串口）
+
+先建立 evidence 目标目录与短变量（避免长路径被终端换行拆断），再从启动开始录制：
 
 ```bash
-qemu-system-riscv64 \
-  -machine virt -bios default \
-  -kernel /home/daivy/projects/serial/work/StarryOS/StarryOS_riscv64-qemu-virt.bin \
-  -m 1G -smp 1 \
-  -device virtio-blk-device,drive=disk0 \
-  -drive id=disk0,if=none,format=raw,file=/home/daivy/projects/serial/work/StarryOS/make/disk.img \
-  -device virtio-net-device,netdev=net0 \
-  -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
-  -nographic
+cd /home/daivy/projects/serial/work/StarryOS
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+script -q -e -f "$EV/qemu-serial.log" -c \
+'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
 ```
+
+对应手工参数展开（如需逐行粘贴到 `-c` 外）：
 
 | 参数 | 作用 |
 |------|------|
@@ -97,6 +96,9 @@ qemu-system-riscv64 \
 | `-netdev user` | user-mode networking，guest 可通过 10.0.2.2 出站 |
 | `hostfwd=tcp::5555-:5555` | host 5555 → guest 5555 端口转发 |
 | `-nographic` | 串口连 stdio |
+
+`script` 只录制完整串口（含 boot 与每次输入），用户仍逐条手动输入；串口保存在
+`$EV/qemu-serial.log`。Host 侧命令如需留档用 `tee`（见 `qemu-evidence-capture.md`）。
 
 ### 在 QEMU Guest 中（出现 `starry:~#` 后）
 
@@ -117,7 +119,7 @@ wget -q -O /tmp/ms01_test http://10.0.2.2:18765/ms01_socket_baseline && chmod +x
 
 ### 方式 A：`debugfs` 离线写入（不需要 sudo；推荐用于诊断）
 
-把 payload 写进 **`make/disk.img` 的副本**（原盘不动，避免污染冻结 hash），重启 QEMU 时
+把 payload 写进 **`make/disk.img` 的副本**（原盘不动，避免污染原始镜像），重启 QEMU 时
 让 virtio-blk 指向该副本：
 
 ```bash
@@ -170,6 +172,9 @@ sudo umount /mnt/starry-rootfs
   由该 change 或对应 Runbook 单独声明，不把此项默认套用到全部手工 QEMU 证据。
 - 已被删除的 `ms05-automatic-gate-manifest.md`（R54，数百 logs + hash 冻结）不再
   作为通用证据模板；其 R54 引用标记为悬空，待 `openspec-docs-maintainer` 处理。
+- 统一的证据/日志采集命令行模式（Cycle级EV短变量 + `script -q -e -f`录制串口 + 启用
+  `pipefail`后用`tee`采集
+  host 日志）见 `qemu-evidence-capture.md`。
 
 ## 验证
 
@@ -210,6 +215,9 @@ umount/恢复，不能套用本段。
 
 ## 变更历史
 
+- 2026-08-27：QEMU 启动段改为 EV+script 完整串口录制（对齐 `qemu-evidence-capture.md`
+  统一采集模式）；debugfs 段"冻结 hash"措辞改为"保持原盘不变"；证据精简原则补充
+  统一采集命令行模式指引。
 - 2026-08-17：新增「直接挂载注入」备用路径（debugfs 离线写入 + mount -o loop 直挂），
   供 guest `wget` 网络挂起/下载失败时离线跑 probe/回归 payload 做数据面判断；排障表
   增加 `wget` 挂起到 R55 分层诊断 + 备用路径的指引；回滚段补充诊断盘副本/挂载目录清理。

@@ -49,7 +49,7 @@ python3 -m http.server 18765 --bind 0.0.0.0
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
 EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/004-rework
-script -q -f "$EV/qemu-serial.log" -c \
+script -q -e -f "$EV/qemu-serial.log" -c \
 'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0 -nographic'
 ```
 
@@ -66,7 +66,8 @@ chmod +x /tmp/ms05_data_plane_probe
 ### 4. 六个模式
 
 每个模式：先启动 host stimulus（Terminal C），再在 guest 跑对应命令。host stimulus
-每个模式需重启一次（一次服务一个 exchange）。
+每个模式需重启一次（一次服务一个 exchange）。Terminal C先执行`set -o pipefail`，确保stimulus失败
+不会被`tee`的exit 0掩盖。
 
 - snapshot：
 
@@ -155,13 +156,13 @@ slot-full/descriptor-full Full→recovery 闭合；flush `flush_ok=1`。
 | 任一模式缺终态 PASS、超时、中断、账本不闭合 | 产品失败；保存该模式原始串口与 host 输出，停止后续，不进入兼容/归档。 |
 | `wget: Connection refused` | HTTP server 必须 `--bind 0.0.0.0`。 |
 | `wget` 挂起 | 数据面问题；用 R55 分层诊断，或 debugfs 离线注入探针。 |
-| `Address already in use` 15557 | 上一个 host stimulus 未退出；等待或 `pkill -f ms05_data_plane_stimulus.py`。 |
+| `Address already in use` 15557 | 上一个host stimulus未退出；先用`pgrep -af ms05_data_plane_stimulus.py`核对，再对确认的单个PID执行`kill <PID>`。 |
 
 ## 回滚
 
 - Guest `/tmp` payload 随 QEMU 退出丢失，无需回滚。
 - 退出 QEMU `Ctrl-A X`；停止 host 命令 `Ctrl-C`。
-- 进程残留 `pkill -f qemu-system-riscv64`；host stimulus `pkill -f ms05_data_plane_stimulus.py`。
+- 进程残留先用`pgrep -af`核对完整命令，再对确认的QEMU或stimulus单个PID执行`kill <PID>`。
 - 证据精简豁免：不再保存几百个 gate 日志 / 几万行原始日志 / hash 值；只保留必要的
   每模式串口 marker 摘录、host 结果和退出码（见 R44 证据精简原则）。
 

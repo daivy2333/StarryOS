@@ -35,7 +35,7 @@
 
 ## 6. 自动集成资格
 
-- [ ] 6.1 依次运行ordinary和qemu-diagnostics axnet默认并行全量tests、100×lost-wakeup/lock竞争、MS01 socket、MS04 snapshot/idle/nudge/burst、MS05双向/Full/flush、MS06 seam/validator、root QEMU与受支持D1 checks、fmt/source assertions、strict OpenSpec和full diff review。记录命令、决定性输出和exit；不得再用已知flake豁免、隔离重跑或串行full suite替代默认并行Gate，任一产品、compile、assert、ownership或review failure都阻止进入QEMU runtime。生成与当前working tree匹配的probe和QEMU artifact，不使用历史产物。
+- [x] 6.1 依次运行ordinary和qemu-diagnostics axnet默认并行全量tests、100×lost-wakeup/lock竞争、MS01 socket、MS04 snapshot/idle/nudge/burst、MS05双向/Full/flush、MS06 seam/validator、root QEMU与受支持D1 checks、fmt/source assertions、strict OpenSpec和full diff review。记录命令、决定性输出和exit；不得再用已知flake豁免、隔离重跑或串行full suite替代默认并行Gate，任一产品、compile、assert、ownership或review failure都阻止进入QEMU runtime。生成与当前working tree匹配的probe和QEMU artifact，不使用历史产物。完成于 Iteration 007 Cycle `000-initial`（2026-08-27）：automatic Gates 与 fresh artifacts PASS；ordinary full suite 曾在20×窗口第16次出现SIGSEGV，随后30/30未复现，用户明确豁免该残余风险；Plan Review `accepted`。
 
 ## 7. 单 hart QEMU 验收
 
@@ -144,10 +144,10 @@
 
 ## Current Cycle
 
-- Current Iteration: `007-automatic-integration-qualification`
+- Current Iteration: `008-single-hart-qemu-acceptance`
 - Cycle: `000-initial.md`
-- Persisted Evidence: none
-- Previous Cycle: Iteration 006 `001-rework.md` Act `reported`，Plan Review `accepted`；Tasks 5.1-5.2完成，host default-parallel Gate可信。
+- Persisted Evidence: required（README + bounded runtime marker/host-result extracts；完整串口先作为人工输入审查，入库受公共500行/256 KiB限制）
+- Previous Cycle: Iteration 007 `000-initial.md` Act `reported`，Plan Review `accepted`；Task 6.1完成，残余SIGSEGV由用户明确豁免，fresh runtime artifacts已生成。
 - Gate 2: `000-initial.md` 技术检查项 PASS；Plan status `draft`，等待用户审计和明确批准，未授权`openspec-act`。
-- Initial scope: Task 6.1；运行自动功能/ownership/build/format/OpenSpec/full diff Gates并重建当前工作树匹配的QEMU与probe artifacts；不启动QEMU runtime。
-- Deferred Iterations: 008 Tasks 7.1-7.2（single-hart QEMU验收）。自动Gate任一失败都阻止进入runtime。
+- Initial scope: Tasks 7.1-7.2；按R44/R58由用户在single-hart、单VirtIO-MMIO NIC QEMU中手工运行MS06应用见证和MS01/MS04/MS05回归，随后由Act/Plan核对完整marker、exit、telemetry与最终diff。
+- Deferred Iterations: None。
