@@ -161,7 +161,7 @@ SERVICE
 2. 在SocketSet guard内把bridge waker登记到smoltcp recv/send slot。
 3. 释放guard后重检 `poll()`；若已ready，wake对应PollSet。
 
-runner观察稳定全局fault后从registry取得Arc快照，释放registry lock，再wake全部terminal/read/write sets。这样wake callback不会在registry或Service guard内执行。
+runner观察稳定全局fault后先把code提交到`SocketSetWrapper`的first-wins global terminal，再从registry取得Arc快照，释放registry lock，无条件wake快照中每个bridge的terminal/read/write sets。`ReadinessBridge`中的terminal code只保存socket-local error，不复制或覆盖global code；public poll和I/O每次都从wrapper global与bridge local组成effective terminal snapshot，global优先。这样已有local error的socket仍会收到global wake，late socket在对外可见后的第一次snapshot也能观察同一个global code，且wake callback不会在registry或Service guard内执行。
 
 **Reason**：smoltcp每方向只有一个waker，适合指向一个扇出集合；application waiter不应互相覆盖。registry使设备级fatal可到达所有public IP sockets，而无需修改smoltcp或建立容量64的全局共享热点。
 
@@ -208,11 +208,15 @@ runner观察稳定全局fault后从registry取得Arc快照，释放registry lock
 | UDP closed | `HUP` | recv/send返回关闭错误 |
 | stable data-plane fault | `ERR`（所有IP socket） | 操作返回稳定DevError→AxError映射 |
 
-连接级错误保存在socket-local terminal state；设备级fatal使用D6 registry广播的稳定code。`OUT`不再由`!may_send`伪造。`poll_io`和epoll已有外层check-register-recheck，bridge内部仍按D6重臂，两个层次共同关闭race。
+连接级错误保存在socket-local terminal state；设备级fatal使用D6 registry广播的稳定code。global与local分别first-wins，effective snapshot始终让global优先。所有blocking I/O的`poll_io`重试闭包都必须重新读取effective terminal，API入口还必须在地址、绑定、状态检查或协议提交前读取一次，保证调用前已存在的fatal不被`NotConnected`、`WouldBlock`或隐式bind覆盖。
+
+smoltcp方向waker只提供状态变化后的recheck机会，不承载连接错误code。TCP connect失败可由该hint先唤醒；application recheck必须先提交socket-local错误，再返回`OUT|ERR`或completion错误。稳定data-plane fatal不同：wrapper global code是publication线性化点，必须先提交code，再执行registry快照和全部bridge wake。
+
+`OUT`不再由`!may_send`伪造。`poll_io`和epoll已有外层check-register-recheck，bridge内部仍按D6重臂，两个层次共同关闭race。
 
 **Reason**：当前TCP把`!may_send`当OUT，会让关闭连接看似可写；RDHUP只观察本地flag；UDP关闭后返回空events。显式snapshot让poll与send/recv/accept共用判定来源。
 
-**Impact**：`GeneralOptions::Error`仍不在本轮扩展为完整Linux `SO_ERROR`消费语义；但blocking/nonblocking操作必须读取同一terminal state并返回稳定错误。若实现发现兼容必须依赖SO_ERROR消费，停止并返回Plan重规划。
+**Impact**：`GeneralOptions::Error`仍不在本轮扩展为完整Linux `SO_ERROR`消费语义；已保存的连接错误保持非消费读取。blocking/nonblocking操作必须读取同一effective terminal并返回稳定错误。若实现发现兼容必须依赖SO_ERROR消费，停止并返回Plan重规划。
 
 **Alternatives**：
 
@@ -235,11 +239,13 @@ runner观察稳定全局fault后从registry取得Arc快照，释放registry lock
 
 **Decision**：Iteration内先建立确定性host/model tests，再运行单hartQEMU。新增MS06 guest probe覆盖无需主动poll的timer/traffic progress、poll/select/epoll多waiter、64/65 overflow、listener、close/error和fixed deadline；复用MS01 socket payload与MS04/MS05 probe模式做回归，不扩建I16 benchmark。
 
+`poll`、`select` 和 `epoll_wait` 的 replacement wake 在内核 `poll_io` 中只触发 readiness recheck；状态仍未 ready 时 syscall 重新注册并保持 Pending，不向用户态返回 empty event。因此 guest 不得等待 pre-data replacement notification。exact 64/65 场景改用每 waiter 独立 epoll instance：worker 完成同步 `epoll_ctl(ADD)` 后报告 arm，parent 收齐精确 64/65 个 arm 才发布与 waiter 数相同的 consumable units。第65次同步注册触发既有PollSet wake-on-replacement；host/model与 `Epoll::consume(NoEvent) → register_waker_only()` 证明no-event recheck/re-register，guest证明所有distinct waiter最终各完成一次。两类证据共同闭合容量边界，不把内核内部wake伪装为用户态事件。
+
 QEMU runtime原始命令和marker写入Act Response；本计划默认 `Persisted Evidence: none`，除非执行时发现运行不可低成本复现并经Plan重新批准。任何历史artifact只作基线参考，不能替代当前revision结果。
 
 **Reason**：host tests能穷举generation和budget交错，但不能证明axtask timer、VirtIO device-model IRQ、queue task、runner和syscall waiter的完整调度链。反过来，单次QEMU成功不能穷举lost-wakeup。
 
-**Impact**：自动Gate包括ordinary/qemu-diagnostics axnet tests、kernel QEMU check、受支持root feature checks、probe self-tests、fmt、strict OpenSpec、source assertions和full diff review。runtime结论只覆盖单hartQEMU。
+**Impact**：验证分成三个后续Iteration。guest witness先独立闭合marker协议、核心socket场景、普通poll/select/epoll multiwaiter，以及epoll同步注册的64/65容量场景；自动资格随后运行ordinary/qemu-diagnostics axnet tests、kernel QEMU check、受支持root feature checks、probe self-tests、fmt、strict OpenSpec、source assertions和full diff review；最后才运行人工单hartQEMU。runtime结论只覆盖单hartQEMU。
 
 **Alternatives**：
 

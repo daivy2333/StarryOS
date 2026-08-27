@@ -23,7 +23,7 @@ use crate::{
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    readiness::ReadinessBridge,
+    readiness::{self, ReadinessBridge, TERMINAL_NONE, effective_terminal_code, terminal_ax_error},
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
@@ -70,6 +70,142 @@ impl UdpSocket {
             Some(addr) => addr.ok_or(AxError::NotConnected),
             None => Err(AxError::NotConnected),
         }
+    }
+
+    /// Task 3.1: effective stable terminal code — the global data-plane
+    /// fault takes precedence over the socket-local terminal.
+    fn terminal_code(&self) -> u64 {
+        effective_terminal_code(
+            SOCKET_SET.global_terminal_code(),
+            self.readiness.terminal_code(),
+        )
+    }
+
+    fn observe_terminal_error(&self) -> Option<AxError> {
+        let code = self.terminal_code();
+        if code == TERMINAL_NONE {
+            return None;
+        }
+        let err = terminal_ax_error(code);
+        self.general.record_socket_error(&err);
+        Some(err)
+    }
+}
+
+/// Peer-matching policy for one receive attempt (module-level so the
+/// attempt is an extractable, testable path).
+enum ExpectedRemote<'a> {
+    Any(&'a mut SocketAddrEx),
+    Expecting(IpEndpoint),
+    Ignore,
+}
+
+impl UdpSocket {
+    /// Single receive attempt shared verbatim by the blocking poll_io
+    /// closure and model witnesses: dequeues at most one datagram into
+    /// `dst`, matching `expected_remote` when a peer is pinned.
+    fn try_recv_once(
+        &self,
+        dst: &mut impl Write,
+        expected_remote: &mut ExpectedRemote<'_>,
+        flags: RecvFlags,
+    ) -> AxResult<usize> {
+        // Task 3.2: every retry observes the effective terminal, so a fatal
+        // landing between attempts returns its stable category instead of
+        // another WouldBlock.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
+        self.with_smol_socket(|socket| {
+            if !socket.is_open() {
+                // not bound
+                Err(ax_err_type!(NotConnected))
+            } else if !socket.can_recv() {
+                info!("UDP socket {}: recv recheck WouldBlock", self.handle);
+                Err(AxError::WouldBlock)
+            } else {
+                let result = if flags.contains(RecvFlags::PEEK) {
+                    socket.peek().map(|(data, meta)| (data, *meta))
+                } else {
+                    socket.recv()
+                };
+                match result {
+                    Ok((src, meta)) => {
+                        match expected_remote {
+                            ExpectedRemote::Any(remote_addr) => {
+                                **remote_addr = SocketAddrEx::Ip(meta.endpoint.into());
+                            }
+                            ExpectedRemote::Expecting(expected) => {
+                                if (!expected.addr.is_unspecified()
+                                    && expected.addr != meta.endpoint.addr)
+                                    || (expected.port != 0 && expected.port != meta.endpoint.port)
+                                {
+                                    return Err(AxError::WouldBlock);
+                                }
+                            }
+                            ExpectedRemote::Ignore => {}
+                        }
+
+                        let read = dst.write(src)?;
+                        if read < src.len() {
+                            warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
+                        }
+                        info!("UDP socket {}: recv {} bytes", self.handle, read);
+
+                        Ok(if flags.contains(RecvFlags::TRUNCATE) {
+                            src.len()
+                        } else {
+                            read
+                        })
+                    }
+                    Err(smol::RecvError::Exhausted) => Err(AxError::WouldBlock),
+                    Err(smol::RecvError::Truncated) => {
+                        unreachable!("UDP socket recv never returns Err(Truncated)")
+                    }
+                }
+            }
+        })
+    }
+
+    /// Single send attempt shared verbatim by the blocking poll_io closure
+    /// and model witnesses: reads the effective terminal first, then
+    /// enqueues at most one datagram.
+    fn try_send_once<S: Read + IoBuf>(
+        &self,
+        src: &mut S,
+        remote_addr: IpEndpoint,
+        source_addr: IpAddress,
+    ) -> AxResult<usize> {
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
+        self.with_smol_socket(|socket| {
+            if !socket.is_open() {
+                // not connected
+                Err(ax_err_type!(NotConnected))
+            } else if !socket.can_send() {
+                Err(AxError::WouldBlock)
+            } else {
+                let buf = socket
+                    .send(
+                        src.remaining(),
+                        UdpMetadata {
+                            endpoint: remote_addr,
+                            local_address: Some(source_addr),
+                            meta: PacketMeta::default(),
+                        },
+                    )
+                    .map_err(|e| match e {
+                        smol::SendError::BufferFull => AxError::WouldBlock,
+                        smol::SendError::Unaddressable => {
+                            ax_err_type!(ConnectionRefused, "unaddressable")
+                        }
+                    })?;
+                let read = src.read(buf)?;
+                assert_eq!(read, buf.len());
+                Ok(read)
+            }
+        })
     }
 }
 
@@ -151,6 +287,11 @@ impl SocketOps for UdpSocket {
     }
 
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+        // Task 3.2: a preexisting effective fatal precedes address parsing,
+        // implicit bind and the peer-endpoint commit.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         let remote_addr = remote_addr.into_ip()?;
         let mut guard = self.peer_addr.write();
         if self.local_addr.read().is_none() {
@@ -169,6 +310,11 @@ impl SocketOps for UdpSocket {
     }
 
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+        // Task 3.2: a preexisting effective fatal precedes remote-address
+        // resolution and any implicit bind.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         let (remote_addr, source_addr) = match options.to {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
@@ -188,33 +334,7 @@ impl SocketOps for UdpSocket {
             )))?;
         }
         self.general.send_poller(self, || {
-            let result = self.with_smol_socket(|socket| {
-                if !socket.is_open() {
-                    // not connected
-                    Err(ax_err_type!(NotConnected))
-                } else if !socket.can_send() {
-                    Err(AxError::WouldBlock)
-                } else {
-                    let buf = socket
-                        .send(
-                            src.remaining(),
-                            UdpMetadata {
-                                endpoint: remote_addr,
-                                local_address: Some(source_addr),
-                                meta: PacketMeta::default(),
-                            },
-                        )
-                        .map_err(|e| match e {
-                            smol::SendError::BufferFull => AxError::WouldBlock,
-                            smol::SendError::Unaddressable => {
-                                ax_err_type!(ConnectionRefused, "unaddressable")
-                            }
-                        })?;
-                    let read = src.read(buf)?;
-                    assert_eq!(read, buf.len());
-                    Ok(read)
-                }
-            });
+            let result = self.try_send_once(&mut src, remote_addr, source_addr);
             if result.is_ok() {
                 crate::stack_runner::publish_software_work();
             }
@@ -223,15 +343,16 @@ impl SocketOps for UdpSocket {
     }
 
     fn recv(&self, mut dst: impl Write, options: RecvOptions) -> AxResult<usize> {
+        // Task 3.1: terminal-first, before the bound pre-check, so a
+        // committed fault surfaces as its stable category on any affected
+        // socket.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         if self.local_addr.read().is_none() {
             ax_bail!(NotConnected);
         }
 
-        enum ExpectedRemote<'a> {
-            Any(&'a mut SocketAddrEx),
-            Expecting(IpEndpoint),
-            Ignore,
-        }
         let mut expected_remote = match options.from {
             Some(addr) => ExpectedRemote::Any(addr),
             None => match *self.peer_addr.read() {
@@ -241,56 +362,7 @@ impl SocketOps for UdpSocket {
         };
 
         self.general.recv_poller(self, || {
-            let result = self.with_smol_socket(|socket| {
-                if !socket.is_open() {
-                    // not bound
-                    Err(ax_err_type!(NotConnected))
-                } else if !socket.can_recv() {
-                    info!("UDP socket {}: recv recheck WouldBlock", self.handle);
-                    Err(AxError::WouldBlock)
-                } else {
-                    let result = if options.flags.contains(RecvFlags::PEEK) {
-                        socket.peek().map(|(data, meta)| (data, *meta))
-                    } else {
-                        socket.recv()
-                    };
-                    match result {
-                        Ok((src, meta)) => {
-                            match &mut expected_remote {
-                                ExpectedRemote::Any(remote_addr) => {
-                                    **remote_addr = SocketAddrEx::Ip(meta.endpoint.into());
-                                }
-                                ExpectedRemote::Expecting(expected) => {
-                                    if (!expected.addr.is_unspecified()
-                                        && expected.addr != meta.endpoint.addr)
-                                        || (expected.port != 0
-                                            && expected.port != meta.endpoint.port)
-                                    {
-                                        return Err(AxError::WouldBlock);
-                                    }
-                                }
-                                ExpectedRemote::Ignore => {}
-                            }
-
-                            let read = dst.write(src)?;
-                            if read < src.len() {
-                                warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
-                            }
-                            info!("UDP socket {}: recv {} bytes", self.handle, read);
-
-                            Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                                src.len()
-                            } else {
-                                read
-                            })
-                        }
-                        Err(smol::RecvError::Exhausted) => Err(AxError::WouldBlock),
-                        Err(smol::RecvError::Truncated) => {
-                            unreachable!("UDP socket recv never returns Err(Truncated)")
-                        }
-                    }
-                }
-            });
+            let result = self.try_recv_once(&mut dst, &mut expected_remote, options.flags);
             if result.is_ok() && !options.flags.contains(RecvFlags::PEEK) {
                 crate::stack_runner::publish_software_work();
             }
@@ -328,7 +400,11 @@ impl SocketOps for UdpSocket {
 impl Pollable for UdpSocket {
     fn poll(&self) -> IoEvents {
         let bound = self.local_addr.read().is_some();
-        self.with_smol_socket(|socket| udp_readiness(socket, bound))
+        let mut events = self.with_smol_socket(|socket| udp_readiness(socket, bound));
+        if self.terminal_code() != TERMINAL_NONE {
+            events.insert(IoEvents::ERR);
+        }
+        events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
@@ -336,7 +412,10 @@ impl Pollable for UdpSocket {
         let bound = self.local_addr.read().is_some();
         let ready = self.with_smol_socket(|socket| {
             let slot_ready = self.readiness.rearm(socket, events);
-            let full = udp_readiness(socket, bound);
+            let mut full = udp_readiness(socket, bound);
+            if self.terminal_code() != TERMINAL_NONE {
+                full.insert(IoEvents::ERR);
+            }
             slot_ready | (full & events)
         });
         self.readiness.wake(ready);
@@ -456,21 +535,55 @@ mod tests {
         assert!(!events.contains(IoEvents::HUP));
     }
 
-    #[test]
-    fn closed_socket_reports_hup_and_no_io() {
-        let mut socket = new_udp_socket();
-        socket
-            .bind(IpListenEndpoint {
-                addr: None,
-                port: 9001,
-            })
-            .unwrap();
-        socket.close();
-        let events = udp_readiness(&socket, true);
+    // ── Task 3.1: terminal readiness overlay and terminal-first I/O ─────
 
-        assert!(events.contains(IoEvents::HUP));
-        assert!(!events.contains(IoEvents::IN));
-        assert!(!events.contains(IoEvents::OUT));
+    use axerrno::AxError;
+    use axpoll::Pollable;
+
+    use super::UdpSocket;
+    use crate::{
+        options::{Configurable, SetSocketOption},
+        readiness,
+    };
+
+    #[test]
+    fn normal_udp_states_stay_free_of_device_err() {
+        let mut raw = new_udp_socket();
+        raw.bind(IpListenEndpoint {
+            addr: None,
+            port: 9050,
+        })
+        .unwrap();
+        assert!(!udp_readiness(&raw, true).contains(IoEvents::ERR));
+        raw.close();
+        assert!(!udp_readiness(&raw, true).contains(IoEvents::ERR));
+    }
+
+    #[test]
+    fn terminal_commit_surfaces_err_on_poll() {
+        let socket = UdpSocket::new();
+        assert!(Pollable::poll(&socket).is_empty());
+
+        socket
+            .readiness
+            .commit_terminal(readiness::TERMINAL_BAD_STATE);
+
+        let events = Pollable::poll(&socket);
+        assert!(events.contains(IoEvents::ERR));
+    }
+
+    #[test]
+    fn terminal_guard_maps_committed_codes_for_udp_io() {
+        let socket = UdpSocket::new();
+        assert_eq!(socket.observe_terminal_error(), None);
+
+        socket
+            .readiness
+            .commit_terminal(readiness::TERMINAL_CONNECT_REFUSED);
+        assert_eq!(
+            socket.observe_terminal_error(),
+            Some(AxError::ConnectionRefused)
+        );
     }
 
     #[test]
@@ -494,5 +607,73 @@ mod tests {
         let events = udp_readiness(&socket, true);
         assert!(events.contains(IoEvents::OUT));
         assert!(!events.contains(IoEvents::HUP));
+    }
+
+    // ── Task 3.2: per-attempt effective terminal and entry ordering ─────
+
+    use core::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use crate::{RecvFlags, SendOptions, SocketAddrEx, SocketOps};
+
+    #[test]
+    fn fatal_between_attempts_makes_second_attempt_return_stable_error() {
+        let socket = UdpSocket::new();
+        SocketOps::bind(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9061)),
+        )
+        .unwrap();
+
+        let mut remote = super::ExpectedRemote::Ignore;
+        let mut sink = std::vec::Vec::<u8>::new();
+
+        let first = socket.try_recv_once(&mut sink, &mut remote, RecvFlags::empty());
+        assert_eq!(first.unwrap_err(), AxError::WouldBlock);
+
+        // A data-plane fault commits between attempt one and attempt two;
+        // the same effective-terminal read serves a global publication.
+        socket.readiness.commit_terminal(readiness::TERMINAL_IO);
+
+        let second = socket.try_recv_once(&mut sink, &mut remote, RecvFlags::empty());
+        assert_eq!(
+            second.unwrap_err(),
+            AxError::Io,
+            "the retry must observe the effective terminal instead of re-Pending on WouldBlock"
+        );
+    }
+
+    #[test]
+    fn send_entry_reports_preexisting_terminal_before_address_work() {
+        let socket = UdpSocket::new(); // unbound: address work would fail or bind implicitly
+        socket.readiness.commit_terminal(readiness::TERMINAL_IO);
+
+        let err = SocketOps::send(&socket, &b"ab"[..], SendOptions::default()).unwrap_err();
+        assert_eq!(err, AxError::Io);
+        assert!(
+            socket.local_addr.read().is_none(),
+            "no implicit bind may happen under a preexisting fatal"
+        );
+    }
+
+    #[test]
+    fn connect_entry_reports_preexisting_terminal_before_peer_commit() {
+        let socket = UdpSocket::new();
+        socket
+            .readiness
+            .commit_terminal(readiness::TERMINAL_CONNECT_REFUSED);
+
+        let err = SocketOps::connect(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                9000,
+            )),
+        )
+        .unwrap_err();
+        assert_eq!(err, AxError::ConnectionRefused);
+        assert!(
+            socket.peer_addr.write().is_none(),
+            "peer endpoint must stay unset under a preexisting fatal"
+        );
     }
 }

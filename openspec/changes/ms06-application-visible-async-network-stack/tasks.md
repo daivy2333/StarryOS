@@ -17,12 +17,30 @@
 - [x] 2.7 在本地`crates/smoltcp/src/socket/udp.rs`和axnet `udp.rs`/`service.rs`/`stack_runner.rs`闭合UDP queued-TX drain ownership。WHY 是`can_send()`表示TX未满而非pending TX，当前UDP drop/reaper会丢包或泄漏。HOW 是先为smoltcp增加只读`has_pending_tx()`及空/单包/dispatch RED→GREEN tests，再让UDP drop只在真实pending TX时提交`UdpQueued`、修正verdict顺序和egress后有界重检；host/model证明send→drop→peer receive→reap、empty drop立即回收和stale/retyped安全。EXPECTED 是已提交datagram由唯一runner派发，raw handle在drain后恰好回收一次，quiet sweep不busy-wake。若需要同步drop派发、axnet影子TX ledger、修改smoltcp dequeue/wire语义、scheduler、SO_LINGER或reset/cancellation，停止返回Plan。
 - [x] 2.8 在listener head-signal、stack-runner host/model tests与`tests/ms01_socket_baseline.c`建立确定性的concurrent-SYN、backlog overflow/recovery兼容证据。WHY 是单个idle hidden socket在同一32-packet ingress batch的首个SYN后不会及时refill，后续SYN即使backlog有空间也被smoltcp RST；尚未判定的overflow SYN还会与recovery SYN竞争accept释放的新headroom。HOW 是先以同batch双SYN复现第二连接被拒，改用hidden waker登记精确、去重且预留容量的listener-head signal，并在每个ingress packet后最多执行一个O(1) head transition/refill/rearm；主listener sweep仍每round一次、共享32-token cursor。保留Cycle 000的overflow终态、exact-512和guest deadline/14-marker改动，fresh QEMU重新运行diagnostic与完整MS01。EXPECTED 是backlog仍为512，同batch相邻SYN不因瞬时无idle被RST，overflow与recovery分项判定，single-hart QEMU diagnostic single/fork及MS01 14/14+END全部通过。若signal不能在不分配、不丢失、不反向取锁的情况下精确路由，必须预分配idle pool、提高backlog、恢复全表扫描、sleep/caller-driven poll或修改scheduler/reset契约，停止返回Plan。完成于 Cycle `001-replan`（2026-08-26）：ordinary 326/326 + diagnostics 346/346 全绿，用户手动 QEMU diagnostic single/fork PASS 且 MS01 14/14（含 tcp-adjacent）START/END 齐全；Act Response 见 `iterations/003-backlog-and-ms01-runtime-compatibility/001-replan.md`。
 
-## 3. Terminal readiness 与单 hart QEMU 验收
+## 3. Terminal readiness 闭合
 
-- [ ] 3.1 在 `readiness.rs`、`wrapper.rs`、`general.rs`、`flush.rs`、`service.rs`、`async_rx.rs`、`tcp.rs`、`udp.rs` 和`listen_table.rs` 加入socket-local terminal state、stable DevError→AxError映射和fault-before-wake全registry广播。WHY 是close、connect failure、listener reset和queue fatal必须唤醒所有waiter并让下一I/O返回匹配错误，且fault后新增socket也不能漏失终态；HOW 是先写connect failure `OUT|ERR`、listener reset `IN|ERR`、normal EOF/HUP、UDP close、fault无waiter/多waiter/重复publish/late-add、wake观察已提交code RED tests，再复用单一DevError编码并实现first-wins global/socket transition、snapshot解锁后wake和late socket继承；EXPECTED 是正常close不误报设备ERR，fatal不隐藏为WouldBlock/Full且Faulted不回退polling。运行terminal matrix、MS05 fatal/flush和100×publication ordering tests；若需要完整Linux SO_ERROR消费或reset semantics才能稳定错误，停止返回Plan。
-- [ ] 3.2 在 `tests/ms06_stack_readiness_probe.c`（新文件）、对应host seam test和纯输出marker validator中建立fixed-deadline application witness，覆盖无需主动poll的TCP/UDP/listener、poll/select/epoll多waiter、64/65 overflow、timer progress、quiet、continuous traffic和close/error。WHY 是host model不能证明VirtIO IRQ→queue task→runner→syscall waiter完整链；HOW 是先以fake platform让缺marker、超时、partial success和主动poll调用RED，再实现每场景唯一PASS/FAIL marker、环境/revision/exit输出并复用MS01/MS04/MS05启动模式；validator只校验用户手工运行所得输出，不得启动QEMU或驱动guest shell。EXPECTED 是所有场景分项判定且probe不调用axnet内部poll。运行C syntax/seam/validator self-tests与kernel QEMU build；若必须扩建I16 benchmark、依赖SMP或无法在fixed deadline区分overflow/quiet，停止返回Plan。
-- [ ] 3.3 依次运行ordinary和qemu-diagnostics axnet全量tests、100×lost-wakeup/lock竞争、MS01 socket、MS04 snapshot/idle/nudge/burst、MS05双向/Full/flush回归、probe self-tests、root QEMU与受支持D1 checks、fmt/source assertions、strict OpenSpec和full diff review。WHY 是QEMU runtime前必须关闭功能、ownership和兼容Gate；HOW 是记录每条命令、revision和exit到Act Response，任一产品/compile/assert/review失败立即停止且不把既有无效standalone D1命令当产品failure；EXPECTED 是无Missing、无未批准Simplified、Critical/Important finding为零且生成当前QEMU artifact。不得修改全局文档、归档change或用历史artifact替代当前结果。
-- [ ] 3.4 在单hart、单VirtIO-MMIO NIC QEMU中运行MS06 probe与受影响MS01/MS04/MS05 runtime场景，核对runner三源wake、Active quiet、budget self-yield、多waiter/overflow、listener、close/error和网络功能。WHY 是只有真实axtask timer和QEMU device model能证明应用可见链路；HOW 是使用Task 3.2 fixed deadline/marker，保留完整serial/host stimulus/commands/environment/revision/exit于Act Response并执行最终full diff review；EXPECTED 是全部分项PASS且结论只覆盖单hartQEMU。超时、缺marker、partial telemetry、用户中断或环境阻塞必须记为未完成/blocked，不能提升为PASS或扩大到SMP/真板/性能。
+- [x] 3.1 在 `readiness.rs`、`wrapper.rs`、`flush.rs`、`service.rs`、`async_rx.rs` 和 `stack_runner.rs` 分离socket-local与global terminal所有权。WHY 是Cycle 000把global code写入first-wins local slot，导致已有local error的bridge可能跳过global wake；HOW 是保留wrapper first-wins global code和bridge first-wins local code，global提交后快照registry、解锁并无条件wake全部bridge，poll/I/O用global优先的effective snapshot；EXPECTED 是0/1/2/64/65 waiter、重复publish、add/install并发和late socket都观察同一个global category，wake callback看到已提交global code。以Cycle 000现有实现为变更前见证，新增local-before-global RED test后修正；运行两profile targeted与full suites。若正确性需要覆盖local code、持registry锁wake、增加第二个global registry或引入reset epoch，停止返回Plan。完成于 Iteration 004 Cycle `001-replan`（2026-08-26）：true RED→GREEN，ordinary 357/357，focused publication ×100 全过，Act Response 见 `iterations/004-terminal-readiness-and-qemu-acceptance/001-replan.md`。
+- [x] 3.2 在 `general.rs`、`tcp.rs`、`udp.rs`、`listen_table.rs` 和readiness tests闭合terminal-first I/O与connect/listener语义。WHY 是Cycle 000的UDP blocking recv只在进入函数时检查terminal，fault唤醒后的poll_io重试仍可再次Pending；HOW 是让send/recv/connect/accept在API入口和每次blocking重试都读取同一effective terminal，global fatal先于地址/绑定/状态检查和协议提交，connect的smoltcp wake只作recheck hint，recheck先提交local error再暴露`OUT|ERR`，listener Reset仍为一次性`IN|ERR`。EXPECTED 是normal EOF/HUP无设备ERR，global优先于local错误，所有后续I/O返回相同映射类别，不出现WouldBlock/Full/NotConnected遮蔽或永久Pending。把实际poll_io闭包使用的单次I/O attempt提取为可测试路径，以“首次WouldBlock→发布fatal→第二次调用返回稳定错误”的model witness覆盖fault-during-wait；另加connect hint→commit→result和listener consume-once RED tests。运行两profile terminal matrix、MS05 fatal/flush和100×ordering。若必须运行host axtask scheduler、实现完整Linux SO_ERROR消费、引入message passing或修改scheduler/reset/cancellation语义，停止返回Plan。完成于 Iteration 004 Cycle `001-replan`（2026-08-26）：UDP two-attempt model 与入口次序 5 项 true RED→GREEN，attempt 提取为 `try_recv_once`/`try_send_once`，focused terminal ×100 单线程全过，Act Response 见同上。
+
+## 4. Application witness 构建
+
+- [x] 4.1 新建纯输出marker validator及self-tests，固定MS06 START、revision、环境、12个唯一case PASS/FAIL、END和exit协议。validator只读取用户保存的输出；任何PASS/FAIL/MS06 protocol marker在START前、合法phase外、END后或exit后出现，以及缺失、重复、乱序、超时、partial success和exit不一致都必须失败；普通shell/serial noise可保留，不得启动QEMU或驱动guest shell。完成于 Iteration 005 Cycle `002-replan`（2026-08-27）：统一trim分类并按完整物理行识别唯一START/END；pre-START、phase、前导空白、边界子串、metadata、12-case和exit正反矩阵通过独立复审。
+- [x] 4.2 新建`tests/ms06_stack_readiness_probe.c`及host seam，覆盖tcp-timer、udp-progress、listener、nonblock-connect-error、quiet、continuous-traffic和close-error。每个mode使用monotonic fixed deadline，不调用axnet内部poll，不以sleep作为正确性条件；host seam、C syntax和RISC-V static build通过后形成可运行artifact。Cycle `001-rework` 修复AF_INET loopback UDP endpoint与quiet read/terminal interest；Plan Review已接受该部分结果，后续replan不得重做。
+- [x] 4.3 在同一probe中加入普通poll/select/epoll multiwaiter及exact waiter-64/waiter-65-reregister。普通场景证明不同waiter在event-before-register下最终完成；exact 64/65场景中每个不同进程先用独立epoll instance同步执行`epoll_ctl(ADD)`并报告arm，parent收齐精确arm数后才发布N=waiter数的consumable units。第65次注册的replacement/no-event recheck/re-register由既有PollSet host/model与epoll内核路径证明，guest证明65个distinct waiter最终各完成一次；不得等待用户态empty-event notification、降低并发或用final record count代替trigger-unit witness。完成于 Iteration 005 Cycle `002-replan`（2026-08-27）：exact 64/65 切 MS06_WAIT_EPOLL，worker 私有 epoll 同步 ADD 后写 'A' arm，parent 收齐 N arms 且 units==waiters 才发布，26 项 seam（含 63/64、64/64、64/65、65/65、N-1/N、错误 mode、duplicate/partial/double）×2 全过。
+
+## 5. Host 测试隔离与确定性
+
+- [ ] 5.1 依据R57 Incident定位并修复并行axnet测试共享进程级`SOCKET_SET`/`LISTEN_TABLE`产生的陈旧handle、hashbrown断言和SIGSEGV/SIGABRT。WHY 是当前并行full suite会制造假RED且存在host测试进程内存不安全，不能作为自动资格的可信前置；HOW 是先保持现有失败子集和Cycle 000产品对照建立确定性RED/归因，再优先把socket registry、listener table和fault sink改为per-test实例注入，只有能覆盖全部读写方时才允许统一串行边界；EXPECTED 是既有并行失败子集、add/remove/iterate churn和ordinary full suite重复运行均无invalid handle、panic或进程信号，同时产品static singleton、handle生命周期和锁序不变。若根因要求修改产品socket语义、PollSet容量、scheduler或reset/cancellation，停止返回Plan。
+- [ ] 5.2 将qemu-diagnostics的`reclaim_hold_drains_to_real_driver_full_without_observing_again`单独归因并消除flake，不预设其与Task 5.1同根。WHY 是该测试隔离运行恒过、并行full suite偶发失败，可能是diagnostic state、fake clock、telemetry或其他全局读写污染；HOW 是先用读写方矩阵和并行最小复现确定共享边，再优先注入每test独立`DiagnosticState`/clock/telemetry依赖，禁止通过skip、ignore、无限重跑或仅把full suite改为串行掩盖；EXPECTED 是ordinary和qemu-diagnostics默认并行full suites及focused交错重复稳定通过，失败时仍保留真实产品回归检测能力。若证据证明它与5.1同根可共享实现，但必须保留两套独立Acceptance见证。
+
+## 6. 自动集成资格
+
+- [ ] 6.1 依次运行ordinary和qemu-diagnostics axnet默认并行全量tests、100×lost-wakeup/lock竞争、MS01 socket、MS04 snapshot/idle/nudge/burst、MS05双向/Full/flush、MS06 seam/validator、root QEMU与受支持D1 checks、fmt/source assertions、strict OpenSpec和full diff review。记录命令、决定性输出和exit；不得再用已知flake豁免、隔离重跑或串行full suite替代默认并行Gate，任一产品、compile、assert、ownership或review failure都阻止进入QEMU runtime。生成与当前working tree匹配的probe和QEMU artifact，不使用历史产物。
+
+## 7. 单 hart QEMU 验收
+
+- [ ] 7.1 在单hart、单VirtIO-MMIO NIC QEMU中运行MS06 probe，逐项核对device/software/timer progress、Active quiet、continuous traffic、TCP/UDP/listener、nonblocking、poll/select/epoll、multiwaiter/overflow和close/error。每个mode必须有完整marker与exit 0；用户中断、timeout或partial marker记为未完成或失败。
+- [ ] 7.2 在同一新鲜artifact和环境中运行受影响MS01/MS04/MS05 runtime回归，核对START/PASS/END、telemetry和显式exit，随后执行最终full diff review。结论只覆盖single-hart QEMU VirtIO-MMIO，不扩大到reset、SMP、真板或性能。
 
 ## Requirement Traceability Matrix
 
@@ -32,12 +50,12 @@
 | R2 三源wake与register-recheck | D2,D3 | 1.1,1.4,2.4 | `stack_runner.rs`, `async_rx.rs`, `service.rs` | event交错、timer replacement、software-only wake | Covered |
 | R3 budget、公平与quiet | D4 | 1.2,1.3,1.4 | `router.rs`, `service.rs`, runner telemetry | 31/32/33、双向backlog、Active idle | Covered |
 | R4 锁序与guard生命周期 | D5,D9 | 1.3,1.4,2.4 | Service/SocketSet/connect/listener helpers | 100×竞争、source assertions、no-guard-across-Pending | Covered |
-| R5 per-socket multi-waiter bridge | D6 | 2.1,2.2,2.5 | `readiness.rs`, `wrapper.rs`, TCP/UDP register | 1/2/64/65、register races、remove wake | Covered |
-| R6 listener/close/error一致 | D7,D8,D9 | 2.3,2.5,3.1 | ListenTable、terminal snapshot、fault registry | accept/reset、EOF/RDHUP/HUP/ERR、fatal ordering | Covered |
+| R5 per-socket multi-waiter bridge | D6 | 2.1,2.2,2.5,3.1,4.3,7.1 | `readiness.rs`, `wrapper.rs`, TCP/UDP register、epoll kernel path、guest probe | 1/2/64/65、register races、global fault fan-out、host replacement/re-register + guest distinct completion | Covered |
+| R6 listener/close/error一致 | D6-D9 | 2.3,2.5,3.1,3.2 | ListenTable、terminal snapshot、fault registry、TCP/UDP I/O | accept/reset、EOF/RDHUP/HUP/ERR、fatal ordering、fault-during-wait | Covered |
 | R3/R6 规模化close与listener前进 | D3,D4,D7,D9,D11 | 2.6,2.7,2.8 | `stack_runner.rs`、`service.rs`、`listen_table.rs`、`tcp.rs`、`udp.rs`、smoltcp UDP、MS01 payload | listener/deferred 31/32/33/512、send→drop→peer receive、overflow终态、accept→立即reconnect | Covered |
-| R7 MS06验证边界 | D10 | 2.8,3.2,3.3,3.4 | MS01 payload、guest probe、scripts、QEMU product paths | 分层兼容、host seam、automatic gates、single-hart runtime | Covered |
-| network-stack-baseline readiness | D3-D9 | 2.1-2.8,3.1 | TCP/UDP/listener/pollable | poll→I/O matrix、多waiter、512 recovery/close storm、stable fault | Covered |
-| MS05 slot consumer/owner保持 | D2,D4,D10 | 1.2,1.3,3.3,3.4 | Router、Service、queue event/slots | MS05 Full/flush/ownership regression | Covered |
+| R7 MS06验证边界 | D10 | 2.8,4.1-4.3,5.1-5.2,6.1,7.1-7.2 | MS01 payload、guest probe、validator、axnet host harness、QEMU product paths | 分层兼容、host seam、默认并行确定性、automatic gates、single-hart runtime | Covered |
+| network-stack-baseline readiness | D3-D9 | 2.1-2.8,3.1-3.2 | TCP/UDP/listener/pollable | poll→I/O matrix、多waiter、512 recovery/close storm、stable fault | Covered |
+| MS05 slot consumer/owner保持 | D2,D4,D10 | 1.2,1.3,6.1,7.2 | Router、Service、queue event/slots | MS05 Full/flush/ownership regression | Covered |
 
 没有 Missing、未批准 Simplified 或依赖后续MS07/MS08才能满足的当前Requirement。
 
@@ -79,23 +97,57 @@
 - Diagnostic boundary: 失败限制在hidden listener waker、head-signal queue、ingress micro-step、listener backlog状态、guest workload事件排序、QEMU调度链或既有MS01兼容面。
 - Non-goals: MS06新guest probe、terminal fault广播、SMP、真板和性能结论。
 
-### Iteration 004: terminal-readiness-and-qemu-acceptance
+### Iteration 004: terminal-readiness-closure
 
-- Tasks: 3.1-3.4
+- Tasks: 3.1-3.2
 - Depends on: Iteration 003 accepted
-- Stable baseline: close、EOF、half-close、connect/listener错误和stable data-plane fault均唤醒全部相关waiter；单hartQEMU证明应用无需主动poll即可通过TCP/UDP/listener与poll/select/epoll验收。
-- Verification boundary: terminal/fault-before-wake host matrix、probe seam、全部自动Gate、MS01/MS04/MS05回归和fixed-deadline QEMU分项marker通过，最终full diff无Critical/Important finding。
-- Diagnostic boundary: 失败限制在terminal snapshot/error映射、fault registry广播、syscall waiter链、guest probe或QEMU环境/调度链。
-- Non-goals: reset、SMP、multiqueue、多接口、PCI/DWMAC、真板、性能和归档/全局文档维护。
+- Stable baseline: socket-local与global terminal拥有独立first-wins状态；global先提交后无条件唤醒全部已有bridge，late socket通过effective snapshot继承；blocking/nonblocking send/recv/connect/accept在fault前后都返回同一映射类别。
+- Verification boundary: local-before-global、0/1/2/64/65、add/install并发、fault-during-wait、connect recheck、listener consume-once、normal EOF/HUP和MS05 fatal/flush由host/model tests覆盖，两profile full suites通过。
+- Diagnostic boundary: 失败限制在terminal state ownership、registry快照/wake、TCP/UDP I/O recheck、connect/listener error映射或poll_io task-context。
+- Non-goals: guest probe、自动产品资格、QEMU runtime、完整SO_ERROR消费、reset、SMP、真板和性能。
+
+### Iteration 005: application-witness-construction
+
+- Tasks: 4.1-4.3
+- Depends on: Iteration 004 accepted
+- Stable baseline: marker validator和静态RISC-V guest probe可独立构建；核心socket与普通poll/select/epoll场景有fixed-deadline，exact 64/65以同步epoll注册barrier、host replacement/re-register证据和guest distinct completion形成分层契约。
+- Verification boundary: validator含START前protocol负例；host seam直接验证arm数与trigger-unit数；既有PollSet/epoll路径支持replacement/re-register结论；C syntax与static build通过；不要求启动QEMU。
+- Diagnostic boundary: 失败限制在marker协议、guest syscall/task ABI、probe事件编排、deadline或交叉编译。
+- Non-goals: QEMU启动、MS01/MS04/MS05 runtime、自动全量产品Gate和性能测试。
+
+### Iteration 006: axnet-host-test-isolation
+
+- Tasks: 5.1-5.2
+- Depends on: Iteration 005 accepted
+- Stable baseline: axnet host tests不再因进程级socket/listener/diagnostic共享状态产生陈旧handle、内存破坏或随机分支；ordinary与qemu-diagnostics默认并行结果可作为自动Gate依据。
+- Verification boundary: R57失败子集、socket churn、diagnostics目标测试和两profile默认并行full suites重复稳定通过；不得依赖skip/ignore、无限重跑或全局串行full suite。
+- Diagnostic boundary: 失败限制在test fixture实例化、global reader/writer边界、SocketHandle生命周期、diagnostic state/fake clock/telemetry隔离或测试专用并发控制。
+- Non-goals: 产品socket/readiness行为、guest probe、QEMU runtime、scheduler、reset/SMP、真板和性能。
+
+### Iteration 007: automatic-integration-qualification
+
+- Tasks: 6.1
+- Depends on: Iteration 006 accepted
+- Stable baseline: 所有自动功能、ownership、兼容、build、format、OpenSpec和diff Gate通过，并生成与当前working tree一致的QEMU/probe artifact。
+- Verification boundary: Task 6.1所列命令全部exit 0，默认并行host suites无flake豁免，Critical/Important finding为零；任一失败阻止QEMU runtime。
+- Diagnostic boundary: 失败限制在axnet/smoltcp回归、kernel或D1 feature build、probe seam、格式/source guard、OpenSpec或diff质量。
+- Non-goals: 人工QEMU输入、runtime marker、SMP、真板和性能结论。
+
+### Iteration 008: single-hart-qemu-acceptance
+
+- Tasks: 7.1-7.2
+- Depends on: Iteration 007 accepted；用户可执行人工QEMU batch
+- Stable baseline: MS06应用可见probe与受影响MS01/MS04/MS05在同一新鲜single-hart VirtIO-MMIO环境全部通过，最终diff无Critical/Important finding。
+- Verification boundary: 每项runtime有环境、revision、命令、完整marker和exit 0；缺失、timeout、partial success或用户中断均不计通过。
+- Diagnostic boundary: 失败限制在QEMU boot/device model、guest payload、syscall waiter调度链、runner wake或既有runtime兼容面。
+- Non-goals: reset、SMP、multiqueue、多NIC、PCI/DWMAC、真板、DMA/cache和性能资格。
 
 ## Current Cycle
 
-- Current Iteration: `004-terminal-readiness-and-qemu-acceptance`
+- Current Iteration: `006-axnet-host-test-isolation`
 - Cycle: `000-initial.md`
 - Persisted Evidence: none
-- Gate 2: BLOCKED；Iteration 004 Cycle 000 已展开，等待用户审计与明确批准；不会自动调用 Act。
-- Previous Cycle: Iteration 003 Cycle `001-replan.md` Review Result = `accepted`。Task 2.8 已闭合；用户手工
-  QEMU diagnostic single/fork及MS01 14/14+END+exit 0通过，Evidence见
-  `evidence/003-backlog-and-ms01-runtime-compatibility/001-replan/`。
-- Previous Iteration: Iteration 003 accepted。当前 Cycle 只执行Tasks 3.1–3.4，不包含reset、SMP、真板、
-  性能、全局文档维护或归档。
+- Previous Cycle: Iteration 005 `002-replan.md` Act `reported`，Plan Review `accepted`；validator与静态probe构造边界已闭合。
+- Gate 2: `000-initial.md` 技术检查项 PASS；Plan status `draft`，等待用户审计和明确批准，未授权 `openspec-act`。
+- Initial scope: Tasks 5.1-5.2；以per-test socket/listener context和diagnostic fixture clock消除R57共享状态前置条件，产品singleton与语义不变。
+- Deferred Iterations: 007 Task 6.1（自动资格）；008 Tasks 7.1-7.2（QEMU验收）。不得在本Iteration夹带全量产品资格或QEMU runtime。

@@ -26,6 +26,7 @@ use crate::{
     router::RxOwnerView,
     service::Service,
     stack_runner::StackEvent,
+    wrapper::SocketSetWrapper,
 };
 
 /// Dual-role queue notification state shared by the future queue task and
@@ -223,16 +224,7 @@ pub mod rx_error_stage {
 /// The codes are explicit and never derived from the enum discriminant, so
 /// they stay stable across dependency updates. Do not renumber them.
 pub fn rx_error_code(err: &DevError) -> u64 {
-    match err {
-        DevError::AlreadyExists => 1,
-        DevError::Again => 2,
-        DevError::BadState => 3,
-        DevError::InvalidParam => 4,
-        DevError::Io => 5,
-        DevError::NoMemory => 6,
-        DevError::ResourceBusy => 7,
-        DevError::Unsupported => 8,
-    }
+    crate::readiness::dev_error_code(err)
 }
 
 /// Monotonic relaxed-atomics telemetry of the async RX queue path.
@@ -859,6 +851,9 @@ pub(crate) struct RxRxFuture {
     stack_notify: &'static StackEvent,
     stack_progress_pending: bool,
     telemetry: &'static RxTelemetry,
+    /// Task 3.1: publication target for terminal queue faults. Production
+    /// points at the global socket registry; tests inject a local wrapper.
+    fault_sink: &'static SocketSetWrapper<'static>,
     /// C4: armed QEMU diagnostic lease deadline (wall nanos) the owner is
     /// sleeping on. The timer is wake-only: it carries no generation, so a
     /// stale wake costs at most one bounded poll and the current Service
@@ -1227,10 +1222,10 @@ impl RxRxFuture {
                 self.arm_lease_deadline(cx, deadline);
                 Poll::Pending
             }
-            RoundOutcome::Fault(_err) => {
+            RoundOutcome::Fault(err) => {
                 // Task 3.7: commit `Active -> Faulted` first, publish only on
                 // success, so a woken stack waiter observes Faulted.
-                self.publish_fatal();
+                self.publish_fatal(&err);
                 Poll::Ready(())
             }
         }
@@ -1323,14 +1318,16 @@ impl RxRxFuture {
         }
     }
 
-    /// Attempts the `Active -> Faulted` transition and publishes
-    /// stack-progress only when the CAS commits.
+    /// Attempts the `Active -> Faulted` transition, publishes the concrete
+    /// error to the fault sink, then publishes stack-progress only when the
+    /// CAS commits.
     ///
     /// Task 3.7: the terminal wake ordering is state-first, event-after. An
     /// illegal transition (lifecycle already terminal) records the
     /// LIFECYCLE-stage diagnostic but never publishes a fake terminal state.
-    fn publish_fatal(&self) {
+    fn publish_fatal(&self, err: &DevError) {
         if self.transition_fatal() {
+            self.fault_sink.publish_global_fault(err);
             self.notify.publish_progress();
             self.stack_notify.publish_device();
         }
@@ -1377,7 +1374,7 @@ impl RxRxFuture {
                 self.telemetry.record_fault(rx_error_stage::ARM, &err);
                 // Task 3.7: the arm fault path holds no Service guard but
                 // follows the same commit-then-publish ordering.
-                self.publish_fatal();
+                self.publish_fatal(&err);
                 Poll::Ready(())
             }
         }
@@ -1420,6 +1417,7 @@ fn spawn_rx_task() {
                 stack_notify: &STACK_EVENT,
                 stack_progress_pending: false,
                 telemetry: &RX_TELEMETRY,
+                fault_sink: &crate::SOCKET_SET,
                 #[cfg(feature = "qemu-diagnostics")]
                 lease_deadline: None,
                 #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -1604,9 +1602,11 @@ mod tests {
     };
     use crate::{
         device::{Device, RxCopyStep, RxStep, TxOutcome, TxPreflight, TxReclaimStep, TxSubmitStep},
+        readiness,
         router::{Router, RxOwnerView},
         service::Service,
         stack_runner::StackEvent,
+        wrapper::SocketSetWrapper,
     };
 
     #[derive(Default)]
@@ -2449,7 +2449,10 @@ mod tests {
     }
 
     /// Builds an injected Future: local leaked lifecycle/notify/telemetry,
-    /// spin service mutex, lifecycle already driven to `Spawned`.
+    /// spin service mutex, lifecycle already driven to `Spawned`. Faults
+    /// publish to a fresh LOCAL sink so fault-driving tests never mutate the
+    /// shared global registry (tests needing the sink use
+    /// [`Self::leaked_future_with_sink`]).
     fn leaked_future(
         service_mutex: &'static spin::Mutex<Service>,
         notify: &'static QueueEvent,
@@ -2464,6 +2467,7 @@ mod tests {
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
             telemetry,
+            fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -2487,6 +2491,7 @@ mod tests {
             stack_notify,
             stack_progress_pending: false,
             telemetry,
+            fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -2620,6 +2625,7 @@ mod tests {
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
             telemetry,
+            fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -2881,6 +2887,7 @@ mod tests {
             stack_notify,
             stack_progress_pending: false,
             telemetry: Box::leak(Box::new(RxTelemetry::new())),
+            fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -3284,6 +3291,74 @@ mod tests {
         );
     }
 
+    fn leaked_future_with_sink(
+        service_mutex: &'static spin::Mutex<Service>,
+    ) -> (
+        &'static RxLifecycle,
+        &'static SocketSetWrapper<'static>,
+        RxRxFuture,
+    ) {
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
+        let sink: &'static SocketSetWrapper<'static> = Box::leak(Box::new(SocketSetWrapper::new()));
+        let fut = RxRxFuture {
+            service: ServiceAccess::Injected(service_mutex),
+            lifecycle,
+            notify: Box::leak(Box::new(QueueEvent::new())),
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
+            telemetry,
+            fault_sink: sink,
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
+        };
+        (lifecycle, sink, fut)
+    }
+
+    #[test]
+    fn receive_fault_publishes_concrete_code_to_fault_sink() {
+        let (mutex, ..) = leaked_service(vec![RxStep::Fault(DevError::Io)], true);
+        let (lifecycle, sink, mut fut) = leaked_future_with_sink(mutex);
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(
+            sink.global_terminal_code(),
+            readiness::dev_error_code(&DevError::Io)
+        );
+        // The published code maps to a retryable-backpressure-free category.
+        assert!(matches!(
+            readiness::terminal_ax_error(sink.global_terminal_code()),
+            axerrno::AxError::Io
+        ));
+    }
+
+    #[test]
+    fn arm_fault_publishes_concrete_code_to_fault_sink() {
+        let steps: Vec<RxStep> = (0..RX_BUDGET).map(|_| RxStep::Consumed).collect();
+        let (mutex, _, control) = leaked_service(steps, true);
+        control
+            .missing_after_first_control_call
+            .store(true, Ordering::Relaxed);
+        let (lifecycle, sink, mut fut) = leaked_future_with_sink(mutex);
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(
+            sink.global_terminal_code(),
+            readiness::dev_error_code(&DevError::Unsupported)
+        );
+    }
+
     #[test]
     fn telemetry_missing_service_records_preflight_bad_state() {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
@@ -3296,6 +3371,7 @@ mod tests {
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
             telemetry,
+            fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -3446,7 +3522,7 @@ mod tests {
         let (lifecycle, fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
 
-        fut.publish_fatal();
+        fut.publish_fatal(&DevError::Io);
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
         assert_eq!(stack_count.load(Ordering::Relaxed), 0);
         assert_eq!(stack_notify.generation(), 0);
@@ -3483,7 +3559,7 @@ mod tests {
         let poll_active_end = source.find("fn publish_fatal").unwrap();
         let poll_active = &source[poll_active_start..poll_active_end];
         let round_fault = &poll_active[poll_active.find("RoundOutcome::Fault").unwrap()..];
-        assert!(round_fault.contains("self.publish_fatal()"));
+        assert!(round_fault.contains("self.publish_fatal(&err)"));
         assert!(
             !round_fault.contains("publish_progress()"),
             "poll_active fault branch must not publish directly"
@@ -3493,7 +3569,7 @@ mod tests {
         let arm_end = source.find("impl Future for RxRxFuture").unwrap();
         let arm_region = &source[arm_start..arm_end];
         let arm_fault = &arm_region[arm_region.find("WaitDecision::Fault").unwrap()..];
-        assert!(arm_fault.contains("self.publish_fatal()"));
+        assert!(arm_fault.contains("self.publish_fatal(&err)"));
         assert!(
             !arm_fault.contains("publish_progress()"),
             "poll_register_recheck fault branch must not publish directly"

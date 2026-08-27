@@ -67,7 +67,10 @@ pub(crate) struct StackRoundOutcome {
     pub(crate) rx_ready: bool,
     pub(crate) rx_space_woken: bool,
     pub(crate) tx_enqueued: bool,
-    pub(crate) faulted: bool,
+    /// Task 3.1: stable code of the concrete terminal fault observed by any
+    /// stage of this round (`readiness::TERMINAL_NONE` = none). The error
+    /// identity must reach the public fault publisher uncollapsed.
+    pub(crate) fault_code: u64,
     pub(crate) protocol_deadline: Option<Instant>,
     pub(crate) requires_polling: bool,
     /// Task 2.6 replan: deferred-close entries examined this round (≤
@@ -521,6 +524,10 @@ impl Service {
             || ingress.budget_exhausted
             || egress.budget_exhausted
             || dispatch.budget_exhausted;
+        let fault_code = match &router_rx.fault {
+            Some(err) => crate::readiness::dev_error_code(err),
+            None => dispatch.fault_code,
+        };
         StackRoundOutcome {
             work: router_rx.processed + ingress.processed + egress.processed + dispatch.processed,
             backlog: router_rx.backlog
@@ -532,7 +539,7 @@ impl Service {
             rx_ready: dispatch.rx_ready,
             rx_space_woken,
             tx_enqueued,
-            faulted: router_rx.fault.is_some() || dispatch.faulted,
+            fault_code,
             protocol_deadline,
             requires_polling,
             deferred_checked: deferred.checked,
@@ -1099,7 +1106,7 @@ mod tests {
         );
 
         assert!(!outcome.backlog);
-        assert!(!outcome.faulted);
+        assert_eq!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
         assert!(!outcome.socket_changed);
         assert!(!outcome.tx_enqueued);
     }
@@ -1674,7 +1681,7 @@ mod tests {
         assert_eq!(outcome.work, 32 + 5);
         assert!(outcome.backlog);
         assert!(outcome.self_yield);
-        assert!(!outcome.faulted);
+        assert_eq!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
         assert_eq!(
             service
                 .router_for_test()
@@ -1697,7 +1704,11 @@ mod tests {
             &mut sockets,
         );
 
-        assert!(outcome.faulted);
+        assert_ne!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert_eq!(
+            outcome.fault_code,
+            crate::readiness::dev_error_code(&DevError::Io)
+        );
         assert!(!outcome.self_yield);
     }
 
@@ -1720,7 +1731,11 @@ mod tests {
             &mut sockets,
         );
 
-        assert!(outcome.faulted);
+        assert_ne!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert_eq!(
+            outcome.fault_code,
+            crate::readiness::dev_error_code(&DevError::Io)
+        );
         assert!(service.router_for_test().tx_faulted());
     }
 

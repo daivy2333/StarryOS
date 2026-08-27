@@ -426,3 +426,31 @@ iteration 009
 - **WHEN** 用户手工构建用于解除 agent 的环境疑点
 - **THEN** MUST 对比 target、feature、平台配置和产品入口
 - **AND** MUST 只关闭该命令实际覆盖的 Gate
+
+### Requirement: K44 — axnet 宿主单元测试冷重建后必须以非 PIE 链接（percpu 绝对重定位）
+
+workspace-exclude 的 axnet 以 `--manifest-path` 在宿主运行单元测试时，测试可执行文件
+MUST 以非 PIE 方式链接：依赖图中的 `percpu`（经 axtask 引入）使用绝对寻址
+（`R_X86_64_32S`，符号如 `__PERCPU_SELF_PTR`、`__PERCPU_RUN_QUEUE`、
+`__PERCPU_CURRENT_TASK_PTR`），rust-lld 拒绝将其重定位进 PIE 可执行文件。发行版 gcc
+默认启用 PIE，仅剥离 rustc 传入的 `-pie` 参数并不解除冲突；MUST 对可执行链接显式追加
+`-no-pie`，共享对象链接（proc-macro `.so`）原样透传。热缓存时期不会触发——只有改动
+axnet 触发依赖图冷重建后该冲突才暴露，症状看似产品失败实为链接模型问题。
+
+**证据**: MS06 iter 004 Cycle
+`004-terminal-readiness-and-qemu-acceptance/000-initial.md` Act Response 偏差 D1；
+无 wrapper 时同一命令以 `relocation R_X86_64_32S ... '__PERCPU_SELF_PTR'` 失败，
+使用 wrapper 后 ordinary 348/348、qemu-diagnostics 368/368 通过（exit 0）
+**状态**: ✅ 已验证，2026-08-26
+
+- **触发条件**: 冷重建（清缓存、rustc 变更、或首次在独立 target 目录构建）后运行 axnet 宿主单元测试。
+- **诊断特征**: 链接期报 `relocation R_X86_64_32S cannot be used against symbol '__PERCPU_*'` 即为本条；属环境/链接模型事项，不计入产品失败。
+- **处理原则**: 用按链接种类区分的 linker wrapper（遇 `-shared` 透传，否则追加 `-no-pie`）并以 `RUSTFLAGS="-C linker=<wrapper>"` 运行；wrapper 属一次性本地工具，不入库。
+- **排除的替代方案**: `[profile.dev] pie = false`（当前 cargo 报 unused manifest key 不生效）；全局 `RUSTFLAGS="-C link-arg=-no-pie"`（追加到 `.so` 链接尾部导致 proc-macro 构建失败）；`-C relocation-model=static`（同理破坏 proc-macro `.so`）。
+- **适用边界**: 仅 axnet 独立 target 目录下的宿主 x86_64 测试构建；内核与 RISC-V 构建走根 workspace target，不受影响。
+
+#### Scenario: 冷重建后宿主测试链接报 R_X86_64_32S
+
+- **WHEN** axnet 宿主单元测试在冷重建后报 percpu 符号的 `R_X86_64_32S` 重定位错误
+- **THEN** MUST 使用按链接种类区分的非 PIE linker wrapper 运行同一测试命令
+- **AND** MUST 将该差异记录为执行环境事项，不提升为产品失败或 ENV BLOCK

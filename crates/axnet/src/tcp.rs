@@ -23,7 +23,10 @@ use crate::{
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    readiness::ReadinessBridge,
+    readiness::{
+        self, ReadinessBridge, TERMINAL_CONNECT_REFUSED, TERMINAL_NONE, effective_terminal_code,
+        terminal_ax_error,
+    },
     state::*,
 };
 
@@ -125,6 +128,35 @@ impl TcpSocket {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
+    /// Task 3.1: effective stable terminal code — the global data-plane
+    /// fault takes precedence over the socket-local terminal.
+    fn terminal_code(&self) -> u64 {
+        effective_terminal_code(
+            SOCKET_SET.global_terminal_code(),
+            self.readiness.terminal_code(),
+        )
+    }
+
+    /// Returns the stable terminal category and records it for the
+    /// non-consuming `SO_ERROR` view, or `None` without terminal state.
+    fn observe_terminal_error(&self) -> Option<AxError> {
+        let code = self.terminal_code();
+        if code == TERMINAL_NONE {
+            return None;
+        }
+        let err = terminal_ax_error(code);
+        self.general.record_socket_error(&err);
+        Some(err)
+    }
+
+    /// Adds the `ERR` readiness bit once a stable terminal state exists.
+    fn terminal_overlay(&self, mut events: IoEvents) -> IoEvents {
+        if self.terminal_code() != TERMINAL_NONE {
+            events.insert(IoEvents::ERR);
+        }
+        events
+    }
+
     fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
         let endpoint = SOCKET_SET
             .tcp_bound_endpoint(self.handle)
@@ -153,28 +185,45 @@ impl TcpSocket {
             }
             _ => {
                 self.state.set(State::Closed); // connection failed
+                // Task 3.1: commit the stable completion error before the
+                // completion event becomes observable (`OUT` then `ERR`).
+                self.readiness.commit_terminal(TERMINAL_CONNECT_REFUSED);
+                let err = terminal_ax_error(TERMINAL_CONNECT_REFUSED);
+                self.general.record_socket_error(&err);
                 true
             }
         });
         events.set(IoEvents::OUT, writable);
+        if writable && self.terminal_code() != TERMINAL_NONE {
+            events.insert(IoEvents::ERR);
+        }
         events
     }
 
     fn poll_stream(&self) -> IoEvents {
         let rx_closed = self.rx_closed.load(Ordering::Acquire);
         let axnet_state = self.state();
-        self.with_smol_socket(|socket| tcp_readiness(socket, rx_closed, axnet_state))
+        let events = self.with_smol_socket(|socket| tcp_readiness(socket, rx_closed, axnet_state));
+        self.terminal_overlay(events)
     }
 
     fn poll_listener(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        events.set(
-            IoEvents::IN,
-            LISTEN_TABLE
-                .can_accept(self.bound_endpoint().unwrap().port)
-                .unwrap(),
-        );
-        events
+        // Task 3.1 (D4): readiness inspects the first consumable accept
+        // outcome; a queued Reset reports once as `IN|ERR` and never poisons
+        // the listener.
+        let port = self.bound_endpoint().unwrap().port;
+        match LISTEN_TABLE.accept_head_is_reset(port) {
+            Some(true) => {
+                events.insert(IoEvents::IN);
+                events.insert(IoEvents::ERR);
+            }
+            Some(false) => {
+                events.insert(IoEvents::IN);
+            }
+            None => {}
+        }
+        self.terminal_overlay(events)
     }
 }
 
@@ -269,6 +318,11 @@ impl SocketOps for TcpSocket {
     }
 
     fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+        // Task 3.2: a preexisting effective fatal precedes state transit,
+        // route resolution and the smoltcp connect commit.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         let remote_addr = remote_addr.into_ip()?;
         self.state
             .lock(State::Idle)
@@ -325,6 +379,12 @@ impl SocketOps for TcpSocket {
 
         // Here our state must be `CONNECTING`, and only one thread can run here.
         self.general.send_poller(self, || {
+            // Task 3.1: terminal-first — a committed global fault or a prior
+            // failed completion returns its stable category instead of
+            // blocking or re-deriving an error.
+            if let Some(err) = self.observe_terminal_error() {
+                return Err(err);
+            }
             let events = self.poll_connect();
             if !events.contains(IoEvents::OUT) {
                 Err(AxError::WouldBlock)
@@ -352,12 +412,20 @@ impl SocketOps for TcpSocket {
     }
 
     fn accept(&self) -> AxResult<Socket> {
+        // Task 3.2: a preexisting effective fatal precedes the listening
+        // state check and never consumes queued Ready/Reset slots.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         if !self.is_listening() {
             ax_bail!(InvalidInput, "not listening");
         }
 
         let bound_port = self.bound_endpoint()?.port;
         self.general.recv_poller(self, || {
+            if let Some(err) = self.observe_terminal_error() {
+                return Err(err);
+            }
             // Task 2.7 replan: accept consumes the Ready/Reset slot and
             // refills an idle hidden listener inside one `SOCKET_SET ->
             // ListenTable entry` critical section, so an immediate
@@ -397,6 +465,9 @@ impl SocketOps for TcpSocket {
     fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         self.general.send_poller(self, || {
+            if let Some(err) = self.observe_terminal_error() {
+                return Err(err);
+            }
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
@@ -422,10 +493,18 @@ impl SocketOps for TcpSocket {
     }
 
     fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+        // Task 3.2: a preexisting effective fatal precedes the rx-closed
+        // branch and every protocol-state read.
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(AxError::NotConnected);
         }
         self.general.recv_poller(self, || {
+            if let Some(err) = self.observe_terminal_error() {
+                return Err(err);
+            }
             let result = self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
@@ -518,12 +597,13 @@ impl SocketOps for TcpSocket {
 
 impl Pollable for TcpSocket {
     fn poll(&self) -> IoEvents {
-        match self.state() {
+        let events = match self.state() {
             State::Connecting => self.poll_connect(),
             State::Connected | State::Idle | State::Closed => self.poll_stream(),
             State::Listening => self.poll_listener(),
             State::Busy => IoEvents::empty(),
-        }
+        };
+        self.terminal_overlay(events)
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
@@ -532,13 +612,16 @@ impl Pollable for TcpSocket {
             // Accept waiters wake only from ListenTable transitions; the
             // listener socket itself never receives data, so recheck the
             // hidden-socket queue instead of a smoltcp slot.
-            let ready = self.poll_listener() & events;
+            let ready = self.terminal_overlay(self.poll_listener()) & events;
             self.readiness.wake(ready);
         } else {
             let ready = self.with_smol_socket(|socket| {
                 let slot_ready = self.readiness.rearm(socket, events);
-                let full =
+                let mut full =
                     tcp_readiness(socket, self.rx_closed.load(Ordering::Acquire), self.state());
+                if self.terminal_code() != TERMINAL_NONE {
+                    full.insert(IoEvents::ERR);
+                }
                 slot_ready | (full & events)
             });
             self.readiness.wake(ready);
@@ -719,5 +802,190 @@ mod tests {
         assert_eq!(close_kind(State::Listen), None);
         assert_eq!(close_kind(State::CloseWait), None);
         assert_eq!(close_kind(State::Closed), None);
+    }
+
+    // ── Task 3.1: terminal readiness and stable errors before wake ──────
+
+    use core::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use axerrno::AxError;
+    use axpoll::Pollable;
+
+    use super::TcpSocket;
+    use crate::{LISTEN_TABLE, SOCKET_SET, SocketAddrEx, SocketOps, readiness};
+
+    #[test]
+    fn normal_close_reports_eof_hup_without_device_err() {
+        let mut raw = new_tcp_socket();
+        raw.abort();
+        let events = tcp_readiness(&raw, false, State::Closed);
+        assert!(!events.contains(IoEvents::ERR));
+    }
+
+    #[test]
+    fn connect_failure_commits_socket_local_terminal_before_reporting_out_err() {
+        let socket = TcpSocket::new();
+        socket.state.set(State::Connecting);
+        socket.with_smol_socket(|s| s.abort());
+
+        let events = socket.poll_connect();
+
+        assert!(events.contains(IoEvents::OUT));
+        assert!(events.contains(IoEvents::ERR));
+        assert_eq!(
+            socket.readiness.terminal_code(),
+            readiness::TERMINAL_CONNECT_REFUSED
+        );
+        assert_eq!(socket.state(), State::Closed);
+    }
+
+    #[test]
+    fn terminal_guard_maps_committed_codes_for_io() {
+        let socket = TcpSocket::new();
+        assert_eq!(socket.observe_terminal_error(), None);
+
+        socket
+            .readiness
+            .commit_terminal(readiness::TERMINAL_RESOURCE_BUSY);
+        assert_eq!(socket.observe_terminal_error(), Some(AxError::ResourceBusy));
+
+        // Precedence (pure table): the global fault wins over socket-local.
+        assert_eq!(
+            readiness::effective_terminal_code(
+                readiness::TERMINAL_NO_MEMORY,
+                readiness::TERMINAL_RESOURCE_BUSY
+            ),
+            readiness::TERMINAL_NO_MEMORY
+        );
+    }
+
+    #[test]
+    fn listener_reset_head_polls_in_err_until_accept_consumes_it_once() {
+        const PORT: u16 = 18500;
+        let socket = TcpSocket::new();
+        SocketOps::bind(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                PORT,
+            )),
+        )
+        .unwrap();
+        SocketOps::listen(&socket).unwrap();
+
+        assert!(!Pollable::poll(&socket).contains(IoEvents::IN));
+
+        LISTEN_TABLE.test_push_reset_slot(PORT);
+
+        let events = Pollable::poll(&socket);
+        assert!(events.contains(IoEvents::IN));
+        assert!(events.contains(IoEvents::ERR));
+
+        // Consuming the queued reset clears the one-shot `IN|ERR` report
+        // without committing any listener or device terminal state.
+        let mut sockets = SOCKET_SET.inner.lock();
+        assert!(matches!(
+            LISTEN_TABLE.accept_with(PORT, &mut sockets),
+            Err(AxError::ConnectionReset)
+        ));
+        drop(sockets);
+
+        let events = Pollable::poll(&socket);
+        assert!(!events.contains(IoEvents::ERR));
+        assert!(!events.contains(IoEvents::IN));
+        assert_eq!(socket.readiness.terminal_code(), readiness::TERMINAL_NONE);
+    }
+
+    // ── Task 3.2: entry ordering under preexisting terminal state ───────
+
+    use core::sync::atomic::Ordering;
+
+    use crate::RecvOptions;
+
+    #[test]
+    fn tcp_connect_entry_reports_preexisting_terminal_without_protocol_submit() {
+        let socket = TcpSocket::new();
+        socket
+            .readiness
+            .commit_terminal(readiness::TERMINAL_BAD_STATE);
+
+        let err = SocketOps::connect(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                9100,
+            )),
+        )
+        .unwrap_err();
+        assert_eq!(err, AxError::BadState);
+        assert_eq!(
+            socket.state(),
+            State::Idle,
+            "no Connecting transit or smoltcp submit may happen"
+        );
+    }
+
+    #[test]
+    fn tcp_accept_entry_reports_preexisting_terminal_before_state_checks() {
+        let socket = TcpSocket::new(); // not listening
+        socket.readiness.commit_terminal(readiness::TERMINAL_IO);
+
+        let result = SocketOps::accept(&socket);
+        assert!(
+            matches!(result, Err(AxError::Io)),
+            "the terminal precedes the not-listening InvalidInput"
+        );
+    }
+
+    #[test]
+    fn tcp_recv_entry_reports_preexisting_terminal_before_rxclosed() {
+        let socket = TcpSocket::new();
+        socket.rx_closed.store(true, Ordering::Release);
+        socket.readiness.commit_terminal(readiness::TERMINAL_IO);
+
+        let mut sink = std::vec::Vec::<u8>::new();
+        let err = SocketOps::recv(&socket, &mut sink, RecvOptions::default()).unwrap_err();
+        assert_eq!(
+            err,
+            AxError::Io,
+            "the terminal precedes the rx-closed NotConnected"
+        );
+    }
+
+    #[test]
+    fn preexisting_terminal_leaves_queued_listener_reset_intact() {
+        const PORT: u16 = 18501;
+        let socket = TcpSocket::new();
+        SocketOps::bind(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                PORT,
+            )),
+        )
+        .unwrap();
+        SocketOps::listen(&socket).unwrap();
+        LISTEN_TABLE.test_push_reset_slot(PORT);
+        // A committed terminal (the same effective read a global fault
+        // takes) must fail accept fast WITHOUT consuming the queued Reset.
+        socket
+            .readiness
+            .commit_terminal(readiness::TERMINAL_NO_MEMORY);
+
+        let err = SocketOps::accept(&socket);
+        assert!(
+            matches!(err, Err(AxError::NoMemory)),
+            "accept must fail fast with the terminal category"
+        );
+
+        let mut sockets = SOCKET_SET.inner.lock();
+        assert!(
+            matches!(
+                LISTEN_TABLE.accept_with(PORT, &mut sockets),
+                Err(AxError::ConnectionReset)
+            ),
+            "the Reset slot survives the terminal-failed accept"
+        );
+        drop(sockets);
     }
 }

@@ -331,48 +331,208 @@ explicitly requests it or a later Plan decision establishes that necessary attri
 
 ## Act Response
 
-- Status: pending
+- Status: blocked
+
+### Completed
+
+Task 3.1 only. The user directed, mid-execution (2026-08-26), that this Act invocation
+close Task 3.1 and stop; Tasks 3.2–3.4 remain pending inside this Cycle.
+
+**Actual changes**
+
+1. Single stable DevError encoding centralized in `readiness.rs`
+   (`dev_error_code` / `dev_error_from_code`, codes 1–8) plus one explicit terminal
+   mapping (`terminal_ax_error`): fatal `Again→Io` (never `WouldBlock`),
+   `InvalidParam→InvalidInput`, others identity; `TERMINAL_CONNECT_REFUSED=9` is the
+   socket-local connect-failure category. `flush.rs::error_code/error_from_code` and
+   `async_rx.rs::rx_error_code` now delegate to it (no duplicate tables).
+2. `ReadinessBridge` owns a first-wins socket-local terminal code
+   (`commit_terminal`) and a commit-before-wake fan-out helper
+   (`commit_terminal_and_wake`: commit → wake IN|OUT|RDHUP|HUP|ERR).
+3. `SocketSetWrapper` owns the first-wins global data-plane fault
+   (`publish_global_fault[_code]`): first-wins CAS is the linearization point,
+   then registry snapshot under the lock, lock released, then per-bridge
+   commit+wake. `add_public` / `install_readiness` inherit the published fault
+   while holding the registry lock (no late-socket gap).
+4. Concrete errors reach the single publisher uncollapsed: `RxRxFuture`
+   gained an injected `fault_sink` (production: global registry; tests: leaked
+   local wrappers for hermeticity); both fatal paths
+   (`RoundOutcome::Fault(err)` and arm `WaitDecision::Fault(err)`) call
+   `publish_fatal(&err)` = lifecycle CAS → sink publish → internal wakes.
+   `RouterDispatchOutcome.faulted:bool` became `fault_code:u64`;
+   `StackRoundOutcome.faulted:bool` became `fault_code:u64`; the stack runner
+   publishes the concrete code after `round()` returns (guards already
+   dropped). MS05 flush ledger semantics untouched.
+5. Terminal-first I/O surfaces: TCP connect completion commits
+   `CONNECT_REFUSED` + records SO_ERROR before reporting `OUT`; `poll_connect`
+   reports `OUT|ERR` on failure; stream/listener/UDP poll and register overlay
+   `ERR` whenever a terminal state exists; `send`/`recv`/`accept`/UDP
+   send/recv closures check `observe_terminal_error()` first and return the
+   mapped stable category. Listener Reset stays a queued consumable outcome:
+   readiness reports `IN|ERR` from the queue head via
+   `ListenTable::accept_head_is_reset`; consumption clears it; no permanent
+   listener poisoning. Normal EOF/HUP/UDP-close never gain device `ERR`.
+6. `GeneralOptions` saves the Linux errno of the stable socket error;
+   `GetSocketOption::Error` exposes it WITHOUT consuming (D5 scope boundary
+   respected).
+
+**Files/symbols**: `readiness.rs` (encoding/mapping/effective_terminal_code,
+bridge terminal state), `wrapper.rs` (global fault + inheritance),
+`general.rs` (saved_error, non-consuming Error), `flush.rs`,
+`async_rx.rs` (`rx_error_code` delegate, `fault_sink`, `publish_fatal(&err)`),
+`router.rs` (`RouterDispatchOutcome.fault_code`), `service.rs`
+(`StackRoundOutcome.fault_code`), `stack_runner.rs` (publisher consumer),
+`tcp.rs`, `udp.rs`, `listen_table.rs` (`accept_head_is_reset`, test seam
+`test_push_reset_slot`). No product behavior outside the contract touched.
+
+**Test witness (RED→GREEN)**: 22 new tests — encoding roundtrip table,
+mapping table (incl. Again→Io), first-wins commit, wake-callback observes
+committed code, source guard on commit-before-wake ordering,
+global-precedence table, publication commits before waking waiters,
+duplicate-publish idempotence, late `add_public`/`install_readiness`
+inheritance, 100-cycle deterministic publication ordering, threaded
+add-vs-publish interleaving pin, connect failure commits before `OUT|ERR`,
+listener Reset `IN|ERR` consumed once, guard-mapping witnesses for TCP/UDP,
+UDP ERR overlay, normal-close-no-ERR regressions (TCP+UDP), stack-round
+RX/TX fault codes surfaced exactly (strengthened to exact `DevError::Io`),
+receive/arm fault publishes concrete code to injected sink.
+
+**Deviations from Plan**
+
+- D1 (environment): cold rebuild exposed that `percpu` (via axtask) cannot
+  link into PIE host-test binaries (`R_X86_64_32S` under rust-lld). Resolved
+  by running axnet host suites with
+  `RUSTFLAGS="-C linker=/tmp/opencode/cc-nopie.sh"`, a wrapper that appends
+  `-no-pie` to executable links and passes shared-object links through
+  (distro gcc defaults to PIE; stripping `-pie` alone was insufficient).
+  Wrapper content (recreate as needed):
+  ```bash
+  #!/usr/bin/env bash
+  shared=false
+  for a in "$@"; do [ "$a" = "-shared" ] && { shared=true; break; }; done
+  if [ "$shared" = true ]; then exec cc "$@"; else exec cc "$@" -no-pie; fi
+  ```
+  Kernel/D1/RISC-V builds are unaffected (root workspace target dir).
+- D2 (test isolation): pre-existing `leaked_future*` fixtures would have
+  published faults into the shared global registry once publication went
+  live; they now default to fresh local sinks. Tests needing the sink use
+  `leaked_future_with_sink`. Production spawn path keeps the global registry.
+- D3 (witness shape): public `send`/`recv` e2e calls require an axtask task
+  context (`block_on` panics without one in host unit tests). The mapped-
+  category-through-I/O witness is carried by the guard-mapping tests plus
+  the connect-completion path; real application-level delivery is witnessed
+  later by Tasks 3.2–3.4 exactly as planned. Source-level coverage of all
+  four I/O closures is present.
+
+**Self-Review**: spec compliance re-checked against Contract 3.1 line by line
+(required behavior, preserve list, forbidden list) — no unresolved Critical
+or Important findings. Minor findings fixed during execution: stale
+`publish_fatal()` source-guard strings updated to the `(&err)` call shape;
+unused test helpers/imports removed. Remaining Minor: none open.
+
+**Verification (Gate 5)**
+
+| 验证项 | 命令 | 输出摘录 | 结论 |
+|---|---|---|---|
+| ordinary full suite | `RUSTFLAGS="-C linker=/tmp/opencode/cc-nopie.sh" cargo test --manifest-path crates/axnet/Cargo.toml --lib` | `test result: ok. 348 passed; 0 failed` | PASS |
+| diagnostics full suite | same + `--features qemu-diagnostics` | `test result: ok. 368 passed; 0 failed` | PASS |
+
+Both include the MS01 socket-baseline self-tests, MS04/MS05 harness seams,
+MS05 fatal/flush exact-error regressions and the 100× deterministic
+publication-ordering cycles. Exit code 0 for both runs.
+
+**Persisted Evidence**
+
+None required (mode `none`); decisive outputs retained above.
+
+**Experience Candidates**
+
+- Candidate (Runbook): "axnet host unit suites need the non-PIE link wrapper
+  after any cold rebuild" — verified end-to-end twice today (both profiles),
+  repeatable, high-friction if lost. Evidence: Deviations D1 and the
+  verification table above. Not persisted; Recorder decides.
+
+**Unresolved / remaining in this Cycle**
+
+Tasks 3.2, 3.3, 3.4 — not started.
+
+**Blocker Handoff**
+
+- Found at: Cycle scope execution, after Task 3.1 Gate 4/5.
+- Plan expectation vs actual: Plan expects 3.1–3.4 in one Cycle; the user
+  explicitly redirected mid-Cycle to close 3.1 only ("先把3.1做完就行").
+  This is a user authorization boundary, not a technical failure; no product
+  work is blocked.
+- Done: Task 3.1 fully GREEN in both profiles with evidence above; change
+  `tasks.md` marks 3.1 complete.
+- Partial: none. Not started: 3.2 (guest probe + validator), 3.3 (automatic
+  Gates incl. focused 100× reruns, kernel/D1 checks, fmt, OpenSpec strict,
+  full diff review), 3.4 (manual single-hart QEMU batch).
+- Workspace: clean except the 11 axnet files of Task 3.1 plus unrelated
+  user edits to `CLAUDE.md` and `.claude/docs/templates/change-cycle.md`
+  (present before Act started; untouched).
+- Gates passed: Gate 3 (per-task witnesses), Gate 4 (spec then quality),
+  Gate 5 (table above). Gate 6 not triggered (the linker issue was solved,
+  not bypassed).
+- Recovery condition: user resumes implementation (invoke `openspec-act`
+  again; status returns `pending` via Blocker Resolution, then continue at
+  Task 3.2), or redirects scope via `openspec-plan` (e.g., split Iteration
+  004 so 3.2–3.4 form their own Cycle).
 
 ## Plan Review
 
-- Status: pending
+- Review Result: replan-required
 
 **Review Result**
 
-pending
+replan-required
 
 **Findings**
 
-None yet.
+1. Important：`UdpSocket::recv`只在进入函数时读取terminal；`poll_io`重试闭包没有重复读取。blocking recv在注册IN waiter后遇到global fatal时会被首次wake，但重试仍可返回`WouldBlock`并再次Pending，违反stable fault后的I/O终态。
+2. Important：Plan把bridge terminal同时当作socket-local first-wins状态和global fault副本。已有local connect error时，`commit_terminal_and_wake(global)`提交失败并跳过wake；实际I/O又从wrapper global取优先值，形成两个未闭合的事实源。
+3. Important：smoltcp `DirectionNotify`可在`poll_connect`提交local error前发出recheck wake。Cycle没有区分状态变化hint与terminal publication wake，现有测试只证明`poll_connect`返回`OUT|ERR`前已提交错误。
+4. Important：Task 3.1要求global fatal覆盖0/1/2/64/65 waiter与真实blocking I/O。现有64/65测试只覆盖普通read transition，global fatal只覆盖单waiter，TCP/UDP I/O测试主要直接调用helper；Task 3.1不能按原Contract判定GREEN。
+5. Minor：Task 3.1新增数个unused imports；不单独阻塞Acceptance，但与Act Response的`Remaining Minor: none`不一致。
 
 **Deviation Classification**
 
-None yet.
+PLAN-INVALID；ACT-DEVIATION
 
 **Acceptance Gaps**
 
-Not reviewed.
+- global与socket-local terminal的独立所有权、优先级和wake规则未闭合。
+- UDP blocking recv及其他公共I/O缺少“入口检查+每次poll_io重试检查”的一致terminal路径。
+- connect transition hint、local error提交和application-visible `OUT|ERR`的线性化点未定义。
+- global fatal的0/1/2/64/65 fan-out、local-before-global、fault-during-wait与真实I/O见证缺失。
+- Tasks 3.2-3.4未开始；按用户要求不得继续留在同一过重Iteration。
 
 **Convergence**
 
-Not reviewed.
+reduced。Task 3.1已建立共享DevError编码、global publisher、listener Reset readiness和大部分terminal映射，两profile全量测试通过；上述Acceptance仍未闭合。
 
 **Evidence**
 
-None yet.
+- 代码：`crates/axnet/src/udp.rs::recv`、`tcp.rs::poll_connect`、`readiness.rs::DirectionNotify/ReadinessBridge`、`wrapper.rs::publish_global_fault_code`。
+- 规范：`specs/qemu-application-visible-async-network-stack/spec.md`的“稳定数据面 fault”和`specs/network-stack-baseline/spec.md`的“稳定网络 fault”。
+- 新鲜验证：`RUSTFLAGS="-C linker=/tmp/opencode/cc-nopie.sh" cargo test --manifest-path crates/axnet/Cargo.toml --lib`，348 passed，exit 0；同命令增加`--features qemu-diagnostics`，368 passed，exit 0；`git diff --cached --check`，exit 0。
+- Persisted Evidence模式为`none`；没有Evidence目录不构成finding。
 
 **Follow-up Decision**
 
-Await Act Response after explicit approval and user-requested implementation.
+原Cycle同时承载terminal语义、guest witness、自动资格和人工QEMU四个故障域，且terminal所有权契约需要修订。有限当前Cycle修复不足以约束后续Act；更新未完成Iteration Map并创建同目录`001-replan.md`。用户于2026-08-26认可审计结果并授权该replan。
 
 **Iteration Plan Update**
 
-None.
+- Iteration 004只闭合Tasks 3.1-3.2的terminal ownership、I/O recheck和host/model witness。
+- Iteration 005执行Tasks 4.1-4.3，构建validator与guest probe，不启动QEMU。
+- Iteration 006执行Task 5.1，关闭自动产品、兼容、build与Review Gate并生成新鲜artifact。
+- Iteration 007执行Tasks 6.1-6.2，完成人工single-hart QEMU MS06及MS01/MS04/MS05 runtime验收。
 
 **Next Cycle**
 
-None until this Cycle is reviewed.
+`001-replan.md`
 
 **Next Iteration**
 
-None; Iteration 004 is the final planned MS06 Iteration.
+None。Iteration 004必须先由`001-replan.md`取得accepted；Iteration 005只保留在Map中。

@@ -438,8 +438,12 @@ impl Future for StackRunnerFuture {
         if outcome.backlog {
             this.telemetry.backlog_round.fetch_add(1, Ordering::Relaxed);
         }
-        if outcome.faulted {
+        if outcome.fault_code != crate::readiness::TERMINAL_NONE {
             this.telemetry.fault.fetch_add(1, Ordering::Relaxed);
+            // Task 3.1: publish the concrete error identity to every public
+            // socket. `round` released the Service/SocketSet guards before
+            // returning, so no guard is held across these wakes.
+            crate::SOCKET_SET.publish_global_fault_code(outcome.fault_code);
         }
         if outcome.rx_space_woken {
             this.telemetry.rx_space_wake.fetch_add(1, Ordering::Relaxed);

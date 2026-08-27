@@ -1,9 +1,9 @@
 use core::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     time::Duration,
 };
 
-use axerrno::AxResult;
+use axerrno::{AxError, AxResult, LinuxError};
 use axpoll::{IoEvents, Pollable};
 use axtask::future::{block_on, poll_io, timeout};
 
@@ -18,6 +18,9 @@ pub(crate) struct GeneralOptions {
 
     send_timeout_nanos: AtomicU64,
     recv_timeout_nanos: AtomicU64,
+    /// Task 3.1: saved stable socket error as a Linux errno number
+    /// (0 = none). Exposed by `SO_ERROR` without being consumed.
+    saved_error: AtomicI32,
 }
 impl Default for GeneralOptions {
     fn default() -> Self {
@@ -32,7 +35,14 @@ impl GeneralOptions {
 
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
+            saved_error: AtomicI32::new(0),
         }
+    }
+
+    /// Saves the Linux errno number backing the non-consuming `SO_ERROR` view.
+    pub(crate) fn record_socket_error(&self, err: &AxError) {
+        let errno = LinuxError::from(*err).code();
+        self.saved_error.store(errno, Ordering::Release);
     }
 
     pub fn nonblocking(&self) -> bool {
@@ -80,8 +90,7 @@ impl Configurable for GeneralOptions {
         use GetSocketOption as O;
         match option {
             O::Error(error) => {
-                // TODO(mivik): actual logic
-                **error = 0;
+                **error = self.saved_error.load(Ordering::Acquire);
             }
             O::NonBlocking(nonblock) => {
                 **nonblock = self.nonblocking();
@@ -124,5 +133,42 @@ impl Configurable for GeneralOptions {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use axerrno::{AxError, LinuxError};
+
+    use super::GeneralOptions;
+    use crate::options::{Configurable, GetSocketOption};
+
+    #[test]
+    fn so_error_returns_saved_errno_without_consuming() {
+        let general = GeneralOptions::new();
+
+        let mut initial = -1i32;
+        assert!(
+            general
+                .get_option_inner(&mut GetSocketOption::Error(&mut initial))
+                .unwrap()
+        );
+        assert_eq!(initial, 0);
+
+        general.record_socket_error(&AxError::ConnectionRefused);
+
+        let mut first = 0i32;
+        general
+            .get_option_inner(&mut GetSocketOption::Error(&mut first))
+            .unwrap();
+        assert_eq!(first, LinuxError::ECONNREFUSED.code());
+
+        let mut second = 0i32;
+        general
+            .get_option_inner(&mut GetSocketOption::Error(&mut second))
+            .unwrap();
+        assert_eq!(second, first);
     }
 }

@@ -101,6 +101,24 @@ host-test:
 	python3 -m unittest tests.test_ms05_evidence_tools -v
 	python3 scripts/ms05_evidence_capture.py --self-test
 	python3 scripts/ms05_evidence_audit.py --self-test
+	python3 scripts/ms06-qemu-validate.py --self-test
+	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms06_stack_readiness_probe.c
+	cc -std=c11 -Wall -Wextra -Werror tests/ms06_stack_readiness_probe_test.c -o /tmp/ms06-stack-readiness-probe-test
+	/tmp/ms06-stack-readiness-probe-test
+	/tmp/ms06-stack-readiness-probe-test
+	python3 scripts/ms06-qemu-validate.py --print-cases > /tmp/ms06-cases-validator.txt
+	/tmp/ms06-stack-readiness-probe-test --print-cases > /tmp/ms06-cases-probe.txt
+	diff -u /tmp/ms06-cases-validator.txt /tmp/ms06-cases-probe.txt
+	@if grep -nE '\bsubprocess\b|\bimport socket\b|qemu-system|os\.system|\bpty\b' scripts/ms06-qemu-validate.py; then \
+		echo "FAIL: ms06 validator must stay a pure output auditor"; exit 1; fi
+	@if grep -nE 'poll_interfaces|\busleep\b|\bnanosleep\b|[^_a-zA-Z]sleep\(' tests/ms06_stack_readiness_probe.c; then \
+		echo "FAIL: ms06 probe must not sleep-poll or call internal axnet poll"; exit 1; fi
+	@if grep -nE '\bprog_fd\b|read_byte_deadline\(prog|progress_reported' tests/ms06_stack_readiness_probe.c; then \
+		echo "FAIL: ms06 probe must not use a pre-data replacement progress barrier"; exit 1; fi
+	@if ! grep -nA3 'static int run_waiter_64' tests/ms06_stack_readiness_probe.c | grep -q MS06_WAIT_EPOLL; then \
+		echo "FAIL: waiter-64 must arm through synchronous epoll"; exit 1; fi
+	@if ! grep -nA3 'static int run_waiter_65_reregister' tests/ms06_stack_readiness_probe.c | grep -q MS06_WAIT_EPOLL; then \
+		echo "FAIL: waiter-65 must arm through synchronous epoll"; exit 1; fi
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)
 network-benchmark-test:
@@ -174,6 +192,13 @@ tests/ms04_rx_probe: tests/ms04_rx_probe.c
 # MS05 data-plane probe (RISC-V static — built automatically, run manually)
 tests/ms05_data_plane_probe: tests/ms05_data_plane_probe.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
+MS06_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+
+# MS06 application readiness probe (RISC-V static — built automatically, run manually)
+tests/ms06_stack_readiness_probe: tests/ms06_stack_readiness_probe.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os \
+		-DMS06_REVISION_DEFAULT='"$(MS06_REVISION)"' -o $@ $<
 
 # Aliases
 rv:

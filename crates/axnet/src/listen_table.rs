@@ -672,6 +672,21 @@ impl ListenTable {
         }
     }
 
+    /// Task 3.1 (D4): inspects the first consumable accept outcome for
+    /// readiness. `Some(true)` when the head commits a Reset, `Some(false)`
+    /// when it commits a Ready connection, `None` when nothing is consumable.
+    /// Pending slots are transparent.
+    pub(crate) fn accept_head_is_reset(&self, port: u16) -> Option<bool> {
+        let entry = self.listen_entry(port);
+        let guard = entry.lock();
+        let entry = guard.as_ref()?;
+        entry
+            .queue
+            .iter()
+            .find(|slot| slot.state != SlotState::Pending)
+            .map(|slot| slot.state == SlotState::Reset)
+    }
+
     /// Consumes one Ready/Reset slot and restores an idle hidden listener in
     /// a single `SOCKET_SET -> entry` critical section (Task 2.7 replan).
     ///
@@ -781,6 +796,18 @@ impl ListenTable {
             .lock()
             .as_ref()
             .map_or(0, |entry| entry.queue.len())
+    }
+
+    /// Task 3.1 test seam: queues one consumable Reset slot for `port`
+    /// (readiness witness injection). Production paths never call this.
+    #[cfg(test)]
+    pub(crate) fn test_push_reset_slot(&self, port: u16) {
+        if let Some(entry) = self.listen_entry(port).lock().as_mut() {
+            entry.queue.push_back(ListenSlot {
+                handle: None,
+                state: SlotState::Reset,
+            });
+        }
     }
 
     /// T2.8-R1 test seam: records a head signal for `port` exactly like the
@@ -1162,6 +1189,64 @@ mod tests {
             table.accept_with(18083, &mut sockets),
             Err(axerrno::AxError::WouldBlock)
         ));
+    }
+
+    #[test]
+    fn accept_head_readiness_inspects_first_consumable_slot() {
+        use crate::readiness;
+
+        let (table, mut sockets, bridge) = session(18085);
+        assert_eq!(table.accept_head_is_reset(18085), None);
+
+        // Pending slots are transparent to readiness.
+        let parked = table.test_park_idle_as_pending_slot(18085);
+        assert!(table.tcp[18085].lock().as_ref().unwrap().idle.is_none());
+        let _ = parked;
+        assert_eq!(table.accept_head_is_reset(18085), None);
+
+        // The first committed Ready slot decides.
+        let ready_handle = {
+            let mut socket = new_tcp_socket();
+            socket.listen(endpoint(18085)).unwrap();
+            sockets.add(socket)
+        };
+        table.tcp[18085]
+            .lock()
+            .as_mut()
+            .unwrap()
+            .queue
+            .push_back(ListenSlot {
+                handle: Some(ready_handle),
+                state: SlotState::Ready,
+            });
+        assert_eq!(table.accept_head_is_reset(18085), Some(false));
+
+        // Reset behind it becomes the head only after the Ready item leaves.
+        table.tcp[18085]
+            .lock()
+            .as_mut()
+            .unwrap()
+            .queue
+            .push_back(ListenSlot {
+                handle: None,
+                state: SlotState::Reset,
+            });
+        assert_eq!(
+            table.accept_with(18085, &mut sockets).unwrap(),
+            ready_handle
+        );
+        assert_eq!(table.accept_head_is_reset(18085), Some(true));
+
+        let count = Arc::new(AtomicUsize::new(0));
+        bridge.register(IoEvents::ERR, &counting_waker(count.clone()));
+        assert!(matches!(
+            table.accept_with(18085, &mut sockets),
+            Err(axerrno::AxError::ConnectionReset)
+        ));
+        assert_eq!(table.accept_head_is_reset(18085), None);
+
+        // Readiness never turns a transient reset into a permanent terminal.
+        assert_eq!(bridge.terminal_code(), readiness::TERMINAL_NONE);
     }
 
     #[test]

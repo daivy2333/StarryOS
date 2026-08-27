@@ -132,3 +132,27 @@ MS05 已建立唯一双向 queue service 和有界 packet slots，但 smoltcp �
   顺延为Iteration 004。
 - User Approval: PASS。用户于2026-08-24回复“已经拆分完了么，认可你的思路”，批准修订后的
   Iteration Map与Cycle 006范围；Cycle 006已更新为`ready`。该批准不构成自动Act授权。
+
+## Iteration 004 Cycle 001 Replan Gate 2
+
+- Status: approved。
+- Trigger: Cycle 000只实施Task 3.1后按用户指令停止。Plan Review发现global/local terminal所有权、UDP blocking recv重试、connect hint线性化和terminal 0/1/2/64/65见证仍有Acceptance gap；原Iteration还混合guest witness、自动资格和人工QEMU四个故障域。
+- Requirements and Scope: Gate 1不变；不新增或裁剪R1-R7。D6/D8只澄清既有stable fault、readiness和I/O一致性要求。
+- Iteration balance: 21个tasks分配到8个依赖有序Iteration。Iteration 004执行Tasks 3.1-3.2并关闭terminal host/model基线；Iteration 005执行Tasks 4.1-4.3并构建guest witness；Iteration 006执行Task 5.1并关闭自动资格；Iteration 007执行Tasks 6.1-6.2并完成人工single-hart QEMU验收。
+- Investigation、Design、Task Contracts、Traceability、Verification和Persisted Evidence：PASS，详见`iterations/004-terminal-readiness-and-qemu-acceptance/001-replan.md`；Evidence模式为`none`。
+- User Approval: PASS。用户于2026-08-26回复“认可，那就给出下一轮rework cyc和对iters map进行更新吧”；因Map和Acceptance边界发生变化，按规则创建replan而非rework Cycle。该批准不构成自动Act授权。
+
+## Host 测试可靠性 Iteration 插入
+
+- Status: approved-map-update。
+- Trigger: Iteration 004 Review确认R57 Incident记录的并行全局`SOCKET_SET`/`LISTEN_TABLE`竞态与独立
+  qemu-diagnostics flake不归因于terminal Cycle，但会削弱后续automatic qualification的可信度。
+- Requirements and Scope: 不新增产品Requirement，不改变R1-R7或Iteration 005的guest witness契约；新增的
+  Tasks 5.1-5.2只修复host test fixture、共享状态隔离和确定性，产品socket/readiness语义保持不变。
+- Iteration balance: 23个tasks分配到9个依赖有序Iteration。Iteration 006在application witness之后、automatic
+  qualification之前处理两个不预设同根的测试可靠性问题；原automatic qualification顺延为Iteration 007，
+  原single-hart QEMU acceptance顺延为Iteration 008。
+- Verification boundary: Iteration 006必须让R57失败子集、diagnostics目标测试和两profile默认并行full suites
+  重复稳定通过；skip/ignore、无限重跑、隔离重跑豁免或把完整套件串行化均不构成修复。
+- User Approval: PASS。用户于2026-08-26要求“更新iter map把这个问题的修复暂时规划一个iter，以待后续进行修复”。
+  本次只更新Map，不展开Iteration 006 Cycle，不调用Act。

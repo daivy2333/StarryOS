@@ -71,7 +71,10 @@ pub(crate) struct RouterDispatchOutcome {
     pub(crate) budget_exhausted: bool,
     pub(crate) backlog: bool,
     pub(crate) rx_ready: bool,
-    pub(crate) faulted: bool,
+    /// Task 3.1: stable code of the concrete fault that entered this round
+    /// (`readiness::TERMINAL_NONE` = none). The error identity must reach
+    /// the public fault publisher uncollapsed.
+    pub(crate) fault_code: u64,
 }
 
 const DEFAULT_ROUTER_BUDGET: usize = 32;
@@ -422,18 +425,18 @@ impl Router {
         timestamp: Instant,
         budget: usize,
     ) -> RouterDispatchOutcome {
-        if self.tx_fault.is_some() {
+        if let Some(existing) = self.tx_fault.as_ref() {
             return RouterDispatchOutcome {
                 processed: 0,
                 budget_exhausted: false,
                 backlog: !self.tx_buffer.is_empty(),
                 rx_ready: false,
-                faulted: true,
+                fault_code: crate::readiness::dev_error_code(existing),
             };
         }
         let mut processed = 0usize;
         let mut rx_ready = false;
-        let mut faulted = false;
+        let mut fault_code = crate::readiness::TERMINAL_NONE;
         let Self {
             tx_buffer,
             devices,
@@ -492,6 +495,7 @@ impl Router {
                         Some(Action::DequeueContinue)
                     }
                     TxPreflight::Fault(err) => {
+                        fault_code = crate::readiness::dev_error_code(&err);
                         *tx_fault = Some(err);
                         Some(Action::FaultKeepHead)
                     }
@@ -528,6 +532,7 @@ impl Router {
                 }
                 break match drift {
                     Some(err) => {
+                        fault_code = crate::readiness::dev_error_code(&err);
                         *tx_fault = Some(err);
                         Action::FaultRemoveHead
                     }
@@ -541,14 +546,10 @@ impl Router {
                     processed += 1;
                 }
                 Action::KeepHeadStop => break,
-                Action::FaultKeepHead => {
-                    faulted = true;
-                    break;
-                }
+                Action::FaultKeepHead => break,
                 Action::FaultRemoveHead => {
                     let _ = tx_buffer.dequeue();
                     processed += 1;
-                    faulted = true;
                     break;
                 }
             }
@@ -559,7 +560,7 @@ impl Router {
             budget_exhausted: budget != 0 && processed == budget && backlog,
             backlog,
             rx_ready,
-            faulted,
+            fault_code,
         }
     }
 }

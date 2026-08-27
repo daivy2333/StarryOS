@@ -27,32 +27,15 @@ pub(crate) struct FlushTicket {
     pub(crate) target: Option<u64>,
 }
 
-/// Stable error code for a [`DevError`] (mirrors `async_rx::rx_error_code`).
+/// Stable error code for a [`DevError`] (the single shared encoding lives in
+/// `readiness`).
 pub(crate) fn error_code(err: &DevError) -> u64 {
-    match err {
-        DevError::AlreadyExists => 1,
-        DevError::Again => 2,
-        DevError::BadState => 3,
-        DevError::InvalidParam => 4,
-        DevError::Io => 5,
-        DevError::NoMemory => 6,
-        DevError::ResourceBusy => 7,
-        DevError::Unsupported => 8,
-    }
+    crate::readiness::dev_error_code(err)
 }
 
 /// Reconstructs a [`DevError`] from [`error_code`].
 pub(crate) fn error_from_code(code: u64) -> DevError {
-    match code {
-        1 => DevError::AlreadyExists,
-        2 => DevError::Again,
-        3 => DevError::BadState,
-        4 => DevError::InvalidParam,
-        5 => DevError::Io,
-        6 => DevError::NoMemory,
-        7 => DevError::ResourceBusy,
-        _ => DevError::Unsupported,
-    }
+    crate::readiness::dev_error_from_code(code)
 }
 
 /// Single-slot flush waiter state owned by the [`Service`](crate::service::Service).
