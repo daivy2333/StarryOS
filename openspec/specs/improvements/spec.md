@@ -97,6 +97,8 @@ I15 提升时 MUST 保证原始 rootfs 不变。当前 QEMU 挂载 `make/disk.im
 
 ### Requirement: I17 — 异步网卡从 axnet 抽离为独立库
 
+I17 的任何实施 MUST 通过独立 change 完成，并遵守下述触发条件、前置依赖与范围边界。
+
 将当前 `crates/axnet` 中的异步数据面（queue task、stack runner、TX/RX slot、generation/owner ledger）从 StarryOS 内核工作区抽离为独立 crate。当前 `axnet` 已从 root workspace 排除（`crates/axnet/Cargo.toml:155-158`）但仍直接依赖 `axdriver` / `axhal` / `axtask` / `axsync` / `axpoll` 六个 ArceOS 内部 crate；本 I 的目标是把这些依赖收拢到 OS 适配层，库本体只保留协议栈 + 异步契约 + 数据面。
 
 **状态**: 待评估，未承诺
@@ -149,6 +151,8 @@ I15 提升时 MUST 保证原始 rootfs 不变。当前 QEMU 挂载 `make/disk.im
 - **AND** Plan Context MUST 在 Task Contract 标明"协议栈抽象 / 第二 OS 适配 / 真板 DMA"为 explicit non-goals
 
 ### Requirement: I18 — 异步设备骨架抽象可行性
+
+I18 在触发条件满足前 MUST 只记录观察与候选方向，不得预先承诺或设计统一框架。
 
 观察：UART 与 NIC 的异步路径在"ISR 收中断 → 识别原因 → 唤醒 waker → 调度 async task"这 4 个分段上模式高度相似（共享 `embassy_sync::AtomicWaker`、bounded budget、register-recheck、drop guard before wake、generation 等契约）。但"读/写数据结构"和"协议栈/应用层"是设备特定的——UART 是 SPSC ring buffer + tty/embedded_io，NIC 是 RX/TX slot + smoltcp。
 
