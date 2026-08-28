@@ -23,7 +23,7 @@ use crate::{
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    readiness::{self, ReadinessBridge, TERMINAL_NONE, effective_terminal_code, terminal_ax_error},
+    readiness::{ReadinessBridge, TERMINAL_NONE, effective_terminal_code, terminal_ax_error},
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {

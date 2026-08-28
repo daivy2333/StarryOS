@@ -22,7 +22,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 #[cfg(not(test))]
 use crate::stack_runner::STACK_EVENT;
 use crate::{
-    device::{RxCopyStep, TxReclaimStep, TxSubmitStep, fixed_queue::MAX_LIVE_TICKETS},
+    device::{RxCopyStep, TxReclaimStep, TxSubmitStep},
     router::RxOwnerView,
     service::Service,
     stack_runner::StackEvent,
@@ -219,6 +219,31 @@ pub mod rx_error_stage {
     pub const LIFECYCLE: u64 = 6;
 }
 
+/// Stable D3 stage codes for a recovery/ownership fault summary (F2).
+///
+/// These are internal diagnostic codes ONLY — never serialized into the frozen
+/// V1–V3 wire snapshot. They identify which bounded recovery stage the fault
+/// was frozen at, so a fault summary is diagnosable without needing a new wire
+/// field this iteration.
+pub mod recover_stage {
+    /// Submit wait timed out (a Queued frame was never accepted).
+    pub const SUBMIT_WAIT: u64 = 1;
+    /// Completion wait timed out (a DeviceOwned completion did not arrive).
+    pub const COMPLETION_WAIT: u64 = 2;
+    /// Reclaim timed out (a reclaimable completion could not be reaped).
+    pub const RECLAIM: u64 = 3;
+    /// Quiesce window (bounded DeviceOwned drain before reset) elapsed.
+    pub const QUIESCE: u64 = 4;
+    /// Reset confirmation (status == 0) or `begin_recovery` failed.
+    pub const RESET: u64 = 5;
+    /// Reinitialize (queue/backing rebuild) failed.
+    pub const REINITIALIZE: u64 = 6;
+    /// An ownership/identity/ledger drift detected (no reset attempted).
+    pub const OWNERSHIP_DRIFT: u64 = 7;
+    /// Unclassified recovery fault.
+    pub const UNKNOWN: u64 = 0;
+}
+
 /// Stable diagnostic code for a [`DevError`].
 ///
 /// The codes are explicit and never derived from the enum discriminant, so
@@ -286,6 +311,21 @@ pub(crate) struct RxTelemetry {
     /// device-side cookie→ticket ledger drifted, independent of the raw
     /// completion and reclaim counters.
     pub ownership_invariant: AtomicU64,
+    /// F2: frozen structured summary of the most recent recovery/ownership
+    /// fault, read in one pass so a snapshot never combines the stage from one
+    /// fault with the owner from another. Each value is the count observed at
+    /// the fault commit. Internal only: these MUST NOT serialize into the
+    /// V1–V3 wire snapshot (frozen ABI); they are diagnostic-only.
+    pub recover_fault_stage: AtomicU64,
+    pub recover_fault_epoch: AtomicU64,
+    pub recover_available: AtomicU64,
+    pub recover_device_owned: AtomicU64,
+    pub recover_quarantined: AtomicU64,
+    /// F2: the origin stage (submit wait / completion wait / reclaim /
+    /// unknown) of the fault that triggered the resident recovery, preserved
+    /// so a later quiesce/reset failure still records why the owner entered
+    /// recovery. Internal diagnostic only; never serialized to the V1–V3 ABI.
+    pub recover_origin_stage: AtomicU64,
 }
 
 impl RxTelemetry {
@@ -316,6 +356,12 @@ impl RxTelemetry {
             tx_again: AtomicU64::new(0),
             rx_slot_full: AtomicU64::new(0),
             ownership_invariant: AtomicU64::new(0),
+            recover_fault_stage: AtomicU64::new(0),
+            recover_fault_epoch: AtomicU64::new(0),
+            recover_available: AtomicU64::new(0),
+            recover_device_owned: AtomicU64::new(0),
+            recover_quarantined: AtomicU64::new(0),
+            recover_origin_stage: AtomicU64::new(0),
         }
     }
 
@@ -870,7 +916,59 @@ pub(crate) struct RxRxFuture {
     /// Production only; host tests drive the fake clock and re-poll instead.
     #[cfg(all(feature = "qemu-diagnostics", not(test)))]
     lease_timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    /// Task 2.2: in-progress staged device recovery driven by this resident
+    /// owner. `None` means the data plane is not recovering. When `Some`, the
+    /// owner reuses this future across polls and never exits until recovery
+    /// commits or the owner is permanently quarantined.
+    recovery: Option<RecoveryState>,
+    /// Task 2.2: monotonic deadline (nanos) for the current recovery stage.
+    /// The owner quarantines when the stage does not progress past it.
+    recovery_deadline: Option<u64>,
+    /// Task 2.2: per-test recovery clock. Production never sets it (wall clock).
+    #[cfg(all(test))]
+    recovery_test_clock: Option<crate::recovery::RecoveryTestClock>,
+    /// Task 2.2: axtask timer that wakes the owner at the current recovery
+    /// stage deadline (production only; host tests drive the fake clock).
+    #[cfg(all(not(test)))]
+    recovery_timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
+
+/// A stage of the device-recovery flow the resident queue owner is driving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryState {
+    /// Recovery requested; the next poll cancels Queued tickets and begins the
+    /// bounded quiesce reclaim before any reset.
+    Quiescing,
+    /// Driver reset in progress (`Resetting`), under the 2 s reset deadline.
+    Resetting,
+    /// Queues/backing being rebuilt after a confirmed reset (driver
+    /// `Reinitializing`), under the 2 s reinitialize deadline.
+    Reinitializing,
+    /// Recovery failed or a stage deadline exceeded: the owner is quarantined
+    /// resident in `Faulted`, holds the I/O gate and never resumes stepping.
+    Faulted,
+}
+
+/// Per-poll outcome of the resident recovery loop.
+#[derive(Debug)]
+enum RecoveryRound {
+    /// Recovery committed; the owner can resume the Active service loop.
+    Finished,
+    /// Still recovering; the future stays resident.
+    Pending,
+    /// A recovery step failed; the owner must quarantine after the driver
+    /// recovery fault. The error is committed+published only after the Service
+    /// guard is dropped (F5: never wake under a held guard).
+    Fault(DevError),
+}
+
+/// Quiesce/data-stage deadline in nanoseconds (Task 2.2: 1 s for the
+/// submit/completion/reclaim and quiesce window before the reset starts).
+const QUIESCE_STAGE_DEADLINE_NS: u64 = 1_000_000_000;
+
+/// Reset/reinitialize stage deadline in nanoseconds (Task 2.2: 2 s for the
+/// device-reset and queue-rebuild stages).
+const RESET_STAGE_DEADLINE_NS: u64 = 2_000_000_000;
 
 /// Outcome of one RX servicing round before releasing the guard.
 enum RoundOutcome {
@@ -889,6 +987,16 @@ enum RoundOutcome {
     SleepUntil(u64),
     /// Terminal queue/device fault.
     Fault(DevError),
+    /// A recoverable data-plane fault on a recovery-capable device: the owner
+    /// must stay resident and drive the staged device recovery instead of
+    /// exiting and dropping the RX owner. Carries the D3 fault-origin stage
+    /// (submit-wait / completion-wait / reclaim) so the fault summary is
+    /// diagnosed at the stage that actually failed (F2).
+    Recover(DevError, u64),
+    /// An ownership/identity/ledger drift (`BadState`): D3 forbids masking a
+    /// corrupt ledger with a reset, so the owner quarantines resident in
+    /// `Faulted` without calling driver recovery (F4).
+    Drift(DevError),
 }
 
 impl RxRxFuture {
@@ -952,7 +1060,7 @@ impl RxRxFuture {
                         }
                         // D8: a terminal reclaim fault wakes the flush waiter.
                         service.flush_fault(&err);
-                        return RoundOutcome::Fault(err);
+                        return self.classify_fault(service, err, recover_stage::RECLAIM);
                     }
                 }
             }
@@ -990,7 +1098,7 @@ impl RxRxFuture {
                     self.telemetry
                         .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
                     service.flush_fault(&err);
-                    return RoundOutcome::Fault(err);
+                    return self.classify_fault(service, err, recover_stage::COMPLETION_WAIT);
                 }
             }
         }
@@ -1033,7 +1141,7 @@ impl RxRxFuture {
                         self.telemetry
                             .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
                         service.flush_fault(&err);
-                        return RoundOutcome::Fault(err);
+                        return self.classify_fault(service, err, recover_stage::SUBMIT_WAIT);
                     }
                 }
             }
@@ -1068,7 +1176,10 @@ impl RxRxFuture {
                 self.telemetry
                     .record_fault(rx_error_stage::COMPLETION_QUERY, &err);
                 service.flush_fault(&err);
-                return RoundOutcome::Fault(err);
+                // F2: a completion-query failure is not itself a bounded
+                // recovery stage; classify it as unclassified (UNKNOWN) so the
+                // recoverable path still carries a stable stage in the summary.
+                return self.classify_fault(service, err, recover_stage::UNKNOWN);
             }
         };
         let tx_pending = service.tx_slot_pending_target();
@@ -1230,11 +1341,413 @@ impl RxRxFuture {
             }
             RoundOutcome::Fault(err) => {
                 // Task 3.7: commit `Active -> Faulted` first, publish only on
-                // success, so a woken stack waiter observes Faulted.
+                // success, so a woken stack waiter observes Faulted. This is
+                // the non-recovery terminal path (unreachable-owner device,
+                // driver without recovery support).
                 self.publish_fatal(&err);
                 Poll::Ready(())
             }
+            RoundOutcome::Recover(err, stage) => {
+                // Task 2.2 resident-recovery path: the device exposes a
+                // bounded recovery control, so the owner must not exit and
+                // drop the RX owner. Drive the staged recovery loop.
+                self.enter_recovery(&err, stage);
+                self.poll_recovery(cx)
+            }
+            RoundOutcome::Drift(err) => {
+                // F4/D3: an ownership/identity/ledger drift on a
+                // recovery-capable device must NOT be masked by a reset. The
+                // owner quarantines resident in `Faulted`, holds the gate and
+                // never calls driver recovery.
+                self.enter_drift_quarantine(&err);
+                self.poll_recovery(cx)
+            }
         }
+    }
+
+    /// Task 2.2: classifies a data-plane fault. A recovery-capable device keeps
+    /// the resident owner alive and drives recovery; an unrecoverable device
+    /// keeps the historical terminal-exit path. F4/D3: an ownership/identity/
+    /// ledger drift (`BadState`) must NOT be masked by a reset — the owner
+    /// quarantines resident in `Faulted` without calling driver recovery.
+    fn classify_fault(&self, service: &mut Service, err: DevError, stage: u64) -> RoundOutcome {
+        if matches!(err, DevError::BadState) {
+            if service.target_can_recover() {
+                RoundOutcome::Drift(err)
+            } else {
+                RoundOutcome::Fault(err)
+            }
+        } else if service.target_can_recover() {
+            RoundOutcome::Recover(err, stage)
+        } else {
+            RoundOutcome::Fault(err)
+        }
+    }
+
+    /// Task 2.2: a recoverable data-plane fault begins the resident recovery
+    /// phase. The owner gates the I/O path, commits `Active -> Quiescing`,
+    /// publishes the pending quarantine to waiters, then drives the staged
+    /// recovery across polls. Called once, right after the faulting round.
+    fn enter_recovery(&mut self, err: &DevError, origin_stage: u64) {
+        // Find 2: gate the TX enqueue before any recovery window opens so no
+        // new Queued ticket enters a data plane being cleared.
+        self.set_recovery_hold(true);
+        if !self.lifecycle.begin_recovery().is_ok() {
+            self.telemetry.record_last_error_code(
+                rx_error_stage::LIFECYCLE,
+                self.lifecycle.load().code() as u64,
+            );
+            self.telemetry
+                .lifecycle_fault
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        self.recovery = Some(RecoveryState::Quiescing);
+        self.recovery_deadline = None;
+        // F2: the origin stage of the fault that triggered recovery (submit
+        // wait / completion wait / reclaim) is preserved for the fault
+        // summary, so a later quiesce/reset failure still records why the
+        // owner entered recovery.
+        self.telemetry
+            .recover_origin_stage
+            .store(origin_stage, Ordering::Relaxed);
+        self.telemetry
+            .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
+        self.fault_sink.publish_global_fault(err);
+        self.notify.publish_progress();
+        self.stack_notify.publish_device();
+        self.cancel_recovery_timer();
+    }
+
+    /// F4/D3: quarantines a recovery-capable owner on an ownership/identity/
+    /// ledger drift without calling driver recovery. Holds the I/O gate,
+    /// commits `Faulted` from the active state, and makes the future resident
+    /// so the drifting owner never resumes stepping and never resets.
+    fn enter_drift_quarantine(&mut self, err: &DevError) {
+        // F4: close the DeviceOwned ledger as `Fault` WITHOUT releasing the
+        // driver backing (the recovery holder keeps it quarantined), so a new
+        // flush on the faulted owner fails stably instead of pending forever.
+        // The ledger and flush commit happen under a brief guard; the waiter
+        // wake happens after the guard is dropped (F5).
+        if let Some(mut service) = self.service.lock() {
+            service.tx_set_recovery_hold_target(true);
+            service.tx_cancel_queued_target();
+            service.tx_cancel_pending_target();
+            service.tx_fault_device_owned_target(crate::device::TicketFaultStage::OwnershipDrift);
+            service.flush_recovery_abort_all(err);
+        }
+        // F2: commit `Faulted` first, then freeze the summary, so
+        // `freeze_recovery_summary` observes the Faulted lifecycle and records
+        // the real software ticket epoch instead of `u64::MAX`.
+        if !self.lifecycle.recover_fault().is_ok() {
+            self.telemetry.record_last_error_code(
+                rx_error_stage::LIFECYCLE,
+                self.lifecycle.load().code() as u64,
+            );
+            self.telemetry
+                .lifecycle_fault
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        self.recovery = Some(RecoveryState::Faulted);
+        // F2: an ownership/identity drift is its own structured fault stage,
+        // distinct from a recoverable reset-stage failure.
+        self.freeze_recovery_summary(recover_stage::OWNERSHIP_DRIFT);
+        self.recovery_deadline = None;
+        self.telemetry
+            .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
+        self.fault_sink.publish_global_fault(err);
+        self.notify.publish_progress();
+        self.stack_notify.publish_device();
+        self.cancel_recovery_timer();
+        // F5: lifecycle resolved; wake the flush waiter only now, outside any
+        // Service guard.
+        let _ = self.service.lock().map(|s| s.flush_wake_pending());
+    }
+
+    /// Sets or clears the recovery I/O gate on the underlying device (Find 2).
+    /// Locks the Service briefly; safe because no guard is held when the
+    /// owner calls this.
+    fn set_recovery_hold(&mut self, held: bool) {
+        if let Some(mut service) = self.service.lock() {
+            service.tx_set_recovery_hold_target(held);
+        }
+    }
+
+    /// The clock used for recovery-deadline decisions: the attached per-test
+    /// fixture clock when present, else the wall monotonic clock.
+    fn recovery_now(&self) -> u64 {
+        #[cfg(test)]
+        {
+            if let Some(clock) = self.recovery_test_clock {
+                return clock.load();
+            }
+        }
+        crate::recovery::recovery_now()
+    }
+
+    /// Task 2.2: drives the staged device recovery as the resident owner. Each
+    /// poll performs at most one bounded stage transition and reclaims a
+    /// bounded number of quiesce completions, then returns `Pending`; the
+    /// future stays alive across `Quiescing / Resetting / Reinitializing /
+    /// Faulted` and never exits until recovery commits or the owner is
+    /// quarantined. Each stage deadline is an absolute instant armed once on
+    /// entry; a same-stage `Pending` never renews it (Find 3).
+    fn poll_recovery(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.notify.register_queue(cx.waker());
+        let access = self.service;
+        let Some(mut service) = access.lock() else {
+            return Poll::Pending;
+        };
+        let now = self.recovery_now();
+        // Resident quarantine (Find 2): the owner stays but never resumes
+        // stepping; the future keeps returning Pending.
+        if self.recovery == Some(RecoveryState::Faulted) {
+            drop(service);
+            return Poll::Pending;
+        }
+        match self.recovery {
+            Some(RecoveryState::Quiescing) => {
+                if self.recovery_deadline.is_none() {
+                    // Entering quiesce: arm the 1 s absolute deadline once and
+                    // linearize the pre-submit cancel with the current epoch.
+                    self.recovery_deadline = Some(now + QUIESCE_STAGE_DEADLINE_NS);
+                    service.tx_cancel_queued_target();
+                    service.tx_cancel_pending_target();
+                    service.flush_progress();
+                    self.arm_recovery_timer(cx);
+                }
+                // Bounded grace drain of DeviceOwned completions within the
+                // quiesce window until the ledger is stable or the 1 s expires.
+                let mut reclaimed = 0usize;
+                loop {
+                    match service.tx_reclaim_one_target() {
+                        TxReclaimStep::Reclaimed => {
+                            reclaimed += 1;
+                            service.flush_progress();
+                            if reclaimed >= RECLAIM_BUDGET {
+                                break;
+                            }
+                        }
+                        TxReclaimStep::Empty => break,
+                        TxReclaimStep::Fault(err) => {
+                            // F5: commit under the guard, drop, then publish.
+                            service.flush_recovery_abort_all(&err);
+                            drop(service);
+                            self.publish_recovery_fault(&err);
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                let drained = service.device_owned_len_target() == 0;
+                let expired = self
+                    .recovery_deadline
+                    .is_some_and(|d| self.recovery_now() >= d);
+                if drained || expired {
+                    if !self.lifecycle.quiescing_to_resetting().is_ok() {
+                        self.telemetry
+                            .lifecycle_fault
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    match service.recovery_begin_target() {
+                        Ok(_epoch) => {
+                            self.recovery = Some(RecoveryState::Resetting);
+                            self.recovery_deadline =
+                                Some(self.recovery_now() + RESET_STAGE_DEADLINE_NS);
+                            self.arm_recovery_timer(cx);
+                        }
+                        Err(err) => {
+                            // F5: commit under the guard, drop, then publish.
+                            service.flush_recovery_abort_all(&err);
+                            drop(service);
+                            self.publish_recovery_fault(&err);
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                drop(service);
+                Poll::Pending
+            }
+            Some(RecoveryState::Resetting) | Some(RecoveryState::Reinitializing) => {
+                if self
+                    .recovery_deadline
+                    .is_some_and(|d| self.recovery_now() >= d)
+                {
+                    let err = DevError::Io;
+                    // F5: commit under the guard, drop, then publish.
+                    service.flush_recovery_abort_all(&err);
+                    drop(service);
+                    self.publish_recovery_fault(&err);
+                    return Poll::Pending;
+                }
+                let outcome = self.recovery_step(cx, &mut service);
+                drop(service);
+                match outcome {
+                    RecoveryRound::Finished => {
+                        // F5: commit any pending flush outcome under the
+                        // (already dropped) guard before reopening the gate and
+                        // self-waking.
+                        self.service.lock().map(|s| s.flush_wake_pending());
+                        // The new epoch was committed; reopen the I/O gate.
+                        self.set_recovery_hold(false);
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    RecoveryRound::Pending => Poll::Pending,
+                    RecoveryRound::Fault(err) => {
+                        // F5: the Service guard is already dropped; commit the
+                        // residency + publish the recovery fault now.
+                        self.publish_recovery_fault(&err);
+                        Poll::Pending
+                    }
+                }
+            }
+            _ => {
+                drop(service);
+                Poll::Pending
+            }
+        }
+    }
+
+    /// Task 2.2 / Find 3: one bounded driver recovery step for the
+    /// reset/reinitialize stage. A stage change re-arms the 2 s absolute
+    /// deadline; a same-stage `Pending` keeps the already-mounted deadline, so
+    /// a stalled driver eventually times out rather than being renewed forever.
+    fn recovery_step(&mut self, cx: &mut Context<'_>, service: &mut Service) -> RecoveryRound {
+        let now = self.recovery_now();
+        let current = self.recovery.unwrap_or(RecoveryState::Resetting);
+        match service.recovery_step_target() {
+            Ok(progress) if progress.stage == axdriver_net::RecoveryStage::Recovered => {
+                let epoch = progress.epoch;
+                service.tx_close_device_owned_target();
+                // Finding 1: settle the old-epoch flush BEFORE the epoch
+                // advances so its outcome is not corrupted by the reset.
+                service.flush_recovery_close();
+                service.tx_advance_epoch_target(epoch);
+                if !self.lifecycle.recovery_committed().is_ok() {
+                    self.telemetry
+                        .lifecycle_fault
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                self.recovery = None;
+                self.recovery_deadline = None;
+                self.cancel_recovery_timer();
+                RecoveryRound::Finished
+            }
+            Ok(progress) => {
+                let next = match progress.stage {
+                    axdriver_net::RecoveryStage::Resetting => RecoveryState::Resetting,
+                    axdriver_net::RecoveryStage::Reinitializing => RecoveryState::Reinitializing,
+                    _ => current,
+                };
+                if next != current {
+                    self.recovery = Some(next);
+                    self.recovery_deadline = Some(now + RESET_STAGE_DEADLINE_NS);
+                    if next == RecoveryState::Reinitializing {
+                        let _ = self.lifecycle.resetting_to_reinitializing();
+                    }
+                }
+                self.arm_recovery_timer(cx);
+                RecoveryRound::Pending
+            }
+            Err(err) => {
+                // F5: commit the flush outcome under the guard but DON'T wake
+                // (commit_fault, no wake); publish the recovery fault only
+                // after poll_recovery drops the Service guard. The error is
+                // returned so the caller orders drop->commit->wake correctly.
+                service.flush_recovery_abort_all(&err);
+                RecoveryRound::Fault(err)
+            }
+        }
+    }
+
+    /// F2: freezes the structured recovery-fault summary into internal (non-ABI)
+    /// telemetry. The stage comes from the running recovery state; the driver
+    /// owner summary is read under a brief Service guard so the fault records
+    /// the actual available/device-owned/quarantined resources at commit time.
+    fn freeze_recovery_summary(&self, stage: u64) {
+        let epoch = match self.lifecycle.load() {
+            RxTaskLifecycle::Faulted => {
+                // The software ticket epoch is not directly on the lifecycle;
+                // read it from the target device under the guard.
+                self.service
+                    .lock()
+                    .map(|s| s.queue_epoch_target().current())
+                    .unwrap_or(u64::MAX)
+            }
+            _ => u64::MAX,
+        };
+        let summary = self
+            .service
+            .lock()
+            .map(|mut s| s.recovery_owner_summary_target())
+            .unwrap_or(axdriver_net::OwnerSummary::default());
+        self.telemetry
+            .recover_fault_stage
+            .store(stage, Ordering::Relaxed);
+        self.telemetry
+            .recover_fault_epoch
+            .store(epoch, Ordering::Relaxed);
+        self.telemetry
+            .recover_available
+            .store(summary.available, Ordering::Relaxed);
+        self.telemetry
+            .recover_device_owned
+            .store(summary.device_owned, Ordering::Relaxed);
+        self.telemetry
+            .recover_quarantined
+            .store(summary.quarantined, Ordering::Relaxed);
+    }
+
+    /// The R6/S4 stage identity for the current recovery state (F2).
+    fn recovery_fault_stage(&self) -> crate::device::TicketFaultStage {
+        match self.recovery {
+            Some(RecoveryState::Quiescing) => crate::device::TicketFaultStage::Quiesce,
+            Some(RecoveryState::Resetting) => crate::device::TicketFaultStage::Reset,
+            Some(RecoveryState::Reinitializing) => crate::device::TicketFaultStage::Reinitialize,
+            Some(RecoveryState::Faulted) | None => crate::device::TicketFaultStage::Unknown,
+        }
+    }
+
+    /// Task 2.2 / Find 2: commits the quarantine. The same owner stays
+    /// resident in `Faulted`, holds the I/O gate, and never resumes stepping;
+    /// the error, stage and epoch are published so nothing pends forever.
+    fn publish_recovery_fault(&mut self, err: &DevError) {
+        // F4: close the DeviceOwned ledger as `Fault` WITHOUT releasing the
+        // driver backing (the recovery holder keeps it quarantined), so a new
+        // flush on the faulted owner fails stably instead of pending forever.
+        // Capture the fault stage from the CURRENT recovery state BEFORE it
+        // transitions to Faulted (the Faulted code maps to Unknown), then pass
+        // it into the ledger closure so the Fault terminal is diagnosable.
+        let stage = self.recovery_fault_stage();
+        if let Some(mut service) = self.service.lock() {
+            service.tx_fault_device_owned_target(stage);
+            service.flush_recovery_abort_all(err);
+        }
+        // F2: commit `Faulted`, and only then freeze the summary so
+        // `freeze_recovery_summary` observes the Faulted lifecycle and records
+        // the real software ticket epoch instead of `u64::MAX`.
+        if self.recovery != Some(RecoveryState::Faulted) {
+            if !self.lifecycle.recover_fault().is_ok() {
+                self.telemetry.record_last_error_code(
+                    rx_error_stage::LIFECYCLE,
+                    self.lifecycle.load().code() as u64,
+                );
+                self.telemetry
+                    .lifecycle_fault
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            self.recovery = Some(RecoveryState::Faulted);
+        }
+        self.freeze_recovery_summary(stage.code());
+        self.recovery_deadline = None;
+        self.telemetry
+            .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
+        self.fault_sink.publish_global_fault(err);
+        self.notify.publish_progress();
+        self.stack_notify.publish_device();
+        self.cancel_recovery_timer();
+        // F5: lifecycle resolved; wake the flush waiter only now, outside any
+        // Service guard.
+        let _ = self.service.lock().map(|s| s.flush_wake_pending());
     }
 
     /// The clock used for lease-deadline decisions: the attached per-test
@@ -1294,6 +1807,42 @@ impl RxRxFuture {
     /// Host-test counterpart: there is no axtask timer to cancel.
     #[cfg(all(feature = "qemu-diagnostics", test))]
     fn cancel_lease_timer(&mut self) {}
+
+    /// Drops any armed recovery-deadline timer (Task 2.2). Host tests drive
+    /// the recovery clock instead.
+    #[cfg(not(test))]
+    fn cancel_recovery_timer(&mut self) {
+        self.recovery_timer = None;
+    }
+    #[cfg(test)]
+    fn cancel_recovery_timer(&mut self) {}
+
+    /// Wakes the owner at the recovery-stage absolute deadline (Task 2.2 / Find
+    /// 3). The timer is wake-only; host tests advance the deterministic
+    /// recovery clock and re-poll instead of running an axtask timer.
+    #[cfg(not(test))]
+    fn arm_recovery_timer(&mut self, cx: &mut Context<'_>) {
+        use axhal::time::TimeValue;
+        use axtask::future::sleep_until;
+
+        self.recovery_timer = None;
+        let Some(deadline) = self.recovery_deadline else {
+            return;
+        };
+        if self.recovery_now() >= deadline {
+            cx.waker().wake_by_ref();
+            return;
+        }
+        let mut timer = Box::pin(sleep_until(TimeValue::from_nanos(deadline)));
+        let mut timer_cx = Context::from_waker(cx.waker());
+        if timer.as_mut().poll(&mut timer_cx).is_ready() {
+            cx.waker().wake_by_ref();
+        } else {
+            self.recovery_timer = Some(timer);
+        }
+    }
+    #[cfg(test)]
+    fn arm_recovery_timer(&mut self, _cx: &mut Context<'_>) {}
 
     /// RW-1: registers an axtask timer that wakes the owner at `deadline`.
     #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -1415,6 +1964,19 @@ impl Future for RxRxFuture {
         this.lease_deadline_elapsed(cx);
         match this.lifecycle.load() {
             RxTaskLifecycle::Spawned => this.poll_first(cx),
+            // Task 2.2: while a staged device recovery is in flight the owner
+            // must drive it; the normal Active round would step no recovery.
+            // The resident owner stays in Quiescing/Resetting/Reinitializing
+            // (and quarantined Faulted) across polls until it resolves.
+            RxTaskLifecycle::Quiescing
+            | RxTaskLifecycle::Resetting
+            | RxTaskLifecycle::Reinitializing
+            | RxTaskLifecycle::Faulted
+                if this.recovery.is_some() =>
+            {
+                this.poll_recovery(cx)
+            }
+            RxTaskLifecycle::Active if this.recovery.is_some() => this.poll_recovery(cx),
             RxTaskLifecycle::Active => this.poll_active(cx),
             // Terminal/unavailable states: the task exits; polling keeps the
             // owner for Spawned/Unavailable.
@@ -1443,6 +2005,10 @@ fn spawn_rx_task() {
                 diag_test_clock: None,
                 #[cfg(all(feature = "qemu-diagnostics", not(test)))]
                 lease_timer: None,
+                recovery: None,
+                recovery_deadline: None,
+                #[cfg(not(test))]
+                recovery_timer: None,
             })
         },
         RX_TASK_NAME.to_owned(),
@@ -1487,19 +2053,37 @@ pub(crate) enum SpaceDecision {
 
 /// Lifecycle of the async RX queue task.
 ///
-/// Monotonic: `Polling -> Spawned -> Active -> Faulted`, or `Spawned ->
-/// Unavailable` when preflight fails. No transition ever rolls the owner back
-/// to an earlier state.
+/// Activation is monotonic: `Polling -> Spawned -> Active -> Faulted`, or
+/// `Spawned -> Unavailable` when preflight fails. After a recoverable
+/// data-plane fault on a recovery-capable device, the same unique owner moves
+/// `Active -> Quiescing -> Resetting -> Reinitializing -> Active` under a new
+/// device-reset epoch, or into `Faulted` when any recovery stage exhausts its
+/// deadline or the driver faults. All recovery/faulted states keep the async
+/// owner resident (never roll back to a polling owner).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RxTaskLifecycle {
     Polling,
     Spawned,
     Active,
+    /// Bounded reclaim/cancel of the current epoch before a device reset
+    /// (Task 2.2, 1 s data/quiesce deadline).
+    Quiescing,
+    /// Driver reset in progress (Task 2.2, 2 s reset deadline).
+    Resetting,
+    /// Queue/backing rebuild after a confirmed reset (2 s reinitialize
+    /// deadline).
+    Reinitializing,
     Faulted,
     Unavailable,
 }
 
 impl RxTaskLifecycle {
+    /// Stable V1–V3 lifecycle ABI. The first five codes are frozen and MUST
+    /// NOT change: `RxSnapshot`/`IrqSnapshotV2/V3` and the kernel V2 mapping
+    /// document `0 Polling, 1 Spawned, 2 Active, 3 Faulted, 4 Unavailable`.
+    /// The resident-recovery states occupy the previously unoccupied codes
+    /// `5 Quiescing, 6 Resetting, 7 Reinitializing` (Task 2.2). Do not reorder
+    /// or repurpose these; `rx_snapshot_impl` publishes `code()` verbatim.
     const fn code(self) -> u8 {
         match self {
             Self::Polling => 0,
@@ -1507,6 +2091,9 @@ impl RxTaskLifecycle {
             Self::Active => 2,
             Self::Faulted => 3,
             Self::Unavailable => 4,
+            Self::Quiescing => 5,
+            Self::Resetting => 6,
+            Self::Reinitializing => 7,
         }
     }
 
@@ -1517,16 +2104,26 @@ impl RxTaskLifecycle {
             2 => Self::Active,
             3 => Self::Faulted,
             4 => Self::Unavailable,
+            5 => Self::Quiescing,
+            6 => Self::Resetting,
+            7 => Self::Reinitializing,
             _ => unreachable!("lifecycle code out of range"),
         }
     }
 
-    /// Consumption-right view: the async task owns RX only once `Active`, and
-    /// keeps it after a fatal fault so polling never silently resumes.
+    /// Consumption-right view: the async task owns RX once `Active` and keeps
+    /// it through every recovery stage (population/drain/quiesce/reset/
+    /// reinitialize) and a fatal fault, so a recovering or faulted owner is
+    /// never rolled back to a polling owner. Only the un-started / un-available
+    /// states are polling-owned.
     pub(crate) fn owner_view(self) -> RxOwnerView {
         match self {
-            Self::Active | Self::Faulted => RxOwnerView::AsyncOwned,
             Self::Polling | Self::Spawned | Self::Unavailable => RxOwnerView::PollingOwned,
+            Self::Active
+            | Self::Quiescing
+            | Self::Resetting
+            | Self::Reinitializing
+            | Self::Faulted => RxOwnerView::AsyncOwned,
         }
     }
 }
@@ -1582,6 +2179,60 @@ impl RxLifecycle {
         self.transition(RxTaskLifecycle::Active, RxTaskLifecycle::Faulted)
     }
 
+    /// `Active -> Quiescing`: a recoverable data-plane fault begins the
+    /// bounded cancel/reclaim window before the device reset (Task 2.2).
+    pub(crate) fn begin_recovery(&self) -> Result<(), TransitionError> {
+        self.transition(RxTaskLifecycle::Active, RxTaskLifecycle::Quiescing)
+    }
+
+    /// `Quiescing -> Resetting`: quiesce finished (drained or deadline);
+    /// driver `begin_recovery` starts the reset.
+    pub(crate) fn quiescing_to_resetting(&self) -> Result<(), TransitionError> {
+        self.transition(RxTaskLifecycle::Quiescing, RxTaskLifecycle::Resetting)
+    }
+
+    /// `Resetting -> Reinitializing`: status == 0 confirmed; queues/backing
+    /// rebuild under the reinitialize deadline.
+    pub(crate) fn resetting_to_reinitializing(&self) -> Result<(), TransitionError> {
+        self.transition(RxTaskLifecycle::Resetting, RxTaskLifecycle::Reinitializing)
+    }
+
+    /// `Resetting | Reinitializing -> Active`: recovery committed. Handles a
+    /// driver that reports `Recovered` from either reset stage; the resident
+    /// owner resumes normal service in both cases.
+    pub(crate) fn recovery_committed(&self) -> Result<(), TransitionError> {
+        let current = self.load();
+        match current {
+            RxTaskLifecycle::Resetting | RxTaskLifecycle::Reinitializing => {
+                self.state
+                    .swap(RxTaskLifecycle::Active.code(), Ordering::AcqRel);
+                Ok(())
+            }
+            _ => Err(TransitionError::Illegal(current)),
+        }
+    }
+
+    /// Any non-terminal recovery state `-> Faulted`: a recovery stage deadline
+    /// or driver fault quarantines the resident owner. Returns `Ok` only on a
+    /// committed swap, so a fault is never published from an already-terminal
+    /// lifecycle.
+    pub(crate) fn recover_fault(&self) -> Result<(), TransitionError> {
+        let current = self.load();
+        if matches!(
+            current,
+            RxTaskLifecycle::Active
+                | RxTaskLifecycle::Quiescing
+                | RxTaskLifecycle::Resetting
+                | RxTaskLifecycle::Reinitializing
+        ) {
+            self.state
+                .swap(RxTaskLifecycle::Faulted.code(), Ordering::AcqRel);
+            Ok(())
+        } else {
+            Err(TransitionError::Illegal(current))
+        }
+    }
+
     fn transition(
         &self,
         from: RxTaskLifecycle,
@@ -1607,19 +2258,22 @@ mod tests {
     use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
     use core::{
         pin::Pin,
-        sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
         task::{Context, Poll, Waker},
     };
 
     use axdriver::prelude::{DevError, DevResult};
-    use axdriver_net::{NetQueueControl, NetQueueDirection};
+    use axdriver_net::{
+        NetQueueControl, NetQueueDirection, NetRecoveryControl, QueueEpoch, RecoveryProgress,
+        RecoveryStage,
+    };
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
     use super::{
         ArmObservation, QUEUE_EVENT, QueueEvent, RECLAIM_BUDGET, RX_BUDGET, RX_LIFECYCLE,
-        RX_TELEMETRY, RxLifecycle, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL, SUBMIT_BUDGET,
-        ServiceAccess, SpaceDecision, StartError, TransitionError, WaitDecision, rx_error_code,
-        rx_error_stage, software_nudge_impl, start_with,
+        RX_TELEMETRY, RecoveryState, RxLifecycle, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL,
+        SUBMIT_BUDGET, ServiceAccess, SpaceDecision, StartError, TransitionError, WaitDecision,
+        recover_stage, rx_error_code, rx_error_stage, software_nudge_impl, start_with,
     };
     use crate::{
         device::{Device, RxCopyStep, RxStep, TxOutcome, TxPreflight, TxReclaimStep, TxSubmitStep},
@@ -1873,6 +2527,14 @@ mod tests {
                 lifecycle.start().unwrap();
                 lifecycle.preflight(false).unwrap();
             }
+            RxTaskLifecycle::Quiescing
+            | RxTaskLifecycle::Resetting
+            | RxTaskLifecycle::Reinitializing => {
+                // Recovery states are only reachable by running a staged
+                // recovery on a real future (see the recovery lifetime tests);
+                // the standalone helper cannot synthesize them.
+                panic!("recovery lifecycle states require a running recovery")
+            }
         }
         assert_eq!(lifecycle.load(), state);
         lifecycle
@@ -1884,6 +2546,51 @@ mod tests {
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Polling);
         lifecycle.start().unwrap();
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
+    }
+
+    #[test]
+    fn lifecycle_frozen_v1_v3_abi_round_trips() {
+        // F1 / A6: the V1–V3 wire ABI freezes `0 Polling, 1 Spawned,
+        // 2 Active, 3 Faulted, 4 Unavailable` (kernel `virtio_net_irq_logic`
+        // maps `rx_lifecycle` verbatim). The resident-recovery states must use
+        // the unoccupied codes `5/6/7`, never shift the frozen ones, or the
+        // ioctl/validator would misread Faulted/Unavailable as unknown.
+        for (state, code) in [
+            (RxTaskLifecycle::Polling, 0),
+            (RxTaskLifecycle::Spawned, 1),
+            (RxTaskLifecycle::Active, 2),
+            (RxTaskLifecycle::Faulted, 3),
+            (RxTaskLifecycle::Unavailable, 4),
+            (RxTaskLifecycle::Quiescing, 5),
+            (RxTaskLifecycle::Resetting, 6),
+            (RxTaskLifecycle::Reinitializing, 7),
+        ] {
+            assert_eq!(state.code(), code, "lifecycle code drift");
+            assert_eq!(RxTaskLifecycle::from_code(code), state, "round-trip drift");
+        }
+    }
+
+    #[test]
+    fn lifecycle_recovery_states_keep_async_owner_resident() {
+        // F1 / A1/E5: even with the frozen codes, a committed recovery state
+        // must never roll the async owner back to a polling owner. This is the
+        // observable contract the ioctl relies on beyond the raw code.
+        for state in [
+            RxTaskLifecycle::Quiescing,
+            RxTaskLifecycle::Resetting,
+            RxTaskLifecycle::Reinitializing,
+            RxTaskLifecycle::Faulted,
+            RxTaskLifecycle::Active,
+        ] {
+            assert_eq!(state.owner_view(), RxOwnerView::AsyncOwned);
+        }
+        for state in [
+            RxTaskLifecycle::Polling,
+            RxTaskLifecycle::Spawned,
+            RxTaskLifecycle::Unavailable,
+        ] {
+            assert_eq!(state.owner_view(), RxOwnerView::PollingOwned);
+        }
     }
 
     #[test]
@@ -1967,11 +2674,21 @@ mod tests {
             (RxTaskLifecycle::Polling, RxOwnerView::PollingOwned),
             (RxTaskLifecycle::Spawned, RxOwnerView::PollingOwned),
             (RxTaskLifecycle::Active, RxOwnerView::AsyncOwned),
+            (RxTaskLifecycle::Quiescing, RxOwnerView::AsyncOwned),
+            (RxTaskLifecycle::Resetting, RxOwnerView::AsyncOwned),
+            (RxTaskLifecycle::Reinitializing, RxOwnerView::AsyncOwned),
             (RxTaskLifecycle::Faulted, RxOwnerView::AsyncOwned),
             (RxTaskLifecycle::Unavailable, RxOwnerView::PollingOwned),
         ] {
             assert_eq!(state.owner_view(), expected);
-            assert_eq!(drive_to(state).owner_view(), expected);
+            if !matches!(
+                state,
+                RxTaskLifecycle::Quiescing
+                    | RxTaskLifecycle::Resetting
+                    | RxTaskLifecycle::Reinitializing
+            ) {
+                assert_eq!(drive_to(state).owner_view(), expected);
+            }
         }
     }
 
@@ -2293,6 +3010,269 @@ mod tests {
         fn register_waker(&self, _waker: &Waker) {}
     }
 
+    /// Shared, test-observable driver state for the resident-recovery fixture.
+    #[derive(Default)]
+    struct RecoveryDriverStats {
+        begin_calls: AtomicUsize,
+        step_calls: AtomicUsize,
+        /// Epoch written by `Device::tx_advance_epoch` at the commit.
+        committed_epoch: AtomicU64,
+        /// Driver epoch offset from `QueueEpoch::MIN` (survives re-fetch).
+        lasted_epoch: AtomicU64,
+        /// Driver-visible stage (RecoveryStage discriminant).
+        stage: AtomicU8,
+        /// One-shot injectable step fault for the quarantine path.
+        step_error: AtomicBool,
+        /// Whether the next RX-copy raises a data-plane fault.
+        fault_pending: AtomicBool,
+        /// Whether the next RX-copy raises an ownership-drift (`BadState`)
+        /// data-plane fault (F4: must quarantine without a reset).
+        drift_pending: AtomicBool,
+        /// Driver-visible owner resources reported by `owner_summary()` (F2);
+        /// the recovery fault must freeze these real values.
+        owner_available: AtomicU64,
+        owner_device_owned: AtomicU64,
+        owner_quarantined: AtomicU64,
+        /// Recovery I/O gate mirror observed by the test (Find 2).
+        recovery_hold: AtomicBool,
+        /// When set, `poll_recovery_step` reports the same stage without
+        /// advancing, so a test can prove a stage deadline is not renewed
+        /// (Find 3).
+        stall_stage: AtomicBool,
+        /// Count of pre-submit owner-cancellation passthroughs invoked on the
+        /// mocked device. The drift-quarantine witness asserts these are
+        /// called exactly once under the Service guard, so same-epoch Queued
+        /// tickets and ARP-pending packets never survive a resident fault.
+        cancel_queued_calls: AtomicUsize,
+        cancel_pending_calls: AtomicUsize,
+        /// Count of DeviceOwned fault-closure invocations (F4). The witness
+        /// asserts the drift path terminates every outstanding DeviceOwned
+        /// ticket as `Fault(OwnershipDrift)` exactly once.
+        fault_device_owned_calls: AtomicUsize,
+    }
+
+    /// Scripted driver recovery machine (mirrors `axdriver_net::RecoveryModel`).
+    ///
+    /// The generated epoch is a raw offset from [`QueueEpoch::MIN`] held in the
+    /// shared stats (the real `QueueEpoch` value is produced only via the
+    /// public [`QueueEpoch::advance`] chain; the tuple field is private, and a
+    /// fresh `ScriptedRecovery` is re-fetched on each `recovery_control()` call).
+    struct ScriptedRecovery {
+        stats: Arc<RecoveryDriverStats>,
+    }
+
+    impl ScriptedRecovery {
+        fn stage(&self) -> u8 {
+            self.stats.stage.load(Ordering::Relaxed)
+        }
+        fn current_epoch(&self) -> QueueEpoch {
+            let mut e = QueueEpoch::MIN;
+            for _ in 0..self.stats.lasted_epoch.load(Ordering::Relaxed) {
+                e = e.advance().expect("test epoch headroom");
+            }
+            e
+        }
+        fn progress_view(&self) -> RecoveryProgress {
+            let stage = match self.stage() {
+                1 => RecoveryStage::Resetting,
+                2 => RecoveryStage::Reinitializing,
+                3 => RecoveryStage::Recovered,
+                _ => RecoveryStage::Idle,
+            };
+            RecoveryProgress {
+                stage,
+                epoch: self.current_epoch(),
+            }
+        }
+    }
+
+    impl NetRecoveryControl for ScriptedRecovery {
+        fn progress(&self) -> RecoveryProgress {
+            self.progress_view()
+        }
+
+        fn begin_recovery(&mut self) -> DevResult<RecoveryProgress> {
+            if self.stage() != 0 {
+                return Err(DevError::BadState);
+            }
+            self.stats.begin_calls.fetch_add(1, Ordering::Relaxed);
+            self.stats.stage.store(1, Ordering::Relaxed);
+            Ok(self.progress_view())
+        }
+
+        fn poll_recovery_step(&mut self) -> DevResult<RecoveryProgress> {
+            self.stats.step_calls.fetch_add(1, Ordering::Relaxed);
+            if self.stats.step_error.swap(false, Ordering::Relaxed) {
+                return Err(DevError::Io);
+            }
+            // Find 3: a stalled driver reports the same reset stage without
+            // advancing, so the absolute deadline must eventually expire.
+            if self.stats.stall_stage.load(Ordering::Relaxed) && matches!(self.stage(), 1 | 2) {
+                return Ok(self.progress_view());
+            }
+            match self.stage() {
+                1 => {
+                    self.stats.stage.store(2, Ordering::Relaxed);
+                    Ok(self.progress_view())
+                }
+                2 => {
+                    self.stats.lasted_epoch.fetch_add(1, Ordering::Relaxed);
+                    self.stats.stage.store(3, Ordering::Relaxed);
+                    Ok(self.progress_view())
+                }
+                _ => Err(DevError::BadState),
+            }
+        }
+
+        fn owner_summary(&self) -> axdriver_net::OwnerSummary {
+            axdriver_net::OwnerSummary {
+                available: self.stats.owner_available.load(Ordering::Relaxed),
+                device_owned: self.stats.owner_device_owned.load(Ordering::Relaxed),
+                quarantined: self.stats.owner_quarantined.load(Ordering::Relaxed),
+            }
+        }
+
+        fn read_link_status(&mut self) -> DevResult<bool> {
+            Err(DevError::Unsupported)
+        }
+    }
+
+    /// A fake NIC that faults once on RX-copy, then goes quiet, but exposes a
+    /// scripted bounded recovery control so the resident owner must recover
+    /// instead of exiting.
+    struct RecoveringDevice {
+        stats: Arc<RecoveryDriverStats>,
+        recovery: ScriptedRecovery,
+        queue_control: ScriptedControl,
+    }
+
+    impl Device for RecoveringDevice {
+        fn name(&self) -> &str {
+            "recovering"
+        }
+
+        fn recv(&mut self, _buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
+            RxStep::Empty
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn rx_copy_one(&mut self) -> RxCopyStep {
+            // F4: an ownership-drift RX-copy fault must quarantine the owner
+            // without a reset mask.
+            if matches!(
+                self.stats.drift_pending.swap(false, Ordering::Relaxed),
+                true
+            ) {
+                RxCopyStep::Fault(DevError::BadState)
+            } else if matches!(
+                self.stats.fault_pending.swap(false, Ordering::Relaxed),
+                true
+            ) {
+                RxCopyStep::Fault(DevError::Io)
+            } else {
+                RxCopyStep::Empty
+            }
+        }
+
+        fn tx_submit_one(&mut self) -> TxSubmitStep {
+            TxSubmitStep::Empty
+        }
+
+        fn tx_reclaim_one(&mut self) -> TxReclaimStep {
+            TxReclaimStep::Empty
+        }
+
+        fn rx_slot_has_space(&self) -> bool {
+            true
+        }
+
+        fn tx_slot_pending(&self) -> bool {
+            false
+        }
+
+        fn tx_close_device_owned(&mut self) -> usize {
+            0
+        }
+
+        fn tx_cancel_queued(&mut self) -> usize {
+            self.stats
+                .cancel_queued_calls
+                .fetch_add(1, Ordering::Relaxed);
+            0
+        }
+
+        fn tx_cancel_pending(&mut self) -> usize {
+            self.stats
+                .cancel_pending_calls
+                .fetch_add(1, Ordering::Relaxed);
+            0
+        }
+
+        fn tx_fault_device_owned(&mut self, _stage: crate::device::TicketFaultStage) -> usize {
+            self.stats
+                .fault_device_owned_calls
+                .fetch_add(1, Ordering::Relaxed);
+            0
+        }
+
+        fn tx_advance_epoch(&mut self, next: QueueEpoch) {
+            self.stats
+                .committed_epoch
+                .store(next.current(), Ordering::Relaxed);
+        }
+
+        fn tx_set_recovery_hold(&mut self, held: bool) {
+            self.stats.recovery_hold.store(held, Ordering::Relaxed);
+        }
+
+        fn tx_device_owned_len(&self) -> u64 {
+            0
+        }
+
+        fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
+            Some(&mut self.recovery)
+        }
+
+        fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+            Some(&mut self.queue_control)
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    fn leaked_service_recovering() -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
+        let stats = Arc::new(RecoveryDriverStats::default());
+        stats.fault_pending.store(true, Ordering::Relaxed);
+        let queue_stats = Arc::new(ScriptedControlStats::default());
+        let device = RecoveringDevice {
+            stats: stats.clone(),
+            recovery: ScriptedRecovery {
+                stats: stats.clone(),
+            },
+            queue_control: ScriptedControl {
+                stats: queue_stats.clone(),
+            },
+        };
+        let mut router = Router::new();
+        let idx = router.add_device(Box::new(device));
+        let service = Service::new(router, Some(idx));
+        (Box::leak(Box::new(spin::Mutex::new(service))), stats)
+    }
+
     fn leaked_service(
         steps: Vec<RxStep>,
         with_control: bool,
@@ -2343,6 +3323,7 @@ mod tests {
     /// capacity, matching the production relation (both `MS05_QS = 64`), so a full
     /// 32-submit round budget drains exactly to capacity without a pending slot to
     /// force a real `Again`.
+    #[cfg(feature = "qemu-diagnostics")]
     #[derive(Default)]
     struct LedgerCounters {
         capacity: AtomicUsize,
@@ -2353,11 +3334,13 @@ mod tests {
         again_calls: AtomicUsize,
     }
 
+    #[cfg(feature = "qemu-diagnostics")]
     struct LedgerDevice {
         counters: Arc<LedgerCounters>,
         control: Option<ScriptedControl>,
     }
 
+    #[cfg(feature = "qemu-diagnostics")]
     impl Device for LedgerDevice {
         fn name(&self) -> &str {
             "ledger"
@@ -2444,6 +3427,7 @@ mod tests {
 
     /// Builds a leaked Service wrapping a [`LedgerDevice`], returning the
     /// Service mutex, the shared counters handle and the control stats.
+    #[cfg(feature = "qemu-diagnostics")]
     fn leaked_service_ledger(
         capacity: usize,
         with_control: bool,
@@ -2495,6 +3479,10 @@ mod tests {
             diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
+            recovery: None,
+            recovery_deadline: None,
+            #[cfg(test)]
+            recovery_test_clock: None,
         };
         (lifecycle, fut)
     }
@@ -2521,6 +3509,10 @@ mod tests {
             diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
+            recovery: None,
+            recovery_deadline: None,
+            #[cfg(test)]
+            recovery_test_clock: None,
         };
         (lifecycle, fut)
     }
@@ -2663,6 +3655,10 @@ mod tests {
             diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
+            recovery: None,
+            recovery_deadline: None,
+            #[cfg(test)]
+            recovery_test_clock: None,
         };
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
@@ -2927,6 +3923,10 @@ mod tests {
             diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
+            recovery: None,
+            recovery_deadline: None,
+            #[cfg(test)]
+            recovery_test_clock: None,
         };
 
         let owner_wakes = Arc::new(AtomicUsize::new(0));
@@ -3351,6 +4351,10 @@ mod tests {
             diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
+            recovery: None,
+            recovery_deadline: None,
+            #[cfg(test)]
+            recovery_test_clock: None,
         };
         (lifecycle, sink, fut)
     }
@@ -3415,6 +4419,10 @@ mod tests {
             diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
+            recovery: None,
+            recovery_deadline: None,
+            #[cfg(test)]
+            recovery_test_clock: None,
         };
         let count = Arc::new(AtomicUsize::new(0));
 
@@ -3595,9 +4603,10 @@ mod tests {
         );
 
         let poll_active_start = source.find("fn poll_active").unwrap();
-        let poll_active_end = source.find("fn publish_fatal").unwrap();
+        let poll_active_end = source.find("fn classify_fault").unwrap();
         let poll_active = &source[poll_active_start..poll_active_end];
-        let round_fault = &poll_active[poll_active.find("RoundOutcome::Fault").unwrap()..];
+        let round_fault = &poll_active[poll_active.find("RoundOutcome::Fault").unwrap()
+            ..poll_active.find("RoundOutcome::Recover").unwrap()];
         assert!(round_fault.contains("self.publish_fatal(&err)"));
         assert!(
             !round_fault.contains("publish_progress()"),
@@ -4155,5 +5164,456 @@ mod tests {
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
         assert!(mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn recoverable_fault_commits_new_epoch_with_resident_owner() {
+        // Task 2.2 / A4 / Find 2: a data-plane fault on a recovery-capable
+        // device must NOT exit the owner; the same future walks
+        // `Quiescing -> Resetting -> Reinitializing -> Active`, commits the new
+        // epoch, and reopens the I/O gate.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: fault -> Quiescing -> drained quiesce -> begin Resetting.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 0);
+        assert!(
+            stats.recovery_hold.load(Ordering::Relaxed),
+            "gate held mid-recovery"
+        );
+
+        // poll2: step -> Reinitializing.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Reinitializing);
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 1);
+
+        // poll3: step -> Recovered -> commit epoch, return to Active, reopen gate.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.committed_epoch.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 2);
+        assert!(fut.recovery.is_none(), "recovery cleared after commit");
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert!(
+            !stats.recovery_hold.load(Ordering::Relaxed),
+            "gate reopened after commit"
+        );
+    }
+
+    #[test]
+    fn recovery_entry_preserves_origin_stage_for_fault_summary() {
+        // F2 / R4: the data-plane fault that triggered the resident recovery
+        // (here an RX-copy failure classified as COMPLETION_WAIT) must be
+        // preserved as the origin stage, so a fault summary records why the
+        // owner entered recovery even if a later reset stage fails.
+        let (mutex, _stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert!(fut.recovery.is_some());
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+        assert_eq!(
+            fut.telemetry.recover_origin_stage.load(Ordering::Relaxed),
+            recover_stage::COMPLETION_WAIT,
+            "origin stage of the triggering data-plane fault is preserved"
+        );
+    }
+
+    #[test]
+    fn recovery_step_error_quarantines_owner_in_faulted_and_holds_gate() {
+        // Task 2.2 / A5 / Find 2: a driver recovery-step failure quarantines
+        // the same owner in `Faulted`, holds the I/O gate, and never resumes
+        // stepping (the future stays resident and Pending).
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: quiesce + begin Resetting.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+
+        stats.step_error.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(
+            stats.recovery_hold.load(Ordering::Relaxed),
+            "gate stays held on quarantine"
+        );
+
+        // A later poll must NOT resume stepping: the owner is resident.
+        let before = stats.step_calls.load(Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), before);
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+    }
+
+    #[test]
+    fn same_stage_pending_does_not_renew_absolute_deadline_then_times_out() {
+        // Task 2.2 / A4 / Find 3: a recovery stage that stays in the same
+        // Pending must NOT re-arm its absolute deadline; a stalled driver
+        // eventually times out and quarantines instead of being renewed forever.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: quiesce + begin Resetting; reset deadline armed at 0 + 2 s.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+        assert_eq!(fut.recovery_deadline, Some(2_000_000_000));
+
+        // Stall the driver at Resetting; advance partway into the deadline.
+        stats.stall_stage.store(true, Ordering::Relaxed);
+        clock.store(1_000_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        // Same-stage Pending must NOT renew the absolute deadline.
+        assert_eq!(
+            fut.recovery_deadline,
+            Some(2_000_000_000),
+            "same-stage pending must not re-arm the deadline"
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+
+        // Advance past the deadline: the stage times out and quarantines.
+        clock.store(2_000_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(fut.recovery_deadline.is_none());
+    }
+
+    #[test]
+    fn recovery_stage_timeout_quarantines_stalled_driver() {
+        // Task 2.2 / A4 / Find 2: a stage that does not advance past its
+        // deadline must quarantine the owner resident in `Faulted` (never
+        // block it forever), driven by the deterministic recovery clock.
+        let (mutex, _stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+        // poll1: quiesce + begin Resetting.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert!(fut.recovery.is_some());
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+        // Pass the reset deadline without the stage advancing.
+        clock.store(3_000_000_000);
+        let count2 = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count2.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(fut.recovery_deadline.is_none());
+    }
+
+    #[test]
+    fn ownership_drift_quarantines_without_driver_recovery() {
+        // F4 / A1/A5 / D3: an ownership/identity drift (`BadState`) on a
+        // recovery-capable device must commit `Faulted` resident and hold the
+        // gate WITHOUT calling driver recovery (a reset must never mask a
+        // corrupt ledger). This is distinct from the `Recover(Io)` path that
+        // drives `begin_recovery`.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.drift_pending.store(true, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(
+            stats.recovery_hold.load(Ordering::Relaxed),
+            "gate must stay held on drift quarantine"
+        );
+        assert_eq!(
+            stats.begin_calls.load(Ordering::Relaxed),
+            0,
+            "ownership drift must never call driver recovery"
+        );
+        assert_eq!(
+            stats.committed_epoch.load(Ordering::Relaxed),
+            0,
+            "ownership drift must never advance the epoch"
+        );
+
+        // A later poll must NOT resume stepping or reset.
+        let before = stats.step_calls.load(Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), before);
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+    }
+
+    #[test]
+    fn ownership_drift_cancels_pre_submit_owners_exactly_once() {
+        // Plan Review Finding 1 (Task 2.1 / R2-R4): entering drift quarantine
+        // must invoke the pre-submit owner-cancellation passthroughs
+        // (`tx_cancel_queued_target` + `tx_cancel_pending_target`) under the
+        // same single Service guard that terminates DeviceOwned and commits
+        // flush, each exactly once, before the permanently-Faulted owner is
+        // committed. This witness proves the same-guard call sequence and
+        // ordering at the async_rx layer; the real state closure (Queued slot
+        // and ledger closing together, CancelledPreSubmit flush outcome) is
+        // separately witnessed on a real `EthernetDevice` in
+        // `device::tests::tx_cancel_queued_closes_slot_and_ledger_in_same_holder`.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.drift_pending.store(true, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(
+            stats.recovery_hold.load(Ordering::Relaxed),
+            "gate must stay held on drift quarantine"
+        );
+        // The pre-submit cancellation passthroughs must be invoked exactly once
+        // inside the same guard that terminates DeviceOwned and commits flush.
+        assert_eq!(
+            stats.cancel_queued_calls.load(Ordering::Relaxed),
+            1,
+            "Queued pre-submit tickets must be cancelled exactly once on drift"
+        );
+        assert_eq!(
+            stats.cancel_pending_calls.load(Ordering::Relaxed),
+            1,
+            "ARP-pending pre-submit packets must be dropped exactly once on drift"
+        );
+        assert_eq!(
+            stats.fault_device_owned_calls.load(Ordering::Relaxed),
+            1,
+            "DeviceOwned must terminate as Fault(OwnershipDrift) exactly once"
+        );
+        // Drift must still never drive driver recovery.
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.committed_epoch.load(Ordering::Relaxed), 0);
+
+        // A later poll must not repeat the cancellations or resume recovery.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(
+            stats.cancel_queued_calls.load(Ordering::Relaxed),
+            1,
+            "pre-submit cancellation must happen exactly once, not once per poll"
+        );
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+    }
+
+    #[test]
+    fn ownership_drift_freezes_structured_fault_summary() {
+        // F2 / A5 / R4: a recovery/ownership fault must freeze the stage, epoch
+        // and the driver's real owner/resource summary (available / device-
+        // owned / quarantined) into internal telemetry, so a fault is
+        // diagnosable without a new wire field (the V1–V3 ABI stays frozen).
+        let (mutex, stats) = leaked_service_recovering();
+        stats.drift_pending.store(true, Ordering::Relaxed);
+        stats.owner_available.store(10, Ordering::Relaxed);
+        stats.owner_device_owned.store(3, Ordering::Relaxed);
+        stats.owner_quarantined.store(5, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(
+            fut.telemetry.recover_fault_stage.load(Ordering::Relaxed),
+            recover_stage::OWNERSHIP_DRIFT
+        );
+        assert_eq!(fut.telemetry.recover_available.load(Ordering::Relaxed), 10);
+        assert_eq!(
+            fut.telemetry.recover_device_owned.load(Ordering::Relaxed),
+            3
+        );
+        assert_eq!(fut.telemetry.recover_quarantined.load(Ordering::Relaxed), 5);
+        // F2: the summary must freeze the real software ticket epoch (read after
+        // the Faulted commit), never the `u64::MAX` unreadable sentinel.
+        assert_eq!(
+            fut.telemetry.recover_fault_epoch.load(Ordering::Relaxed),
+            0,
+            "epoch frozen from the faulted target, not the unavailable sentinel"
+        );
+    }
+
+    #[test]
+    fn recover_stage_codes_are_distinct_and_stable() {
+        // F2 / R4: the six D3 recovery stages must each map to a distinct,
+        // stable internal code so a fault summary identifies the exact stage
+        // (submit wait / completion wait / reclaim / quiesce / reset /
+        // reinitialize) plus the ownership-drift separator.
+        assert_ne!(recover_stage::SUBMIT_WAIT, recover_stage::COMPLETION_WAIT);
+        assert_ne!(recover_stage::COMPLETION_WAIT, recover_stage::RECLAIM);
+        assert_ne!(recover_stage::RECLAIM, recover_stage::QUIESCE);
+        assert_ne!(recover_stage::QUIESCE, recover_stage::RESET);
+        assert_ne!(recover_stage::RESET, recover_stage::REINITIALIZE);
+        assert_ne!(recover_stage::REINITIALIZE, recover_stage::OWNERSHIP_DRIFT);
+        assert_ne!(recover_stage::OWNERSHIP_DRIFT, recover_stage::UNKNOWN);
+        for code in [
+            recover_stage::SUBMIT_WAIT,
+            recover_stage::COMPLETION_WAIT,
+            recover_stage::RECLAIM,
+            recover_stage::QUIESCE,
+            recover_stage::RESET,
+            recover_stage::REINITIALIZE,
+            recover_stage::OWNERSHIP_DRIFT,
+        ] {
+            assert!(code >= 1 && code <= 7, "stage code in diagnostic range");
+        }
+    }
+
+    #[test]
+    fn recovery_step_error_wakes_only_after_guard_released_and_faulted_committed() {
+        // F5 / A3–A5 / R1: the recovery-step fault path must NOT wake the
+        // queue/stack/flush waiters while the Service guard is still held, and
+        // must commit `Faulted` before publishing. An UnlockObservingWake on
+        // the stack role samples `try_lock` of the injected Service inside the
+        // wake callback: a success proves the guard was dropped before the wake.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: fault -> Quiescing -> begin Resetting (guard dropped between
+        // polls; no step error yet).
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+
+        // Register an unlock-observing waker on the stack role so the fault
+        // publication calls it.
+        let unlocked = Arc::new(AtomicBool::new(false));
+        let woken = Arc::new(AtomicUsize::new(0));
+        stack_notify.register(&unlock_observing_waker(
+            mutex,
+            unlocked.clone(),
+            woken.clone(),
+        ));
+
+        // poll2: a driver step error must publish only after the guard drop.
+        stats.step_error.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert_eq!(
+            woken.load(Ordering::Relaxed),
+            1,
+            "recovery-step fault must publish a stack wake"
+        );
+        assert!(
+            unlocked.load(Ordering::Relaxed),
+            "F5: the stack wake must observe the Service guard released"
+        );
+        assert!(
+            stats.recovery_hold.load(Ordering::Relaxed),
+            "gate stays held after quarantine"
+        );
+    }
+
+    #[test]
+    fn recovery_commit_wakes_flush_only_after_epoch_and_active_committed() {
+        // F5 / A3 / R1: on a successful recovery commit, the old-epoch flush is
+        // settled and woken only AFTER the epoch advanced and the lifecycle
+        // returned to Active — never before, so a woken observer never reads a
+        // half-committed state. The flush waiter events land outside the guard.
+        let (mutex, _stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: quiesce + begin Resetting.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+        // poll2: Reinitializing.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Reinitializing);
+        // poll3: Recovered -> commit Active + reopen gate; the flush close +
+        // advance happens before the lifecycle returns to Active.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert!(fut.recovery.is_none());
     }
 }

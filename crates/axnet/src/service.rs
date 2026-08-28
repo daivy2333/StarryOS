@@ -646,6 +646,146 @@ impl Service {
         self.router.tx_reclaim_one(dev)
     }
 
+    /// Target's current device-reset epoch (Task 2.1 recovery owner).
+    pub(crate) fn queue_epoch_target(&self) -> axdriver_net::QueueEpoch {
+        match self.target_dev {
+            Some(dev) => self.router.queue_epoch(dev),
+            None => axdriver_net::QueueEpoch::MIN,
+        }
+    }
+
+    /// Cancels every current-epoch `Queued` ticket on the target, returning
+    /// the count (Task 2.1). Called by the queue task under the Service guard
+    /// at the recovery linearization point.
+    pub(crate) fn tx_cancel_queued_target(&mut self) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_cancel_queued(dev),
+            None => 0,
+        }
+    }
+
+    /// Drops every pre-submit packet waiting in the ARP/neighbor pending
+    /// storage on the target, returning the count (Task 2.2, F3). Linearized
+    /// with `tx_cancel_queued_target` under the Service guard so no pending
+    /// pre-submit packet survives into a new epoch and is auto-sent after
+    /// recovery.
+    pub(crate) fn tx_cancel_pending_target(&mut self) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_cancel_pending(dev),
+            None => 0,
+        }
+    }
+
+    /// Closes every remaining `DeviceOwned` ticket on the target as
+    /// `ResetAborted` after a confirmed reset, returning the count (Task 2.1).
+    pub(crate) fn tx_close_device_owned_target(&mut self) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_close_device_owned(dev),
+            None => 0,
+        }
+    }
+
+    /// Resident-fault closure of every `DeviceOwned` ticket on the target
+    /// device with the committed bounded stage identity (Task 2.1 / F4).
+    /// Backing stays quarantined.
+    pub(crate) fn tx_fault_device_owned_target(
+        &mut self,
+        stage: crate::device::TicketFaultStage,
+    ) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_fault_device_owned(dev, stage),
+            None => 0,
+        }
+    }
+
+    /// Advances the target's software ticket epoch after a confirmed reset
+    /// (Task 2.1). Callers must hold the guard.
+    pub(crate) fn tx_advance_epoch_target(&mut self, next: axdriver_net::QueueEpoch) {
+        if let Some(dev) = self.target_dev {
+            self.router.tx_advance_epoch(dev, next);
+        }
+    }
+
+    /// Sets or clears the recovery I/O gate on the target (Task 2.2): while
+    /// held, the device's TX enqueue path rejects new sends, so no new Queued
+    /// ticket enters a data plane being reset. Callers must hold the guard.
+    pub(crate) fn tx_set_recovery_hold_target(&mut self, held: bool) {
+        if let Some(dev) = self.target_dev {
+            self.router.tx_set_recovery_hold(dev, held);
+        }
+    }
+
+    /// Number of DeviceOwned tickets still outstanding on the target (Task
+    /// 2.2 quiesce drain). Callers must hold the guard.
+    pub(crate) fn device_owned_len_target(&self) -> u64 {
+        match self.target_dev {
+            Some(dev) => self.router.tx_device_owned_len(dev),
+            None => 0,
+        }
+    }
+
+    /// Whether the target device exposes a transport-neutral recovery control
+    /// that the queue owner can drive. Devices without one must fail closed:
+    /// the owner cannot pretend to recover them.
+    pub(crate) fn target_can_recover(&mut self) -> bool {
+        let Some(dev) = self.target_dev else {
+            return false;
+        };
+        self.router.recovery_control(dev).is_some()
+    }
+
+    /// Initiates the target's recovery: cancels every current-epoch `Queued`
+    /// ticket, then starts the driver's bounded recovery flow. Callers must
+    /// hold the guard. The returned epoch is the one recovery is moving to.
+    ///
+    /// A device without recovery support must fail-closed; the queue must not
+    /// pretend to recover it.
+    pub(crate) fn recovery_begin_target(&mut self) -> DevResult<axdriver_net::QueueEpoch> {
+        let Some(dev) = self.target_dev else {
+            return Err(DevError::BadState);
+        };
+        if !self.target_can_recover() {
+            return Err(DevError::Unsupported);
+        }
+        // Linearize the pre-submit cancellation (queued tickets AND ARP-pending
+        // pre-submit packets) with the driver begin under the same guard so no
+        // ticket or packet is both cancelled and submitted.
+        self.tx_cancel_queued_target();
+        self.tx_cancel_pending_target();
+        let Some(control) = self.router.recovery_control(dev) else {
+            return Err(DevError::Unsupported);
+        };
+        control.begin_recovery().map(|p| p.epoch)
+    }
+
+    /// Advances the target's in-progress recovery by at most one bounded
+    /// driver step. Callers must hold the guard. Returns the recovery progress;
+    /// the caller decides whether to keep polling, publish a new epoch on
+    /// `Recovered`, or fail-closed.
+    pub(crate) fn recovery_step_target(&mut self) -> DevResult<axdriver_net::RecoveryProgress> {
+        let Some(dev) = self.target_dev else {
+            return Err(DevError::BadState);
+        };
+        let Some(control) = self.router.recovery_control(dev) else {
+            return Err(DevError::Unsupported);
+        };
+        control.poll_recovery_step()
+    }
+
+    /// F2: reads the driver's current ownership summary (available /
+    /// device-owned / quarantined resources) so a recovery fault freezes a
+    /// structured ledger snapshot instead of a generic error. Callers hold the
+    /// guard; a device without a recovery control reports the all-zero summary.
+    pub(crate) fn recovery_owner_summary_target(&mut self) -> axdriver_net::OwnerSummary {
+        let Some(dev) = self.target_dev else {
+            return axdriver_net::OwnerSummary::default();
+        };
+        self.router
+            .recovery_control(dev)
+            .map(|control| control.owner_summary())
+            .unwrap_or(axdriver_net::OwnerSummary::default())
+    }
+
     /// RX-slot-space recheck, callable only while holding the Service guard.
     ///
     /// The queue task's RX copy stage stops without reaping when the fixed
@@ -693,7 +833,8 @@ impl Service {
             Some(dev) => self.router.tx_last_accepted(dev),
             None => None,
         };
-        self.flush_waiter = Some(FlushWaiter::new(identity, target));
+        let epoch = self.queue_epoch_target();
+        self.flush_waiter = Some(FlushWaiter::new(identity, target, epoch));
         Ok(FlushTicket { identity, target })
     }
 
@@ -711,6 +852,9 @@ impl Service {
     /// Rechecks flush completion under the guard. A `Stale` result means the
     /// waiter identity no longer owns the slot.
     pub(crate) fn flush_recheck(&mut self, identity: u64, target: Option<u64>) -> FlushRecheck {
+        // Captured before the `&mut waiter` borrow so the epoch comparison and
+        // the waiters' mutable methods do not conflict on `self`.
+        let current_epoch = self.queue_epoch_target();
         let Some(waiter) = &mut self.flush_waiter else {
             return FlushRecheck::Stale;
         };
@@ -723,16 +867,43 @@ impl Service {
             self.flush_waiter = None;
             return FlushRecheck::Faulted(err);
         }
-        let done = match self.target_dev {
-            Some(dev) => self.router.tx_flush_done(dev, target),
-            None => true,
-        };
-        if done {
+        // Finding 1: a successful flush sealed by the recovery owner before the
+        // epoch advanced survives the reset; the epoch advance must not turn it
+        // into a false Lost, nor a pending old-epoch flush into a false success.
+        if waiter.is_sealed_done() {
             self.flush_success += 1;
             self.flush_waiter = None;
-            FlushRecheck::Done
-        } else {
-            FlushRecheck::Pending
+            return FlushRecheck::Done;
+        }
+        // A flush still pending whose data-plane epoch advanced without being
+        // sealed can never have fully reclaimed its target (the reset aborted
+        // whatever was still in flight), so it must fail, never read a false
+        // success from the new epoch's empty ledger.
+        if waiter.epoch() != current_epoch {
+            self.flush_error += 1;
+            self.flush_waiter = None;
+            return FlushRecheck::Faulted(DevError::BadState);
+        }
+        // Task 2.1: epoch-scoped outcome. `Lost` is a packet-loss terminal on a
+        // ticket within scope; it fails this flush stably but does NOT set the
+        // persistent device fault, so a later generation's flush can succeed.
+        let state = match self.target_dev {
+            Some(dev) => self.router.tx_flush_state(dev, target),
+            None => crate::device::FlushState::Done,
+        };
+        match state {
+            crate::device::FlushState::Done => {
+                self.flush_success += 1;
+                self.flush_waiter = None;
+                FlushRecheck::Done
+            }
+            crate::device::FlushState::Pending => FlushRecheck::Pending,
+            crate::device::FlushState::Lost(outcome) => {
+                let err = Self::lost_outcome_error(outcome);
+                self.flush_error += 1;
+                self.flush_waiter = None;
+                FlushRecheck::Faulted(err)
+            }
         }
     }
 
@@ -750,17 +921,88 @@ impl Service {
     }
 
     /// Publishes flush progress after a successful reclaim: wakes the sole
-    /// waiter when its target is now satisfied. Caller holds the guard.
+    /// waiter when its target is now satisfied or a packet-loss outcome makes
+    /// it permanently unsatisfiable. Caller holds the guard.
     pub(crate) fn flush_progress(&mut self) {
         let Some(waiter) = &self.flush_waiter else {
             return;
         };
-        let done = match self.target_dev {
-            Some(dev) => self.router.tx_flush_done(dev, waiter.target()),
+        let wake = match self.target_dev {
+            Some(dev) => matches!(
+                self.router.tx_flush_state(dev, waiter.target()),
+                crate::device::FlushState::Done | crate::device::FlushState::Lost(_)
+            ),
             None => true,
         };
-        if done {
+        if wake {
             waiter.wake();
+        }
+    }
+
+    /// F5: settles the sole flush waiter for the closing epoch, right before
+    /// the recovery owner advances the device epoch. Commits the outcome
+    /// WITHOUT waking: the caller must wake the waiter via
+    /// [`Self::flush_wake_pending`] only after dropping the Service guard and
+    /// committing the epoch/lifecycle, so a woken observer never sees a
+    /// half-committed state.
+    pub(crate) fn flush_recovery_close(&mut self) {
+        if self.flush_waiter.is_none() {
+            return;
+        }
+        if self
+            .flush_waiter
+            .as_ref()
+            .is_some_and(|w| w.epoch() != self.queue_epoch_target())
+        {
+            return;
+        }
+        let state = match self.target_dev {
+            Some(dev) => self
+                .router
+                .tx_flush_state(dev, self.flush_waiter.as_ref().unwrap().target()),
+            None => crate::device::FlushState::Done,
+        };
+        if let Some(waiter) = &mut self.flush_waiter {
+            match state {
+                crate::device::FlushState::Done => waiter.commit_sealed_done(),
+                crate::device::FlushState::Lost(outcome) => {
+                    waiter.commit_fault(&Self::lost_outcome_error(outcome))
+                }
+                crate::device::FlushState::Pending => waiter.commit_fault(&DevError::BadState),
+            }
+        }
+    }
+
+    /// F5: fails the sole flush waiter with a stable error but does NOT wake.
+    /// The recovery owner commits the fault inside the guard, then wakes via
+    /// [`Self::flush_wake_pending`] after releasing the guard. A flush that is
+    /// never woken after a commit would pend forever, so the recovery owner
+    /// must pair this with that deferred wake.
+    pub(crate) fn flush_recovery_abort_all(&mut self, err: &DevError) {
+        if let Some(waiter) = &mut self.flush_waiter {
+            waiter.commit_fault(err);
+        }
+    }
+
+    /// F5: wakes the sole flush waiter if a commit is outstanding. MUST be
+    /// called only after the Service guard is dropped and the caller has
+    /// committed every ledger/epoch/lifecycle result, so the wake callback
+    /// observes a fully-committed state.
+    pub(crate) fn flush_wake_pending(&self) {
+        if let Some(waiter) = &self.flush_waiter {
+            waiter.wake();
+        }
+    }
+
+    /// Stable error returned by a flush whose target was lost to a packet
+    /// cancel/reset/fault outcome (Task 2.1). Distinct from the persistent
+    /// device fault so a recovered generation's flush can still succeed.
+    fn lost_outcome_error(outcome: crate::device::TicketOutcome) -> DevError {
+        match outcome {
+            crate::device::TicketOutcome::CancelledPreSubmit
+            | crate::device::TicketOutcome::ResetAborted
+            | crate::device::TicketOutcome::Fault(_) => DevError::BadState,
+            crate::device::TicketOutcome::Reclaimed => DevError::BadState,
         }
     }
 
@@ -1844,9 +2086,9 @@ mod tests {
         threads.push(std::thread::spawn(move || {
             for _ in 0..ITERS {
                 // Fixed connect order: Service first (route), then SocketSet.
-                let mut guard = service.lock();
+                let guard = service.lock();
                 let _src = guard.get_source_address(&IpAddress::v4(127, 0, 0, 1));
-                let mut set = sockets.lock();
+                let set = sockets.lock();
                 let _ = set.iter().count();
                 drop(set);
                 drop(guard);
@@ -1857,9 +2099,9 @@ mod tests {
         let done = listener_done.clone();
         threads.push(std::thread::spawn(move || {
             for _ in 0..ITERS {
-                let mut guard = service.lock();
+                let guard = service.lock();
                 {
-                    let mut set = sockets.lock();
+                    let set = sockets.lock();
                     let _ = set.iter().count();
                 }
                 let mut e = entry.lock();

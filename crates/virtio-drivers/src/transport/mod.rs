@@ -6,7 +6,7 @@ pub mod fake;
 pub mod mmio;
 pub mod pci;
 
-use crate::{PhysAddr, Result, PAGE_SIZE};
+use crate::{Error, PhysAddr, Result, PAGE_SIZE};
 use bitflags::{bitflags, Flags};
 use core::{fmt::Debug, ops::BitAnd, ptr::NonNull};
 use log::debug;
@@ -101,6 +101,57 @@ pub trait Transport {
 
     /// Gets the pointer to the config space.
     fn config_space<T: 'static>(&self) -> Result<NonNull<T>>;
+
+    /// Resets the device by writing the empty device status required by VirtIO
+    /// 3.1.1 to trigger a device reset.
+    ///
+    /// This is a bounded, one-shot status write. The device must confirm the
+    /// reset via [`Self::reset_confirmed`] before the driver frees or reuses
+    /// any queue backing the device may still access.
+    fn begin_reset(&mut self) {
+        self.set_status(DeviceStatus::empty());
+    }
+
+    /// Reports whether the device has confirmed that it stopped accessing its
+    /// queues, by reading back an empty device status (VirtIO 3.1.1).
+    ///
+    /// This is a bounded, one-shot status read. The default models an immediate
+    /// reset; a transport that must model a deferred or never-achieved reset
+    /// overrides this method.
+    fn reset_confirmed(&self) -> bool {
+        self.get_status().is_empty()
+    }
+
+    /// Reads the device's config-generation register, when the transport
+    /// exposes one.
+    ///
+    /// Returns `None` when no config generation is observable (for example a
+    /// legacy MMIO transport). A consistent config snapshot must compare this
+    /// value before and after a config-space read, and retry when it changes.
+    fn config_generation(&self) -> Option<u8> {
+        None
+    }
+
+    /// Reads a config-space value under a config-generation guard.
+    ///
+    /// When the transport exposes a config generation, [`Self::config_generation`]
+    /// is read once before and once after `read`; if the two differ, a device
+    /// config update raced the read and [`Error::Retry`] is returned so the
+    /// caller re-reads. When no generation is observable, `read` runs once and
+    /// its result is returned unchanged.
+    fn read_config_snapshot<F, R>(&self, read: F) -> Result<R>
+    where
+        F: FnOnce(&Self) -> Result<R>,
+    {
+        let pre = self.config_generation();
+        let value = read(self)?;
+        let post = self.config_generation();
+        match (pre, post) {
+            (Some(pre), Some(post)) if pre == post => Ok(value),
+            (None, None) => Ok(value),
+            _ => Err(Error::Retry),
+        }
+    }
 }
 
 bitflags! {

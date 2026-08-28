@@ -23,7 +23,7 @@ use crate::{
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
     readiness::{
-        self, ReadinessBridge, TERMINAL_CONNECT_REFUSED, TERMINAL_NONE, effective_terminal_code,
+        ReadinessBridge, TERMINAL_CONNECT_REFUSED, TERMINAL_NONE, effective_terminal_code,
         terminal_ax_error,
     },
     state::*,

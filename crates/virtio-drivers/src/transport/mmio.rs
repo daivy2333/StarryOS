@@ -365,6 +365,17 @@ impl Transport for MmioTransport {
         unsafe { volread!(self.header, status) }
     }
 
+    fn config_generation(&self) -> Option<u8> {
+        match self.version {
+            MmioVersion::Legacy => None,
+            MmioVersion::Modern => {
+                // Safe because self.header points to a valid VirtIO MMIO region;
+                // only the low byte of the MMIO config generation is meaningful.
+                unsafe { Some((volread!(self.header, config_generation) & 0xff) as u8) }
+            }
+        }
+    }
+
     fn set_status(&mut self, status: DeviceStatus) {
         // Safe because self.header points to a valid VirtIO MMIO region.
         unsafe {

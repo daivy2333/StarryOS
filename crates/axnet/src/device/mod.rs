@@ -1,7 +1,7 @@
 use core::task::Waker;
 
 use axdriver::prelude::{DevError, DevResult};
-use axdriver_net::NetQueueControl;
+use axdriver_net::{NetQueueControl, NetRecoveryControl, QueueEpoch};
 use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 mod ethernet;
 pub(crate) mod fixed_queue;
@@ -15,6 +15,7 @@ mod vsock;
 
 pub use axdriver_net::TxResourceLedger;
 pub use ethernet::*;
+pub(crate) use fixed_queue::{FlushState, TicketFaultStage, TicketOutcome};
 pub use loopback::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
@@ -272,12 +273,94 @@ pub trait Device: Send + Sync {
         None
     }
 
-    /// Whether a C4 flush to `target` is complete (no live ticket `<= target`).
-    ///
-    /// Devices without ticket tracking are always complete.
-    fn tx_flush_done(&self, target: Option<u64>) -> bool {
+    /// Epoch-scoped flush state (Task 2.1): distinguishes a fully-reclaimed
+    /// target from a still-pending one and a packet-loss outcome. Devices
+    /// without ticket tracking always report `Done`.
+    fn tx_flush_state(&self, target: Option<u64>) -> FlushState {
         let _ = target;
-        true
+        FlushState::Done
+    }
+
+    /// The device-reset epoch every live ticket belongs to (Task 2.1). Devices
+    /// not participating in recovery report the minimum epoch.
+    fn queue_epoch(&self) -> QueueEpoch {
+        QueueEpoch::MIN
+    }
+
+    /// Cancels every `Queued` ticket of the current epoch as
+    /// [`CancelledPreSubmit`](fixed_queue::TicketOutcome::CancelledPreSubmit),
+    /// returning the count. Called by the recovery owner under the Service
+    /// guard (Task 2.1). Devices without ticket tracking cancel nothing.
+    fn tx_cancel_queued(&mut self) -> usize {
+        0
+    }
+
+    /// Drops every pre-submit packet waiting in the ARP/neighbor pending
+    /// storage of the current epoch, returning the count (Task 2.2, F3).
+    ///
+    /// A recovery linearizes this with `tx_cancel_queued` under the Service
+    /// guard so no pending pre-submit packet survives into a new epoch and is
+    /// auto-sent after recovery. Devices without neighbor pending storage
+    /// cancel nothing.
+    fn tx_cancel_pending(&mut self) -> usize {
+        0
+    }
+
+    /// Number of pre-submit packets still waiting in the ARP/neighbor pending
+    /// storage (Task 2.2, F3). Host-test observer proving the recovery gate
+    /// rejects new pending and the recovery cancel drained the old ones.
+    #[cfg(test)]
+    fn tx_pending_len_for_test(&self) -> usize {
+        0
+    }
+
+    /// Closes every remaining `DeviceOwned` ticket as
+    /// [`ResetAborted`](fixed_queue::TicketOutcome::ResetAborted) after a
+    /// confirmed reset, returning the count (Task 2.1).
+    fn tx_close_device_owned(&mut self) -> usize {
+        0
+    }
+
+    /// Terminates every `DeviceOwned` ticket as
+    /// [`Fault`](fixed_queue::TicketOutcome::Fault) with the committed
+    /// bounded `stage` identity on a resident fault without a confirmed
+    /// reset, returning the count (Task 2.1 / F4). The driver backing is NOT
+    /// released — the recovery holder keeps it quarantined. Devices without
+    /// ticket tracking terminate nothing.
+    fn tx_fault_device_owned(&mut self, stage: fixed_queue::TicketFaultStage) -> usize {
+        let _ = stage;
+        0
+    }
+
+    /// Advance the software ticket epoch to `next` after a confirmed reset
+    /// (Task 2.1). Devices without ticket tracking are a no-op.
+    fn tx_advance_epoch(&mut self, next: QueueEpoch) {
+        let _ = next;
+    }
+
+    /// Access to the device's transport-neutral recovery control (Task 2.2).
+    /// Devices whose driver does not support bounded recovery return `None`,
+    /// and the recovery owner must then fail closed instead of pretending the
+    /// device can recover.
+    fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
+        None
+    }
+
+    /// Sets or clears the recovery I/O gate (Task 2.2). While the device is
+    /// gated the send/enqueue path must reject new TX (return `Full`) so no
+    /// new Queued ticket is allocated into a data plane being reset. The
+    /// recovery owner holds the gate from the moment a recoverable fault is
+    /// detected until recovery commits (or permanently on quarantine).
+    fn tx_set_recovery_hold(&mut self, held: bool) {
+        let _ = held;
+    }
+
+    /// Number of DeviceOwned tickets still outstanding on the device (Task
+    /// 2.2). The recovery owner consults this during the quiesce drain to
+    /// decide when the ledger is stable (all reclaimed) versus still waiting.
+    /// Devices without ticket tracking report zero.
+    fn tx_device_owned_len(&self) -> u64 {
+        0
     }
 
     /// Slot ledger for the V3 diagnostic snapshot (Task 4.2).

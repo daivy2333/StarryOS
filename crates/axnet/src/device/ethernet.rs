@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::Waker;
 
 use axdriver::prelude::*;
-use axdriver_net::{NetQueueControl, TxCookie, TxResourceLedger};
+use axdriver_net::{NetQueueControl, NetRecoveryControl, QueueEpoch, TxCookie, TxResourceLedger};
 use axtask::future::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
@@ -19,8 +19,8 @@ use smoltcp::{
 use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{
-        Device, RxCopyStep, RxStep, SlotLedger, TxDropReason, TxOutcome, TxPreflight,
-        TxReclaimStep, TxSubmitStep,
+        Device, FlushState, RxCopyStep, RxStep, SlotLedger, TicketFaultStage, TxDropReason,
+        TxOutcome, TxPreflight, TxReclaimStep, TxSubmitStep,
         fixed_queue::{FixedFrameQueue, MAX_FRAME_SIZE, TicketTracker},
     },
 };
@@ -89,6 +89,10 @@ pub struct EthernetDevice {
     /// Checked monotonic tickets for accepted dormant TX frames.
     tx_tickets: TicketTracker,
     tx_mode: TxMode,
+    /// Recovery I/O gate (Task 2.2): while held, the TX enqueue path returns
+    /// `Full` so no new Queued ticket enters a data plane being reset. Only
+    /// the recovery owner toggles it, under the Service guard.
+    recovery_hold: bool,
     /// Host-test witness for deferred RX retry counting (Task 3.6).
     #[cfg(test)]
     recv_dormant_calls: AtomicUsize,
@@ -107,6 +111,7 @@ impl EthernetDevice {
             tx_slots: FixedFrameQueue::new(),
             tx_tickets: TicketTracker::new(),
             tx_mode: TxMode::Polling,
+            recovery_hold: false,
             #[cfg(test)]
             recv_dormant_calls: AtomicUsize::new(0),
         }
@@ -219,6 +224,11 @@ impl EthernetDevice {
             ethertype: proto,
         };
         let frame_len = repr.buffer_len() + size;
+        // Recovery gate: the resetting NIC must not allocate a new Queued
+        // ticket into a data plane about to be torn down.
+        if self.recovery_hold {
+            return TxOutcome::Full;
+        }
         if self.tx_slots.preflight(frame_len).is_err() {
             return TxOutcome::Full;
         }
@@ -511,7 +521,7 @@ impl EthernetDevice {
             // task alone owns raw TX completions. Readiness depends only on
             // fixed TX slot capacity and checked ticket headroom.
             TxMode::DormantSlots => {
-                if self.tx_slots.is_full() || !self.tx_tickets.can_alloc() {
+                if self.recovery_hold || self.tx_slots.is_full() || !self.tx_tickets.can_alloc() {
                     TxPreflight::Full
                 } else {
                     TxPreflight::Ready
@@ -538,9 +548,11 @@ impl EthernetDevice {
     }
 
     /// Preflight for an already-requested neighbor (pending wait): only the
-    /// pending storage capacity matters, never raw TX capacity.
+    /// pending storage capacity matters, never raw TX capacity. A gated
+    /// recovery rejects the enqueue so no new pre-submit packet is accepted
+    /// into a data plane being reset (F3).
     fn preflight_requested_neighbor(&mut self) -> TxPreflight {
-        if self.pending_packets.is_full() {
+        if self.recovery_hold || self.pending_packets.is_full() {
             TxPreflight::Full
         } else {
             TxPreflight::Ready
@@ -690,6 +702,12 @@ impl Device for EthernetDevice {
                 outcome => return outcome,
             }
         }
+        // F3: the recovery gate must also reject the direct pre-submit enqueue
+        // to `pending_packets` (the already-requested neighbor path), so no new
+        // pre-submit packet enters a data plane being reset.
+        if self.recovery_hold {
+            return TxOutcome::Full;
+        }
         if self.pending_packets.is_full() {
             warn!("Pending packets buffer is full, dropping packet");
             return TxOutcome::Full;
@@ -758,7 +776,11 @@ impl Device for EthernetDevice {
         let Some(tx_queue) = self.inner.tx_queue() else {
             return TxSubmitStep::Fault(DevError::Unsupported);
         };
-        match tx_queue.submit_tx(tx_buf, TxCookie::new(ticket)) {
+        // Stamp the cookie with the device's current recovery epoch so a
+        // completion can only ever be attributed to the generation it was
+        // submitted under (Task 2.1: single epoch/ticket identity).
+        let cookie = TxCookie::with_epoch(self.tx_tickets.current_epoch(), ticket);
+        match tx_queue.submit_tx(tx_buf, cookie) {
             // On submit the driver owns the buffer; the ticket transitions
             // Queued -> DeviceOwned before the slot pops, and stays live until
             // the matching completion is reclaimed (D8).
@@ -783,10 +805,10 @@ impl Device for EthernetDevice {
         match tx_queue.reclaim_tx() {
             Ok(Some(cookie)) => {
                 // The completion cookie must match exactly one DeviceOwned
-                // ticket. An unknown, duplicate or still-Queued cookie is an
-                // ownership invariant violation: report a stable fault instead
-                // of a success.
-                if self.tx_tickets.release_device_owned(cookie.value()) {
+                // ticket of the same epoch. An unknown, duplicate,
+                // still-Queued or stale-epoch cookie is an ownership invariant
+                // violation: report a stable fault instead of a success.
+                if self.tx_tickets.release_device_owned(cookie) {
                     TxReclaimStep::Reclaimed
                 } else {
                     TxReclaimStep::Fault(DevError::BadState)
@@ -809,8 +831,63 @@ impl Device for EthernetDevice {
         self.tx_tickets.last_accepted()
     }
 
-    fn tx_flush_done(&self, target: Option<u64>) -> bool {
-        self.tx_tickets.flush_done(target)
+    fn tx_flush_state(&self, target: Option<u64>) -> FlushState {
+        self.tx_tickets.flush_state(target)
+    }
+
+    fn queue_epoch(&self) -> QueueEpoch {
+        self.tx_tickets.current_epoch()
+    }
+
+    fn tx_cancel_queued(&mut self) -> usize {
+        // Close the ticket ledger and the TX slot storage in the SAME `&mut
+        // self` critical section: every `tx_slots` entry is a Queued frame
+        // awaiting submit, so cancelling a Queued ticket must also pop the
+        // matching slot. Otherwise the stale frame survives into the next
+        // hold-free window and `tx_submit_one` re-submits the cancelled packet
+        // before `mark_device_owned(ticket)` fails.
+        let cancelled = self.tx_tickets.cancel_queued();
+        for _ in 0..cancelled {
+            let _ = self.tx_slots.pop();
+        }
+        cancelled
+    }
+
+    fn tx_cancel_pending(&mut self) -> usize {
+        let mut drained = 0usize;
+        while !self.pending_packets.is_empty() {
+            // The pending frame is dropped: it is a pre-submit packet that must
+            // not be auto-sent after a recovery into a new epoch. The neighbor
+            // marker that requested this resolution is still in the ARP cache.
+            let _ = self.pending_packets.pop();
+            drained += 1;
+        }
+        drained
+    }
+
+    #[cfg(test)]
+    fn tx_pending_len_for_test(&self) -> usize {
+        self.pending_packets.len()
+    }
+
+    fn tx_close_device_owned(&mut self) -> usize {
+        self.tx_tickets.close_device_owned()
+    }
+
+    fn tx_fault_device_owned(&mut self, stage: TicketFaultStage) -> usize {
+        self.tx_tickets.fault_outstanding(stage)
+    }
+
+    fn tx_advance_epoch(&mut self, next: QueueEpoch) {
+        self.tx_tickets.advance_epoch(next);
+    }
+
+    fn tx_set_recovery_hold(&mut self, held: bool) {
+        self.recovery_hold = held;
+    }
+
+    fn tx_device_owned_len(&self) -> u64 {
+        self.tx_tickets.device_owned_len() as u64
     }
 
     fn slot_ledger(&self) -> SlotLedger {
@@ -840,6 +917,10 @@ impl Device for EthernetDevice {
 
     fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
         self.inner.queue_control()
+    }
+
+    fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
+        self.inner.recovery_control()
     }
 
     fn register_waker(&self, waker: &Waker) {

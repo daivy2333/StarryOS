@@ -24,8 +24,8 @@ use crate::{
     async_rx::{QUEUE_EVENT, RX_TELEMETRY, SERIAL},
     consts::STANDARD_MTU,
     device::{
-        Device, EthernetDevice, LoopbackDevice, RxStep, TxOutcome, TxPreflight, TxReclaimStep,
-        TxSubmitStep,
+        Device, EthernetDevice, FlushState, LoopbackDevice, RxStep, TicketOutcome, TxOutcome,
+        TxPreflight, TxReclaimStep, TxSubmitStep,
     },
     router::{Router, Rule, RxOwnerView},
     service::Service,
@@ -564,6 +564,80 @@ fn arp_reply_flushes_pending_ipv4_once() {
         EthernetProtocol::Ipv4
     );
     assert_eq!(frame.payload(), &IPV4_PAYLOAD[..]);
+}
+
+#[test]
+fn recovery_gate_and_cancel_cover_arp_pending_pre_submit_paths() {
+    // F3 / A2/A5: the recovery I/O gate must cover the ARP `pending_packets`
+    // and all already-requested-neighbor pre-submit branches, and recovery
+    // must cancel the held pending packets exactly once so a new epoch never
+    // auto-sends them.
+    let (mut dev, stats) = make_ethernet();
+    // First send establishes the unknown neighbor request, holds the payload
+    // in `pending_packets`, and records the neighbor as requested (`Some(None)`).
+    assert!(
+        matches!(
+            dev.send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxOutcome::Accepted { .. }
+        ),
+        "PRECONDITION: initial ARP request must be accepted"
+    );
+    assert_eq!(
+        dev.tx_pending_len_for_test(),
+        1,
+        "PRECONDITION: payload held pending awaiting ARP"
+    );
+
+    // Gate held: the already-requested-neighbor preflight and send path must
+    // reject the enqueue so no new pre-submit packet enters a resetting plane.
+    dev.tx_set_recovery_hold(true);
+    assert!(
+        matches!(
+            dev.preflight_send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxPreflight::Full
+        ),
+        "held device must reject the requested-neighbor preflight"
+    );
+    assert!(
+        matches!(
+            dev.send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxOutcome::Full
+        ),
+        "held device must reject the requested-neighbor direct enqueue"
+    );
+    assert_eq!(
+        dev.tx_pending_len_for_test(),
+        1,
+        "gate must not add new pending packets"
+    );
+
+    // Recovery cancel drains the held pending pre-submit packets exactly once.
+    assert_eq!(dev.tx_cancel_pending(), 1);
+    assert_eq!(dev.tx_pending_len_for_test(), 0);
+    assert_eq!(
+        dev.tx_cancel_pending(),
+        0,
+        "second cancel must drain nothing"
+    );
+    assert_eq!(
+        stats.tx_packets.lock().len(),
+        1,
+        "only the ARP request was sent"
+    );
+    dev.tx_set_recovery_hold(false);
+    assert!(dev.tx_pending_len_for_test() == 0);
 }
 
 #[test]
@@ -2093,6 +2167,57 @@ fn dormant_slots_full_returns_backpressure() {
     let (_, tx) = dev.slots_for_test();
     assert_eq!(tx.len(), 64);
     assert!(tx.is_full());
+}
+
+#[test]
+fn tx_cancel_queued_closes_slot_and_ledger_in_same_holder() {
+    // Plan Review Finding 1 (Task 2.1 / A1-A3 / R2-R4): cancelling a Queued
+    // pre-submit ticket must also close the matching TX slot frame in the same
+    // `&mut EthernetDevice` critical section. If only the ledger is cancelled,
+    // the slot still holds the frame: after the recovery hold is released,
+    // `tx_submit_one` reads the stale slot, submits the already-cancelled
+    // packet to the raw driver, then `mark_device_owned(ticket)` fails and
+    // reports `BadState` — a cancelled pre-submit packet is (re)transmitted.
+    let (mut dev, stats) = make_ethernet_with_tx_queue();
+    dev.set_dormant_slots_for_test();
+    let outcome = dev.send(
+        IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+        &[1u8; 10],
+        Instant::from_millis_const(0),
+    );
+    assert!(matches!(outcome, TxOutcome::Accepted { .. }));
+    let target = dev.tx_last_accepted().expect("send records a ticket");
+    assert_eq!(
+        dev.tx_slot_len_for_test(),
+        1,
+        "one dormant Queued frame in slot"
+    );
+
+    assert_eq!(dev.tx_cancel_queued(), 1, "one Queued ticket cancelled");
+    assert_eq!(
+        dev.tx_slot_len_for_test(),
+        0,
+        "cancelled pre-submit frame must leave the slot storage"
+    );
+    assert_eq!(dev.tx_cancel_queued(), 0, "no Queued ticket remains");
+    assert_eq!(
+        stats.tx_packets.lock().len(),
+        0,
+        "no cancelled frame submitted"
+    );
+    assert!(
+        matches!(dev.tx_submit_one(), TxSubmitStep::Empty),
+        "no stale slot may be submitted after cancellation"
+    );
+    // A flush targeting the cancelled ticket fails stably with the
+    // `CancelledPreSubmit` outcome — it must NOT stay Pending forever.
+    assert!(
+        matches!(
+            dev.tx_flush_state(Some(target)),
+            FlushState::Lost(TicketOutcome::CancelledPreSubmit)
+        ),
+        "flush of a cancelled ticket resolves to CancelledPreSubmit, not Pending"
+    );
 }
 
 #[test]

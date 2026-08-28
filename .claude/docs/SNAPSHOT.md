@@ -1,10 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-27
-> Revision: `9d58bd422577959f84fc5e5a59db5a94bd7eb7fc`
+> Updated: 2026-08-28
+> Revision: `aab92f95825cfb8dd9983249bcfe118ab6a3d64c`
 > Branch: `net-k3`
-> Worktree: modified（仅含本次 improvements 格式修复与 SNAPSHOT 同步）
+> Worktree: modified（`openspec/specs/knowledge/spec.md` 知识表达压缩未提交）
 
 ## 项目身份
 
@@ -48,8 +48,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `9d58bd422577959f84fc5e5a59db5a94bd7eb7fc`，与 `origin/net-k3` 同步。
-- 工作树仅包含本次 improvements 格式修复与 SNAPSHOT 同步；详细里程碑状态见 [`tasks.md`](tasks.md)。
+- 当前 revision 为 `aab92f95825cfb8dd9983249bcfe118ab6a3d64c`，相对 `origin/net-k3` ahead 1（MS07 单 hart 恢复语义 change 的规划提交，未推送）。
+- 工作树含 `openspec/specs/knowledge/spec.md` 表达压缩的未提交改动；详细里程碑状态见 [`tasks.md`](tasks.md)。
 
 ## 权威入口
 

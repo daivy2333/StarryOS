@@ -50,7 +50,14 @@ impl<C> Transport for FakeTransport<C> {
     }
 
     fn set_status(&mut self, status: DeviceStatus) {
-        self.state.lock().unwrap().status = status;
+        let mut state = self.state.lock().unwrap();
+        if status.is_empty() && state.defer_reset {
+            // A deferred reset does not commit: the observed device status
+            // stays non-empty until the test lifts the flag, modelling a device
+            // that has not yet confirmed it stopped accessing its queues.
+            return;
+        }
+        state.status = status;
     }
 
     fn set_guest_page_size(&mut self, guest_page_size: u32) {
@@ -88,6 +95,10 @@ impl<C> Transport for FakeTransport<C> {
         self.state.lock().unwrap().queues[queue as usize].descriptors != 0
     }
 
+    fn config_generation(&self) -> Option<u8> {
+        Some(self.state.lock().unwrap().config_generation)
+    }
+
     fn ack_interrupt(&mut self) -> bool {
         let mut state = self.state.lock().unwrap();
         let pending = state.interrupt_pending;
@@ -112,6 +123,12 @@ pub struct State {
     pub driver_features: u64,
     pub guest_page_size: u32,
     pub interrupt_pending: bool,
+    /// When set, a reset write is held pending and does not clear the observed
+    /// device status until the flag is lifted; models a device whose reset
+    /// confirmation is deferred or never arrives.
+    pub defer_reset: bool,
+    /// The current config-generation value reported by the fake device.
+    pub config_generation: u8,
     pub queues: Vec<QueueStatus>,
 }
 
@@ -204,4 +221,78 @@ pub struct QueueStatus {
     pub driver_area: PhysAddr,
     pub device_area: PhysAddr,
     pub notified: AtomicBool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::ptr::NonNull;
+
+    fn fake_transport() -> FakeTransport<[u8; 16]> {
+        let mut state = State::default();
+        state.queues = (0..2).map(|_| QueueStatus::default()).collect();
+        FakeTransport {
+            device_type: DeviceType::Network,
+            max_queue_size: 4,
+            device_features: 0,
+            config_space: NonNull::new(Box::into_raw(Box::new([0u8; 16])) as *mut [u8; 16])
+                .unwrap(),
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    #[test]
+    fn begin_reset_and_confirmation_are_separate_steps() {
+        let mut t = fake_transport();
+        // A busy device exposes a non-empty status.
+        t.state.lock().unwrap().status =
+            DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER_OK;
+        assert!(!t.reset_confirmed(), "busy device is not confirmed reset");
+
+        // `begin_reset` is a bounded one-shot empty-status write.
+        t.begin_reset();
+        assert!(
+            t.state.lock().unwrap().status.is_empty(),
+            "reset start clears status"
+        );
+        assert!(t.reset_confirmed(), "immediate reset reads back empty");
+
+        // A device that defers stopping must not be reported confirmed until
+        // it actually reads back empty.
+        t.state.lock().unwrap().defer_reset = true;
+        t.state.lock().unwrap().status =
+            DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER_OK;
+        t.begin_reset();
+        assert!(
+            !t.reset_confirmed(),
+            "a pending reset must not be reported confirmed"
+        );
+        assert!(
+            !t.state.lock().unwrap().status.is_empty(),
+            "deferred reset keeps a non-empty observed status"
+        );
+
+        // Simulate the device finishing the reset: it stops and reports empty.
+        t.state.lock().unwrap().defer_reset = false;
+        t.state.lock().unwrap().status = DeviceStatus::empty();
+        assert!(t.reset_confirmed(), "confirmed reset reads back empty");
+    }
+
+    #[test]
+    fn config_snapshot_retries_when_generation_changes_mid_read() {
+        let t = fake_transport();
+        t.state.lock().unwrap().config_generation = 3;
+
+        // `read` simulates a device config update racing the read by bumping
+        // the generation between the before/after reads of the snapshot.
+        let racing = |_t: &FakeTransport<[u8; 16]>| -> crate::Result<u16> {
+            t.state.lock().unwrap().config_generation = 4;
+            Ok(7)
+        };
+        assert_eq!(t.read_config_snapshot(racing), Err(crate::Error::Retry));
+
+        // A stable read (no concurrent update) returns the value once.
+        let stable = |_t: &FakeTransport<[u8; 16]>| -> crate::Result<u16> { Ok(9) };
+        assert_eq!(t.read_config_snapshot(stable), Ok(9));
+    }
 }

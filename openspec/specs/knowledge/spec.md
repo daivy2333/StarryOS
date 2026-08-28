@@ -15,7 +15,7 @@ ISR MUST 最小化：读 ISR -> 禁用中断 -> AtomicWaker::wake() -> 返回。
 
 **Legacy**: L12, L107, L128 | **状态**: ✅ 已验证（ISR 最小化原则在全部 UART 驱动验证阶段通过）
 
-- **模式**: ISR 中读 ISR 寄存器判断 InterruptType，禁用 RX/TX 中断防止重入，分别唤醒 rx_waker/tx_waker。
+- **模式**: ISR 读 ISR 寄存器判 InterruptType；禁用 RX/TX 中断防重入；分别唤醒 rx_waker/tx_waker。
 - **安全约束**: ISR 中无阻塞、无锁、MMIO read/write 安全。
 - **选型对比**（L128）：
 
@@ -190,7 +190,7 @@ UART 已验证经验 MUST 可迁移到 NIC：最小 ISR、register-recheck、显
 
 ### Requirement: K42 — 并发测试污染：症状、定位与隔离
 
-`no_std`/内核 crate 的 host 单元测试引入新的生产态全局共享状态（静态 `AtomicXxx` 单例、fake clock 等）时，MUST 同时设计测试隔离边界。生产代码路径（如 queue future 的每轮调度）读取该全局状态时，任何并行测试写它都会污染兄弟测试。诊断特征是**单测单独跑全过、全量并行跑失败、失败集合不稳定**（每次运行失败测试不同）。修复 MUST 优先走"实例注入"（生产用全局引用、测试注入各自独立实例），其次才是共享隔离边界（SERIAL）。
+`no_std`/内核 crate 的 host 单元测试引入新的生产态全局共享状态（静态 `AtomicXxx` 单例、fake clock 等）时，MUST 同时设计测试隔离边界。生产代码路径（如 queue future 的每轮调度）读取该全局状态时，任何并行测试写它都会污染兄弟测试（诊断特征见下 ①–③）。修复 MUST 优先走"实例注入"（生产用全局引用、测试注入各自独立实例），其次才是共享隔离边界（SERIAL）。
 
 **证据**: `ms05-qemu-bounded-bidirectional-device-data-plane` iter 007 `001-rework.md` Act Response；`crates/axnet/src/async_rx.rs` 的 `RxRxFuture::diag` 注入、`diag.rs` 的 `TEST_NOW`
 **状态**: ✅ 已验证，2026-08-15

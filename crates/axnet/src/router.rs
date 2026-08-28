@@ -317,11 +317,94 @@ impl Router {
             .and_then(|device| device.tx_last_accepted())
     }
 
-    /// Whether a C4 flush to `target` is complete on device `dev`.
-    pub fn tx_flush_done(&self, dev: usize, target: Option<u64>) -> bool {
+    /// Epoch-scoped flush state on device `dev` (Task 2.1).
+    pub fn tx_flush_state(&self, dev: usize, target: Option<u64>) -> crate::device::FlushState {
         self.devices
             .get(dev)
-            .is_some_and(|device| device.tx_flush_done(target))
+            .map(|device| device.tx_flush_state(target))
+            .unwrap_or(crate::device::FlushState::Done)
+    }
+
+    /// The device-reset epoch of device `dev` (Task 2.1).
+    pub fn queue_epoch(&self, dev: usize) -> axdriver_net::QueueEpoch {
+        self.devices
+            .get(dev)
+            .map(|device| device.queue_epoch())
+            .unwrap_or(axdriver_net::QueueEpoch::MIN)
+    }
+
+    /// Cancels every current-epoch `Queued` ticket on device `dev`, returning
+    /// the count (Task 2.1, called under the Service guard).
+    pub fn tx_cancel_queued(&mut self, dev: usize) -> usize {
+        self.devices
+            .get_mut(dev)
+            .map(|device| device.tx_cancel_queued())
+            .unwrap_or(0)
+    }
+
+    /// Closes every remaining `DeviceOwned` ticket on device `dev` as
+    /// `ResetAborted`, returning the count (Task 2.1).
+    pub fn tx_close_device_owned(&mut self, dev: usize) -> usize {
+        self.devices
+            .get_mut(dev)
+            .map(|device| device.tx_close_device_owned())
+            .unwrap_or(0)
+    }
+
+    /// Resident-fault closure of every `DeviceOwned` ticket on device `dev`
+    /// with the committed bounded stage identity (Task 2.1 / F4). Backing
+    /// stays quarantined.
+    pub fn tx_fault_device_owned(
+        &mut self,
+        dev: usize,
+        stage: crate::device::TicketFaultStage,
+    ) -> usize {
+        self.devices
+            .get_mut(dev)
+            .map(|device| device.tx_fault_device_owned(stage))
+            .unwrap_or(0)
+    }
+
+    /// Drops every pre-submit packet waiting in the ARP/neighbor pending
+    /// storage on device `dev`, returning the count (Task 2.2, F3). Linearized
+    /// with `tx_cancel_queued` under the Service guard.
+    pub fn tx_cancel_pending(&mut self, dev: usize) -> usize {
+        self.devices
+            .get_mut(dev)
+            .map(|device| device.tx_cancel_pending())
+            .unwrap_or(0)
+    }
+
+    /// Advances device `dev`'s software ticket epoch after a confirmed reset
+    /// (Task 2.1).
+    pub fn tx_advance_epoch(&mut self, dev: usize, next: axdriver_net::QueueEpoch) {
+        if let Some(device) = self.devices.get_mut(dev) {
+            device.tx_advance_epoch(next);
+        }
+    }
+
+    /// Sets or clears the recovery I/O gate on device `dev` (Task 2.2).
+    pub fn tx_set_recovery_hold(&mut self, dev: usize, held: bool) {
+        if let Some(device) = self.devices.get_mut(dev) {
+            device.tx_set_recovery_hold(held);
+        }
+    }
+
+    /// Number of DeviceOwned tickets outstanding on device `dev` (Task 2.2
+    /// quiesce drain).
+    pub fn tx_device_owned_len(&self, dev: usize) -> u64 {
+        self.devices
+            .get(dev)
+            .map(|device| device.tx_device_owned_len())
+            .unwrap_or(0)
+    }
+
+    /// Access to device `dev`'s transport-neutral recovery control (Task 2.2).
+    pub fn recovery_control(
+        &mut self,
+        dev: usize,
+    ) -> Option<&mut dyn axdriver_net::NetRecoveryControl> {
+        self.devices.get_mut(dev)?.recovery_control()
     }
 
     /// Slot/ticket ledger of device `dev` for the V3 diagnostic snapshot.

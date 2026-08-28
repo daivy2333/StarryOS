@@ -3,7 +3,8 @@ use alloc::{sync::Arc, vec::Vec};
 use axdriver_base::{BaseDriverOps, DevError, DevResult, DeviceType};
 use axdriver_net::{
     EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps, NetQueueControl,
-    NetQueueDirection, NetTxQueue, TxCookie, TxResourceLedger,
+    NetQueueDirection, NetRecoveryControl, NetTxQueue, OwnerSummary, QueueEpoch, RecoveryProgress,
+    RecoveryStage, TxCookie, TxResourceLedger,
 };
 use virtio_drivers::{Hal, device::net::VirtIONetRaw as InnerDev, transport::Transport};
 
@@ -20,6 +21,17 @@ enum TxSlot {
     Queue(NetBufBox, TxCookie),
 }
 
+/// The adapter's full-device recovery state machine for the exclusive-owner
+/// path. `Recovered` and `Faulted` are terminal until a new `begin_recovery`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryState {
+    Idle,
+    Resetting,
+    Reinitializing,
+    Recovered,
+    Faulted,
+}
+
 /// The VirtIO network device driver.
 ///
 /// `QS` is the VirtIO queue size.
@@ -30,6 +42,11 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     /// Buffer retained by the driver after a post-accept ownership invariant
     /// broke; it must never return to the allocatable set.
     tx_fault_buf: Option<NetBufBox>,
+    /// A buffer submitted for RX recycle while the data plane was inactive
+    /// (reset/reinit/fault). Kept as a single driver owner until the device is
+    /// dropped so the rejection never loses or duplicates the buffer; a further
+    /// replay while one is already on hold returns to the pool.
+    rx_recycle_hold: Option<NetBufBox>,
     /// Set once a TX ownership invariant breaks: all later TX operations fail
     /// with a stable [`DevError::BadState`] instead of panicking or reusing
     /// state.
@@ -38,6 +55,14 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     /// whether or not the reclaim later succeeded. Lets V3 distinguish
     /// "completion observed" from "completion successfully reclaimed".
     tx_completions_seen: u64,
+    /// The current device-reset epoch; advanced on each successful recovery.
+    epoch: QueueEpoch,
+    /// The epoch a recovery is moving toward, saved at `begin_recovery` so the
+    /// progress report is explicit (no silent `unwrap_or` fallback on
+    /// exhaustion). Cleared/reset to the current epoch after a recovery outcome.
+    target_epoch: QueueEpoch,
+    /// The adapter's full-device recovery state machine.
+    recovery: RecoveryState,
     buf_pool: Arc<NetBufPool>,
     inner: InnerDev<H, T, QS>,
     irq: Option<usize>,
@@ -51,6 +76,12 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     /// corrupting the used ring. Production builds contain neither field.
     #[cfg(test)]
     forced_completion_failure: bool,
+    /// Test-only seam: when set, `refill_all` fails at the Nth pooled-buffer
+    /// allocation (0-based), so a partial RX/TX refill after a confirmed reset
+    /// can be witnessed without a kernel interrupt source. Production builds do
+    /// not contain this field.
+    #[cfg(test)]
+    refill_fail_at: Option<usize>,
 }
 
 unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, QS> {}
@@ -75,21 +106,48 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             free_tx_bufs,
             tx_fault_buf: None,
             tx_fault: false,
+            rx_recycle_hold: None,
             tx_completions_seen: 0,
+            epoch: QueueEpoch::MIN,
+            target_epoch: QueueEpoch::MIN,
+            recovery: RecoveryState::Idle,
             buf_pool,
             irq,
             #[cfg(test)]
             forced_tx_token: None,
             #[cfg(test)]
             forced_completion_failure: false,
+            #[cfg(test)]
+            refill_fail_at: None,
         };
 
-        // 1. Fill all rx buffers.
-        for (i, rx_buf_place) in dev.rx_buffers.iter_mut().enumerate() {
-            let mut rx_buf = dev.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
+        dev.refill_all()?;
+
+        // 3. Return the driver instance.
+        Ok(dev)
+    }
+
+    /// Refills every RX and TX slot against the current [`Self::inner`].
+    ///
+    /// Shared by [`Self::try_new`] and the post-reset recovery path so both
+    /// drive the same initialization flow. Requires the underlying queues to
+    /// already exist; `self.rx_buffers` and `self.free_tx_bufs` must be empty.
+    fn refill_all(&mut self) -> DevResult<()> {
+        #[cfg(test)]
+        let mut alloc_count = 0usize;
+        for (i, rx_buf_place) in self.rx_buffers.iter_mut().enumerate() {
+            #[cfg(test)]
+            if Some(alloc_count) == self.refill_fail_at {
+                return Err(DevError::NoMemory);
+            }
+            #[cfg(test)]
+            {
+                alloc_count += 1;
+            }
+            let mut rx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
             // Safe because the buffer lives as long as the queue.
             let token = unsafe {
-                dev.inner
+                self.inner
                     .receive_begin(rx_buf.raw_buf_mut())
                     .map_err(as_dev_err)?
             };
@@ -97,20 +155,60 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
             *rx_buf_place = Some(rx_buf);
         }
 
-        // 2. Allocate all tx buffers.
         for _ in 0..QS {
-            let mut tx_buf = dev.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
+            let mut tx_buf = self.buf_pool.alloc_boxed().ok_or(DevError::NoMemory)?;
             // Fill header
-            let hdr_len = dev
+            let hdr_len = self
                 .inner
                 .fill_buffer_header(tx_buf.raw_buf_mut())
                 .or(Err(DevError::InvalidParam))?;
             tx_buf.set_header_len(hdr_len);
-            dev.free_tx_bufs.push(tx_buf);
+            self.free_tx_bufs.push(tx_buf);
         }
 
-        // 3. Return the driver instance.
-        Ok(dev)
+        Ok(())
+    }
+
+    /// Rebuilds the device and all buffers after a confirmed device reset.
+    ///
+    /// Runs the transactional recovery: prepare the replacement queues (without
+    /// `DRIVER_OK`), release obsolete owners, refill every RX/TX slot against the
+    /// replacement queues, and only then commit `DRIVER_OK` and advance the epoch.
+    /// The `DRIVER_OK` arm is deferred until the full refill succeeds, so a partial
+    /// rebuild or partial refill never leaves an armed device DMAing into a
+    /// partially populated queue. On any failure the caller keeps the adapter
+    /// faulted with whatever backing it still owns.
+    fn recover_after_reset(&mut self) -> DevResult<()> {
+        // 1. Prepare replacement queues; DRIVER_OK stays unset.
+        self.inner.reinit_prepare().map_err(as_dev_err)?;
+
+        // 2. Release owners that are obsolete now the device has stopped. A
+        //    late-RX recycle held during the reset is returned to the pool so
+        //    the full `2*QS` refill below always has every buffer available; the
+        //    caller that recycled it while the device was inactive has no right
+        //    to keep ownership across the reset.
+        for slot in &mut self.rx_buffers {
+            *slot = None;
+        }
+        for slot in &mut self.tx_slots {
+            *slot = TxSlot::Free;
+        }
+        self.rx_recycle_hold = None;
+        self.free_tx_bufs.clear();
+        self.tx_fault_buf = None;
+        self.tx_fault = false;
+        self.tx_completions_seen = 0;
+
+        // 3. Fill all packet backing against the replacement queues.
+        self.refill_all()?;
+
+        // 4. Only now arm the device; a failure above never published DRIVER_OK.
+        self.inner.commit_driver_ok().map_err(as_dev_err)?;
+
+        let next = self.epoch.advance().ok_or(DevError::BadState)?;
+        self.epoch = next;
+        self.target_epoch = next;
+        Ok(())
     }
 }
 
@@ -168,6 +266,13 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
     #[cfg(test)]
     fn fail_next_tx_completion(&mut self) {
         self.forced_completion_failure = true;
+    }
+
+    /// Hands out the backing pool so a test can prove conservation after a
+    /// fault by draining the pool when the device is dropped.
+    #[cfg(test)]
+    fn buf_pool(&self) -> Arc<NetBufPool> {
+        Arc::clone(&self.buf_pool)
     }
 
     /// Runs the raw TX completion for `token` and reports whether the device
@@ -261,6 +366,138 @@ impl<H: Hal, T: Transport, const QS: usize> NetQueueControl for VirtIoNetDev<H, 
     }
 }
 
+impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    /// Whether the data plane is allowed to move packets right now.
+    ///
+    /// Only a healthy (idle) or freshly recovered device may; an in-flight
+    /// reset/reinitialize or a terminal fault must reject new I/O while keeping
+    /// its ownership ledger unchanged. `Recovered` counts as active because the
+    /// device was rebuilt and is usable again.
+    #[inline]
+    fn data_plane_active(&self) -> bool {
+        matches!(
+            self.recovery,
+            RecoveryState::Idle | RecoveryState::Recovered
+        )
+    }
+
+    /// Returns how many TX slots and RX slots are currently installed as owner
+    /// entries (device-addressable in an active/pending-reset device). Does not
+    /// include the held late-RX buffer, which is always driver-held and handled
+    /// separately in [`Self::owner_summary`].
+    fn committed_owner_count(&self) -> u64 {
+        self.tx_slots
+            .iter()
+            .filter(|slot| !matches!(slot, TxSlot::Free))
+            .count() as u64
+            + self.rx_buffers.iter().filter(|b| b.is_some()).count() as u64
+    }
+}
+
+impl<H: Hal, T: Transport, const QS: usize> NetRecoveryControl for VirtIoNetDev<H, T, QS> {
+    fn progress(&self) -> RecoveryProgress {
+        let stage = match self.recovery {
+            RecoveryState::Idle => RecoveryStage::Idle,
+            RecoveryState::Resetting => RecoveryStage::Resetting,
+            RecoveryState::Reinitializing => RecoveryStage::Reinitializing,
+            RecoveryState::Recovered => RecoveryStage::Recovered,
+            RecoveryState::Faulted => RecoveryStage::Faulted,
+        };
+        // `RecoveryProgress::epoch` is the target epoch the recovery operates
+        // on; while resetting or reinitializing, report the saved target rather
+        // than silently falling back on the not-yet-advanced current one.
+        let epoch = match self.recovery {
+            RecoveryState::Resetting | RecoveryState::Reinitializing => self.target_epoch,
+            _ => self.epoch,
+        };
+        RecoveryProgress { stage, epoch }
+    }
+
+    fn begin_recovery(&mut self) -> DevResult<RecoveryProgress> {
+        // A checked advance before any device touch: if the epoch counter is
+        // exhausted, fail closed without a status write, queue mutation, DMA
+        // allocation/deallocation or ledger change (fail-before-touch).
+        let target = self.epoch.advance().ok_or(DevError::BadState)?;
+        // Only a healthy device can start a fresh recovery. A Faulted adapter
+        // is a stable quarantined owner: it keeps its backing and the current
+        // contract defines no retry policy, so it refuses recovery here (the
+        // higher layer must tear it down instead).
+        match self.recovery {
+            RecoveryState::Idle | RecoveryState::Recovered => {
+                self.target_epoch = target;
+                self.inner.begin_reset();
+                self.recovery = RecoveryState::Resetting;
+                Ok(self.progress())
+            }
+            _ => Err(DevError::BadState),
+        }
+    }
+
+    fn poll_recovery_step(&mut self) -> DevResult<RecoveryProgress> {
+        match self.recovery {
+            RecoveryState::Resetting => {
+                // Step 1 (bounded): confirm the device stopped. If not yet
+                // confirmed, stay pending; once confirmed, mark the rebuild
+                // stage so a later poll performs it.
+                if !self.inner.reset_confirmed() {
+                    return Ok(self.progress());
+                }
+                self.recovery = RecoveryState::Reinitializing;
+                Ok(self.progress())
+            }
+            RecoveryState::Reinitializing => {
+                // Step 2 (bounded): rebuild queues and buffers, or fault.
+                match self.recover_after_reset() {
+                    Ok(()) => {
+                        self.recovery = RecoveryState::Recovered;
+                        Ok(self.progress())
+                    }
+                    Err(e) => {
+                        // Preserve the exact bounded fault category so the
+                        // higher layer can distinguish why recovery failed.
+                        self.recovery = RecoveryState::Faulted;
+                        Err(e)
+                    }
+                }
+            }
+            _ => Err(DevError::BadState),
+        }
+    }
+
+    fn owner_summary(&self) -> OwnerSummary {
+        // Owner classification follows the *actual* device-access boundary:
+        // only a healthy device, or a recovery still waiting for the reset
+        // status to read back zero, has the device path able to reach its old
+        // owners. Once a reset is confirmed (or the adapter has faulted), the
+        // device path stopped and every committed owner is driver-quarantined.
+        // The held late-RX buffer is driver-held in *every* phase (it was handed
+        // back out of the queue to the caller before recycling), so it is always
+        // a quarantined driver owner.
+        let committed = self.committed_owner_count();
+        let driver_held =
+            u64::from(self.tx_fault_buf.is_some()) + u64::from(self.rx_recycle_hold.is_some());
+        let reset_pending =
+            matches!(self.recovery, RecoveryState::Resetting) && !self.inner.reset_confirmed();
+        if self.data_plane_active() || reset_pending {
+            OwnerSummary {
+                available: self.free_tx_bufs.len() as u64,
+                device_owned: committed,
+                quarantined: driver_held,
+            }
+        } else {
+            OwnerSummary {
+                available: self.free_tx_bufs.len() as u64,
+                device_owned: 0,
+                quarantined: committed + driver_held,
+            }
+        }
+    }
+
+    fn read_link_status(&mut self) -> DevResult<bool> {
+        self.inner.read_link_status().map_err(as_dev_err)
+    }
+}
+
 impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, QS> {
     #[inline]
     fn mac_address(&self) -> EthernetAddress {
@@ -269,12 +506,15 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 
     #[inline]
     fn can_transmit(&self) -> bool {
-        !self.tx_fault && !self.free_tx_bufs.is_empty() && self.inner.can_send()
+        !self.tx_fault
+            && self.data_plane_active()
+            && !self.free_tx_bufs.is_empty()
+            && self.inner.can_send()
     }
 
     #[inline]
     fn can_receive(&self) -> bool {
-        self.inner.poll_receive().is_some()
+        self.data_plane_active() && self.inner.poll_receive().is_some()
     }
 
     #[inline]
@@ -295,8 +535,27 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         Some(self)
     }
 
+    fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
+        Some(self)
+    }
+
     fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult {
         let mut rx_buf = unsafe { NetBuf::from_buf_ptr(rx_buf) };
+        // During a reset/reinitialize/fault the queue may be being torn down or
+        // rebuilt; submitting to it here would mutate a queue whose backing is
+        // not ready. Reject without touching the queue and preserve the buffer
+        // as a single driver-owned owner, matching the contract that a rejection
+        // must not mutate the queue nor lose/double the buffer. If a replay
+        // buffer is already on hold, return the new one to the pool so it keeps a
+        // single owner.
+        if !self.data_plane_active() {
+            if self.rx_recycle_hold.is_none() {
+                self.rx_recycle_hold = Some(rx_buf);
+            } else {
+                drop(rx_buf);
+            }
+            return Err(DevError::BadState);
+        }
         // Safe because we take the ownership of `rx_buf` back to `rx_buffers`,
         // it lives as long as the queue.
         let new_token = unsafe {
@@ -307,6 +566,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         // `rx_buffers[new_token]` is expected to be `None` since it was taken
         // away at `Self::receive()` and has not been added back.
         if self.rx_buffers[new_token as usize].is_some() {
+            drop(rx_buf);
             return Err(DevError::BadState);
         }
         self.rx_buffers[new_token as usize] = Some(rx_buf);
@@ -314,7 +574,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     }
 
     fn recycle_tx_buffers(&mut self) -> DevResult {
-        if self.tx_fault {
+        if self.tx_fault || !self.data_plane_active() {
             return Err(DevError::BadState);
         }
         while let Some(token) = self.inner.poll_transmit() {
@@ -346,7 +606,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult {
         // 0. prepare tx buffer.
         let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
-        if self.tx_fault {
+        if self.tx_fault || !self.data_plane_active() {
             self.free_tx_bufs.push(tx_buf);
             return Err(DevError::BadState);
         }
@@ -370,6 +630,9 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     }
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
+        if !self.data_plane_active() {
+            return Err(DevError::BadState);
+        }
         self.inner.ack_interrupt();
         if let Some(token) = self.inner.poll_receive() {
             let mut rx_buf = self.rx_buffers[token as usize]
@@ -391,7 +654,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     }
 
     fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr> {
-        if self.tx_fault {
+        if self.tx_fault || !self.data_plane_active() {
             return Err(DevError::BadState);
         }
         // 0. Allocate a buffer from the queue. Runtime exhaustion is
@@ -416,7 +679,13 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
 impl<H: Hal, T: Transport, const QS: usize> NetTxQueue for VirtIoNetDev<H, T, QS> {
     fn submit_tx(&mut self, tx_buf: NetBufPtr, cookie: TxCookie) -> DevResult {
         let tx_buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
-        if self.tx_fault {
+        if cookie.epoch() != self.epoch {
+            // Stale-epoch submission is a pre-accept rejection: the buffer is
+            // returned to the free set and the device is never touched.
+            self.free_tx_bufs.push(tx_buf);
+            return Err(DevError::BadState);
+        }
+        if self.tx_fault || !self.data_plane_active() {
             self.free_tx_bufs.push(tx_buf);
             return Err(DevError::BadState);
         }
@@ -436,7 +705,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetTxQueue for VirtIoNetDev<H, T, QS
     }
 
     fn reclaim_tx(&mut self) -> DevResult<Option<TxCookie>> {
-        if self.tx_fault {
+        if self.tx_fault || !self.data_plane_active() {
             return Err(DevError::BadState);
         }
         let Some(token) = self.inner.poll_transmit() else {
@@ -451,6 +720,16 @@ impl<H: Hal, T: Transport, const QS: usize> NetTxQueue for VirtIoNetDev<H, T, QS
             return Err(self.enter_tx_fault(None));
         }
         if !matches!(self.tx_slots[slot], TxSlot::Queue(_, _)) {
+            return Err(self.enter_tx_fault(None));
+        }
+        let cookie_epoch = match &self.tx_slots[slot] {
+            TxSlot::Queue(_, cookie) => cookie.epoch(),
+            _ => unreachable!(),
+        };
+        if cookie_epoch != self.epoch {
+            // The device returned a completion for a slot whose cookie belongs
+            // to an older generation: a device/owner drift that must not be
+            // counted as a valid reclaim.
             return Err(self.enter_tx_fault(None));
         }
         // Keep the ledger intact until the transport has accepted the
@@ -495,10 +774,11 @@ mod tests {
     use alloc::alloc::{alloc_zeroed, dealloc};
     use core::{
         alloc::Layout,
+        cell::Cell,
         ptr::NonNull,
         sync::atomic::{AtomicU16, Ordering},
     };
-    use std::sync::Mutex;
+    use std::{sync::Mutex, thread_local, vec::Vec};
 
     use virtio_drivers::{
         BufferDirection, Hal, PhysAddr, Result,
@@ -509,6 +789,15 @@ mod tests {
 
     const QS: usize = 4;
 
+    // Per-test-thread DMA accounting for `TestHal`, so a fail-before-touch
+    // witness can prove no DMA allocation/deallocation occurred (thread-local
+    // gives each test isolated counts and keeps the default parallel run
+    // deterministic).
+    thread_local! {
+        static HAL_DMA_ALLOCS: Cell<usize> = const { Cell::new(0) };
+        static HAL_DMA_DEALLOCS: Cell<usize> = const { Cell::new(0) };
+    }
+
     // Identity-mapped host memory: the driver and the fake device see the same
     // addresses, so the test can write used-ring completions directly.
     #[derive(Debug)]
@@ -516,6 +805,7 @@ mod tests {
 
     unsafe impl Hal for TestHal {
         fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
+            HAL_DMA_ALLOCS.set(HAL_DMA_ALLOCS.get() + 1);
             assert_ne!(pages, 0);
             let layout = Layout::from_size_align(
                 pages * virtio_drivers::PAGE_SIZE,
@@ -528,6 +818,7 @@ mod tests {
         }
 
         unsafe fn dma_dealloc(_paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
+            HAL_DMA_DEALLOCS.set(HAL_DMA_DEALLOCS.get() + 1);
             let layout = Layout::from_size_align(
                 pages * virtio_drivers::PAGE_SIZE,
                 virtio_drivers::PAGE_SIZE,
@@ -565,6 +856,19 @@ mod tests {
     struct FakeDeviceState {
         used_rings: [Option<NonNull<u8>>; 2],
         used_idx: [u16; 2],
+        observed_status: DeviceStatus,
+        defer_reset: bool,
+        config_generation: u8,
+        fail_reinit: bool,
+        fail_recv_reinit: bool,
+        bump_generation_on_config_read: bool,
+        /// Number of `set_status` calls: counts any device status write, even
+        /// one that restores the same value, so a fail-before-touch witness can
+        /// prove no status write occurred.
+        status_writes: usize,
+        /// Number of `queue_set` calls: counts any queue registration mutation
+        /// so a fail-before-touch witness can prove no queue change occurred.
+        queue_sets: usize,
     }
 
     // A controller the test keeps after the transport moves into the device.
@@ -579,16 +883,37 @@ mod tests {
                 shared: Arc::new(Mutex::new(FakeDeviceState {
                     used_rings: [None; 2],
                     used_idx: [0; 2],
+                    observed_status: DeviceStatus::empty(),
+                    defer_reset: false,
+                    config_generation: 0,
+                    fail_reinit: false,
+                    fail_recv_reinit: false,
+                    bump_generation_on_config_read: false,
+                    status_writes: 0,
+                    queue_sets: 0,
                 })),
             }
         }
 
         fn complete_tx(&self, token: u16, len: u32) {
+            self.complete_used(1, token, len);
+        }
+
+        fn complete_rx(&self, token: u16, len: u32) {
+            self.complete_used(0, token, len);
+        }
+
+        /// Publishes a used-ring completion on the given queue index (0 == RX,
+        /// 1 == TX) as a real device would, so a test can drive the
+        /// queue → adapter → caller ownership transition through the normal
+        /// `poll_*`/`receive` path rather than manufacturing caller-owned
+        /// buffers directly.
+        fn complete_used(&self, queue: usize, token: u16, len: u32) {
             let mut state = self.shared.lock().unwrap();
-            let used = state.used_rings[1].expect("send queue not configured");
-            let used_idx = state.used_idx[1];
-            // SAFETY: `used` points at the send queue's used ring, whose layout
-            // is flags(u16) + idx(u16) + used_elems[QS] + used_event(u16); each
+            let used = state.used_rings[queue].expect("queue not configured");
+            let used_idx = state.used_idx[queue];
+            // SAFETY: `used` points at the queue's used ring, whose layout is
+            // flags(u16) + idx(u16) + used_elems[QS] + used_event(u16); each
             // used elem is {id: u32, len: u32} at offset 4 + 8 * slot.
             unsafe {
                 let entry = used.as_ptr().add(4 + 8 * (used_idx as usize % QS)) as *mut u32;
@@ -597,7 +922,7 @@ mod tests {
                 let idx = used.as_ptr().add(2) as *mut AtomicU16;
                 (*idx).store(used_idx.wrapping_add(1), Ordering::Release);
             }
-            state.used_idx[1] = used_idx.wrapping_add(1);
+            state.used_idx[queue] = used_idx.wrapping_add(1);
         }
     }
 
@@ -606,7 +931,6 @@ mod tests {
     struct FakeTransport {
         config: TestNetConfig,
         shared: Arc<Mutex<FakeDeviceState>>,
-        status: DeviceStatus,
     }
 
     impl Transport for FakeTransport {
@@ -627,11 +951,23 @@ mod tests {
         fn notify(&mut self, _queue: u16) {}
 
         fn get_status(&self) -> DeviceStatus {
-            self.status
+            self.shared.lock().unwrap().observed_status
         }
 
         fn set_status(&mut self, status: DeviceStatus) {
-            self.status = status;
+            let mut state = self.shared.lock().unwrap();
+            state.status_writes += 1;
+            if status.is_empty() {
+                if state.defer_reset {
+                    return;
+                }
+                // A confirmed reset releases every queue on the device, so the
+                // next `VirtQueue::new` in a reinit sees them unused.
+                state.observed_status = DeviceStatus::empty();
+                state.used_rings = [None; 2];
+                return;
+            }
+            state.observed_status = status;
         }
 
         fn set_guest_page_size(&mut self, _guest_page_size: u32) {}
@@ -650,21 +986,40 @@ mod tests {
         ) {
             self.shared.lock().unwrap().used_rings[queue as usize] =
                 Some(NonNull::new(device_area as *mut u8).unwrap());
+            self.shared.lock().unwrap().queue_sets += 1;
         }
 
         fn queue_unset(&mut self, queue: u16) {
             self.shared.lock().unwrap().used_rings[queue as usize] = None;
         }
 
-        fn queue_used(&mut self, _queue: u16) -> bool {
-            false
+        fn queue_used(&mut self, queue: u16) -> bool {
+            let state = self.shared.lock().unwrap();
+            // Queue 0 == RECEIVE, queue 1 == TRANSMIT (VirtIO-net layout). A
+            // reinit rebuilds transmit first, then receive; `fail_recv_reinit`
+            // fails only the receive rebuild so a partial queue rebuild (one
+            // new queue allocated, then a failure) can be witnessed.
+            state.fail_reinit
+                || (state.fail_recv_reinit && queue == 0)
+                || state.used_rings[queue as usize].is_some()
         }
 
         fn ack_interrupt(&mut self) -> bool {
             false
         }
 
+        fn config_generation(&self) -> Option<u8> {
+            Some(self.shared.lock().unwrap().config_generation)
+        }
+
         fn config_space<T: 'static>(&self) -> Result<NonNull<T>> {
+            let mut state = self.shared.lock().unwrap();
+            if state.bump_generation_on_config_read {
+                // A real config update may land between the two generation
+                // reads of a snapshot; bump once during the read so a mid-read
+                // race is observable end-to-end through the adapter.
+                state.config_generation = state.config_generation.wrapping_add(1);
+            }
             Ok(NonNull::from(&self.config).cast())
         }
     }
@@ -679,7 +1034,6 @@ mod tests {
                 mtu: 1500,
             },
             shared: device.shared.clone(),
-            status: DeviceStatus::empty(),
         };
         let dev = VirtIoNetDev::try_new(transport, None).expect("driver init");
         (dev, device)
@@ -995,5 +1349,912 @@ mod tests {
         // Later TX operations observe the stable fault.
         assert!(matches!(dev.alloc_tx_buffer(100), Err(DevError::BadState)));
         assert!(matches!(dev.recycle_tx_buffers(), Err(DevError::BadState)));
+    }
+
+    // ── Recovery contract (R2/R5/R6): reset deferral, reinit failure, epoch ──
+
+    #[test]
+    fn recovery_completes_on_confirmed_reset_and_advances_epoch() {
+        let (mut dev, _device) = test_dev();
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        let epoch_before = dev.epoch;
+
+        // With an immediately-confirmed reset, begin + two bounded polls reach
+        // Recovered and advance the epoch: confirm, then rebuild.
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .begin_recovery()
+                .unwrap()
+                .stage,
+            RecoveryStage::Resetting
+        );
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Recovered
+        );
+        assert_eq!(dev.epoch.current(), epoch_before.current() + 1);
+        assert_eq!(dev.free_tx_bufs.len(), QS, "capacity rebuilt");
+    }
+
+    #[test]
+    fn deferred_reset_keeps_backing_until_confirmed() {
+        let (mut dev, device) = test_dev();
+        device.shared.lock().unwrap().defer_reset = true;
+
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        let epoch_before = dev.epoch;
+        let free_before = dev.free_tx_bufs.len();
+        let inflight_before = dev.tx_resource_ledger().unwrap().buffer_inflight;
+
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                dev.recovery_control()
+                    .unwrap()
+                    .poll_recovery_step()
+                    .unwrap()
+                    .stage,
+                RecoveryStage::Resetting,
+                "never-confirmed reset stays pending"
+            );
+        }
+        assert_eq!(dev.epoch, epoch_before, "epoch not advanced while pending");
+        assert_eq!(dev.free_tx_bufs.len(), free_before);
+        assert_eq!(
+            dev.tx_resource_ledger().unwrap().buffer_inflight,
+            inflight_before,
+            "backing not released while reset pending"
+        );
+
+        // The device confirms it stopped; recovery completes in one more step.
+        device.shared.lock().unwrap().defer_reset = false;
+        device.shared.lock().unwrap().observed_status = DeviceStatus::empty();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        let done = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert_eq!(dev.epoch.current(), epoch_before.current() + 1);
+        assert_eq!(dev.free_tx_bufs.len(), QS, "full capacity rebuilt");
+    }
+
+    #[test]
+    fn reinit_failure_keeps_faulted_owner_and_backing() {
+        let (mut dev, device) = test_dev();
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        let epoch_before = dev.epoch;
+        let free_before = dev.free_tx_bufs.len();
+        let inflight_before = dev.tx_resource_ledger().unwrap().buffer_inflight;
+
+        device.shared.lock().unwrap().fail_reinit = true;
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing,
+            "confirmed reset enters the rebuild stage"
+        );
+        // Reinit fails (the fake transport reports the queue already used), so
+        // the exact fault category is preserved in the Err and the adapter
+        // settles into Faulted.
+        let err = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap_err();
+        assert!(matches!(err, DevError::AlreadyExists));
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Faulted
+        );
+        assert_eq!(dev.epoch, epoch_before, "epoch not advanced on failure");
+
+        let ledger = dev.tx_resource_ledger().unwrap();
+        assert_eq!(ledger.buffer_available, free_before as u64);
+        assert_eq!(
+            ledger.buffer_inflight, inflight_before,
+            "inflight preserved"
+        );
+        assert_eq!(
+            ledger.buffer_available + ledger.buffer_inflight,
+            QS as u64,
+            "no backing leaked or duplicated in the faulted state"
+        );
+        // A terminal fault refuses further progression and every data-plane
+        // entry point rejects new I/O while keeping ownership unchanged.
+        assert!(matches!(
+            dev.recovery_control().unwrap().poll_recovery_step(),
+            Err(DevError::BadState)
+        ));
+        assert!(matches!(
+            dev.recovery_control().unwrap().begin_recovery(),
+            Err(DevError::BadState)
+        ));
+        assert!(!dev.can_transmit());
+        assert!(matches!(dev.alloc_tx_buffer(100), Err(DevError::BadState)));
+        assert!(matches!(dev.recycle_tx_buffers(), Err(DevError::BadState)));
+        assert!(matches!(dev.receive(), Err(DevError::BadState)));
+    }
+
+    #[test]
+    fn progress_reports_target_epoch_during_reset_reinit() {
+        // Finding 2: RecoveryProgress::epoch is the target epoch the recovery
+        // moves toward; while resetting or reinitializing it must report the
+        // next epoch, not the not-yet-advanced current one.
+        let (mut dev, device) = test_dev();
+        let epoch_before = dev.epoch;
+        device.shared.lock().unwrap().defer_reset = true;
+        {
+            let control = dev.recovery_control().unwrap();
+            control.begin_recovery().unwrap();
+            assert_eq!(control.progress().stage, RecoveryStage::Resetting);
+            assert_eq!(
+                control.progress().epoch.current(),
+                epoch_before.current() + 1,
+                "during reset the progress reports the target (next) epoch"
+            );
+        }
+        // Confirm the reset, then inspect the reinitializing stage too.
+        device.shared.lock().unwrap().defer_reset = false;
+        device.shared.lock().unwrap().observed_status = DeviceStatus::empty();
+        {
+            let control = dev.recovery_control().unwrap();
+            assert_eq!(
+                control.poll_recovery_step().unwrap().stage,
+                RecoveryStage::Reinitializing
+            );
+            assert_eq!(
+                control.progress().epoch.current(),
+                epoch_before.current() + 1
+            );
+        }
+        // Once recovered the reported epoch is the advanced current epoch.
+        let done = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert_eq!(done.epoch.current(), epoch_before.current() + 1);
+        assert_eq!(dev.epoch.current(), epoch_before.current() + 1);
+    }
+
+    #[test]
+    fn partial_rebuild_failure_conserves_backing_and_quarantines() {
+        // Finding 5: reinit rebuilds transmit, then fails on receive, so a
+        // partial queue rebuild is witnessed. The fault preserves the category,
+        // quarantine reclassifies every committed owner, and the pool is
+        // conserved exactly when the device is dropped.
+        let (mut dev, device) = test_dev();
+        let epoch_before = dev.epoch;
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        let pool = dev.buf_pool();
+
+        device.shared.lock().unwrap().fail_recv_reinit = true;
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        let err = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap_err();
+        assert!(matches!(err, DevError::AlreadyExists));
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Faulted
+        );
+        assert_eq!(dev.epoch, epoch_before, "epoch not advanced on failure");
+
+        // No owner is device-owned; every committed slot/RX is quarantined.
+        let os = dev.recovery_control().unwrap().owner_summary();
+        assert_eq!(os.device_owned, 0);
+        assert_eq!(os.available, (QS - 1) as u64);
+        assert_eq!(os.quarantined, (1 + QS) as u64);
+        assert!(!dev.can_transmit());
+        assert!(matches!(dev.alloc_tx_buffer(100), Err(DevError::BadState)));
+
+        drop(dev);
+        // Hold the drained buffers so they cannot return to the pool mid-loop;
+        // exactly `2 * QS` must be recovered: a smaller count is a leak, a
+        // larger one a duplicate.
+        let mut drained: Vec<_> = Vec::new();
+        while let Some(b) = pool.alloc_boxed() {
+            drained.push(b);
+        }
+        assert_eq!(drained.len(), 2 * QS, "partial-rebuild fault conserves");
+    }
+
+    #[test]
+    fn partial_refill_failure_faults_and_conserves_pool() {
+        // Finding 5: after a confirmed reset and successful reinit, the refill
+        // fails partway through the RX phase. The adapter faults, reclassifies
+        // the partially refilled owner as quarantined, blocks the data plane and
+        // conserves every pooled buffer on drop.
+        let (mut dev, _device) = test_dev();
+        let epoch_before = dev.epoch;
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        let pool = dev.buf_pool();
+        dev.refill_fail_at = Some(1);
+
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing,
+            "confirmed reset enters the rebuild stage"
+        );
+        let err = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap_err();
+        assert!(matches!(err, DevError::NoMemory));
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Faulted
+        );
+        assert_eq!(dev.epoch, epoch_before, "epoch not advanced on failure");
+
+        // Only the one partially refilled RX buffer is held and quarantined.
+        let os = dev.recovery_control().unwrap().owner_summary();
+        assert_eq!(os.available, 0);
+        assert_eq!(os.device_owned, 0);
+        assert_eq!(os.quarantined, 1);
+        assert!(!dev.can_transmit());
+        assert!(matches!(dev.alloc_tx_buffer(100), Err(DevError::BadState)));
+        assert!(matches!(dev.receive(), Err(DevError::BadState)));
+
+        drop(dev);
+        // Hold the drained buffers so they cannot return to the pool mid-loop;
+        // exactly `2 * QS` must be recovered: a smaller count is a leak, a
+        // larger one a duplicate.
+        let mut drained: Vec<_> = Vec::new();
+        while let Some(b) = pool.alloc_boxed() {
+            drained.push(b);
+        }
+        assert_eq!(drained.len(), 2 * QS, "partial-refill fault conserves");
+    }
+
+    #[test]
+    fn submit_rejects_stale_epoch_cookie_without_poisoning_device() {
+        let (mut dev, _device) = test_dev();
+        let future = dev.epoch.advance().expect("epoch advances");
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        assert!(matches!(
+            dev.submit_tx(buf, TxCookie::with_epoch(future, 1)),
+            Err(DevError::BadState)
+        ));
+        assert_eq!(dev.free_tx_bufs.len(), QS, "buffer returned on rejection");
+        assert!(dev.can_transmit(), "device not poisoned by stale cookie");
+    }
+
+    #[test]
+    fn full_recovery_cycle_conserves_resources_and_rebuilds_capacity() {
+        let (mut dev, device) = test_dev();
+        let epoch_before = dev.epoch;
+        for i in 0..QS {
+            let buf = dev.alloc_tx_buffer(100).unwrap();
+            dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, i as u64))
+                .unwrap();
+        }
+        assert_eq!(dev.free_tx_bufs.len(), 0, "all tx buffers in flight");
+
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        let done = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert_eq!(dev.epoch.current(), epoch_before.current() + 1);
+
+        assert_eq!(dev.free_tx_bufs.len(), QS);
+        let ledger = dev.tx_resource_ledger().unwrap();
+        assert_eq!(ledger.buffer_available + ledger.buffer_inflight, QS as u64);
+        assert!(dev.can_transmit());
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 11))
+            .unwrap();
+        device.complete_tx(0, 100);
+        assert_eq!(
+            dev.reclaim_tx().unwrap(),
+            Some(TxCookie::with_epoch(dev.epoch, 11))
+        );
+    }
+
+    #[test]
+    fn link_status_reads_through_trait_object() {
+        // A generic control path holding only `dyn NetRecoveryControl` can
+        // request the link snapshot without reaching into the concrete adapter
+        // (Finding 3).
+        let (mut dev, device) = test_dev();
+        let control = dev.recovery_control().unwrap();
+        // TestNetConfig.status bit0 == LINK_UP.
+        assert!(control.read_link_status().unwrap());
+        // A stable read with an exposed generation still returns the link state.
+        device.shared.lock().unwrap().config_generation = 1;
+        assert!(control.read_link_status().is_ok());
+    }
+
+    #[test]
+    fn link_status_mid_read_generation_bump_maps_to_again() {
+        // Finding 5: the generation must change *between* the two guaranteed
+        // reads of a snapshot, so the mid-read race is proven through the
+        // adapter rather than only observed with a pre-raced generation.
+        let (mut dev, device) = test_dev();
+        device.shared.lock().unwrap().bump_generation_on_config_read = true;
+        let control = dev.recovery_control().unwrap();
+        assert!(matches!(control.read_link_status(), Err(DevError::Again)),);
+        // With the race disabled the same read settles on the stable link state.
+        device.shared.lock().unwrap().bump_generation_on_config_read = false;
+        assert!(control.read_link_status().unwrap());
+    }
+
+    // ── Cycle 001 rework: transactional prepare/refill/commit (1.3-R1) ──
+
+    /// A partial refill failure must not arm the device: `DRIVER_OK` must stay
+    /// absent even though the reset was confirmed and the queues rebuilt, so the
+    /// device never DMA's into a partially populated replacement queue.
+    #[test]
+    fn partial_refill_failure_does_not_publish_driver_ok() {
+        let (mut dev, _device) = test_dev();
+        dev.refill_fail_at = Some(1);
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        let err = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap_err();
+        assert!(matches!(err, DevError::NoMemory));
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Faulted
+        );
+        // DRIVER_OK must never be published: a partial refill leaves the device
+        // unarmed so it cannot DMA into the partially populated queues.
+        assert!(
+            !dev.inner
+                .device_status()
+                .contains(virtio_drivers::transport::DeviceStatus::DRIVER_OK),
+            "a partial refill must not publish DRIVER_OK"
+        );
+    }
+
+    /// A successful recovery publishes DRIVER_OK only after the full refill,
+    /// m reaching the operative (Recovered) state with full capacity.
+    #[test]
+    fn successful_recovery_commits_driver_ok_and_advances_epoch() {
+        let (mut dev, _device) = test_dev();
+        let epoch_before = dev.epoch;
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing,
+            "confirmed reset enters rebuild"
+        );
+        // Before the final rebuild+commit step, DRIVER_OK is not yet published.
+        assert!(
+            !dev.inner
+                .device_status()
+                .contains(virtio_drivers::transport::DeviceStatus::DRIVER_OK),
+            "DRIVER_OK must not be armed before the full refill commits"
+        );
+        let done = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert!(
+            dev.inner
+                .device_status()
+                .contains(virtio_drivers::transport::DeviceStatus::DRIVER_OK),
+            "after a full refill the device is armed"
+        );
+        assert_eq!(dev.epoch.current(), epoch_before.current() + 1);
+        assert_eq!(dev.free_tx_bufs.len(), QS, "full capacity rebuilt");
+    }
+
+    // ── Cycle 001 rework: phase-aware ownership (1.3-R2) ──
+
+    /// While a reset is pending (status not yet read back zero), the old owners
+    /// may still be device-accessible and must be conservatively reported as
+    /// `device_owned`, not as driver-only quarantine.
+    #[test]
+    fn owner_summary_keeps_device_owned_during_unconfirmed_reset() {
+        let (mut dev, device) = test_dev();
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        device.shared.lock().unwrap().defer_reset = true;
+
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Resetting
+        );
+        assert!(
+            !dev.inner.reset_confirmed(),
+            "reset still pending in the deferred phase"
+        );
+        // Old committed owners may still be reached by the device: report them
+        // as device_owned, not as driver-only quarantine.
+        let os = dev.recovery_control().unwrap().owner_summary();
+        assert_eq!(
+            os.device_owned,
+            (1 + QS) as u64,
+            "old owners stay device-owned unpconfirmed"
+        );
+        assert_eq!(os.quarantined, 0);
+    }
+
+    /// After the reset is confirmed and the device path stopped, the committed
+    /// owners become driver-quarantined (not device-owned) until they are
+    /// replaced by the rebuild/refill.
+    #[test]
+    fn owner_summary_quarantines_after_confirmed_reset() {
+        let (mut dev, device) = test_dev();
+        let buf = dev.alloc_tx_buffer(100).unwrap();
+        dev.submit_tx(buf, TxCookie::with_epoch(dev.epoch, 1))
+            .unwrap();
+        // Force a fault by failing the receive-queue rebuild, so the adapter
+        // settles in Faulted with reset confirmed and owners quarantined.
+        device.shared.lock().unwrap().fail_reinit = true;
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        assert!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .is_err()
+        );
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Faulted
+        );
+        let os = dev.recovery_control().unwrap().owner_summary();
+        assert_eq!(
+            os.device_owned, 0,
+            "no owner is device-owned after confirmed reset"
+        );
+        assert_eq!(
+            os.quarantined,
+            (1 + QS) as u64,
+            "all committed owners are quarantined"
+        );
+    }
+
+    /// A late RX recycle carried across a *deferred* reset (caller receives a
+    /// buffer, reset begins, then the caller recycles while the device is still
+    /// Resetting) must not break recovery: the held buffer is released before
+    /// the refill, so the recovery converges to a full-capacity `Recovered`
+    /// rather than wrongly faulting on a transient `NoMemory`. The caller-owned
+    /// buffer comes from a real used-ring completion + `receive()`, so the
+    /// queue → adapter → caller ownership transition is the one production
+    /// creates.
+    #[test]
+    fn recycle_during_resetting_converges_to_recovered_full_capacity() {
+        let (mut dev, device) = test_dev();
+        let pool = dev.buf_pool();
+        device.shared.lock().unwrap().defer_reset = true;
+
+        // A device RX completion hands a buffer to the caller through the normal
+        // poll path before the reset begins.
+        device.complete_rx(0, NET_BUF_LEN as u32);
+        let received = dev.receive().expect("receive returns the completed frame");
+
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Resetting
+        );
+        // The caller recycles the received buffer into an inactive data plane
+        // mid-reset; ownership is held until recovery releases it.
+        assert!(matches!(
+            dev.recycle_rx_buffer(received),
+            Err(DevError::BadState)
+        ));
+        assert!(
+            dev.rx_recycle_hold.is_some(),
+            "late recycle held during reset"
+        );
+
+        // Now the device confirms it stopped; recovery proceeds and must converge.
+        device.shared.lock().unwrap().defer_reset = false;
+        device.shared.lock().unwrap().observed_status = DeviceStatus::empty();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        let done = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap();
+        assert_eq!(
+            done.stage,
+            RecoveryStage::Recovered,
+            "recovery must converge to Recovered despite the mid-reset recycle"
+        );
+        assert!(
+            dev.rx_recycle_hold.is_none(),
+            "held buffer released on recovery"
+        );
+        assert_eq!(dev.free_tx_bufs.len(), QS, "full TX capacity rebuilt");
+        assert_eq!(dev.rx_buffers.iter().filter(|b| b.is_some()).count(), QS);
+
+        drop(dev);
+        let mut drained: Vec<_> = Vec::new();
+        while let Some(b) = pool.alloc_boxed() {
+            drained.push(b);
+        }
+        assert_eq!(drained.len(), 2 * QS, "recovery conserves the full pool");
+    }
+
+    /// The same interleave when the recycle lands on the *Reinitializing* phase
+    /// (reset confirmed, rebuild in progress) must also converge to `Recovered`
+    /// with the held buffer released and the pool conserved. The caller-owned
+    /// buffer again crosses the real queue → adapter → caller boundary.
+    #[test]
+    fn recycle_during_reinitializing_converges_to_recovered_full_capacity() {
+        let (mut dev, device) = test_dev();
+        let pool = dev.buf_pool();
+        device.complete_rx(0, NET_BUF_LEN as u32);
+        let received = dev.receive().expect("receive returns the completed frame");
+
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+
+        assert!(matches!(
+            dev.recycle_rx_buffer(received),
+            Err(DevError::BadState)
+        ));
+        assert!(
+            dev.rx_recycle_hold.is_some(),
+            "late recycle held during reinitializing"
+        );
+
+        let done = dev
+            .recovery_control()
+            .unwrap()
+            .poll_recovery_step()
+            .unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert!(
+            dev.rx_recycle_hold.is_none(),
+            "held buffer released on recovery"
+        );
+        assert_eq!(dev.free_tx_bufs.len(), QS);
+
+        drop(dev);
+        let mut drained: Vec<_> = Vec::new();
+        while let Some(b) = pool.alloc_boxed() {
+            drained.push(b);
+        }
+        assert_eq!(drained.len(), 2 * QS, "recovery conserves the full pool");
+    }
+
+    /// A late RX recycle in a *Faulted* adapter must reject without touching the
+    /// queue, preserve the buffer as a single driver owner, and conserve the full
+    /// pool exactly once when the device is dropped. The caller-owned buffer is
+    /// obtained through a real used-ring completion + `receive()` before the
+    /// adapter faults.
+    #[test]
+    fn recycle_during_faulted_conserves_pool_on_drop() {
+        let (mut dev, device) = test_dev();
+        // A receive hands a buffer to the caller through the normal poll path.
+        device.complete_rx(0, NET_BUF_LEN as u32);
+        let received = dev.receive().expect("receive returns the completed frame");
+
+        let pool = dev.buf_pool();
+        dev.refill_fail_at = Some(1);
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        assert!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .is_err()
+        );
+        assert_eq!(
+            dev.recovery_control().unwrap().progress().stage,
+            RecoveryStage::Faulted
+        );
+
+        // The caller now recycles its received buffer into the inactive data
+        // plane.
+        let queued_before = dev.rx_buffers.iter().filter(|b| b.is_some()).count();
+        assert!(matches!(
+            dev.recycle_rx_buffer(received),
+            Err(DevError::BadState)
+        ));
+        let queued_after = dev.rx_buffers.iter().filter(|b| b.is_some()).count();
+        assert_eq!(
+            queued_after, queued_before,
+            "the rejected recycle must not touch the RX queue"
+        );
+        assert!(
+            dev.rx_recycle_hold.is_some(),
+            "late-recycled buffer preserved as one driver owner"
+        );
+        // The held buffer is visible in the owner summary as driver-quarantined.
+        let os = dev.recovery_control().unwrap().owner_summary();
+        assert_eq!(
+            os.quarantined,
+            queued_before as u64 + 1,
+            "held recycle buffer counted in the quarantined owner set"
+        );
+
+        drop(dev);
+        let mut drained: Vec<_> = Vec::new();
+        while let Some(b) = pool.alloc_boxed() {
+            drained.push(b);
+        }
+        assert_eq!(
+            drained.len(),
+            2 * QS,
+            "faulted adapter conserves every pooled buffer exactly once"
+        );
+    }
+
+    /// In the active `Recovered` state, a normal recycle must succeed: it calls
+    /// `receive_begin` and restores the RX slot so the device is back to full
+    /// receive capacity.
+    #[test]
+    fn recycle_during_recovered_restores_rx_slot() {
+        let (mut dev, device) = test_dev();
+        // Complete a recovery to reach an active Recovered device.
+        dev.recovery_control().unwrap().begin_recovery().unwrap();
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Reinitializing
+        );
+        assert_eq!(
+            dev.recovery_control()
+                .unwrap()
+                .poll_recovery_step()
+                .unwrap()
+                .stage,
+            RecoveryStage::Recovered
+        );
+        assert!(dev.data_plane_active(), "Recovered device is active");
+
+        // A normal receive + recycle round trips through the active data plane.
+        device.complete_rx(0, NET_BUF_LEN as u32);
+        let received = dev.receive().expect("receive returns a frame");
+        let queued_before = dev.rx_buffers.iter().filter(|b| b.is_some()).count();
+        assert!(dev.recycle_rx_buffer(received).is_ok());
+        let queued_after = dev.rx_buffers.iter().filter(|b| b.is_some()).count();
+        assert_eq!(
+            queued_after,
+            queued_before + 1,
+            "an active recycle re-arms the RX slot"
+        );
+        assert!(
+            dev.rx_recycle_hold.is_none(),
+            "active recycle does not hold the buffer"
+        );
+    }
+
+    // ── Cycle 001 rework: epoch exhaustion fail-before-touch (1.2/1.3-R3) ──
+
+    /// `begin_recovery` at `QueueEpoch::MAX` must fail before any device touch:
+    /// no status write, queue mutation, DMA alloc/dealloc or ledger change. The
+    /// fake device counts status writes and queue registrations, and the test
+    /// snapshots DMA allocation, the owner summary and the observable TX/RX
+    /// resource ledger, so a write that restores the same value or any resource
+    /// change would still be detected.
+    #[test]
+    fn begin_recovery_at_max_epoch_fails_before_device_touch() {
+        let (mut dev, device) = test_dev();
+        dev.epoch = QueueEpoch::MAX;
+        dev.target_epoch = QueueEpoch::MAX;
+        let status_before = dev.inner.device_status();
+        let stage_before = dev.recovery;
+        // Snapshot the two DMA counters independently, not just their net live
+        // difference: one allocation plus one deallocation would leave the
+        // alloc/dealloc difference unchanged, so only comparing the net value
+        // could hide a device/ledger side effect.
+        let dma_allocs_before = HAL_DMA_ALLOCS.get();
+        let dma_deallocs_before = HAL_DMA_DEALLOCS.get();
+        let owner_before = dev.recovery_control().unwrap().owner_summary();
+        let ledger_before = dev.tx_resource_ledger();
+        let rx_queued_before = dev.rx_buffers.iter().filter(|b| b.is_some()).count();
+        let tx_occupied_before = dev
+            .tx_slots
+            .iter()
+            .filter(|s| !matches!(s, TxSlot::Free))
+            .count();
+
+        // Side-effect counters: any of these changing would mean recovery began
+        // to touch the device/ledger before the exhaustion rejection landed.
+        let (status_writes_before, queue_sets_before) = {
+            let s = device.shared.lock().unwrap();
+            (s.status_writes, s.queue_sets)
+        };
+
+        let control = dev.recovery_control().unwrap();
+        assert!(matches!(control.begin_recovery(), Err(DevError::BadState)));
+
+        // No state transition, no status write, no queue registration, no DMA
+        // allocation/deallocation, no owner/resource-ledger change.
+        assert_eq!(
+            dev.recovery, stage_before,
+            "state unchanged by fail-before-touch"
+        );
+        assert_eq!(
+            dev.inner.device_status(),
+            status_before,
+            "no status write before exhaustion rejection"
+        );
+        assert_eq!(dev.epoch, QueueEpoch::MAX, "epoch unchanged");
+        assert_eq!(dev.target_epoch, QueueEpoch::MAX, "target unchanged");
+        assert_eq!(
+            HAL_DMA_ALLOCS.get(),
+            dma_allocs_before,
+            "no DMA allocation before exhaustion rejection"
+        );
+        assert_eq!(
+            HAL_DMA_DEALLOCS.get(),
+            dma_deallocs_before,
+            "no DMA deallocation before exhaustion rejection"
+        );
+        assert_eq!(
+            dev.recovery_control().unwrap().owner_summary(),
+            owner_before,
+            "owner summary unchanged"
+        );
+        assert_eq!(
+            dev.tx_resource_ledger(),
+            ledger_before,
+            "observable TX/RX resource ledger unchanged"
+        );
+        assert_eq!(
+            dev.rx_buffers.iter().filter(|b| b.is_some()).count(),
+            rx_queued_before,
+            "RX slots unchanged"
+        );
+        assert_eq!(
+            dev.tx_slots
+                .iter()
+                .filter(|s| !matches!(s, TxSlot::Free))
+                .count(),
+            tx_occupied_before,
+            "TX slots unchanged"
+        );
+
+        let (status_writes_after, queue_sets_after) = {
+            let s = device.shared.lock().unwrap();
+            (s.status_writes, s.queue_sets)
+        };
+        assert_eq!(
+            status_writes_after, status_writes_before,
+            "no device status write before exhaustion rejection"
+        );
+        assert_eq!(
+            queue_sets_after, queue_sets_before,
+            "no queue registration before exhaustion rejection"
+        );
+    }
+
+    /// A normal (non-exhausted) recovery still advances the epoch exactly once
+    /// and reports an explicit target epoch during reset/reinit.
+    #[test]
+    fn non_exhausted_recovery_advances_epoch_exactly_once() {
+        let (mut dev, _device) = test_dev();
+        let epoch_before = dev.epoch;
+        let control = dev.recovery_control().unwrap();
+        let started = control.begin_recovery().unwrap();
+        assert_eq!(started.epoch.current(), epoch_before.current() + 1);
+        assert_eq!(
+            control.progress().epoch.current(),
+            epoch_before.current() + 1,
+            "explicit target epoch reported during reset"
+        );
+        assert_eq!(
+            control.poll_recovery_step().unwrap().stage,
+            RecoveryStage::Reinitializing
+        );
+        let done = control.poll_recovery_step().unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert_eq!(
+            done.epoch.current(),
+            epoch_before.current() + 1,
+            "recovered epoch advanced exactly once"
+        );
     }
 }

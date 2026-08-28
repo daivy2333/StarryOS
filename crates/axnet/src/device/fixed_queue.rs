@@ -10,6 +10,7 @@
 
 use alloc::{boxed::Box, vec};
 
+use axdriver_net::{QueueEpoch, TxCookie};
 use smoltcp::wire::EthernetFrame;
 
 use crate::consts::STANDARD_MTU;
@@ -285,26 +286,134 @@ pub(crate) enum TicketState {
     DeviceOwned,
 }
 
+/// Bounded stage identity carried by a
+/// [`Fault`](TicketOutcome::Fault) terminal outcome (Task 2.1 / A1).
+///
+/// The codes mirror the D3 `recover_stage` diagnostic codes
+/// (`crate::async_rx::recover_stage`) so a faulted ticket is diagnosable
+/// without widening the frozen V1–V3 ABI. The mapping is pinned by a
+/// stability test; do not renumber either side independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TicketFaultStage {
+    /// Submit wait fault: a Queued frame was never accepted.
+    SubmitWait,
+    /// Completion wait fault: a DeviceOwned completion did not arrive.
+    CompletionWait,
+    /// Reclaim fault: a reclaimable completion could not be reaped.
+    Reclaim,
+    /// Quiesce stage fault (bounded DeviceOwned drain elapsed).
+    Quiesce,
+    /// Reset stage fault (status == 0 confirmation or `begin_recovery` failed).
+    Reset,
+    /// Reinitialize stage fault (queue/backing rebuild failed).
+    Reinitialize,
+    /// Ownership/identity/ledger drift detected; no reset attempted.
+    OwnershipDrift,
+    /// Unclassified fault.
+    Unknown,
+}
+
+impl TicketFaultStage {
+    /// The mirrored D3 diagnostic code (see `recover_stage`).
+    pub(crate) fn code(self) -> u64 {
+        match self {
+            Self::SubmitWait => crate::async_rx::recover_stage::SUBMIT_WAIT,
+            Self::CompletionWait => crate::async_rx::recover_stage::COMPLETION_WAIT,
+            Self::Reclaim => crate::async_rx::recover_stage::RECLAIM,
+            Self::Quiesce => crate::async_rx::recover_stage::QUIESCE,
+            Self::Reset => crate::async_rx::recover_stage::RESET,
+            Self::Reinitialize => crate::async_rx::recover_stage::REINITIALIZE,
+            Self::OwnershipDrift => crate::async_rx::recover_stage::OWNERSHIP_DRIFT,
+            Self::Unknown => crate::async_rx::recover_stage::UNKNOWN,
+        }
+    }
+}
+
+/// Terminal reason a ticket left the device-owner live set. A fresh ticket is
+/// `Queued`, then `DeviceOwned`; it reaches exactly one terminal outcome:
+/// [`Reclaimed`](TicketOutcome::Reclaimed) for a matched completion, or a
+/// packet-loss outcome [`CancelledPreSubmit`](TicketOutcome::CancelledPreSubmit)
+/// / [`ResetAborted`](TicketOutcome::ResetAborted) /
+/// [`Fault`](TicketOutcome::Fault).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TicketOutcome {
+    /// A matched `(epoch, ticket, DeviceOwned)` completion closed the ticket.
+    Reclaimed,
+    /// A recovery cancelled the ticket while still `Queued` (never submitted).
+    CancelledPreSubmit,
+    /// A confirmed device reset closed the ticket while it was `DeviceOwned`.
+    ResetAborted,
+    /// An ownership or device fault terminated the ticket; the payload is the
+    /// bounded stage identity the owner committed for the fault.
+    Fault(TicketFaultStage),
+}
+
+/// Whether a target-scoped C4 flush may complete, given the epoch-scoped
+/// ticket ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlushState {
+    /// Every ticket `<= target` in the current epoch reached a terminal
+    /// outcome and every one of them was [`Reclaimed`](TicketOutcome::Reclaimed).
+    Done,
+    /// Some ticket `<= target` is still live (`Queued`/`DeviceOwned`).
+    Pending,
+    /// A ticket `<= target` in the current epoch ended in a non-Reclaimed
+    /// packet-loss outcome; the flush can never succeed and must fail stably.
+    Lost(TicketOutcome),
+}
+
 /// A checked monotonic TX ticket allocator with a fixed live-ticket backing.
+///
+/// Each live owner is bound to the device-reset [`QueueEpoch`] it was
+/// allocated under, so a completion cookie can only close the current-epoch
+/// ticket with the matching ticket. Terminal outcomes are recorded in a
+/// bounded, epoch-scoped summary (a single monotonic "first lost ticket"), so
+/// a flush can distinguish a successful reclaim from a cancelled/reset/fault
+/// packet loss without unbounded history.
 pub(crate) struct TicketTracker {
+    /// The device-reset epoch every live ticket currently belongs to.
+    epoch: QueueEpoch,
     next: u64,
-    live: Box<[Option<(u64, TicketState)>]>,
+    live: Box<[Option<(QueueEpoch, u64, TicketState)>]>,
     live_len: usize,
     last_accepted: Option<u64>,
+    /// Lowest ticket in the *current epoch* that ended non-Reclaimed; `None`
+    /// when no packet loss occurred yet. A flush whose target `>=` this ticket
+    /// must fail. Reset when the epoch advances.
+    first_lost: Option<(u64, TicketOutcome)>,
 }
 
 impl TicketTracker {
     pub(crate) fn new() -> Self {
         Self {
+            epoch: QueueEpoch::MIN,
             next: 0,
             live: vec![None; MAX_LIVE_TICKETS].into_boxed_slice(),
             live_len: 0,
             last_accepted: None,
+            first_lost: None,
         }
     }
 
-    /// Allocates the next ticket as `Queued`. Fails when the live backing is
-    /// full or when the counter cannot advance past `u64::MAX`.
+    /// The device-reset epoch every ticket currently belongs to.
+    pub(crate) fn current_epoch(&self) -> QueueEpoch {
+        self.epoch
+    }
+
+    /// Advances to `next_epoch`, requiring the live set already be empty and
+    /// re-seeding the bounded loss summary for the new generation. Only the
+    /// recovery owner calls this after confirming the device stopped and every
+    /// old ticket was closed as [`ResetAborted`](TicketOutcome::ResetAborted)
+    /// (the queue task is the caller that holds them).
+    pub(crate) fn advance_epoch(&mut self, next_epoch: QueueEpoch) {
+        debug_assert_eq!(self.live_len, 0, "advance requires an empty live set");
+        self.epoch = next_epoch;
+        self.first_lost = None;
+    }
+
+    /// Allocates the next ticket as `Queued` in the current epoch. Fails when
+    /// the live backing is full or when the counter cannot advance past
+    /// `u64::MAX`.
     pub(crate) fn alloc(&mut self) -> Result<u64, TicketError> {
         if self.live_len == MAX_LIVE_TICKETS {
             return Err(TicketError::LiveFull);
@@ -320,7 +429,7 @@ impl TicketTracker {
             .iter_mut()
             .position(|entry| entry.is_none())
             .expect("live backing has a free slot");
-        self.live[slot] = Some((ticket, TicketState::Queued));
+        self.live[slot] = Some((self.epoch, ticket, TicketState::Queued));
         self.live_len += 1;
         self.last_accepted = Some(ticket);
         Ok(ticket)
@@ -339,39 +448,151 @@ impl TicketTracker {
         let Some(slot) = self
             .live
             .iter()
-            .position(|entry| *entry == Some((ticket, TicketState::Queued)))
+            .position(|entry| *entry == Some((self.epoch, ticket, TicketState::Queued)))
         else {
             return false;
         };
-        self.live[slot] = Some((ticket, TicketState::DeviceOwned));
+        self.live[slot] = Some((self.epoch, ticket, TicketState::DeviceOwned));
         true
     }
 
     /// Removes a `Queued` ticket whose slot-fill aborted before submission.
+    /// This is a pre-submit packet loss, recorded so a flush can fail
+    /// instead of reporting a silent success.
     pub(crate) fn release_queued(&mut self, ticket: u64) -> bool {
-        self.remove(ticket, Some(TicketState::Queued))
+        if self.remove(ticket, Some(TicketState::Queued)) {
+            self.record_lost(ticket, TicketOutcome::CancelledPreSubmit);
+            true
+        } else {
+            false
+        }
     }
 
-    /// Removes a `DeviceOwned` ticket whose completion was reclaimed (C4).
-    /// A non-`DeviceOwned` or unknown cookie is owner drift, not a success.
-    pub(crate) fn release_device_owned(&mut self, ticket: u64) -> bool {
-        self.remove(ticket, Some(TicketState::DeviceOwned))
+    /// Removes a `DeviceOwned` ticket whose completion was reclaimed (C4),
+    /// matching the cookie epoch and ticket exactly. A non-`DeviceOwned`,
+    /// unknown, stale-epoch or duplicate cookie is owner drift, not a success.
+    pub(crate) fn release_device_owned(&mut self, cookie: TxCookie) -> bool {
+        let Some(slot) = self.live.iter().position(|entry| {
+            matches!(entry, Some((e, t, TicketState::DeviceOwned)) if *e == cookie.epoch() && *t == cookie.ticket())
+        }) else {
+            return false;
+        };
+        self.live[slot] = None;
+        self.live_len -= 1;
+        true
+    }
+
+    /// Recovery cancellation: atomically cancels every `Queued` ticket of the
+    /// current epoch as [`CancelledPreSubmit`](TicketOutcome::CancelledPreSubmit),
+    /// returning the number cancelled. `DeviceOwned` tickets are untouched and
+    /// keep their owner. The single Service-guard caller linearizes this with
+    /// submit, so no ticket is both submitted and excluded.
+    pub(crate) fn cancel_queued(&mut self) -> usize {
+        let mut cancelled = 0usize;
+        for entry in self.live.iter_mut() {
+            if let Some((e, t, TicketState::Queued)) = entry
+                && *e == self.epoch
+            {
+                let ticket = *t;
+                *entry = None;
+                self.live_len -= 1;
+                match self.first_lost {
+                    Some((current, _)) if current <= ticket => {}
+                    _ => self.first_lost = Some((ticket, TicketOutcome::CancelledPreSubmit)),
+                }
+                cancelled += 1;
+            }
+        }
+        cancelled
+    }
+
+    /// Recovery close: after a confirmed `status == 0`, closes every remaining
+    /// `DeviceOwned` ticket of the current epoch as
+    /// [`ResetAborted`](TicketOutcome::ResetAborted), returning the count.
+    /// `Queued` tickets were already cancelled by the recovery owner.
+    pub(crate) fn close_device_owned(&mut self) -> usize {
+        let mut closed = 0usize;
+        for entry in self.live.iter_mut() {
+            if let Some((e, t, TicketState::DeviceOwned)) = entry
+                && *e == self.epoch
+            {
+                let ticket = *t;
+                *entry = None;
+                self.live_len -= 1;
+                match self.first_lost {
+                    Some((current, _)) if current <= ticket => {}
+                    _ => self.first_lost = Some((ticket, TicketOutcome::ResetAborted)),
+                }
+                closed += 1;
+            }
+        }
+        closed
+    }
+
+    /// Recovery fault closure: terminates every `DeviceOwned` ticket of the
+    /// current epoch as [`Fault`](TicketOutcome::Fault) with the committed
+    /// `stage` identity, returning the count. Unlike a confirmed-recovery
+    /// close, the driver backing is NOT released — the recovery holder keeps
+    /// it quarantined — so the tickets are removed from the live set (a flush
+    /// fails stably instead of pending forever) but the adapter-side
+    /// DMA/buffer ownership is untouched. Used by the owner when it commits a
+    /// resident `Faulted` without a confirmed reset (F4).
+    pub(crate) fn fault_outstanding(&mut self, stage: TicketFaultStage) -> usize {
+        let mut faulted = 0usize;
+        for entry in self.live.iter_mut() {
+            if let Some((e, t, TicketState::DeviceOwned)) = entry
+                && *e == self.epoch
+            {
+                let ticket = *t;
+                *entry = None;
+                self.live_len -= 1;
+                match self.first_lost {
+                    Some((current, _)) if current <= ticket => {}
+                    _ => self.first_lost = Some((ticket, TicketOutcome::Fault(stage))),
+                }
+                faulted += 1;
+            }
+        }
+        faulted
     }
 
     /// Whether any live ticket is at or before `target` (D8 flush predicate).
     pub(crate) fn has_live_at_or_before(&self, target: u64) -> bool {
         self.live
             .iter()
-            .any(|entry| matches!(entry, Some((t, _)) if *t <= target))
+            .any(|entry| matches!(entry, Some((_, t, _)) if *t <= target))
     }
 
-    /// D8 C4 flush completion: `None` (empty data plane) is always complete;
-    /// `Some(target)` completes once no live ticket `<= target` remains.
-    pub(crate) fn flush_done(&self, target: Option<u64>) -> bool {
+    /// D8 C4 flush state. `None` (empty data plane) is always `Done`;
+    /// `Some(target)` is `Lost` when a packet-loss outcome occurred at a ticket
+    /// `<= target` in the current epoch, `Pending` while a live ticket
+    /// `<= target` remains, and only `Done` when every ticket `<= target` was
+    /// reclaimed.
+    pub(crate) fn flush_state(&self, target: Option<u64>) -> FlushState {
         match target {
-            None => true,
-            Some(target) => !self.has_live_at_or_before(target),
+            None => FlushState::Done,
+            Some(target) => {
+                if let Some((lost, outcome)) = self.first_lost
+                    && lost <= target
+                {
+                    return FlushState::Lost(outcome);
+                }
+                if self.has_live_at_or_before(target) {
+                    FlushState::Pending
+                } else {
+                    FlushState::Done
+                }
+            }
         }
+    }
+
+    /// Whether a target-scoped flush is complete: `true` exactly when
+    /// [`Self::flush_state`] is `Done`. Test-only convenience over
+    /// [`Self::flush_state`]; production paths use `flush_state` directly so a
+    /// lost outcome is never conflated with success.
+    #[cfg(test)]
+    pub(crate) fn flush_done(&self, target: Option<u64>) -> bool {
+        matches!(self.flush_state(target), FlushState::Done)
     }
 
     /// The most recently accepted ticket, used as the flush target source.
@@ -384,7 +605,7 @@ impl TicketTracker {
     pub(crate) fn queued_len(&self) -> usize {
         self.live
             .iter()
-            .filter(|entry| matches!(entry, Some((_, TicketState::Queued))))
+            .filter(|entry| matches!(entry, Some((_, _, TicketState::Queued))))
             .count()
     }
 
@@ -394,13 +615,22 @@ impl TicketTracker {
     pub(crate) fn device_owned_len(&self) -> usize {
         self.live
             .iter()
-            .filter(|entry| matches!(entry, Some((_, TicketState::DeviceOwned))))
+            .filter(|entry| matches!(entry, Some((_, _, TicketState::DeviceOwned))))
             .count()
+    }
+
+    /// Records the lowest non-Reclaimed ticket of the current epoch so a
+    /// flush can fail closed. Keeps the bounded min across the generation.
+    fn record_lost(&mut self, ticket: u64, outcome: TicketOutcome) {
+        match self.first_lost {
+            Some((current, _)) if current <= ticket => {}
+            _ => self.first_lost = Some((ticket, outcome)),
+        }
     }
 
     fn remove(&mut self, ticket: u64, expected: Option<TicketState>) -> bool {
         let Some(slot) = self.live.iter().position(|entry| {
-            matches!(entry, Some((t, state)) if *t == ticket && expected.is_none_or(|e| *state == e))
+            matches!(entry, Some((e, t, state)) if *t == ticket && *e == self.epoch && expected.is_none_or(|exp| *state == exp))
         }) else {
             return false;
         };
@@ -415,7 +645,7 @@ impl TicketTracker {
     pub(crate) fn contains(&self, ticket: u64) -> bool {
         self.live
             .iter()
-            .any(|entry| matches!(entry, Some((t, _)) if *t == ticket))
+            .any(|entry| matches!(entry, Some((_, t, _)) if *t == ticket))
     }
 
     #[allow(dead_code)]
@@ -771,13 +1001,13 @@ mod tests {
         let a = tracker.alloc().unwrap();
         // The ticket is still Queued (never submitted): a completion cookie
         // matching it is ownership drift, not a successful reclaim.
-        assert!(!tracker.release_device_owned(a));
+        assert!(!tracker.release_device_owned(TxCookie::new(a)));
         assert_eq!(tracker.live_len(), 1);
         tracker.mark_device_owned(a);
-        assert!(tracker.release_device_owned(a));
+        assert!(tracker.release_device_owned(TxCookie::new(a)));
         assert_eq!(tracker.live_len(), 0);
         // A duplicate completion cookie is drift.
-        assert!(!tracker.release_device_owned(a));
+        assert!(!tracker.release_device_owned(TxCookie::new(a)));
     }
 
     #[test]
@@ -807,7 +1037,7 @@ mod tests {
         // Submitting keeps the ticket live until the completion is reclaimed.
         tracker.mark_device_owned(a);
         assert!(!tracker.flush_done(Some(a)));
-        tracker.release_device_owned(a);
+        tracker.release_device_owned(TxCookie::new(a));
         assert!(tracker.flush_done(Some(a)));
     }
 
@@ -821,11 +1051,11 @@ mod tests {
             tracker.mark_device_owned(t);
         }
         // Reclaim out of order: 2 then 0 leaves the hole at 1.
-        assert!(tracker.release_device_owned(c));
+        assert!(tracker.release_device_owned(TxCookie::new(c)));
         assert!(!tracker.flush_done(Some(c)));
-        assert!(tracker.release_device_owned(a));
+        assert!(tracker.release_device_owned(TxCookie::new(a)));
         assert!(!tracker.flush_done(Some(c)));
-        assert!(tracker.release_device_owned(b));
+        assert!(tracker.release_device_owned(TxCookie::new(b)));
         assert!(tracker.flush_done(Some(c)));
     }
 
@@ -838,7 +1068,7 @@ mod tests {
         tracker.mark_device_owned(b);
         // Flush target 0: ticket 1 accepted after the target is irrelevant.
         assert!(!tracker.flush_done(Some(a)));
-        tracker.release_device_owned(a);
+        tracker.release_device_owned(TxCookie::new(a));
         assert!(tracker.flush_done(Some(a)));
         assert!(!tracker.flush_done(Some(b)));
     }
@@ -867,7 +1097,249 @@ mod tests {
         assert_eq!(tracker.alloc(), Err(TicketError::CounterExhausted));
         assert_eq!(tracker.last_accepted(), Some(a));
         assert!(!tracker.flush_done(Some(a)));
-        tracker.release_device_owned(a);
+        tracker.release_device_owned(TxCookie::new(a));
         assert!(tracker.flush_done(Some(a)));
+    }
+
+    mod task21 {
+        use super::*;
+
+        fn next_epoch(e: QueueEpoch) -> QueueEpoch {
+            e.advance().expect("epoch headroom")
+        }
+
+        #[test]
+        fn reclaim_requires_current_epoch_and_device_owned() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            let e1 = next_epoch(t.current_epoch());
+            assert!(!t.release_device_owned(TxCookie::with_epoch(e1, a)));
+            assert_eq!(t.live_len(), 1);
+            assert!(!t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), a)));
+            assert_eq!(t.live_len(), 1);
+            t.mark_device_owned(a);
+            assert!(!t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), 999)));
+            assert!(!t.release_device_owned(TxCookie::with_epoch(e1, a)));
+            assert!(t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), a)));
+            assert_eq!(t.live_len(), 0);
+            assert!(!t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), a)));
+            assert_eq!(t.flush_state(Some(a)), FlushState::Done);
+        }
+
+        #[test]
+        fn cancel_queued_is_exactly_once_and_flushes_lost() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            let b = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            assert_eq!(t.cancel_queued(), 1);
+            assert_eq!(t.queued_len(), 0);
+            assert_eq!(t.device_owned_len(), 1);
+            assert_eq!(t.live_len(), 1);
+            assert_eq!(t.cancel_queued(), 0);
+            assert_eq!(
+                t.flush_state(Some(b)),
+                FlushState::Lost(TicketOutcome::CancelledPreSubmit)
+            );
+            assert!(t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), a)));
+        }
+
+        #[test]
+        fn device_owned_cancel_is_rejected_not_aborted() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            assert!(!t.release_queued(a));
+            assert_eq!(t.live_len(), 1);
+            assert_eq!(t.device_owned_len(), 1);
+            assert_eq!(t.flush_state(Some(a)), FlushState::Pending);
+            assert!(t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), a)));
+            assert_eq!(t.flush_state(Some(a)), FlushState::Done);
+        }
+
+        #[test]
+        fn close_device_owned_marks_reset_aborted_and_fails_flush() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            let b = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            t.mark_device_owned(b);
+            assert_eq!(t.close_device_owned(), 2);
+            assert_eq!(t.live_len(), 0);
+            assert_eq!(
+                t.flush_state(Some(b)),
+                FlushState::Lost(TicketOutcome::ResetAborted)
+            );
+            assert_eq!(
+                t.flush_state(Some(a)),
+                FlushState::Lost(TicketOutcome::ResetAborted)
+            );
+        }
+
+        #[test]
+        fn flush_outcome_is_min_lost_not_unbounded_history() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            let b = t.alloc().unwrap();
+            let c = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            t.mark_device_owned(c);
+            assert!(t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), a)));
+            assert!(t.release_device_owned(TxCookie::with_epoch(t.current_epoch(), c)));
+            assert_eq!(t.cancel_queued(), 1);
+            assert_eq!(t.flush_state(Some(a)), FlushState::Done);
+            assert_eq!(
+                t.flush_state(Some(b)),
+                FlushState::Lost(TicketOutcome::CancelledPreSubmit)
+            );
+            assert_eq!(
+                t.flush_state(Some(c)),
+                FlushState::Lost(TicketOutcome::CancelledPreSubmit)
+            );
+        }
+
+        #[test]
+        fn epoch_advance_clears_loss_and_fresh_generation_flushes_clean() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            assert_eq!(t.close_device_owned(), 1);
+            let e1 = t.current_epoch().advance().expect("headroom");
+            t.advance_epoch(e1);
+            assert_eq!(t.current_epoch(), e1);
+            assert_eq!(t.live_len(), 0);
+            assert_eq!(t.flush_state(None), FlushState::Done);
+            let b = t.alloc().unwrap();
+            assert_eq!(t.flush_state(Some(b)), FlushState::Pending);
+            t.mark_device_owned(b);
+            assert!(t.release_device_owned(TxCookie::with_epoch(e1, b)));
+            assert_eq!(t.flush_state(Some(b)), FlushState::Done);
+        }
+
+        #[test]
+        fn stale_epoch_cookie_cannot_meet_new_generation_flush() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            let old_epoch = t.current_epoch();
+            assert_eq!(t.close_device_owned(), 1);
+            let e1 = old_epoch.advance().expect("headroom");
+            t.advance_epoch(e1);
+            assert!(!t.release_device_owned(TxCookie::with_epoch(old_epoch, a)));
+        }
+
+        #[test]
+        fn loss_summary_is_bounded_to_first_lost() {
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            assert_eq!(t.cancel_queued(), 1);
+            assert_eq!(t.first_lost, Some((a, TicketOutcome::CancelledPreSubmit)));
+            let _b = t.alloc().unwrap();
+            assert_eq!(t.cancel_queued(), 1);
+            assert_eq!(t.first_lost, Some((a, TicketOutcome::CancelledPreSubmit)));
+        }
+
+        #[test]
+        fn fault_closure_closes_device_owned_as_fault_and_fails_flush_stably() {
+            // F4 / A1 / A5: on a resident fault without a confirmed reset, the
+            // owner terminates every DeviceOwned ticket as `Fault` (backing
+            // stays quarantined in the adapter). A flush at or after the
+            // faulted ticket must fail stably — never read a false success
+            // from the faulted generation's ledger.
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            let b = t.alloc().unwrap();
+            t.mark_device_owned(b);
+            assert_eq!(t.fault_outstanding(TicketFaultStage::OwnershipDrift), 1);
+            assert_eq!(t.live_len(), 1);
+            assert_eq!(
+                t.flush_state(Some(b)),
+                FlushState::Lost(TicketOutcome::Fault(TicketFaultStage::OwnershipDrift))
+            );
+            assert_eq!(t.flush_state(Some(a)), FlushState::Pending);
+            assert_eq!(t.flush_state(None), FlushState::Done);
+        }
+
+        #[test]
+        fn fault_outcome_carries_the_committed_stage() {
+            // A1: the Fault terminal must preserve the stage identity the
+            // owner committed, so a flush can diagnose which bounded stage
+            // failed instead of an undifferentiated fault.
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            assert_eq!(t.fault_outstanding(TicketFaultStage::Reset), 1);
+            assert_eq!(
+                t.flush_state(Some(a)),
+                FlushState::Lost(TicketOutcome::Fault(TicketFaultStage::Reset))
+            );
+        }
+
+        #[test]
+        fn fault_outstanding_keeps_min_ticket_across_stages() {
+            // A1: the bounded loss summary keeps the first (lowest) lost
+            // ticket together with the stage the owner committed for it.
+            let mut t = TicketTracker::new();
+            let a = t.alloc().unwrap();
+            let b = t.alloc().unwrap();
+            t.mark_device_owned(a);
+            t.mark_device_owned(b);
+            assert_eq!(t.fault_outstanding(TicketFaultStage::Reinitialize), 2);
+            assert_eq!(
+                t.flush_state(Some(b)),
+                FlushState::Lost(TicketOutcome::Fault(TicketFaultStage::Reinitialize))
+            );
+        }
+
+        #[test]
+        fn ticket_fault_stage_codes_mirror_recover_stage() {
+            // The ticket fault stages are the bounded mirror of the D3
+            // recover_stage diagnostic codes; both sides must stay in sync.
+            use crate::async_rx::recover_stage;
+            assert_eq!(
+                TicketFaultStage::SubmitWait.code(),
+                recover_stage::SUBMIT_WAIT
+            );
+            assert_eq!(
+                TicketFaultStage::CompletionWait.code(),
+                recover_stage::COMPLETION_WAIT
+            );
+            assert_eq!(TicketFaultStage::Reclaim.code(), recover_stage::RECLAIM);
+            assert_eq!(TicketFaultStage::Quiesce.code(), recover_stage::QUIESCE);
+            assert_eq!(TicketFaultStage::Reset.code(), recover_stage::RESET);
+            assert_eq!(
+                TicketFaultStage::Reinitialize.code(),
+                recover_stage::REINITIALIZE
+            );
+            assert_eq!(
+                TicketFaultStage::OwnershipDrift.code(),
+                recover_stage::OWNERSHIP_DRIFT
+            );
+            assert_eq!(TicketFaultStage::Unknown.code(), recover_stage::UNKNOWN);
+        }
+
+        #[test]
+        fn terminal_outcomes_are_distinct_and_stable() {
+            // Task 2.1 / F6: the four ticket outcomes are distinct and each
+            // maps to a stable flush terminal, so no outcome is silently
+            // conflated with another when a flush re-checks later.
+            assert_ne!(TicketOutcome::Reclaimed, TicketOutcome::CancelledPreSubmit);
+            assert_ne!(
+                TicketOutcome::CancelledPreSubmit,
+                TicketOutcome::ResetAborted
+            );
+            assert_ne!(
+                TicketOutcome::ResetAborted,
+                TicketOutcome::Fault(TicketFaultStage::OwnershipDrift)
+            );
+            assert_ne!(
+                TicketOutcome::Fault(TicketFaultStage::OwnershipDrift),
+                TicketOutcome::Fault(TicketFaultStage::Reset)
+            );
+            assert!(matches!(
+                FlushState::Lost(TicketOutcome::Reclaimed),
+                FlushState::Lost(_)
+            ));
+        }
     }
 }

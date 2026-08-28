@@ -122,6 +122,7 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
         Unsupported => DevError::Unsupported,
         ConfigSpaceTooSmall => DevError::BadState,
         ConfigSpaceMissing => DevError::BadState,
+        Retry => DevError::Again,
         SocketDeviceError(e) => match e {
             ConnectionExists => DevError::AlreadyExists,
             NotConnected => DevError::BadState,

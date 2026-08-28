@@ -28,6 +28,7 @@ mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
 mod readiness;
+mod recovery;
 mod router;
 mod service;
 mod socket;

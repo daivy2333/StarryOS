@@ -645,6 +645,12 @@ mod tests {
                 lifecycle.preflight(true).unwrap();
                 lifecycle.fatal().unwrap();
             }
+            RxTaskLifecycle::Quiescing
+            | RxTaskLifecycle::Resetting
+            | RxTaskLifecycle::Reinitializing => {
+                // Recovery states are only reachable through a live recovery.
+                panic!("recovery lifecycle states require a running recovery")
+            }
         }
         lifecycle
     }
@@ -1622,7 +1628,7 @@ mod tests {
         }
 
         let listen_table = Box::leak(Box::new(ListenTable::new()));
-        let mut service = Service::new_with_listen_table(router, None, listen_table);
+        let service = Service::new_with_listen_table(router, None, listen_table);
         let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
         let event = Box::leak(Box::new(StackEvent::new()));
         let now = Box::leak(Box::new(AtomicI64::new(0)));
