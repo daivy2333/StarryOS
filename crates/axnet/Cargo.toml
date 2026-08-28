@@ -94,10 +94,6 @@ version = "0.3"
 version = "0.6.2"
 default-features = false
 
-[dependencies.event-listener]
-version = "5.4"
-default-features = false
-
 [dependencies.hashbrown]
 version = "0.16"
 
@@ -150,6 +146,16 @@ version = "0.4"
 [dev-dependencies.critical-section]
 version = "1.2"
 features = ["std"]
+
+# Test-only TCP state seed (smoltcp `test-seeds`): the record is outside the
+# [dependencies.smoltcp] feature set, so a product `--lib` build never compiles
+# the state-forcing API. Dev builds union this edge with the normal dependency;
+# default-features must stay false so the test graph adds only `test-seeds`.
+[dev-dependencies.smoltcp]
+path = "../smoltcp"
+version = "0.13.1"
+default-features = false
+features = ["test-seeds"]
 
 # This crate is excluded from the root workspace, so the root patch table does
 # not apply here; redirect axdriver_net to the same workspace-local copy the

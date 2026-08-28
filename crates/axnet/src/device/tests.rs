@@ -1198,6 +1198,133 @@ fn tx_router_with(devs: Vec<(Box<dyn Device>, Ipv4Cidr)>, src: [u8; 4]) -> Route
     router
 }
 
+struct CountingRxDevice {
+    remaining: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl Device for CountingRxDevice {
+    fn name(&self) -> &str {
+        "counting-rx"
+    }
+
+    fn recv(&mut self, _buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                if remaining > 0 {
+                    Some(remaining - 1)
+                } else {
+                    None
+                }
+            })
+            .map_or(RxStep::Empty, |_| RxStep::Consumed)
+    }
+
+    fn preflight_send(
+        &mut self,
+        _next_hop: IpAddress,
+        _packet: &[u8],
+        _timestamp: Instant,
+    ) -> TxPreflight {
+        TxPreflight::Ready
+    }
+
+    fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+        TxOutcome::Accepted {
+            rx_became_ready: false,
+        }
+    }
+
+    fn register_waker(&self, _waker: &core::task::Waker) {}
+}
+
+fn add_counting_rx(router: &mut Router, count: usize) -> (Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let remaining = Arc::new(AtomicUsize::new(count));
+    let calls = Arc::new(AtomicUsize::new(0));
+    router.add_device(Box::new(CountingRxDevice {
+        remaining: remaining.clone(),
+        calls: calls.clone(),
+    }));
+    (remaining, calls)
+}
+
+#[test]
+fn bounded_rx_reports_31_32_33_and_preserves_backlog() {
+    for count in [31usize, 32, 33] {
+        let mut router = Router::new();
+        let (remaining, _) = add_counting_rx(&mut router, count);
+        let first = router.poll_bounded(
+            RxOwnerView::PollingOwned,
+            None,
+            Instant::from_millis_const(0),
+            32,
+        );
+        assert_eq!(first.processed, count.min(32));
+        assert_eq!(first.budget_exhausted, count >= 32);
+        assert_eq!(first.backlog, count >= 32);
+        assert_eq!(remaining.load(Ordering::Relaxed), count.saturating_sub(32));
+
+        if count == 33 {
+            let second = router.poll_bounded(
+                RxOwnerView::PollingOwned,
+                None,
+                Instant::from_millis_const(0),
+                32,
+            );
+            assert_eq!(second.processed, 1);
+            assert!(!second.budget_exhausted);
+            assert!(!second.backlog);
+        }
+    }
+}
+
+#[test]
+fn bounded_rx_round_robin_services_target_behind_continuous_device() {
+    let mut router = Router::new();
+    let (_continuous_remaining, continuous_calls) = add_counting_rx(&mut router, 100);
+    let (target_remaining, target_calls) = add_counting_rx(&mut router, 1);
+
+    let outcome = router.poll_bounded(
+        RxOwnerView::PollingOwned,
+        Some(1),
+        Instant::from_millis_const(0),
+        2,
+    );
+
+    assert_eq!(outcome.processed, 2);
+    assert!(outcome.backlog);
+    assert_eq!(continuous_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(target_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(target_remaining.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn bounded_dispatch_reports_budget_and_retains_remainder() {
+    let mut router = Router::new();
+    for _ in 0..33 {
+        assert!(router.enqueue_tx_for_test(&[0u8; 1]));
+    }
+
+    let first = router.dispatch_bounded(Instant::from_millis_const(0), 32);
+    assert_eq!(first.processed, 32);
+    assert!(first.budget_exhausted);
+    assert!(first.backlog);
+    assert_eq!(
+        router.drop_count(crate::device::TxDropReason::MalformedIp),
+        32
+    );
+
+    let second = router.dispatch_bounded(Instant::from_millis_const(0), 32);
+    assert_eq!(second.processed, 1);
+    assert!(!second.budget_exhausted);
+    assert!(!second.backlog);
+    assert_eq!(
+        router.drop_count(crate::device::TxDropReason::MalformedIp),
+        33
+    );
+}
+
 #[test]
 fn dispatch_single_target_full_keeps_head_no_commit() {
     let pre_calls = Arc::new(Mutex::new(0usize));

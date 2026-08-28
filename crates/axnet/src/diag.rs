@@ -14,6 +14,8 @@
 //! committed part of the Service, so no identity can exhaust and every
 //! reachable Hold is releasable.
 
+use alloc::boxed::Box;
+
 #[cfg(not(test))]
 use axhal::time::wall_time_nanos;
 
@@ -41,6 +43,35 @@ pub(crate) const NS_PER_MS: u64 = 1_000_000;
 #[cfg(test)]
 static TEST_NOW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// Task 5.2 (Iteration 006): per-test fixture clock. Each fixture owns an
+/// independent fake-clock instance; `Service::diag_hold_tick` and the RX
+/// future's lease deadline read the fixture's clock when attached, so the
+/// R57-companion flake (parallel diagnostics tests sharing the process-global
+/// `TEST_NOW`) disappears without suite-level serialization.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct DiagTestClock {
+    now: &'static core::sync::atomic::AtomicU64,
+}
+
+#[cfg(test)]
+impl DiagTestClock {
+    /// Leaks a fresh independent clock starting at 0.
+    pub(crate) fn new() -> Self {
+        Self {
+            now: Box::leak(Box::new(core::sync::atomic::AtomicU64::new(0))),
+        }
+    }
+
+    pub(crate) fn store(&self, nanos: u64) {
+        self.now.store(nanos, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn load(&self) -> u64 {
+        self.now.load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Returns the current diagnostic clock: the platform wall clock in
 /// production, or the host-test override. The queue future uses this for its
 /// lease-deadline wake decision so an expired hold auto-releases without an
@@ -56,7 +87,9 @@ pub(crate) fn diag_now() -> u64 {
     }
 }
 
-/// Advances the host-test fake clock to `nanos`.
+/// Advances the host-test fake clock to `nanos`. Intended for fixtures that
+/// still drive the raw `diag_now()`; per-test clock users prefer
+/// [`DiagTestClock`].
 #[cfg(test)]
 pub(crate) fn set_test_now(nanos: u64) {
     TEST_NOW.store(nanos, core::sync::atomic::Ordering::Relaxed);

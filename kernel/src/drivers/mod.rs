@@ -10,7 +10,6 @@
 //! - bench: 内核态性能测试
 
 pub mod bench;
-pub(crate) mod critical_section_policy;
 #[cfg(feature = "lichee-d1-async-uart")]
 pub mod d1_uart;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]

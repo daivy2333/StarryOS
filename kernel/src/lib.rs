@@ -33,6 +33,9 @@ compile_error!(
 pub mod entry;
 
 mod config;
+// Crate-root shared IRQ restore policy (no feature gate: `lichee-d1-smoke`
+// excludes `drivers` but still requires the critical-section impl).
+mod critical_section_policy;
 #[cfg(not(feature = "lichee-d1-smoke"))]
 mod drivers;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
@@ -57,13 +60,13 @@ mod time;
 // entered from an enabled state. Nested sections (and ISR wake) therefore
 // never re-enable IRQs prematurely.
 //
-// Restore policy lives in `drivers::critical_section_policy` (the seam
-// host-tested by `tests/ms04-async-rx-host-harness.rs`); keep no direct
-// `axhal` IRQ calls here.
+// Restore policy lives in `critical_section_policy` (the seam host-tested by
+// `tests/ms04-async-rx-host-harness.rs`); keep no direct `axhal` IRQ calls
+// here.
 mod critical_impl {
     use axhal::asm::{disable_irqs, enable_irqs, irqs_enabled};
 
-    use crate::drivers::critical_section_policy::{self, IrqOps};
+    use crate::critical_section_policy::{self, IrqOps};
 
     struct AxhalIrqOps;
 

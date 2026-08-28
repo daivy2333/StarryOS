@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-22 | 路线规划更新: 2026-08-14 | 分支: linshi | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41；MS01-MS04 与 MS16 已归档。
+> 任务状态最后同步: 2026-08-27 | 路线规划更新: 2026-08-14 | 分支: linshi | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS06 与 MS16 已归档。
 
 ---
 
@@ -21,9 +21,9 @@
 | <!-- T06 --> T06 | QEMU 异步 RX | queue task 只处理 RX reap/refill 和 budget；TX 保持基线 | 单向 RX burst 无 busy loop、饿死或 descriptor 泄漏；budget 可观测 | T05 | ✅ 完成（MS04 核心 Gate；兼容性重复项按用户授权豁免） |
 | <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ✅ 完成（MS05） |
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
-| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ⏳ 待规划（T08 已完成） |
-| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ⏳ 等待 T09 |
-| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 等待 T10 |
+| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ✅ 完成（MS06 Iteration 000 `001-rework` accepted；Tasks 1.1–1.5 全部闭合） |
+| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ✅ 完成（MS06；最终 Cycle `001-replan` accepted，单 hart QEMU 手工验收全过；host/QEMU 进程证据完整性按用户明确授权豁免） |
+| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 待 MS07 change 规划与批准 |
 | <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ⏳ 等待 T11 |
 | <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待 T12 |
 | <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ⏳ 等待 T13 |
@@ -51,7 +51,7 @@
 - M39：跨 hart ordering 按同步角色说明；QEMU 单 hart 不能作为 SMP 证据。
 - R53：W1C/clear-on-read cause 保留只补充 register-recheck，不替代 descriptor/cookie completion ledger；单请求 DMA fail-stop 只作为恢复语义的安全下限，不扩张 MS05。
 - I06 只在 T13-T24 的触发条件满足时评估。
-- I13-I16 未承诺，不得混入 T01-T25。
+- I13-I18 未承诺，不得混入 T01-T25；I17 仅在 MS08+MS07 accepted 且唯一 spawn seam 稳定后评估，I18 仅在 MS08 accepted + 至少一个其他 async 设备稳定后评估。
 
 ---
 
@@ -153,7 +153,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS06：应用可见的异步网络栈
 
-- Status: planned
+- Status: completed — 2026-08-27；最终 Review accepted，缺失的 host/QEMU 进程级留档按用户明确授权豁免
 - Outcome: stack runner 和 socket readiness 让应用在无主动轮询依赖下使用异步网络。
 - Rationale: T09 单独只有协议栈内部推进，和 T10 合并后才形成应用可依赖的阶段成果。
 - Dependencies: MS05
@@ -164,7 +164,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 多 waiter、overflow、close、error 和三类 runner 唤醒均有见证。
 - Diagnostic boundary: 失败限制在 stack 推进、timer/software wake 或 socket event bridge。
 - Split signals: readiness bridge 需要替换 axpoll 并形成独立的多 waiter 子系统。
-- Related changes: `ms06-application-visible-async-network-stack`（活跃，2026-08-21 创建，Gate 1/Gate 2 approved，Iteration 000 `resident-stack-runner` Cycle 000 ready、Act pending；0/14 tasks）
+- Related changes: `ms06-application-visible-async-network-stack`（归档于 `openspec/changes/archive/2026-08-27-ms06-application-visible-async-network-stack/`；9 iterations，全部 tasks 完成；最终 Iteration 008 Cycle `001-replan` Review accepted。MS06 12/12、MS01 14/14、MS04 4/4、MS05 六 mode guest runtime PASS；host/QEMU 进程级输出未完整留档，用户以逐步手工全过声明接受证据完整性风险）
 
 ### MS07：QEMU 单 hart 恢复语义
 
@@ -317,5 +317,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-- 活跃：`ms06-application-visible-async-network-stack`（0/14 tasks，2026-08-21 创建，Gate 1/Gate 2 approved，Iteration 000 `resident-stack-runner` 的 Cycle 000 已 ready、Act pending）。对应 MS06（T09-T10）。
-- 已归档：`demo-host-guest-chat`（linshi 分支周会演示产物，2026-08-22 归档为 `openspec/changes/archive/2026-08-22-demo-host-guest-chat/`；1 iteration、4/4 tasks、Plan Review accepted）。独立于 T01-T25 与 MS 路线，不占用 MSxx 编号。Runbook R57 `demo-host-guest-chat-qemu.md` 已发布。
+当前无活跃 change。MS06 已于 2026-08-27 归档并完成 T09–T10；下一项为 MS07，仍需独立 Plan 和用户批准。

@@ -19,10 +19,14 @@ use axdriver::prelude::{DevError, DevResult};
 use axdriver_net::NetQueueDirection;
 use embassy_sync::waitqueue::AtomicWaker;
 
+#[cfg(not(test))]
+use crate::stack_runner::STACK_EVENT;
 use crate::{
     device::{RxCopyStep, TxReclaimStep, TxSubmitStep, fixed_queue::MAX_LIVE_TICKETS},
     router::RxOwnerView,
     service::Service,
+    stack_runner::StackEvent,
+    wrapper::SocketSetWrapper,
 };
 
 /// Dual-role queue notification state shared by the future queue task and
@@ -44,7 +48,6 @@ use crate::{
 /// order only the control state; counters are `Relaxed`.
 pub(crate) struct QueueEvent {
     queue_waker: AtomicWaker,
-    stack_waker: AtomicWaker,
     waiting: AtomicBool,
     generation: AtomicU64,
 }
@@ -53,7 +56,6 @@ impl QueueEvent {
     pub(crate) const fn new() -> Self {
         Self {
             queue_waker: AtomicWaker::new(),
-            stack_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(0),
         }
@@ -63,21 +65,15 @@ impl QueueEvent {
     fn with_generation(generation: u64) -> Self {
         Self {
             queue_waker: AtomicWaker::new(),
-            stack_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(generation),
         }
     }
 
     /// Registers the queue-owner task waker. Callable without the Service
-    /// lock.
+    /// lock. The stack role lives in `StackEvent` (Iteration 000).
     pub(crate) fn register_queue(&self, waker: &Waker) {
         self.queue_waker.register(waker);
-    }
-
-    /// Registers the stack-progress waker. Callable without the Service lock.
-    pub(crate) fn register_stack(&self, waker: &Waker) {
-        self.stack_waker.register(waker);
     }
 
     /// Publishes the waiting bit. Only called inside the Service guard after a
@@ -98,11 +94,10 @@ impl QueueEvent {
     }
 
     /// Publishes a queue event: wrapping Release increment of the shared
-    /// generation, then wakes both roles. Called by the ISR path.
+    /// generation, then wakes the queue owner. Called by the ISR path.
     pub(crate) fn publish_event(&self) {
         self.generation.fetch_add(1, Ordering::Release);
         self.queue_waker.wake();
-        self.stack_waker.wake();
         RX_TELEMETRY.queue_wake.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -118,11 +113,10 @@ impl QueueEvent {
     }
 
     /// Publishes a stack-progress hint: bumps the shared generation so the
-    /// queue wait protocol observes the change, and wakes only the stack role.
-    /// Called after slot RX-ready, TX-slot space or a fatal event.
+    /// queue wait protocol observes the change. The stack-wake role lives in
+    /// `StackEvent`; here only the generation carries the hint.
     pub(crate) fn publish_progress(&self) {
         self.generation.fetch_add(1, Ordering::Release);
-        self.stack_waker.wake();
     }
 
     /// Acquire snapshot of the event generation.
@@ -230,16 +224,7 @@ pub mod rx_error_stage {
 /// The codes are explicit and never derived from the enum discriminant, so
 /// they stay stable across dependency updates. Do not renumber them.
 pub fn rx_error_code(err: &DevError) -> u64 {
-    match err {
-        DevError::AlreadyExists => 1,
-        DevError::Again => 2,
-        DevError::BadState => 3,
-        DevError::InvalidParam => 4,
-        DevError::Io => 5,
-        DevError::NoMemory => 6,
-        DevError::ResourceBusy => 7,
-        DevError::Unsupported => 8,
-    }
+    crate::readiness::dev_error_code(err)
 }
 
 /// Monotonic relaxed-atomics telemetry of the async RX queue path.
@@ -846,7 +831,8 @@ pub(crate) fn diagnostic_control_shared(
             ServiceGuard::Injected(mutex.try_lock().ok_or(DevError::ResourceBusy)?)
         }
     };
-    guard.diag_control(op, lease_ms, crate::diag::diag_now())?;
+    let now = guard.diag_now();
+    guard.diag_control(op, lease_ms, now)?;
     drop(guard);
     notify.publish_queue_work();
     Ok(())
@@ -863,13 +849,23 @@ pub(crate) struct RxRxFuture {
     service: ServiceAccess,
     lifecycle: &'static RxLifecycle,
     notify: &'static QueueEvent,
+    stack_notify: &'static StackEvent,
+    stack_progress_pending: bool,
     telemetry: &'static RxTelemetry,
+    /// Task 3.1: publication target for terminal queue faults. Production
+    /// points at the global socket registry; tests inject a local wrapper.
+    fault_sink: &'static SocketSetWrapper<'static>,
     /// C4: armed QEMU diagnostic lease deadline (wall nanos) the owner is
     /// sleeping on. The timer is wake-only: it carries no generation, so a
     /// stale wake costs at most one bounded poll and the current Service
     /// lease decides whether to remain held and which deadline is rearmed.
     #[cfg(feature = "qemu-diagnostics")]
     lease_deadline: Option<u64>,
+    /// Task 5.2 (Iteration 006): per-test fixture clock shared with the
+    /// injected Service. `lease_deadline` decisions read this when attached;
+    /// production never sets it (wall clock).
+    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    diag_test_clock: Option<crate::diag::DiagTestClock>,
     /// C4: axtask timer that wakes the queue owner at `lease_deadline`.
     /// Production only; host tests drive the fake clock and re-poll instead.
     #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -904,7 +900,8 @@ impl RxRxFuture {
     /// ≤32. Exhausting one stage never skips a later stage. After the
     /// stages, a visible backlog self-wakes/yields once; no work sleeps via
     /// the register/arm/recheck protocol.
-    fn service_round(&self, service: &mut Service) -> RoundOutcome {
+    fn service_round(&mut self, service: &mut Service) -> RoundOutcome {
+        self.stack_progress_pending = false;
         // QEMU diagnostic hold (D9): a hold pauses exactly one stage of the
         // sole queue owner. The lease is Service-owned and advanced once per
         // round under the Service guard; an expired lease auto-releases and
@@ -974,7 +971,7 @@ impl RxRxFuture {
                     self.telemetry.refilled.fetch_add(1, Ordering::Relaxed);
                     // A new frame in the RX slot is stack-progress: wake the
                     // socket role so smoltcp re-evaluates readiness (T3.3).
-                    self.notify.publish_progress();
+                    self.stack_progress_pending = true;
                     if copied >= RX_BUDGET {
                         self.telemetry
                             .budget_exhausted
@@ -1015,7 +1012,7 @@ impl RxRxFuture {
                         self.telemetry.tx_submitted.fetch_add(1, Ordering::Relaxed);
                         // A freed TX slot is stack-progress: wake the socket
                         // role so blocked senders re-check write readiness (T3.3).
-                        self.notify.publish_progress();
+                        self.stack_progress_pending = true;
                         if submitted >= SUBMIT_BUDGET {
                             self.telemetry
                                 .budget_exhausted
@@ -1180,12 +1177,24 @@ impl RxRxFuture {
     /// service at most RX_BUDGET completions under the guard.
     fn poll_active(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.notify.register_queue(cx.waker());
-        let Some(mut service) = self.service.lock() else {
+        let access = self.service;
+        let Some(mut service) = access.lock() else {
             return Poll::Pending;
         };
-        match self.service_round(&mut service) {
+        let outcome = self.service_round(&mut service);
+        #[cfg(feature = "qemu-diagnostics")]
+        let waiting_lease_expiry = if matches!(&outcome, RoundOutcome::WaitSpace(_)) {
+            service.diag_lease_expiry()
+        } else {
+            0
+        };
+        drop(service);
+        if core::mem::take(&mut self.stack_progress_pending) {
+            self.notify.publish_progress();
+            self.stack_notify.publish_device();
+        }
+        match outcome {
             RoundOutcome::SelfWakeYield => {
-                drop(service);
                 // Not a lease sleep: cancel any stale deadline so an explicit
                 // Release invalidates the old timer (RW-1).
                 #[cfg(feature = "qemu-diagnostics")]
@@ -1194,7 +1203,6 @@ impl RxRxFuture {
                 Poll::Pending
             }
             RoundOutcome::WaitSpace(SpaceDecision::Retry) => {
-                drop(service);
                 #[cfg(feature = "qemu-diagnostics")]
                 self.cancel_lease_deadline();
                 cx.waker().wake_by_ref();
@@ -1207,32 +1215,39 @@ impl RxRxFuture {
                 // (no hold) cancels any stale one. The expiry is read from
                 // the committed Service lease while the guard is still held.
                 #[cfg(feature = "qemu-diagnostics")]
-                let lease_expiry = service.diag_lease_expiry();
-                drop(service);
-                #[cfg(feature = "qemu-diagnostics")]
-                self.arm_lease_deadline(cx, lease_expiry);
+                self.arm_lease_deadline(cx, waiting_lease_expiry);
                 Poll::Pending
             }
             RoundOutcome::RegisterRecheck => {
-                drop(service);
                 #[cfg(feature = "qemu-diagnostics")]
                 self.cancel_lease_deadline();
                 self.poll_register_recheck(cx)
             }
             #[cfg(feature = "qemu-diagnostics")]
             RoundOutcome::SleepUntil(deadline) => {
-                drop(service);
                 self.arm_lease_deadline(cx, deadline);
                 Poll::Pending
             }
-            RoundOutcome::Fault(_err) => {
+            RoundOutcome::Fault(err) => {
                 // Task 3.7: commit `Active -> Faulted` first, publish only on
                 // success, so a woken stack waiter observes Faulted.
-                self.publish_fatal();
-                drop(service);
+                self.publish_fatal(&err);
                 Poll::Ready(())
             }
         }
+    }
+
+    /// The clock used for lease-deadline decisions: the attached per-test
+    /// fixture clock when present, else `diag::diag_now()`.
+    #[cfg(feature = "qemu-diagnostics")]
+    fn diag_now(&self) -> u64 {
+        #[cfg(test)]
+        {
+            if let Some(clock) = self.diag_test_clock {
+                return clock.load();
+            }
+        }
+        crate::diag::diag_now()
     }
 
     /// C4: cancels any armed lease deadline and its timer.
@@ -1258,7 +1273,7 @@ impl RxRxFuture {
     /// whether to remain held and which deadline to rearm.
     #[cfg(feature = "qemu-diagnostics")]
     fn arm_lease_deadline(&mut self, cx: &mut Context<'_>, deadline: u64) {
-        if deadline == 0 || crate::diag::diag_now() >= deadline {
+        if deadline == 0 || self.diag_now() >= deadline {
             self.lease_deadline = None;
             self.cancel_lease_timer();
             return;
@@ -1315,22 +1330,25 @@ impl RxRxFuture {
         let Some(deadline) = self.lease_deadline else {
             return;
         };
-        if crate::diag::diag_now() >= deadline {
+        if self.diag_now() >= deadline {
             self.lease_deadline = None;
             self.cancel_lease_timer();
             cx.waker().wake_by_ref();
         }
     }
 
-    /// Attempts the `Active -> Faulted` transition and publishes
-    /// stack-progress only when the CAS commits.
+    /// Attempts the `Active -> Faulted` transition, publishes the concrete
+    /// error to the fault sink, then publishes stack-progress only when the
+    /// CAS commits.
     ///
     /// Task 3.7: the terminal wake ordering is state-first, event-after. An
     /// illegal transition (lifecycle already terminal) records the
     /// LIFECYCLE-stage diagnostic but never publishes a fake terminal state.
-    fn publish_fatal(&self) {
+    fn publish_fatal(&self, err: &DevError) {
         if self.transition_fatal() {
+            self.fault_sink.publish_global_fault(err);
             self.notify.publish_progress();
+            self.stack_notify.publish_device();
         }
     }
 
@@ -1375,7 +1393,7 @@ impl RxRxFuture {
                 self.telemetry.record_fault(rx_error_stage::ARM, &err);
                 // Task 3.7: the arm fault path holds no Service guard but
                 // follows the same commit-then-publish ordering.
-                self.publish_fatal();
+                self.publish_fatal(&err);
                 Poll::Ready(())
             }
         }
@@ -1415,9 +1433,14 @@ fn spawn_rx_task() {
                 service: ServiceAccess::Global,
                 lifecycle: &RX_LIFECYCLE,
                 notify: &QUEUE_EVENT,
+                stack_notify: &STACK_EVENT,
+                stack_progress_pending: false,
                 telemetry: &RX_TELEMETRY,
+                fault_sink: &crate::SOCKET_SET,
                 #[cfg(feature = "qemu-diagnostics")]
                 lease_deadline: None,
+                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                diag_test_clock: None,
                 #[cfg(all(feature = "qemu-diagnostics", not(test)))]
                 lease_timer: None,
             })
@@ -1600,8 +1623,11 @@ mod tests {
     };
     use crate::{
         device::{Device, RxCopyStep, RxStep, TxOutcome, TxPreflight, TxReclaimStep, TxSubmitStep},
+        readiness,
         router::{Router, RxOwnerView},
         service::Service,
+        stack_runner::StackEvent,
+        wrapper::SocketSetWrapper,
     };
 
     #[derive(Default)]
@@ -1703,89 +1729,61 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 
-    // ---- T3.1: dual-role QueueEvent and bidirectional activation ----
+    // ---- QueueEvent: queue-owner role (stack role lives in StackEvent) ----
 
     #[test]
-    fn event_queue_and_stack_wakers_are_independent() {
+    fn queue_event_publish_wakes_queue_role_and_bumps_generation() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
-
-        // A queue event wakes both roles.
-        event.publish_event();
-        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
-
-        // A stack-progress hint wakes only the stack role.
-        event.publish_progress();
-        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn event_queue_register_does_not_overwrite_stack_waker() {
-        let event = super::QueueEvent::new();
-        let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        event.register_stack(&counting_waker(stack_count.clone()));
+        let before = event.generation();
         event.register_queue(&counting_waker(queue_count.clone()));
         event.publish_event();
+        assert_eq!(event.generation(), before + 1);
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_stack_register_does_not_overwrite_queue_waker() {
+    fn queue_register_does_not_lose_generation_change() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
         event.publish_progress();
-        assert_eq!(queue_count.load(Ordering::Relaxed), 0);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+        event.register_queue(&counting_waker(queue_count.clone()));
+        event.publish_queue_work();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_generation_wraps_and_wakes_both() {
+    fn queue_generation_wraps() {
         let event = super::QueueEvent::with_generation(u64::MAX);
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
         event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
         event.publish_event();
         assert_eq!(event.generation(), 0);
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_space_wait_wakes_only_queue_role() {
+    fn space_wait_wakes_queue_role_but_progress_hint_does_not() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
         event.register_queue(&counting_waker(queue_count.clone()));
-        event.register_stack(&counting_waker(stack_count.clone()));
         event.publish_waiting();
         assert!(event.wake_if_space(true));
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
-        assert_eq!(stack_count.load(Ordering::Relaxed), 0);
+        event.publish_progress();
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn event_dual_role_wait_decision_retries_on_any_generation_change() {
+    fn wait_decision_retries_on_any_generation_change() {
         let event = super::QueueEvent::new();
         let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
         let before = event.generation();
         let decision = event.wait_decision(&counting_waker(queue_count.clone()), || {
-            event.register_stack(&counting_waker(stack_count.clone()));
             event.publish_progress();
             Ok(ArmObservation::Quiescent)
         });
-        // The queue wait observes the stack-role generation change and retries.
+        // The queue wait observes the generation change and retries.
         assert!(matches!(decision, WaitDecision::Retry));
         assert_eq!(before, event.generation() - 1);
     }
@@ -2472,7 +2470,10 @@ mod tests {
     }
 
     /// Builds an injected Future: local leaked lifecycle/notify/telemetry,
-    /// spin service mutex, lifecycle already driven to `Spawned`.
+    /// spin service mutex, lifecycle already driven to `Spawned`. Faults
+    /// publish to a fresh LOCAL sink so fault-driving tests never mutate the
+    /// shared global registry (tests needing the sink use
+    /// [`Self::leaked_future_with_sink`]).
     fn leaked_future(
         service_mutex: &'static spin::Mutex<Service>,
         notify: &'static QueueEvent,
@@ -2484,9 +2485,40 @@ mod tests {
             service: ServiceAccess::Injected(service_mutex),
             lifecycle,
             notify,
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
             telemetry,
+            fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
+        };
+        (lifecycle, fut)
+    }
+
+    fn leaked_future_with_stack(
+        service_mutex: &'static spin::Mutex<Service>,
+        notify: &'static QueueEvent,
+        stack_notify: &'static StackEvent,
+    ) -> (&'static RxLifecycle, RxRxFuture) {
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
+        let fut = RxRxFuture {
+            service: ServiceAccess::Injected(service_mutex),
+            lifecycle,
+            notify,
+            stack_notify,
+            stack_progress_pending: false,
+            telemetry,
+            fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -2510,17 +2542,23 @@ mod tests {
         // `Again`. This proves the probe's `tx_again > held->tx_again` FULL
         // predicate is structurally unreachable and the driver-Full witness must
         // come from the conserved ledger instead.
-        crate::diag::set_test_now(1_000_000_000_000);
-        let _serial = SERIAL.lock();
+        //
+        // Task 5.2 (Iteration 006): a per-test fixture clock (not the
+        // process-global `TEST_NOW`) drives the lease, so this test no longer
+        // needs the suite-level `SERIAL`.
+        let clock = crate::diag::DiagTestClock::new();
+        clock.store(1_000_000_000_000);
         let (mutex, counters, _stats) = leaked_service_ledger(64, true);
+        mutex.lock().attach_test_clock(clock);
         counters.slots.store(64, Ordering::Relaxed);
         {
             let mut s = mutex.lock();
-            s.diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 1500, 1_000_000_000_000)
+            s.diag_control(crate::diag::OP_HOLD_TX_RECLAIM, 1500, clock.load())
                 .unwrap();
             assert_eq!(s.diag_hold_mode(), crate::diag::HOLD_RECLAIM);
         }
         let (_, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.diag_test_clock = Some(clock);
 
         // Drive service rounds: reclaim is held, submit advances 32/round. The
         // round self-wakes while TX slots remain, then sleeps on the lease once
@@ -2615,9 +2653,14 @@ mod tests {
             service: ServiceAccess::Global,
             lifecycle,
             notify,
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
             telemetry,
+            fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -2700,25 +2743,6 @@ mod tests {
         assert_eq!(copy_calls.load(Ordering::Relaxed), 2);
         assert_eq!(control.arm_calls.load(Ordering::Relaxed), 2);
         assert!(mutex.try_lock().is_some());
-    }
-
-    #[test]
-    fn future_rx_copy_publishes_stack_progress() {
-        // Task 3.3: a successful RX copy fills the fixed RX slot, which is
-        // stack-progress — the socket role must be woken so smoltcp
-        // re-evaluates readiness. The queue-owner waker is untouched.
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (mutex, ..) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
-        let (_, mut fut) = leaked_future(mutex, notify);
-        let queue_count = Arc::new(AtomicUsize::new(0));
-        let stack_count = Arc::new(AtomicUsize::new(0));
-        notify.register_queue(&counting_waker(queue_count.clone()));
-        notify.register_stack(&counting_waker(stack_count.clone()));
-        let _ = poll_once(&mut fut, Arc::new(AtomicUsize::new(0)));
-        // The RX copy published a stack-progress hint; the queue role was
-        // not woken by it (the task itself drives the next round).
-        assert_eq!(stack_count.load(Ordering::Relaxed), 1);
-        assert_eq!(queue_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -2880,6 +2904,38 @@ mod tests {
     }
 
     #[test]
+    fn rx_copy_publishes_the_independent_stack_event() {
+        let (mutex, _, control) = leaked_service(vec![RxStep::Consumed, RxStep::Empty], true);
+        control.completion_visible.store(true, Ordering::Relaxed);
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let stack_wakes = Arc::new(AtomicUsize::new(0));
+        stack_notify.register(&counting_waker(stack_wakes.clone()));
+        let mut fut = RxRxFuture {
+            service: ServiceAccess::Injected(mutex),
+            lifecycle,
+            notify: queue_notify,
+            stack_notify,
+            stack_progress_pending: false,
+            telemetry: Box::leak(Box::new(RxTelemetry::new())),
+            fault_sink: &crate::SOCKET_SET,
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
+        };
+
+        let owner_wakes = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, owner_wakes), Poll::Pending));
+        assert_eq!(stack_notify.generation(), 1);
+        assert_eq!(stack_wakes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn round_tx_again_without_completion_sleeps() {
         // Task 3.5: a `Full` (Again) TX submit with no visible completion
         // must arm/register/recheck and sleep, not self-wake — the driver is
@@ -2951,13 +3007,14 @@ mod tests {
     fn fatal_wakes_stack_progress() {
         // Task 3.5: a terminal fault must publish stack-progress so waiting
         // socket callers observe the stable fault (D4/D5), not just the
-        // queue-owner role.
+        // queue-owner role. The stack wake now lands on `StackEvent`.
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.arm_error.store(true, Ordering::Relaxed);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
         let stack_count = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&counting_waker(stack_count.clone()));
-        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        stack_notify.register(&counting_waker(stack_count.clone()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         let count = Arc::new(AtomicUsize::new(0));
         assert!(matches!(
             poll_once(&mut fut, count.clone()),
@@ -2965,6 +3022,7 @@ mod tests {
         ));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
         assert_eq!(stack_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stack_notify.generation(), 1);
     }
 
     #[test]
@@ -2974,12 +3032,13 @@ mod tests {
         // observer samples the lifecycle inside the wake callback, so the old
         // publish-before-transition order observes `Active` and fails here.
         let (mutex, ..) = leaked_service(vec![RxStep::Fault(DevError::Io)], true);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         lifecycle.preflight(true).unwrap();
         let observed = Arc::new(AtomicU8::new(u8::MAX));
         let woken = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&lifecycle_observing_waker(
+        stack_notify.register(&lifecycle_observing_waker(
             lifecycle,
             observed.clone(),
             woken.clone(),
@@ -3005,11 +3064,12 @@ mod tests {
         // commit Faulted before publishing the stack wake.
         let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
         control.arm_error.store(true, Ordering::Relaxed);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
-        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let (lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         let observed = Arc::new(AtomicU8::new(u8::MAX));
         let woken = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&lifecycle_observing_waker(
+        stack_notify.register(&lifecycle_observing_waker(
             lifecycle,
             observed.clone(),
             woken.clone(),
@@ -3266,6 +3326,76 @@ mod tests {
         );
     }
 
+    fn leaked_future_with_sink(
+        service_mutex: &'static spin::Mutex<Service>,
+    ) -> (
+        &'static RxLifecycle,
+        &'static SocketSetWrapper<'static>,
+        RxRxFuture,
+    ) {
+        let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
+        lifecycle.start().unwrap();
+        let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
+        let sink: &'static SocketSetWrapper<'static> = Box::leak(Box::new(SocketSetWrapper::new()));
+        let fut = RxRxFuture {
+            service: ServiceAccess::Injected(service_mutex),
+            lifecycle,
+            notify: Box::leak(Box::new(QueueEvent::new())),
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
+            telemetry,
+            fault_sink: sink,
+            #[cfg(feature = "qemu-diagnostics")]
+            lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
+            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            lease_timer: None,
+        };
+        (lifecycle, sink, fut)
+    }
+
+    #[test]
+    fn receive_fault_publishes_concrete_code_to_fault_sink() {
+        let (mutex, ..) = leaked_service(vec![RxStep::Fault(DevError::Io)], true);
+        let (lifecycle, sink, mut fut) = leaked_future_with_sink(mutex);
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(
+            sink.global_terminal_code(),
+            readiness::dev_error_code(&DevError::Io)
+        );
+        // The published code maps to a retryable-backpressure-free category.
+        assert!(matches!(
+            readiness::terminal_ax_error(sink.global_terminal_code()),
+            axerrno::AxError::Io
+        ));
+    }
+
+    #[test]
+    fn arm_fault_publishes_concrete_code_to_fault_sink() {
+        let steps: Vec<RxStep> = (0..RX_BUDGET).map(|_| RxStep::Consumed).collect();
+        let (mutex, _, control) = leaked_service(steps, true);
+        control
+            .missing_after_first_control_call
+            .store(true, Ordering::Relaxed);
+        let (lifecycle, sink, mut fut) = leaked_future_with_sink(mutex);
+        lifecycle.preflight(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        assert!(matches!(poll_once(&mut fut, count), Poll::Ready(())));
+
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(
+            sink.global_terminal_code(),
+            readiness::dev_error_code(&DevError::Unsupported)
+        );
+    }
+
     #[test]
     fn telemetry_missing_service_records_preflight_bad_state() {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
@@ -3275,9 +3405,14 @@ mod tests {
             service: ServiceAccess::Global,
             lifecycle,
             notify: Box::leak(Box::new(QueueEvent::new())),
+            stack_notify: Box::leak(Box::new(StackEvent::new())),
+            stack_progress_pending: false,
             telemetry,
+            fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
             #[cfg(all(feature = "qemu-diagnostics", not(test)))]
             lease_timer: None,
         };
@@ -3416,18 +3551,20 @@ mod tests {
 
     #[test]
     fn illegal_fatal_transition_publishes_no_progress() {
-        // Task 3.7: an illegal Active->Faulted transition must record the
-        // LIFECYCLE diagnostic but never publish a fake terminal stack wake.
+        // Task 3.7: an illegal Active->Faulted transition records the
+        // LIFECYCLE diagnostic but never publishes a fake terminal stack wake.
         let (mutex, ..) = leaked_service(vec![], true);
-        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
         let stack_count = Arc::new(AtomicUsize::new(0));
-        notify.register_stack(&counting_waker(stack_count.clone()));
-        let (lifecycle, fut) = leaked_future(mutex, notify);
+        stack_notify.register(&counting_waker(stack_count.clone()));
+        let (lifecycle, fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
 
-        fut.publish_fatal();
+        fut.publish_fatal(&DevError::Io);
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
         assert_eq!(stack_count.load(Ordering::Relaxed), 0);
+        assert_eq!(stack_notify.generation(), 0);
         assert_eq!(fut.telemetry.fault.load(Ordering::Relaxed), 0);
         assert_eq!(
             fut.telemetry.last_error(),
@@ -3461,7 +3598,7 @@ mod tests {
         let poll_active_end = source.find("fn publish_fatal").unwrap();
         let poll_active = &source[poll_active_start..poll_active_end];
         let round_fault = &poll_active[poll_active.find("RoundOutcome::Fault").unwrap()..];
-        assert!(round_fault.contains("self.publish_fatal()"));
+        assert!(round_fault.contains("self.publish_fatal(&err)"));
         assert!(
             !round_fault.contains("publish_progress()"),
             "poll_active fault branch must not publish directly"
@@ -3471,7 +3608,7 @@ mod tests {
         let arm_end = source.find("impl Future for RxRxFuture").unwrap();
         let arm_region = &source[arm_start..arm_end];
         let arm_fault = &arm_region[arm_region.find("WaitDecision::Fault").unwrap()..];
-        assert!(arm_fault.contains("self.publish_fatal()"));
+        assert!(arm_fault.contains("self.publish_fatal(&err)"));
         assert!(
             !arm_fault.contains("publish_progress()"),
             "poll_register_recheck fault branch must not publish directly"
@@ -3499,21 +3636,24 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_submit_pauses_submit_stage_but_not_reclaim_or_rx() {
-        let _serial = SERIAL.lock();
         // The QEMU diagnostic lease is Service-owned; a hold committed under
         // the injected Service guard only ever gates this owner, so parallel
-        // siblings servicing a round stay unaffected. The fake clock is fixed
-        // because `diag_hold_tick` reads the global `diag_now()`.
-        crate::diag::set_test_now(0);
-        let t0 = crate::diag::diag_now();
+        // siblings servicing a round stay unaffected.
+        //
+        // Task 5.2 (Iteration 006): a per-test fixture clock drives the
+        // lease; no process-global `TEST_NOW` and no suite `SERIAL`.
+        let clock = crate::diag::DiagTestClock::new();
+        let t0 = clock.load();
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Consumed, RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
             vec![],
             true,
         );
+        mutex.lock().attach_test_clock(clock);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        fut.diag_test_clock = Some(clock);
         let count = Arc::new(AtomicUsize::new(0));
 
         // Commit a long-lived submit hold (well under the 2 s max lease).
@@ -3547,21 +3687,21 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_reclaim_pauses_reclaim_stage_and_again_still_backpressures() {
-        let _serial = SERIAL.lock();
         // The QEMU diagnostic lease is Service-owned; a hold committed under
         // the injected Service guard only ever gates this owner, so parallel
-        // siblings servicing a round stay unaffected. The fake clock is fixed
-        // because `diag_hold_tick` reads the global `diag_now()`.
-        crate::diag::set_test_now(0);
-        let t0 = crate::diag::diag_now();
+        // siblings servicing a round stay unaffected.
+        let clock = crate::diag::DiagTestClock::new();
+        let t0 = clock.load();
         let (mutex, _, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             vec![TxSubmitStep::Full],
             (0..4).map(|_| TxReclaimStep::Reclaimed).collect(),
             true,
         );
+        mutex.lock().attach_test_clock(clock);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        fut.diag_test_clock = Some(clock);
         let count = Arc::new(AtomicUsize::new(0));
 
         mutex
@@ -3628,11 +3768,12 @@ mod tests {
         // Service and forces the Busy / validation-error / success event
         // ordering that the public entry cannot be driven through in a host
         // test (the production global `SERVICE` is never initialized here).
-        let _serial = SERIAL.lock();
+        let clock = crate::diag::DiagTestClock::new();
         let t0 = 1_000_000_000_000u64;
-        crate::diag::set_test_now(t0);
+        clock.store(t0);
         let (mutex, _copy_calls, _stats) =
             leaked_service_tx(vec![RxStep::Empty], vec![], vec![], true);
+        mutex.lock().attach_test_clock(clock);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
 
         // Busy: while the Service is held, the shared path must return
@@ -3711,7 +3852,7 @@ mod tests {
 
         // Overflow: a checked-deadline overflow fails closed before any
         // mutation or publication; the previous committed Hold survives.
-        crate::diag::set_test_now(u64::MAX - 10);
+        clock.store(u64::MAX - 10);
         let before = notify.generation();
         let err = super::diagnostic_control_shared(
             ServiceAccess::Injected(mutex),
@@ -3737,11 +3878,12 @@ mod tests {
         // Service guard, so a control or tick ordered on either side of the
         // acquisition can only expose the complete before or after committed
         // tuple — never a synthetic no-hold, torn pair or cross-state mix.
-        let _serial = SERIAL.lock();
+        let clock = crate::diag::DiagTestClock::new();
         let t0 = 1_000_000_000_000u64;
-        crate::diag::set_test_now(t0);
+        clock.store(t0);
         let (mutex, _copy_calls, _stats) =
             leaked_service_tx(vec![RxStep::Empty], vec![], vec![], true);
+        mutex.lock().attach_test_clock(clock);
         let base = super::rx_snapshot();
 
         // Before any control: only the committed no-hold tuple is observable.
@@ -3764,7 +3906,7 @@ mod tests {
         // Tick ordered AFTER the snapshot: the snapshot at A's deadline still
         // returns the complete held tuple (it never mutates); only the queue
         // owner's guarded tick commits the after-state.
-        crate::diag::set_test_now(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         let snap = super::rx_snapshot_v3_from(base, ServiceAccess::Injected(mutex));
         assert_eq!(snap.hold_mode, crate::diag::HOLD_SUBMIT);
         assert_eq!(snap.auto_release_failure, 0);
@@ -3837,22 +3979,30 @@ mod tests {
         );
     }
 
-    // ── RW-1: lease deadline drives the owner wake (fake clock) ─────────
+    // ── RW-1: lease deadline drives the owner wake (fixture clock) ──────
 
-    /// Advances the fake diagnostic clock for the RW-1 tests.
+    /// Task 5.2 (Iteration 006): per-test fixture clock attached to both the
+    /// injected Service and the future it drives, so lease-deadline decisions
+    /// never share process-global `TEST_NOW` across parallel tests.
     #[cfg(feature = "qemu-diagnostics")]
-    fn fake_clock(nanos: u64) {
-        crate::diag::set_test_now(nanos);
+    fn fixture_clock(
+        mutex: &'static spin::Mutex<Service>,
+        fut: &mut RxRxFuture,
+        nanos: u64,
+    ) -> crate::diag::DiagTestClock {
+        let clock = crate::diag::DiagTestClock::new();
+        clock.store(nanos);
+        mutex.lock().attach_test_clock(clock);
+        fut.diag_test_clock = Some(clock);
+        clock
     }
 
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn hold_submit_lease_deadline_wakes_and_auto_releases_exactly_once() {
-        let _serial = SERIAL.lock();
         // Fake clock at T0: commit a 100 ms submit hold. Without an external
         // event, the only way the owner can wake is the lease deadline.
         let t0 = 1_000_000_000_000u64;
-        fake_clock(t0);
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
@@ -3861,6 +4011,7 @@ mod tests {
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = fixture_clock(mutex, &mut fut, t0);
         let count = Arc::new(AtomicUsize::new(0));
 
         mutex
@@ -3877,14 +4028,14 @@ mod tests {
         assert!(mutex.try_lock().is_some());
 
         // Just before the deadline: still sleeping, no wake, no auto-release.
-        fake_clock(t0 + 99 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 99 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(count.load(Ordering::Relaxed), 0, "no wake before deadline");
         assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
 
         // At the deadline the fake clock elapses: the future wakes exactly
         // once and the next round auto-releases the expired hold exactly once.
-        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(count.load(Ordering::Relaxed), 1, "deadline wake fires once");
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
@@ -3904,9 +4055,7 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn held_reclaim_visible_tx_completion_does_not_busy_loop_before_deadline() {
-        let _serial = SERIAL.lock();
         let t0 = 1_000_000_000_000u64;
-        fake_clock(t0);
         // A TX completion is visible, but the reclaim stage is held: the
         // completion can never advance, so the round must not self-wake into
         // a busy loop before the lease deadline.
@@ -3919,6 +4068,7 @@ mod tests {
         control.tx_completion_visible.store(true, Ordering::Relaxed);
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = fixture_clock(mutex, &mut fut, t0);
         let count = Arc::new(AtomicUsize::new(0));
 
         mutex
@@ -3940,7 +4090,7 @@ mod tests {
         }
 
         // At the deadline the hold auto-releases exactly once.
-        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
@@ -3949,9 +4099,7 @@ mod tests {
     #[cfg(feature = "qemu-diagnostics")]
     #[test]
     fn explicit_release_invalidates_stale_deadline_and_new_lease_is_not_released() {
-        let _serial = SERIAL.lock();
         let t0 = 1_000_000_000_000u64;
-        fake_clock(t0);
         let (mutex, _copy_calls, _stats) = leaked_service_tx(
             vec![RxStep::Empty],
             (0..4).map(|_| TxSubmitStep::Submitted).collect(),
@@ -3960,6 +4108,7 @@ mod tests {
         );
         let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
         let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = fixture_clock(mutex, &mut fut, t0);
         let count = Arc::new(AtomicUsize::new(0));
 
         // Hold A with a 100 ms lease.
@@ -3995,13 +4144,13 @@ mod tests {
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
 
         // Advance past hold A's old deadline: B must stay held.
-        fake_clock(t0 + 100 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 100 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
         assert_eq!(mutex.lock().diag_auto_release_failure(), 0);
 
         // Only B's own deadline releases it, exactly once.
-        fake_clock(t0 + 200 * crate::diag::NS_PER_MS);
+        clock.store(t0 + 200 * crate::diag::NS_PER_MS);
         assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
         assert_eq!(mutex.lock().diag_auto_release_failure(), 1);
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);

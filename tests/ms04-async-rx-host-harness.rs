@@ -5,7 +5,7 @@
 //!     -o /tmp/ms04-async-rx-host-test && /tmp/ms04-async-rx-host-test
 //!
 //! The harness includes the *same* `critical_section_policy.rs` file that the
-//! kernel compiles as `crate::drivers::critical_section_policy`. The kernel's
+//! kernel compiles as `crate::critical_section_policy`. The kernel's
 //! `critical_impl` delegates its `critical_section::Impl` acquire/release to
 //! the seam's `acquire`/`release` through an `axhal` backend; here a fake
 //! backend records the simulated IRQ state and call counts. Both paths execute
@@ -16,7 +16,7 @@
 //! no `IrqOps`/`acquire`/`release` API) this harness fails to compile.
 //! GREEN state: all six unique scenarios pass.
 
-#[path = "../kernel/src/drivers/critical_section_policy.rs"]
+#[path = "../kernel/src/critical_section_policy.rs"]
 mod critical_section_policy;
 
 use core::cell::Cell;

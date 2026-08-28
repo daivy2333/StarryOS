@@ -27,9 +27,11 @@ mod general;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
+mod readiness;
 mod router;
 mod service;
 mod socket;
+mod stack_runner;
 pub(crate) mod state;
 /// TCP socket implementation.
 pub mod tcp;
@@ -64,6 +66,7 @@ pub use self::{
         rx_snapshot_v3, software_nudge, start_rx_task,
     },
     socket::*,
+    stack_runner::{StackSnapshot, stack_snapshot},
 };
 
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
@@ -134,6 +137,9 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         }
     });
     SERVICE.call_once(|| Mutex::new(service));
+    if let Err(err) = stack_runner::start_stack_runner() {
+        warn!("stack runner already started: {err:?}");
+    }
 }
 
 /// Init vsock subsystem by vsock devices.
@@ -158,6 +164,7 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
 pub fn poll_interfaces() {
     let owner = RX_LIFECYCLE.owner_view();
     while get_service().poll(owner, &mut SOCKET_SET.inner.lock()) {}
+    LISTEN_TABLE.drain_accept_wakes();
 }
 
 /// Applies a QEMU-only bounded pressure control (D9).

@@ -1,63 +1,166 @@
-use alloc::boxed::Box;
-use core::{
-    pin::Pin,
-    sync::atomic::Ordering,
-    task::{Context, Waker},
-};
+use core::{sync::atomic::Ordering, task::Waker};
 
 use axdriver::prelude::{DevError, DevResult};
 use axdriver_net::NetQueueDirection;
-use axhal::time::{NANOS_PER_MICROS, TimeValue, wall_time_nanos};
-use axtask::future::sleep_until;
+use axhal::time::{NANOS_PER_MICROS, wall_time_nanos};
 use smoltcp::{
-    iface::{Interface, PollIngressSingleResult, PollResult, SocketSet},
-    time::{Duration, Instant},
-    wire::{HardwareAddress, IpAddress, IpListenEndpoint},
+    iface::{Interface, PollIngressSingleResult, PollResult, SocketHandle, SocketSet},
+    socket::tcp::State,
+    time::Instant,
+    wire::{HardwareAddress, IpAddress},
 };
 
 use crate::{
-    LISTEN_TABLE, SOCKET_SET,
     async_rx::{QUEUE_EVENT, RX_TELEMETRY, SpaceDecision},
     device::{RxCopyStep, TxDropReason, TxReclaimStep, TxSubmitStep},
     flush::{FlushRecheck, FlushTicket, FlushWaiter, error_code, error_from_code},
     router::{Router, RxOwnerView},
 };
 
-const POLLING_FALLBACK: Duration = Duration::from_millis(10);
-
 fn now() -> Instant {
     Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
 }
 
-fn select_wake_deadline(
-    protocol_deadline: Option<Instant>,
-    polling_deadline: Option<Instant>,
-) -> Option<Instant> {
-    match (protocol_deadline, polling_deadline) {
-        (Some(protocol), Some(polling)) => Some(protocol.min(polling)),
-        (Some(protocol), None) => Some(protocol),
-        (None, Some(polling)) => Some(polling),
-        (None, None) => None,
+pub(crate) const STACK_STAGE_BUDGET: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageStep {
+    Idle,
+    Processed,
+    SocketStateChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StageOutcome {
+    processed: usize,
+    budget_exhausted: bool,
+    socket_changed: bool,
+}
+
+fn run_bounded_stage(mut step: impl FnMut() -> StageStep) -> StageOutcome {
+    let mut processed = 0usize;
+    let mut socket_changed = false;
+    while processed < STACK_STAGE_BUDGET {
+        match step() {
+            StageStep::Idle => break,
+            StageStep::Processed => processed += 1,
+            StageStep::SocketStateChanged => {
+                processed += 1;
+                socket_changed = true;
+            }
+        }
+    }
+    StageOutcome {
+        processed,
+        budget_exhausted: processed == STACK_STAGE_BUDGET,
+        socket_changed,
     }
 }
 
-/// `polling_capabilities` yields one `requires_polling()` result per device,
-/// where bit `i` in `mask` selects device `i`.
-fn any_masked_device_requires_polling(
-    mask: u32,
-    polling_capabilities: impl IntoIterator<Item = bool>,
-) -> bool {
-    polling_capabilities
-        .into_iter()
-        .enumerate()
-        .any(|(i, requires_polling)| mask & (1 << i) != 0 && requires_polling)
+/// Observable result of one bounded smoltcp stack round.
+#[derive(Debug)]
+pub(crate) struct StackRoundOutcome {
+    pub(crate) work: usize,
+    pub(crate) backlog: bool,
+    pub(crate) self_yield: bool,
+    pub(crate) socket_changed: bool,
+    pub(crate) rx_ready: bool,
+    pub(crate) rx_space_woken: bool,
+    pub(crate) tx_enqueued: bool,
+    /// Task 3.1: stable code of the concrete terminal fault observed by any
+    /// stage of this round (`readiness::TERMINAL_NONE` = none). The error
+    /// identity must reach the public fault publisher uncollapsed.
+    pub(crate) fault_code: u64,
+    pub(crate) protocol_deadline: Option<Instant>,
+    pub(crate) requires_polling: bool,
+    /// Task 2.6 replan: deferred-close entries examined this round (≤
+    /// `STACK_STAGE_BUDGET`) and reclaimed exactly once.
+    pub(crate) deferred_checked: usize,
+    pub(crate) deferred_reclaimed: usize,
+    /// True only while a bounded deferred sweep is still unfinished; the
+    /// runner may self-wake once to finish it. After a complete sweep it is
+    /// false regardless of the deferred list length.
+    pub(crate) deferred_sweep_incomplete: bool,
+    /// Task 2.6 replan: listener hidden-slot positions examined this round
+    /// (≤ `STACK_STAGE_BUDGET`) and whether the bounded listener sweep still
+    /// has more to examine.
+    pub(crate) listener_checked: usize,
+    pub(crate) listener_sweep_incomplete: bool,
+    /// T2.8-R1: exact head micro-repairs executed after processed ingress
+    /// packets this round (≤ processed ingress ≤ `STACK_STAGE_BUDGET`).
+    pub(crate) listener_head_repairs: usize,
+}
+
+/// Which half of a deferred TCP close still needs peer acknowledgment
+/// before the resident runner may reclaim the raw socket handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseKind {
+    /// The local endpoint initiated the close; the FIN (and any queued TX)
+    /// must be acknowledged before the handle is safe to remove.
+    Active,
+    /// The peer closed first and the local close entered `LastAck`; the
+    /// FIN ACK must fully close the connection before removal.
+    LastAck,
+    /// A UDP socket was dropped while a datagram was still queued in its TX
+    /// buffer (undispatched). The resident runner dispatches the datagram in
+    /// its egress rounds and the reaper removes the raw handle once the TX
+    /// buffer is empty — closing the socket (`close()` resets the TX buffer)
+    /// would silently drop the queued datagram.
+    UdpQueued,
+}
+
+impl CloseKind {
+    /// True when a current smoltcp state proves the local close is fully
+    /// acknowledged, so the runner may remove the raw handle.
+    fn is_confirmed(self, state: State) -> bool {
+        match self {
+            Self::Active => matches!(state, State::FinWait2 | State::TimeWait | State::Closed),
+            Self::LastAck => matches!(state, State::TimeWait | State::Closed),
+            // UDP has no close protocol; dispatch progress is the reaper's
+            // UDP-specific verdict (TX drained), never a TCP state.
+            Self::UdpQueued => false,
+        }
+    }
+}
+
+/// A raw TCP handle whose close needs runner-owned protocol progress
+/// before it can be removed from the smoltcp set.
+#[derive(Debug, Clone, Copy)]
+struct DeferredRemoval {
+    handle: SocketHandle,
+    kind: CloseKind,
+}
+
+/// Observable result of one bounded deferred-retirement stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DeferredReapOutcome {
+    /// Entries examined this round (at most `STACK_STAGE_BUDGET`).
+    pub(crate) checked: usize,
+    /// Handles reclaimed this round (confirmed or stale entries dropped).
+    pub(crate) reclaimed: usize,
+    /// True only while a bounded deferred sweep is still unfinished; the
+    /// runner may self-wake once to finish it. After a complete sweep it is
+    /// false regardless of the deferred list length.
+    pub(crate) sweep_incomplete: bool,
+}
+
+/// Per-entry decision of the bounded deferred-removal stage (Task 2.6 replan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeferredVerdict {
+    /// Raw handle reached its close-confirmed state: remove it from the
+    /// socket set and drop the deferred entry.
+    Reap,
+    /// Close is still unconfirmed: keep the deferred entry.
+    Keep,
+    /// Handle is gone or its slot was re-used by another type: drop the
+    /// deferred entry without touching the socket set.
+    Drop,
 }
 
 pub struct Service {
     pub iface: Interface,
     router: Router,
     target_dev: Option<usize>,
-    timeout: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     flush_waiter: Option<FlushWaiter>,
     flush_next_identity: u64,
     /// RW-3: persisted terminal data-plane fault (error code). A submit/
@@ -86,6 +189,33 @@ pub struct Service {
     /// monotonic telemetry; not a synchronization primitive).
     #[cfg(feature = "qemu-diagnostics")]
     diag_auto_release_failure: u64,
+    /// Task 5.2 (Iteration 006): per-test fixture clock. `diag_hold_tick`
+    /// reads this when attached; production never sets it (wall clock).
+    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    diag_test_clock: Option<crate::diag::DiagTestClock>,
+    /// Test-only local listener table so a full-chain witness can run
+    /// `stack_round` against a caller-owned `ListenTable` whose hidden
+    /// sockets live in the injected SocketSet instead of the production
+    /// global. `new()` points this at the global table.
+    #[cfg(test)]
+    listen_table: &'static crate::listen_table::ListenTable,
+    /// Raw TCP handles whose close commit still needs peer ACK; the runner
+    /// reaps each exactly once when its smoltcp state proves confirmation.
+    deferred_removals: alloc::vec::Vec<DeferredRemoval>,
+    /// Task 2.6 replan: rotating position of the next deferred entry to
+    /// examine. `swap_remove` and stale/reused drop keep it valid: it is
+    /// re-clamped to the current length on every sweep step.
+    deferred_cursor: usize,
+    /// Task 2.6 replan: how many live entries the current bounded sweep has
+    /// left to examine (0 = no sweep in progress). Counts down per round and
+    /// restarts only when the sweep completed and new entries exist, so a
+    /// >32-entry deferred list finishes through a bounded self-wake cascade
+    /// instead of a busy loop.
+    deferred_remaining: usize,
+    /// Task 2.6 replan: a new deferred removal was enqueued since the sweep
+    /// completed (or the Service was created), so the next round may start a
+    /// fresh sweep even without protocol progress.
+    deferred_dirty: bool,
 }
 impl Service {
     pub fn new(mut router: Router, target_dev: Option<usize>) -> Self {
@@ -96,7 +226,6 @@ impl Service {
             iface,
             router,
             target_dev,
-            timeout: None,
             flush_waiter: None,
             flush_next_identity: 0,
             flush_terminal_fault: None,
@@ -110,13 +239,210 @@ impl Service {
             diag_lease_expiry_nanos: 0,
             #[cfg(feature = "qemu-diagnostics")]
             diag_auto_release_failure: 0,
+            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            diag_test_clock: None,
+            #[cfg(test)]
+            listen_table: &*crate::LISTEN_TABLE,
+            deferred_removals: alloc::vec::Vec::new(),
+            deferred_cursor: 0,
+            deferred_remaining: 0,
+            deferred_dirty: false,
         }
     }
 
-    pub fn poll(&mut self, owner: RxOwnerView, sockets: &mut SocketSet) -> bool {
-        let timestamp = now();
-        let mut changed = false;
+    #[cfg(test)]
+    fn listen_table(&self) -> &'static crate::listen_table::ListenTable {
+        self.listen_table
+    }
 
+    #[cfg(not(test))]
+    fn listen_table(&self) -> &'static crate::listen_table::ListenTable {
+        &*crate::LISTEN_TABLE
+    }
+
+    /// Test-only constructor: `stack_round`'s listener reconcile uses a
+    /// caller-owned table instead of the production global.
+    #[cfg(test)]
+    pub(crate) fn new_with_listen_table(
+        router: Router,
+        target_dev: Option<usize>,
+        listen_table: &'static crate::listen_table::ListenTable,
+    ) -> Self {
+        let mut service = Self::new(router, target_dev);
+        service.listen_table = listen_table;
+        service
+    }
+
+    /// Task 5.2 (Iteration 006): attaches a per-test fixture clock so this
+    /// Service's lease deadline reads the fixture's time instead of the
+    /// process-global `diag::diag_now()`. Test-only; production never sets it.
+    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    pub(crate) fn attach_test_clock(&mut self, clock: crate::diag::DiagTestClock) {
+        self.diag_test_clock = Some(clock);
+    }
+
+    pub fn poll(&mut self, owner: RxOwnerView, sockets: &mut SocketSet) -> bool {
+        let outcome = self.stack_round(now(), owner, sockets);
+        outcome.socket_changed || outcome.rx_ready || outcome.self_yield
+    }
+
+    /// Enqueues a raw TCP handle whose close still needs runner-owned
+    /// progress. Holds the Service guard only (never the SocketSet guard):
+    /// the runner's `SERVICE -> SOCKET_SET` order. Duplicate requests are
+    /// collapsed to one entry.
+    pub(crate) fn queue_deferred_removal(&mut self, handle: SocketHandle, kind: CloseKind) {
+        if !self.deferred_removals.iter().any(|d| d.handle == handle) {
+            self.deferred_removals
+                .push(DeferredRemoval { handle, kind });
+            // A fresh entry is a reason to start a new sweep even if the
+            // previous sweep completed without any protocol progress.
+            self.deferred_dirty = true;
+        }
+    }
+
+    /// Reclaims deferred raw TCP handles whose close protocol reached a
+    /// confirmed state, bounded to `STACK_STAGE_BUDGET` examinations per
+    /// round with a rotating cursor. Called by `stack_round` after
+    /// egress/Router dispatch and before `poll_at` is recomputed, so a
+    /// doomed deferred deadline can never park the runner. Runs under the
+    /// Service + SocketSet guards (the runner's fixed order).
+    ///
+    /// The stage is fair across rounds: `deferred_cursor` keeps a rotating
+    /// position so newly-appended entries do not starve older ones, and
+    /// `swap_remove` (which moves the tail into the cursor slot) plus a per-
+    /// sweep remaining count keep every live entry examined at most once per
+    /// sweep. Stale handles (gone or re-typed) drop the entry without
+    /// touching the set.
+    /// Reclaims deferred raw TCP handles whose close protocol reached a
+    /// confirmed state, bounded to `STACK_STAGE_BUDGET` examinations per
+    /// round. Called by `stack_round` after egress/Router dispatch and
+    /// before `poll_at` is recomputed, so a doomed deferred deadline can
+    /// never park the runner. Runs under the Service + SocketSet guards.
+    ///
+    /// A "sweep" spans multiple rounds and covers the entries present when
+    /// it starts: `deferred_remaining` counts how many are left to examine,
+    /// and `deferred_cursor` keeps the rotating position across rounds, so
+    /// a >32-entry list is finished by a bounded self-wake cascade before
+    /// the runner parks for a protocol event or `poll_at` deadline — a
+    /// non-empty list alone never sustains self-wakes. `swap_remove` and
+    /// stale/re-typed drop keep the cursor valid.
+    fn reap_deferred_removals(
+        &mut self,
+        sockets: &mut SocketSet,
+        protocol_progressed: bool,
+    ) -> DeferredReapOutcome {
+        let mut checked = 0usize;
+        let mut reclaimed = 0usize;
+        // Start a sweep only when there is a reason to examine entries: an
+        // unfinished sweep from a previous round, protocol progress this
+        // round (an ACK can confirm a close), or a newly enqueued deferral.
+        if self.deferred_remaining == 0 {
+            if !self.deferred_dirty && !protocol_progressed {
+                return DeferredReapOutcome::default();
+            }
+            self.deferred_remaining = self.deferred_removals.len();
+            self.deferred_dirty = false;
+        }
+        while checked < STACK_STAGE_BUDGET
+            && self.deferred_remaining > 0
+            && !self.deferred_removals.is_empty()
+        {
+            let len = self.deferred_removals.len();
+            if self.deferred_cursor >= len {
+                self.deferred_cursor = 0;
+            }
+            let idx = self.deferred_cursor;
+            let entry = self.deferred_removals[idx];
+            // `iter().find` instead of `get`: a deferred handle may be stale
+            // (reaped, cleanly removed elsewhere, or slot reused by another
+            // type), and smoltcp's `get`/`remove` panic on invalid handles.
+            let verdict = match sockets.iter().find(|(handle, _)| *handle == entry.handle) {
+                // A UDPQueued entry whose slot is now a TCP socket is a
+                // re-typed slot: drop the entry, keep the socket. Checked
+                // before the generic TCP arms so `Keep` cannot swallow it.
+                Some((_, smoltcp::socket::Socket::Tcp(_)))
+                    if entry.kind == CloseKind::UdpQueued =>
+                {
+                    DeferredVerdict::Drop
+                }
+                Some((_, smoltcp::socket::Socket::Tcp(socket)))
+                    if entry.kind.is_confirmed(socket.state()) =>
+                {
+                    DeferredVerdict::Reap
+                }
+                Some((_, smoltcp::socket::Socket::Tcp(_))) => DeferredVerdict::Keep,
+                // T2.7: a dropped UDP socket with a queued (undispatched)
+                // datagram is reclaimed only once its TX buffer drained
+                // through the runner's egress rounds; `has_pending_tx()`
+                // reads actual occupancy, unlike `can_send()` (capacity-not-
+                // full) which would reap a full queue and keep an empty one.
+                Some((_, smoltcp::socket::Socket::Udp(socket)))
+                    if entry.kind == CloseKind::UdpQueued =>
+                {
+                    if socket.has_pending_tx() {
+                        DeferredVerdict::Keep
+                    } else {
+                        DeferredVerdict::Reap
+                    }
+                }
+                // Stale (handle gone) or re-typed entry: the entry cannot
+                // own a close protocol anymore; drop it without touching the
+                // socket set.
+                Some(_) | None => DeferredVerdict::Drop,
+            };
+            match verdict {
+                DeferredVerdict::Reap => {
+                    sockets.remove(entry.handle);
+                    self.deferred_removals.swap_remove(idx);
+                    reclaimed += 1;
+                    info!(
+                        "deferred reap: socket {} ({:?}) reclaimed",
+                        entry.handle, entry.kind
+                    );
+                }
+                DeferredVerdict::Drop => {
+                    self.deferred_removals.swap_remove(idx);
+                    reclaimed += 1;
+                }
+                DeferredVerdict::Keep => {
+                    self.deferred_cursor = (idx + 1) % len;
+                }
+            }
+            checked += 1;
+            self.deferred_remaining -= 1;
+        }
+        if self.deferred_removals.is_empty() {
+            self.deferred_remaining = 0;
+        }
+        DeferredReapOutcome {
+            checked,
+            reclaimed,
+            // A live sweep with remaining entries justifies one more
+            // self-wake to finish it; after it completes (or the list is
+            // empty) the runner must rely on a protocol event/deadline.
+            sweep_incomplete: self.deferred_remaining > 0,
+        }
+    }
+
+    /// Test-only observation of the deferred-removal backlog.
+    #[cfg(test)]
+    pub(crate) fn deferred_removals_len(&self) -> usize {
+        self.deferred_removals.len()
+    }
+
+    /// Runs one fixed-order, bounded stack round.
+    ///
+    /// `timestamp` is the single Instant sampled once by the resident stack
+    /// runner for this poll; the round, smoltcp ingress/egress/maintenance,
+    /// `poll_at` deadline and the deferred retirement outcome all observe
+    /// that same Instant (Task 2.6 replan). The wall-clock `now()` helper is
+    /// only used by the compatibility `Service::poll` entry.
+    pub(crate) fn stack_round(
+        &mut self,
+        timestamp: Instant,
+        owner: RxOwnerView,
+        sockets: &mut SocketSet,
+    ) -> StackRoundOutcome {
         // Task 3.5 (Finding 2) + Iteration 011 A1: observe the target TX
         // pending state before ANY operation in this round can create a slot.
         // An ARP reply consumed by `router.poll` resolves a neighbor and flushes
@@ -124,7 +450,9 @@ impl Service {
         // empty->nonempty transition from the queue-owner event below.
         let tx_pending_before = self.tx_slot_pending_target();
 
-        self.router.poll(owner, self.target_dev, timestamp);
+        let router_rx =
+            self.router
+                .poll_bounded(owner, self.target_dev, timestamp, STACK_STAGE_BUDGET);
         // MS05 Task 3.2: frames are delivered/consumed by the stack RX path
         // (slot mode drains the fixed slots); the queue task only copies
         // raw→slot, so the delivered/non-IP counters come from here.
@@ -135,31 +463,45 @@ impl Service {
             .non_ip_consumed
             .fetch_add(self.router.take_rx_consumed_delta(), Ordering::Relaxed);
         self.iface.poll_maintenance(timestamp);
-        LISTEN_TABLE.reconcile(sockets);
-        loop {
-            match self
+        let mut listener_head_repairs = 0usize;
+        let ingress = run_bounded_stage(|| {
+            let step = match self
                 .iface
                 .poll_ingress_single(timestamp, &mut self.router, sockets)
             {
-                PollIngressSingleResult::None => break,
-                PollIngressSingleResult::PacketProcessed => {}
-                PollIngressSingleResult::SocketStateChanged => changed = true,
+                PollIngressSingleResult::None => StageStep::Idle,
+                PollIngressSingleResult::PacketProcessed => StageStep::Processed,
+                PollIngressSingleResult::SocketStateChanged => StageStep::SocketStateChanged,
+            };
+            // T2.8-R1: after each processed ingress packet, repair at most one
+            // exactly signaled listener head so the next same-batch packet
+            // finds a Listen socket; bounded by the processed-packet count.
+            if !matches!(step, StageStep::Idle) && self.listen_table().consume_head_signal(sockets)
+            {
+                listener_head_repairs += 1;
             }
-            LISTEN_TABLE.reconcile(sockets);
-        }
-        loop {
+            step
+        });
+        let egress = run_bounded_stage(|| {
             match self.iface.poll_egress(timestamp, &mut self.router, sockets) {
-                PollResult::None => break,
-                PollResult::SocketStateChanged => changed = true,
+                PollResult::None => StageStep::Idle,
+                PollResult::SocketStateChanged => StageStep::SocketStateChanged,
             }
-        }
-        LISTEN_TABLE.reconcile(sockets);
+        });
+        // Task 2.6 replan: ONE bounded listener reconcile stage per round,
+        // after ingress/egress so their socket transitions are visible to
+        // it. A cross-round cursor limits the stage to `STACK_STAGE_BUDGET`
+        // positions; a budget-exhausted stage requests a continuation.
+        let listener = self
+            .listen_table()
+            .reconcile(sockets, ingress.socket_changed || egress.socket_changed);
         // Waking the queue task is a release of the resource it is blocked
         // on. The waiting bit is published only for a full RX slot (Task 3.2
         // slot-mode copy); Router-buffer space is drained by the stack itself
         // and must never clear it (Task 3.5 Finding 6).
         let space = self.rx_slot_has_space_target();
-        if QUEUE_EVENT.wake_if_space(space) {
+        let rx_space_woken = QUEUE_EVENT.wake_if_space(space);
+        if rx_space_woken {
             RX_TELEMETRY
                 .space_wake
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -170,11 +512,57 @@ impl Service {
         // event the frame would sit in the slot forever. The before-sample is
         // taken at the top of the round so ingress-created slots (Iteration
         // 011 A1) also publish exactly once.
-        let dispatched = self.router.dispatch(timestamp) || changed;
-        if !tx_pending_before && self.tx_slot_pending_target() {
+        let dispatch = self.router.dispatch_bounded(timestamp, STACK_STAGE_BUDGET);
+        let tx_enqueued = !tx_pending_before && self.tx_slot_pending_target();
+        if tx_enqueued {
             QUEUE_EVENT.publish_queue_work();
         }
-        dispatched
+        // T2.5-R2 + Task 2.6 replan: reclaim deferred close handles whose ACK
+        // arrived during this round, before poll_at is recomputed: a
+        // confirmed handle has no pending protocol timer, so it must not
+        // extend the deadline. The reaper itself is bounded to one 32-entry
+        // stage with a rotating cursor, and only examines when there is a
+        // reason to do so (a socket state transition, a fresh enqueue, or an
+        // unfinished sweep) — a quiet set of unconfirmed closes never keeps
+        // the runner self-waking.
+        let deferred =
+            self.reap_deferred_removals(sockets, ingress.socket_changed || egress.socket_changed);
+        let protocol_deadline = self.iface.poll_at(timestamp, sockets);
+        let requires_polling = self
+            .router
+            .devices
+            .iter()
+            .any(|device| device.requires_polling());
+        let socket_changed = ingress.socket_changed || egress.socket_changed;
+        let self_yield = router_rx.budget_exhausted
+            || ingress.budget_exhausted
+            || egress.budget_exhausted
+            || dispatch.budget_exhausted;
+        let fault_code = match &router_rx.fault {
+            Some(err) => crate::readiness::dev_error_code(err),
+            None => dispatch.fault_code,
+        };
+        StackRoundOutcome {
+            work: router_rx.processed + ingress.processed + egress.processed + dispatch.processed,
+            backlog: router_rx.backlog
+                || ingress.budget_exhausted
+                || egress.budget_exhausted
+                || dispatch.backlog,
+            self_yield,
+            socket_changed,
+            rx_ready: dispatch.rx_ready,
+            rx_space_woken,
+            tx_enqueued,
+            fault_code,
+            protocol_deadline,
+            requires_polling,
+            deferred_checked: deferred.checked,
+            deferred_reclaimed: deferred.reclaimed,
+            deferred_sweep_incomplete: deferred.sweep_incomplete,
+            listener_checked: listener.checked,
+            listener_sweep_incomplete: listener.sweep_incomplete,
+            listener_head_repairs,
+        }
     }
 
     /// Whether the target's fixed RX slots have room for at least one frame.
@@ -442,7 +830,9 @@ impl Service {
     /// Advances the Service-owned QEMU diagnostic lease and returns the
     /// active hold mode. The queue task calls this once per round under the
     /// Service guard (D9). The clock is the injectable `diag::diag_now()` so
-    /// host tests drive the lease deadline deterministically.
+    /// host tests drive the lease deadline deterministically; a per-test
+    /// fixture clock (Task 5.2) overrides it without sharing process-global
+    /// state.
     ///
     /// An expired lease is cleared and `auto_release_failure` saturating-
     /// incremented exactly once; no lease generation exists, so no identity
@@ -452,13 +842,26 @@ impl Service {
     pub(crate) fn diag_hold_tick(&mut self) -> u64 {
         if self.diag_hold_mode != crate::diag::HOLD_NONE
             && self.diag_lease_expiry_nanos != 0
-            && crate::diag::diag_now() >= self.diag_lease_expiry_nanos
+            && self.diag_now() >= self.diag_lease_expiry_nanos
         {
             self.diag_hold_mode = crate::diag::HOLD_NONE;
             self.diag_lease_expiry_nanos = 0;
             self.diag_auto_release_failure = self.diag_auto_release_failure.saturating_add(1);
         }
         self.diag_hold_mode
+    }
+
+    /// The clock used for lease-deadline decisions: the attached per-test
+    /// fixture clock when present, else `diag::diag_now()`.
+    #[cfg(feature = "qemu-diagnostics")]
+    pub(crate) fn diag_now(&self) -> u64 {
+        #[cfg(test)]
+        {
+            if let Some(clock) = self.diag_test_clock {
+                return clock.load();
+            }
+        }
+        crate::diag::diag_now()
     }
 
     /// Applies one QEMU diagnostic control under the Service guard (C2).
@@ -535,78 +938,26 @@ impl Service {
         };
         rule.src
     }
-
-    pub fn device_mask_for(&self, endpoint: &IpListenEndpoint) -> u32 {
-        match endpoint.addr {
-            Some(addr) => self
-                .router
-                .table
-                .lookup(&addr)
-                .map_or(0, |it| 1u32 << it.dev),
-            None => u32::MAX,
-        }
-    }
-
-    pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
-        let timestamp = now();
-        let protocol_deadline = self.iface.poll_at(timestamp, &SOCKET_SET.inner.lock());
-        let polling_deadline = any_masked_device_requires_polling(
-            mask,
-            self.router.devices.iter().map(|d| d.requires_polling()),
-        )
-        .then_some(timestamp + POLLING_FALLBACK);
-        let next = select_wake_deadline(protocol_deadline, polling_deadline);
-
-        if let Some(t) = next {
-            let next = TimeValue::from_micros(t.total_micros() as _);
-
-            // drop old timeout future
-            self.timeout = None;
-
-            let mut fut = Box::pin(sleep_until(next));
-            let mut cx = Context::from_waker(waker);
-
-            if fut.as_mut().poll(&mut cx).is_ready() {
-                waker.wake_by_ref();
-                return;
-            } else {
-                self.timeout = Some(fut);
-            }
-        }
-
-        // The active NIC's socket waker registers as the stack-progress role
-        // (Task 3.3): RX-slot-ready, TX-slot-space and fatal events then wake
-        // the caller so smoltcp re-evaluates readiness. It is a hint, never
-        // exact fd readiness, and it never overwrites the queue-owner waker.
-        if let Some(dev) = self.target_dev {
-            if mask & (1 << dev) != 0 && !self.router.devices[dev].requires_polling() {
-                QUEUE_EVENT.register_stack(waker);
-            }
-        }
-
-        for (i, device) in self.router.devices.iter().enumerate() {
-            if mask & (1 << i) != 0 {
-                device.register_waker(waker);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, sync::Arc, task::Wake, vec};
+    extern crate std;
+
+    use alloc::{boxed::Box, sync::Arc, task::Wake, vec, vec::Vec};
     use core::{
         sync::atomic::{AtomicUsize, Ordering},
         task::Waker,
     };
 
-    use smoltcp::time::Instant;
+    use axdriver::prelude::DevError;
+    use smoltcp::{time::Instant, wire::IpAddress};
 
-    use super::{Service, any_masked_device_requires_polling, select_wake_deadline};
+    use super::{CloseKind, STACK_STAGE_BUDGET, Service, StageStep, run_bounded_stage};
     use crate::{
         async_rx::{QUEUE_EVENT, SERIAL},
-        device::LoopbackDevice,
-        router::{Router, RxOwnerView},
+        device::{Device, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
+        router::{Router, Rule, RxOwnerView},
     };
 
     #[derive(Default)]
@@ -626,75 +977,795 @@ mod tests {
         Waker::from(Arc::new(CountWake(count)))
     }
 
-    #[test]
-    fn no_deadline_without_protocol_timer_or_polling_fallback() {
-        assert_eq!(select_wake_deadline(None, None), None);
+    struct CountingRxDevice {
+        remaining: usize,
+    }
+
+    impl Device for CountingRxDevice {
+        fn name(&self) -> &str {
+            "counting-rx"
+        }
+
+        fn recv(
+            &mut self,
+            _buffer: &mut smoltcp::storage::PacketBuffer<()>,
+            _ts: Instant,
+        ) -> RxStep {
+            if self.remaining > 0 {
+                self.remaining -= 1;
+                RxStep::Consumed
+            } else {
+                RxStep::Empty
+            }
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    struct FaultingRxDevice;
+
+    impl Device for FaultingRxDevice {
+        fn name(&self) -> &str {
+            "faulting-rx"
+        }
+
+        fn recv(
+            &mut self,
+            _buffer: &mut smoltcp::storage::PacketBuffer<()>,
+            _ts: Instant,
+        ) -> RxStep {
+            RxStep::Fault(DevError::Io)
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    struct FaultingTxDevice;
+
+    impl Device for FaultingTxDevice {
+        fn name(&self) -> &str {
+            "faulting-tx"
+        }
+
+        fn recv(
+            &mut self,
+            _buffer: &mut smoltcp::storage::PacketBuffer<()>,
+            _ts: Instant,
+        ) -> RxStep {
+            RxStep::Empty
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Fault(DevError::Io)
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Fault(DevError::Io)
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
+    }
+
+    // Builds a minimal valid IPv4 broadcast packet (src = 10.0.2.15).
+    // Broadcast fans out without a route lookup, so this needs no Router rule.
+    fn broadcast_ipv4_packet() -> Vec<u8> {
+        vec![
+            0x45, 0, 0, 20, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 2, 15, 255, 255, 255, 255,
+        ]
     }
 
     #[test]
-    fn preserves_protocol_deadline_without_polling_fallback() {
-        let protocol = Instant::from_millis_const(25);
-
-        assert_eq!(select_wake_deadline(Some(protocol), None), Some(protocol));
+    fn bounded_stage_reports_31_32_33_without_drain_to_empty() {
+        for count in [31usize, 32, 33] {
+            let mut remaining = count;
+            let outcome = run_bounded_stage(|| {
+                if remaining == 0 {
+                    StageStep::Idle
+                } else {
+                    remaining -= 1;
+                    StageStep::Processed
+                }
+            });
+            assert_eq!(outcome.processed, count.min(STACK_STAGE_BUDGET));
+            assert_eq!(outcome.budget_exhausted, count >= STACK_STAGE_BUDGET);
+            assert_eq!(remaining, count.saturating_sub(STACK_STAGE_BUDGET));
+        }
     }
 
     #[test]
-    fn uses_polling_fallback_without_protocol_deadline() {
-        let fallback = Instant::from_millis_const(10);
-
-        assert_eq!(select_wake_deadline(None, Some(fallback)), Some(fallback));
+    fn bounded_stage_preserves_socket_change() {
+        let mut steps = [
+            StageStep::Processed,
+            StageStep::SocketStateChanged,
+            StageStep::Idle,
+        ]
+        .into_iter();
+        let outcome = run_bounded_stage(|| steps.next().unwrap_or(StageStep::Idle));
+        assert_eq!(outcome.processed, 2);
+        assert!(outcome.socket_changed);
+        assert!(!outcome.budget_exhausted);
     }
 
     #[test]
-    fn chooses_earlier_protocol_or_polling_deadline() {
-        let earlier = Instant::from_millis_const(10);
-        let later = Instant::from_millis_const(25);
+    fn quiet_stack_round_has_no_backlog_or_fault() {
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
 
-        assert_eq!(
-            select_wake_deadline(Some(later), Some(earlier)),
-            Some(earlier)
+        let outcome = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
         );
-        assert_eq!(
-            select_wake_deadline(Some(earlier), Some(later)),
-            Some(earlier)
+
+        assert!(!outcome.backlog);
+        assert_eq!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert!(!outcome.socket_changed);
+        assert!(!outcome.tx_enqueued);
+    }
+
+    #[test]
+    fn close_kind_confirmation_matrix() {
+        // T2.5-R2: an active close is safe to reclaim only at FinWait2 /
+        // TimeWait / Closed; a LastAck close only at a fully closed
+        // connection. Every other state keeps the raw handle deferred.
+        use smoltcp::socket::tcp::State;
+
+        assert!(CloseKind::Active.is_confirmed(State::FinWait2));
+        assert!(CloseKind::Active.is_confirmed(State::TimeWait));
+        assert!(CloseKind::Active.is_confirmed(State::Closed));
+        assert!(!CloseKind::Active.is_confirmed(State::FinWait1));
+        assert!(!CloseKind::Active.is_confirmed(State::Closing));
+        assert!(!CloseKind::Active.is_confirmed(State::LastAck));
+        assert!(!CloseKind::Active.is_confirmed(State::SynReceived));
+        assert!(!CloseKind::Active.is_confirmed(State::Established));
+
+        assert!(CloseKind::LastAck.is_confirmed(State::Closed));
+        assert!(CloseKind::LastAck.is_confirmed(State::TimeWait));
+        assert!(!CloseKind::LastAck.is_confirmed(State::LastAck));
+        assert!(!CloseKind::LastAck.is_confirmed(State::FinWait2));
+        assert!(!CloseKind::LastAck.is_confirmed(State::FinWait1));
+        assert!(!CloseKind::LastAck.is_confirmed(State::CloseWait));
+    }
+
+    #[test]
+    fn deferred_close_reap_dedups_stale_and_confirmed_removal() {
+        // T2.5-R2 reaper: entries de-duplicate, a confirmed handle is
+        // removed exactly once, and a stale entry for a gone handle is
+        // dropped without touching the set.
+        let mut service = routed_service();
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let handle = sockets.add(crate::tcp::new_tcp_socket());
+
+        service.queue_deferred_removal(handle, CloseKind::Active);
+        service.queue_deferred_removal(handle, CloseKind::Active);
+        assert_eq!(service.deferred_removals_len(), 1);
+
+        // A fresh TCP socket is Closed: the active close confirms right away.
+        service.reap_deferred_removals(&mut sockets, true);
+        assert_eq!(service.deferred_removals_len(), 0);
+        assert!(!sockets.iter().any(|(h, _)| h == handle));
+
+        // A stale entry whose handle is already gone is dropped inertly.
+        service.queue_deferred_removal(handle, CloseKind::LastAck);
+        service.reap_deferred_removals(&mut sockets, true);
+        assert_eq!(service.deferred_removals_len(), 0);
+    }
+
+    #[test]
+    fn stack_round_reaps_deferred_close_before_poll_at() {
+        // T2.5-R2: `stack_round` reclaims confirmed deferred handles during
+        // the round, before poll_at is recomputed, so a doomed deferred
+        // deadline can never park the runner afterwards.
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let handle = sockets.add(crate::tcp::new_tcp_socket());
+        service.queue_deferred_removal(handle, CloseKind::Active);
+
+        let _ = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+
+        assert_eq!(service.deferred_removals_len(), 0);
+        assert!(!sockets.iter().any(|(h, _)| h == handle));
+    }
+
+    // ── Task 2.6 replan: bounded, fair deferred retirement ───────────────
+
+    /// Creates `count` raw TCP handles in a non-confirmed state (Listen) so a
+    /// sweep keeps every entry live and the per-round budget is observable.
+    fn unconfirmed_listener_handles(
+        sockets: &mut smoltcp::iface::SocketSet<'static>,
+        count: usize,
+    ) -> alloc::vec::Vec<smoltcp::iface::SocketHandle> {
+        use smoltcp::wire::IpListenEndpoint;
+
+        let mut handles = alloc::vec::Vec::new();
+        for i in 0..count {
+            let mut socket = crate::tcp::new_tcp_socket();
+            socket
+                .listen(IpListenEndpoint {
+                    addr: None,
+                    port: 20000 + i as u16,
+                })
+                .expect("listen on a fresh socket");
+            handles.push(sockets.add(socket));
+        }
+        handles
+    }
+
+    #[test]
+    fn deferred_retirement_reaps_at_most_32_entries_per_round() {
+        // Task 2.6 replan: 33 confirmed entries must NOT be drained by one
+        // unbounded scan. Exactly one 32-entry stage step may run per round;
+        // the 33rd entry waits for the next round (fair, bounded retirement).
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        for _ in 0..33 {
+            let handle = sockets.add(crate::tcp::new_tcp_socket());
+            service.queue_deferred_removal(handle, CloseKind::Active);
+        }
+        assert_eq!(service.deferred_removals_len(), 33);
+
+        let _ = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+
+        // Current code scans the whole Vec in one round (0 left); the
+        // bounded stage must leave exactly 1 for the next round.
+        assert_eq!(service.deferred_removals_len(), 1);
+        let _ = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+        assert_eq!(service.deferred_removals_len(), 0);
+    }
+
+    #[test]
+    fn deferred_retirement_512_confirmed_converges_in_16_bounded_rounds() {
+        // Task 2.6 replan: 512 confirmed entries need 512/32 = 16 rounds;
+        // each round may check at most STACK_STAGE_BUDGET entries, and the
+        // other stages of the same round still do their own bounded work.
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        for _ in 0..512 {
+            let handle = sockets.add(crate::tcp::new_tcp_socket());
+            service.queue_deferred_removal(handle, CloseKind::Active);
+        }
+
+        for round in 1..=16 {
+            let _ = service.stack_round(
+                Instant::from_millis_const(0),
+                RxOwnerView::PollingOwned,
+                &mut sockets,
+            );
+            // After round k at most 32*k entries are examined; after round 15
+            // exactly 480 are gone, round 16 finishes the last 32.
+            assert_eq!(service.deferred_removals_len(), 512 - 32 * round);
+        }
+        assert_eq!(service.deferred_removals_len(), 0);
+        assert!(
+            !sockets
+                .iter()
+                .any(|(_, s)| matches!(s, smoltcp::socket::Socket::Tcp(_)))
         );
     }
 
     #[test]
-    fn masked_non_polling_device_does_not_trigger_fallback() {
-        let mask = 0b001;
-        let capabilities = [false];
+    fn deferred_retirement_unconfirmed_head_does_not_starve_confirmed_tail() {
+        // Task 2.6 replan: a long unconfirmed head must not push the whole
+        // scan while the tail is confirmed. One round may examine only the
+        // first 32 head entries (all kept), leaving the confirmed tail for a
+        // later round; every entry is eventually examined and reclaimed once.
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let unconfirmed = unconfirmed_listener_handles(&mut sockets, 40);
+        for handle in &unconfirmed {
+            service.queue_deferred_removal(*handle, CloseKind::Active);
+        }
+        let mut confirmed = alloc::vec::Vec::new();
+        for _ in 0..40 {
+            let handle = sockets.add(crate::tcp::new_tcp_socket());
+            confirmed.push(handle);
+            service.queue_deferred_removal(handle, CloseKind::Active);
+        }
+        assert_eq!(service.deferred_removals_len(), 80);
 
-        assert!(!any_masked_device_requires_polling(mask, capabilities));
+        // Round 1: only the 32-entry budget is consumed on the head; the
+        // 40 confirmed tail entries are left untouched by the bounded sweep.
+        let _ = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+        assert_eq!(service.deferred_removals_len(), 80);
+
+        // After the full sweep every confirmed entry is reclaimed exactly
+        // once and every unconfirmed entry is still kept.
+        for _ in 0..4 {
+            let _ = service.stack_round(
+                Instant::from_millis_const(0),
+                RxOwnerView::PollingOwned,
+                &mut sockets,
+            );
+        }
+        assert_eq!(service.deferred_removals_len(), 40);
+        for handle in &confirmed {
+            assert!(!sockets.iter().any(|(h, _)| h == *handle));
+        }
+        for handle in &unconfirmed {
+            assert!(sockets.iter().any(|(h, _)| h == *handle));
+        }
     }
 
     #[test]
-    fn unmasked_polling_device_does_not_trigger_fallback() {
-        let mask = 0b010;
-        let capabilities = [true, false];
+    fn deferred_retirement_stale_and_retyped_handles_keep_cursor_valid() {
+        // Task 2.6 replan + T2.6-R1: a stale entry for a handle already
+        // gone, and an entry whose handle was re-typed by another socket
+        // type (UDP), are dropped without touching the set or panicking at
+        // any cursor position. Note the accurate naming: "retyped" (slot
+        // taken over by a DIFFERENT socket type) is not the same as
+        // same-type handle reuse — the latter is proven unreachable on legal
+        // paths by `deferred_retirement_live_entry_keeps_raw_slot_occupied`
+        // and the T2.6-R1 source/ownership witness.
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        // One live unconfirmed head, then a stale handle (already removed),
+        // then a confirmed tail: the cursor must survive the swap-remove
+        // paths regardless of where they hit.
+        let head = unconfirmed_listener_handles(&mut sockets, 1);
+        service.queue_deferred_removal(head[0], CloseKind::Active);
+        let stale = sockets.add(crate::tcp::new_tcp_socket());
+        sockets.remove(stale);
+        service.queue_deferred_removal(stale, CloseKind::Active);
+        // Re-typed handle: a UDP socket now occupies the old TCP slot.
+        let retyped = sockets.add(crate::tcp::new_tcp_socket());
+        sockets.remove(retyped);
+        let retyped_udp = sockets.add(crate::udp::new_udp_socket());
+        service.queue_deferred_removal(retyped, CloseKind::Active);
+        let tail = sockets.add(crate::tcp::new_tcp_socket());
+        service.queue_deferred_removal(tail, CloseKind::Active);
 
-        assert!(!any_masked_device_requires_polling(mask, capabilities));
+        for _ in 0..2 {
+            let _ = service.stack_round(
+                Instant::from_millis_const(0),
+                RxOwnerView::PollingOwned,
+                &mut sockets,
+            );
+        }
+        // Confirmed tail reclaimed, stale/retyped dropped, unconfirmed head
+        // kept and the retyped UDP slot untouched.
+        assert_eq!(service.deferred_removals_len(), 1);
+        assert!(sockets.iter().any(|(h, _)| h == head[0]));
+        assert!(sockets.iter().any(|(h, _)| h == retyped_udp));
+        assert!(!sockets.iter().any(|(h, _)| h == tail));
     }
 
     #[test]
-    fn masked_polling_device_triggers_fallback() {
-        let mask = 0b001;
-        let capabilities = [true];
+    fn deferred_retirement_live_entry_keeps_raw_slot_occupied_and_reap_commits_atomically() {
+        // T2.6-R1 ownership runtime half: while a deferred entry lives its
+        // raw smoltcp slot stays OCCUPIED in the set, so `SocketSet::add`
+        // can never hand that slot to a new TCP — same-type handle reuse is
+        // unreachable until the resident reaper commits raw removal + entry
+        // removal together. After that atomic commit a later slot reuse is
+        // safe because no stale entry may target the new socket. 100x on
+        // both feature profiles witness no flakiness.
+        for _ in 0..100 {
+            let mut router = Router::new();
+            router.add_device(Box::new(LoopbackDevice::new()));
+            let mut service = Service::new(router, None);
+            let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
 
-        assert!(any_masked_device_requires_polling(mask, capabilities));
+            // A live unconfirmed entry (Listen state is not Active-confirmed):
+            // the sweep keeps both the entry and its occupied raw slot.
+            let live = unconfirmed_listener_handles(&mut sockets, 1);
+            service.queue_deferred_removal(live[0], CloseKind::Active);
+            service.reap_deferred_removals(&mut sockets, false);
+            assert_eq!(service.deferred_removals_len(), 1);
+            assert!(sockets.iter().any(|(h, _)| h == live[0]));
+
+            // No fresh TCP may take the live deferred slot.
+            for _ in 0..64 {
+                let fresh = sockets.add(crate::tcp::new_tcp_socket());
+                assert_ne!(
+                    fresh, live[0],
+                    "a live deferred raw slot must never be handed to a new owner"
+                );
+            }
+
+            // A confirmed entry (fresh Closed socket confirms an Active close
+            // at once): the reaper removes the raw handle and the entry in
+            // one guarded commit, and the live entry is untouched.
+            let confirmed = sockets.add(crate::tcp::new_tcp_socket());
+            service.queue_deferred_removal(confirmed, CloseKind::Active);
+            service.reap_deferred_removals(&mut sockets, true);
+            assert_eq!(service.deferred_removals_len(), 1);
+            assert!(!sockets.iter().any(|(h, _)| h == confirmed));
+
+            // Post-reap same-type reuse is safe: the new TCP in the freed
+            // slot is never referenced by a leftover entry, so a later
+            // sweep is inert for it.
+            let reused = sockets.add(crate::tcp::new_tcp_socket());
+            service.reap_deferred_removals(&mut sockets, true);
+            assert_eq!(service.deferred_removals_len(), 1);
+            assert!(sockets.iter().any(|(h, _)| h == reused));
+            assert!(sockets.iter().any(|(h, _)| h == live[0]));
+        }
     }
 
     #[test]
-    fn mixed_devices_only_masked_polling_decides() {
-        let mask = 0b101;
-        let capabilities = [true, true, false];
+    fn deferred_retirement_budget_does_not_steal_other_stage_budget() {
+        // Task 2.6 replan: a round with 33 deferred entries must still run the
+        // full 32-entry RX stage (work counts Router RX), so the deferred
+        // stage cannot starve the other stages of their own budgets.
+        let mut router = Router::new();
+        router.add_device(Box::new(CountingRxDevice { remaining: 33 }));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        for _ in 0..33 {
+            let handle = sockets.add(crate::tcp::new_tcp_socket());
+            service.queue_deferred_removal(handle, CloseKind::Active);
+        }
 
-        assert!(any_masked_device_requires_polling(mask, capabilities));
+        let outcome = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
 
-        let mask = 0b101;
-        let capabilities = [false, true, false];
+        // RX consumed its own 32 budget; the deferred stage got its own 32.
+        assert_eq!(outcome.work, 32);
+        assert!(outcome.backlog);
+        assert_eq!(service.deferred_removals_len(), 1);
+    }
 
-        assert!(!any_masked_device_requires_polling(mask, capabilities));
+    #[test]
+    fn listener_stage_budget_does_not_steal_router_or_deferred_stage_budget() {
+        // Task 2.6 replan (S5): a >32-pending listener backlog sharing one
+        // round with 33 Router RX items and 33 deferred entries must not
+        // starve any stage: every stage gets its own 32-entry budget in the
+        // same round, and a budget-hit listener stage requests a continuation
+        // instead of swallowing the round.
+        use crate::service::STACK_STAGE_BUDGET;
+
+        for _ in 0..100 {
+            let mut router = Router::new();
+            router.add_device(Box::new(CountingRxDevice { remaining: 33 }));
+            let table: &'static crate::listen_table::ListenTable =
+                Box::leak(Box::new(crate::listen_table::ListenTable::new()));
+            let mut service = Service::new_with_listen_table(router, None, table);
+            let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+            let accept = Arc::new(crate::readiness::ReadinessBridge::new());
+            table
+                .listen(
+                    smoltcp::wire::IpListenEndpoint {
+                        addr: None,
+                        port: 18300,
+                    },
+                    accept,
+                    &mut sockets,
+                )
+                .unwrap();
+            // Seed 64 pending slots and start the sweep directly: the round's
+            // listener stage must hit its 32-position budget while the Router RX
+            // and deferred stages run their own budgets in the same round.
+            table.test_seed_closed_slots(18300, &mut sockets, 64);
+            assert!(table.reconcile(&mut sockets, true).sweep_incomplete);
+            for _ in 0..33 {
+                let handle = sockets.add(crate::tcp::new_tcp_socket());
+                service.queue_deferred_removal(handle, CloseKind::Active);
+            }
+
+            let outcome = service.stack_round(
+                Instant::from_millis_const(0),
+                RxOwnerView::PollingOwned,
+                &mut sockets,
+            );
+
+            assert_eq!(outcome.work, 32, "Router RX consumed its own 32 budget");
+            assert!(outcome.backlog);
+            assert!(outcome.listener_sweep_incomplete, "listener must continue");
+            assert_eq!(
+                outcome.listener_checked, STACK_STAGE_BUDGET,
+                "the listener stage consumed exactly its own 32-position budget"
+            );
+            assert_eq!(service.deferred_removals_len(), 1);
+        }
+    }
+
+    #[test]
+    fn deferred_retirement_udp_queued_tx_wait_for_drain_before_reap() {
+        // T2.7: a dropped UDP socket whose TX buffer still holds an
+        // undispatched datagram is kept until the datagram is dispatched
+        // (egress drains the TX), then reaped exactly once. Reaping while
+        // the datagram is still queued would silently drop it — the guest
+        // MS01 udp-bidirectional hang.
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+
+        // A UDP socket with a queued datagram: bind, then enqueue a send.
+        let handle = sockets.add(crate::udp::new_udp_socket());
+        sockets
+            .get_mut::<smoltcp::socket::udp::Socket>(handle)
+            .bind(smoltcp::wire::IpListenEndpoint {
+                addr: None,
+                port: 22000,
+            })
+            .unwrap();
+        sockets
+            .get_mut::<smoltcp::socket::udp::Socket>(handle)
+            .send_slice(
+                b"queued",
+                smoltcp::socket::udp::UdpMetadata {
+                    endpoint: smoltcp::wire::IpEndpoint::new(
+                        smoltcp::wire::Ipv4Address::new(10, 0, 0, 2).into(),
+                        21234,
+                    ),
+                    local_address: Some(smoltcp::wire::Ipv4Address::new(10, 0, 0, 1).into()),
+                    meta: Default::default(),
+                },
+            )
+            .unwrap();
+        service.queue_deferred_removal(handle, CloseKind::UdpQueued);
+
+        // A directly-invoked sweep (no egress round) observes the datagram
+        // still queued: the reaper must Keep (not drop it). A full round
+        // would let egress dispatch it first, hiding the pending state.
+        let _ = service.reap_deferred_removals(&mut sockets, true);
+        assert_eq!(service.deferred_removals_len(), 1);
+        assert!(sockets.iter().any(|(h, _)| h == handle));
+        assert!(
+            sockets
+                .iter()
+                .any(|(_, s)| matches!(s, smoltcp::socket::Socket::Udp(_)))
+        );
+
+        // Once the resident runner's egress dispatches the datagram (TX
+        // drains), the same bounded reaper removes raw handle + deferred
+        // entry in one guarded commit.
+        let _ = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+        assert_eq!(service.deferred_removals_len(), 0);
+        assert!(!sockets.iter().any(|(h, _)| h == handle));
+    }
+
+    #[test]
+    fn deferred_retirement_udp_queued_entry_stale_or_retyped_drops() {
+        // T2.7: a UDPQueued entry whose handle is already gone (stale) or
+        // whose slot was re-typed by a DIFFERENT socket type (TCP) drops the
+        // entry without touching the set. Same-type UDP->UDP replacement is
+        // unreachable on legal paths: only the reaper removes the original
+        // deferred UDP socket (removing its entry in the same commit), so a
+        // fresh UDP can only take the slot after the entry is gone.
+        let mut router = Router::new();
+        router.add_device(Box::new(LoopbackDevice::new()));
+        let mut service = Service::new(router, None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let stale = sockets.add(crate::udp::new_udp_socket());
+        sockets.remove(stale);
+        service.queue_deferred_removal(stale, CloseKind::UdpQueued);
+        let retyped_tcp = sockets.add(crate::tcp::new_tcp_socket());
+        service.queue_deferred_removal(retyped_tcp, CloseKind::UdpQueued);
+
+        let _ = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+        assert_eq!(service.deferred_removals_len(), 0);
+        assert!(sockets.iter().any(|(h, _)| h == retyped_tcp));
+    }
+
+    #[test]
+    fn drop_state_read_and_deferred_enqueue_compose_without_deadlock() {
+        // T2.4-R2 close-retirement concurrency witness: the public Drop
+        // reads the raw close state under the SocketSet guard alone, then
+        // enqueues under the Service guard alone; the runner and connect
+        // roles keep the fixed SERVICE -> SOCKET_SET order. All roles
+        // interleave 100x without deadlock.
+        use alloc::vec::Vec;
+
+        use smoltcp::iface::SocketSet;
+        use spin::Mutex;
+
+        let service: &'static Mutex<Service> = Box::leak(Box::new(Mutex::new(routed_service())));
+        let sockets: &'static Mutex<SocketSet<'static>> =
+            Box::leak(Box::new(Mutex::new(SocketSet::new(vec![]))));
+        let handle = sockets.lock().add(crate::tcp::new_tcp_socket());
+
+        const ITERS: usize = 100;
+        let runner_done = Arc::new(AtomicUsize::new(0));
+        let connect_done = Arc::new(AtomicUsize::new(0));
+        let drop_done = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::new();
+
+        let done = runner_done.clone();
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..ITERS {
+                let mut guard = service.lock();
+                let mut set = sockets.lock();
+                let _ = guard.stack_round(
+                    Instant::from_millis_const(0),
+                    RxOwnerView::PollingOwned,
+                    &mut set,
+                );
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        let done = connect_done.clone();
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..ITERS {
+                let guard = service.lock();
+                let _src = guard.get_source_address(&IpAddress::v4(127, 0, 0, 1));
+                let set = sockets.lock();
+                drop(set);
+                drop(guard);
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        let done = drop_done.clone();
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..ITERS {
+                // Drop discipline: SocketSet-only state read ...
+                let _state = {
+                    let set = sockets.lock();
+                    set.iter().count()
+                };
+                // ... then Service-only enqueue (dedup + the runner's reap
+                // keep at most one live entry).
+                service
+                    .lock()
+                    .queue_deferred_removal(handle, CloseKind::Active);
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(runner_done.load(Ordering::Relaxed), ITERS);
+        assert_eq!(connect_done.load(Ordering::Relaxed), ITERS);
+        assert_eq!(drop_done.load(Ordering::Relaxed), ITERS);
+    }
+
+    #[test]
+    fn full_round_executes_dispatch_after_rx_budget_hit() {
+        let _serial = SERIAL.lock();
+        // 33 RX items exhaust the 32-item Router RX budget; 5 malformed TX
+        // packets must still be dispatched by the same round so the stage
+        // order never skips later stages after a budget hit.
+        let mut router = Router::new();
+        router.add_device(Box::new(CountingRxDevice { remaining: 33 }));
+        let mut service = Service::new(router, None);
+        for _ in 0..5 {
+            assert!(service.router_for_test().enqueue_tx_for_test(&[0u8; 1]));
+        }
+
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let outcome = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+
+        assert_eq!(outcome.work, 32 + 5);
+        assert!(outcome.backlog);
+        assert!(outcome.self_yield);
+        assert_eq!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert_eq!(
+            service
+                .router_for_test()
+                .drop_count(crate::device::TxDropReason::MalformedIp),
+            5
+        );
+    }
+
+    #[test]
+    fn full_round_rx_fault_is_not_hidden_as_idle() {
+        let _serial = SERIAL.lock();
+        let mut router = Router::new();
+        router.add_device(Box::new(FaultingRxDevice));
+        let mut service = Service::new(router, None);
+
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let outcome = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+
+        assert_ne!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert_eq!(
+            outcome.fault_code,
+            crate::readiness::dev_error_code(&DevError::Io)
+        );
+        assert!(!outcome.self_yield);
+    }
+
+    #[test]
+    fn full_round_dispatch_fault_surfaces_in_outcome() {
+        let _serial = SERIAL.lock();
+        let mut router = Router::new();
+        router.add_device(Box::new(FaultingTxDevice));
+        let mut service = Service::new(router, None);
+        assert!(
+            service
+                .router_for_test()
+                .enqueue_tx_for_test(&broadcast_ipv4_packet())
+        );
+
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let outcome = service.stack_round(
+            Instant::from_millis_const(0),
+            RxOwnerView::PollingOwned,
+            &mut sockets,
+        );
+
+        assert_ne!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert_eq!(
+            outcome.fault_code,
+            crate::readiness::dev_error_code(&DevError::Io)
+        );
+        assert!(service.router_for_test().tx_faulted());
     }
 
     #[test]
@@ -715,6 +1786,100 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 
+    // ── Task 2.4: runner/socket/connect/listener lock competition ───────
+
+    fn routed_service() -> Service {
+        let mut router = Router::new();
+        let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
+        let lo_ip = smoltcp::wire::Ipv4Cidr::new(smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 8);
+        router.add_rule(Rule::new(
+            lo_ip.into(),
+            None,
+            lo_dev,
+            lo_ip.address().into(),
+        ));
+        Service::new(router, None)
+    }
+
+    #[test]
+    fn runner_connect_listener_lock_orders_compose_without_deadlock() {
+        use alloc::vec::Vec;
+
+        use smoltcp::iface::SocketSet;
+        use spin::Mutex;
+
+        // Two independent `spin::Mutex`s (Service/SocketSet planes) plus a
+        // third entry mutex, exactly mirroring the runner discipline.
+        // `stack_round` holds Service then SocketSet; connect holds Service
+        // then SocketSet; the listener role adds the entry lock last.
+        let service: &'static Mutex<Service> = Box::leak(Box::new(Mutex::new(routed_service())));
+        let sockets: &'static Mutex<SocketSet<'static>> =
+            Box::leak(Box::new(Mutex::new(SocketSet::new(vec![]))));
+        let entry: &'static Mutex<Vec<u64>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+
+        const ITERS: usize = 100;
+        let runner_done = Arc::new(AtomicUsize::new(0));
+        let connect_done = Arc::new(AtomicUsize::new(0));
+        let listener_done = Arc::new(AtomicUsize::new(0));
+
+        let mut threads = Vec::new();
+
+        let done = runner_done.clone();
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..ITERS {
+                let mut guard = service.lock();
+                let mut set = sockets.lock();
+                let _ = guard.stack_round(
+                    Instant::from_millis_const(0),
+                    RxOwnerView::PollingOwned,
+                    &mut set,
+                );
+                drop(set);
+                drop(guard);
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        let done = connect_done.clone();
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..ITERS {
+                // Fixed connect order: Service first (route), then SocketSet.
+                let mut guard = service.lock();
+                let _src = guard.get_source_address(&IpAddress::v4(127, 0, 0, 1));
+                let mut set = sockets.lock();
+                let _ = set.iter().count();
+                drop(set);
+                drop(guard);
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        let done = listener_done.clone();
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..ITERS {
+                let mut guard = service.lock();
+                {
+                    let mut set = sockets.lock();
+                    let _ = set.iter().count();
+                }
+                let mut e = entry.lock();
+                e.push(1);
+                e.clear();
+                drop(e);
+                drop(guard);
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(runner_done.load(Ordering::Relaxed), ITERS);
+        assert_eq!(connect_done.load(Ordering::Relaxed), ITERS);
+        assert_eq!(listener_done.load(Ordering::Relaxed), ITERS);
+    }
+
     // ── Iteration 008: Service-owned QEMU diagnostic lease (C1-C6) ─────
 
     #[cfg(feature = "qemu-diagnostics")]
@@ -731,34 +1896,87 @@ mod tests {
             1_000_000_000_000
         }
 
-        /// Serialized Service + initialized fake clock: `diag_hold_tick`
-        /// reads the global `diag_now()`, so these tests must not share the
-        /// clock with a parallel sibling.
-        fn serialized_service() -> (spin::MutexGuard<'static, ()>, Service) {
-            let serial = crate::async_rx::SERIAL.lock();
-            crate::diag::set_test_now(now());
+        /// Task 5.2 (Iteration 006): per-fixture clock + Service pair. Each
+        /// test owns an independent fake clock, so advancing one fixture can
+        /// never change a sibling's hold mode/expiry/auto-release counter
+        /// (the R57 companion flake came from the process-global `TEST_NOW`).
+        fn test_service() -> (crate::diag::DiagTestClock, Service) {
+            let clock = crate::diag::DiagTestClock::new();
+            clock.store(now());
             let mut router = Router::new();
             router.add_device(Box::new(LoopbackDevice::new()));
-            (serial, Service::new(router, None))
+            let mut service = Service::new(router, None);
+            service.attach_test_clock(clock);
+            (clock, service)
+        }
+
+        #[test]
+        fn two_fixture_clocks_hold_independent_leases() {
+            // Fixture A holds a 100 ms submit lease, fixture B a 50 ms
+            // reclaim lease, both starting at `now()`. Advancing ONLY A past
+            // its deadline must release A exactly once and leave B's mode,
+            // expiry and counter untouched.
+            let (clock_a, mut a) = test_service();
+            let (clock_b, mut b) = test_service();
+            a.diag_control(OP_HOLD_TX_SUBMIT, 100, now()).unwrap();
+            b.diag_control(OP_HOLD_TX_RECLAIM, 50, now()).unwrap();
+
+            clock_a.store(now() + 100 * NS_PER_MS);
+            assert_eq!(a.diag_hold_tick(), HOLD_NONE);
+            assert_eq!(a.diag_auto_release_failure(), 1);
+            assert_eq!(b.diag_hold_mode(), HOLD_RECLAIM, "B's mode must not change");
+            assert_eq!(b.diag_lease_expiry(), now() + 50 * NS_PER_MS);
+            assert_eq!(b.diag_auto_release_failure(), 0);
+
+            // Advancing B's own clock releases B exactly once.
+            clock_b.store(now() + 50 * NS_PER_MS);
+            assert_eq!(b.diag_hold_tick(), HOLD_NONE);
+            assert_eq!(b.diag_auto_release_failure(), 1);
+            assert_eq!(a.diag_auto_release_failure(), 1);
+        }
+
+        #[test]
+        fn concurrent_fixture_clocks_never_leak_expiry_across_services() {
+            // Barrier-free concurrent churn: every thread drives its OWN
+            // Service + clock through commit/advance/release cycles. The
+            // pre-fix process-global `TEST_NOW` would let thread A's store
+            // auto-release thread B's held lease, failing the per-thread
+            // mode/counter assertions.
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    scope.spawn(|| {
+                        let (clock, mut s) = test_service();
+                        let mut expected = 0u64;
+                        for i in 0..50u64 {
+                            s.diag_control(OP_HOLD_TX_SUBMIT, 100, now() + i).unwrap();
+                            clock.store(now() + i + 100 * NS_PER_MS);
+                            assert_eq!(s.diag_hold_tick(), HOLD_NONE);
+                            expected += 1;
+                            assert_eq!(s.diag_auto_release_failure(), expected);
+                            assert_eq!(s.diag_hold_mode(), HOLD_NONE);
+                        }
+                    });
+                }
+            });
         }
 
         #[test]
         fn control_rejects_out_of_range_lease_and_bad_ops() {
-            let (_serial, mut s) = serialized_service();
+            let (clock, mut s) = test_service();
             assert!(matches!(
-                s.diag_control(OP_HOLD_TX_SUBMIT, 0, now()),
+                s.diag_control(OP_HOLD_TX_SUBMIT, 0, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert!(matches!(
-                s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS + 1, now()),
+                s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS + 1, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert!(matches!(
-                s.diag_control(OP_RELEASE, 1, now()),
+                s.diag_control(OP_RELEASE, 1, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert!(matches!(
-                s.diag_control(99, 10, now()),
+                s.diag_control(99, 10, clock.load()),
                 Err(DevError::InvalidParam)
             ));
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
@@ -767,21 +1985,23 @@ mod tests {
 
         #[test]
         fn hold_submit_and_reclaim_set_modes_and_expiry() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 100, now()).unwrap();
+            let (clock, mut s) = test_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 100, clock.load())
+                .unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_SUBMIT);
-            assert_eq!(s.diag_lease_expiry(), now() + 100 * NS_PER_MS);
+            assert_eq!(s.diag_lease_expiry(), clock.load() + 100 * NS_PER_MS);
             assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
-            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now()).unwrap();
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, clock.load()).unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_RECLAIM);
-            assert_eq!(s.diag_lease_expiry(), now() + NS_PER_MS);
+            assert_eq!(s.diag_lease_expiry(), clock.load() + NS_PER_MS);
         }
 
         #[test]
         fn release_clears_hold_and_never_counts_failure() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 2000, now()).unwrap();
-            s.diag_control(OP_RELEASE, 0, now()).unwrap();
+            let (clock, mut s) = test_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 2000, clock.load())
+                .unwrap();
+            s.diag_control(OP_RELEASE, 0, clock.load()).unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
             assert_eq!(s.diag_lease_expiry(), 0);
             assert_eq!(s.diag_auto_release_failure(), 0);
@@ -790,27 +2010,29 @@ mod tests {
 
         #[test]
         fn expired_lease_auto_releases_and_counts_failure() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 2, now()).unwrap();
-            crate::diag::set_test_now(now() + 2 * NS_PER_MS - 1);
+            let (clock, mut s) = test_service();
+            let t0 = clock.load();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 2, t0).unwrap();
+            clock.store(t0 + 2 * NS_PER_MS - 1);
             assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
-            crate::diag::set_test_now(now() + 2 * NS_PER_MS);
+            clock.store(t0 + 2 * NS_PER_MS);
             assert_eq!(s.diag_hold_tick(), HOLD_NONE);
             assert_eq!(s.diag_auto_release_failure(), 1);
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
             assert_eq!(s.diag_lease_expiry(), 0);
-            crate::diag::set_test_now(now() + 2 * NS_PER_MS + 1);
+            clock.store(t0 + 2 * NS_PER_MS + 1);
             assert_eq!(s.diag_hold_tick(), HOLD_NONE);
             assert_eq!(s.diag_auto_release_failure(), 1);
         }
 
         #[test]
         fn second_hold_after_expiry_reuses_the_state() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now()).unwrap();
-            crate::diag::set_test_now(now() + NS_PER_MS);
+            let (clock, mut s) = test_service();
+            let t0 = clock.load();
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, t0).unwrap();
+            clock.store(t0 + NS_PER_MS);
             assert_eq!(s.diag_hold_tick(), HOLD_NONE);
-            s.diag_control(OP_HOLD_TX_RECLAIM, 1, now() + NS_PER_MS)
+            s.diag_control(OP_HOLD_TX_RECLAIM, 1, t0 + NS_PER_MS)
                 .unwrap();
             assert_eq!(s.diag_hold_mode(), HOLD_RECLAIM);
             assert_eq!(s.diag_auto_release_failure(), 1);
@@ -818,8 +2040,8 @@ mod tests {
 
         #[test]
         fn hold_does_not_mutate_owner_or_completion_state() {
-            let (_serial, mut s) = serialized_service();
-            s.diag_control(OP_HOLD_TX_SUBMIT, 10, now()).unwrap();
+            let (clock, mut s) = test_service();
+            s.diag_control(OP_HOLD_TX_SUBMIT, 10, clock.load()).unwrap();
             assert_eq!(s.diag_hold_tick(), HOLD_SUBMIT);
             let _ = s.diag_hold_mode();
             let _ = s.diag_lease_expiry();
@@ -831,7 +2053,7 @@ mod tests {
             // C2: `now + lease_ms * NS_PER_MS` is a checked add; an
             // overflowing deadline is rejected before any mutation and the
             // committed no-hold state survives.
-            let (_serial, mut s) = serialized_service();
+            let (clock, mut s) = test_service();
             let far_future = u64::MAX - 10;
             assert!(matches!(
                 s.diag_control(OP_HOLD_TX_SUBMIT, MAX_LEASE_MS, far_future),
@@ -840,6 +2062,7 @@ mod tests {
             assert_eq!(s.diag_hold_mode(), HOLD_NONE);
             assert_eq!(s.diag_lease_expiry(), 0);
             assert_eq!(s.diag_auto_release_failure(), 0);
+            assert_eq!(clock.load(), now());
         }
 
         #[test]
@@ -847,11 +2070,11 @@ mod tests {
             // D9/C1: the Service lease carries no generation, so no identity
             // can exhaust. Every reachable Hold is releasable explicitly or
             // by expiry, even after many commit/release/expiry cycles.
-            let (_serial, mut s) = serialized_service();
+            let (clock, mut s) = test_service();
             for i in 0..200u64 {
                 s.diag_control(OP_HOLD_TX_SUBMIT, 2, now() + i).unwrap();
                 assert_eq!(s.diag_hold_mode(), HOLD_SUBMIT);
-                crate::diag::set_test_now(now() + i + 2 * NS_PER_MS);
+                clock.store(now() + i + 2 * NS_PER_MS);
                 assert_eq!(s.diag_hold_tick(), HOLD_NONE);
                 assert_eq!(s.diag_auto_release_failure(), i + 1);
                 s.diag_control(OP_HOLD_TX_RECLAIM, 1, now() + i).unwrap();

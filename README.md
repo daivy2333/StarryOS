@@ -132,3 +132,9 @@ See more build options in the [Makefile](./Makefile).
 ## License
 
 This project is now released under the Apache License 2.0. All modifications and new contributions in our project are distributed under the same license. See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) files for details.
+export http_proxy="http://172.23.128.1:17897"
+export https_proxy="http://172.23.128.1:17897"
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$https_proxy"
+export no_proxy="localhost,127.0.0.1,::1"
+export NO_PROXY="$no_proxy"

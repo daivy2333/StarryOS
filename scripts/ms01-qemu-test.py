@@ -34,6 +34,10 @@ EXPECTED = {
     "udp-nonblock",
     "poll-readiness",
     "udp-source",
+    "bind-getsockname",
+    "bind-ephemeral",
+    "bind-conflict",
+    "bind-close-cleanup",
 }
 
 

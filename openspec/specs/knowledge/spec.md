@@ -393,3 +393,64 @@ iteration 009
 - **WHEN** MS05 或后续 change 依赖 MS04 异步 RX
 - **THEN** MUST 按 R51 重跑其受影响的核心模式，或明确引用未受影响的既有证据
 - **AND** MUST 将完整 compatibility、SMP、真板和性能资格作为独立 Gate 处理
+
+### Requirement: K43 — 构建 Gate 的环境噪声与产品失败分层
+
+构建 Gate MUST 以匹配目标平台的命令、最终退出码、首个决定性失败层和预期产物共同
+判定。依赖探测、自动安装或联网的中间告警不能单独构成产品失败或 `ENV BLOCK`。
+
+**证据**: R39、R44；MS06 `000-resident-stack-runner/000-initial.md` Act Response；用户于
+2026-08-23 在正常宿主执行默认 QEMU `make build` exit 0 并生成 ELF/bin
+**状态**: ✅ 已验证，2026-08-23
+
+- **命令资格**: target、feature、平台配置或产品入口不匹配时，结果是 invalid witness；
+  修正命令后重跑，不计入产品失败次数。
+- **工具资格**: 实际工具调用优先于包管理器登记。只读 Cargo home 可使
+  `cargo install --list` 失败并触发错误的安装分支，但随后 `rust-objcopy` 成功执行说明
+  工具可用。
+- **结果优先级**: 最终 exit 0 且预期产物生成是 PASS；最终非零且有编译、链接、断言
+  或验证诊断是产品 FAIL；只有最终非零且最早失败层纯属权限、网络、syscall 或硬件能力
+  限制时才是 `ENV BLOCK`。
+- **交叉验证边界**: 用户宿主复跑必须使用同一产品命令才能替代 sandbox Gate。不同平台
+  命令成功只能解除共享工具链疑点，不能关闭原平台失败。
+
+#### Scenario: 构建准备阶段报安装或联网错误
+
+- **WHEN** 构建日志先出现 Cargo home 只读、自动安装或联网失败
+- **THEN** MUST 继续读取命令的最终退出码和后续编译、链接、objcopy、产物结果
+- **AND** MUST NOT 在命令仍可继续并成功生成产物时标记 blocker
+- **AND** MUST 在最终非零时按首个决定性产品或环境失败层分类
+
+#### Scenario: 用户在 sandbox 外提供构建结果
+
+- **WHEN** 用户手工构建用于解除 agent 的环境疑点
+- **THEN** MUST 对比 target、feature、平台配置和产品入口
+- **AND** MUST 只关闭该命令实际覆盖的 Gate
+
+### Requirement: K44 — axnet 宿主单元测试冷重建后必须以非 PIE 链接（percpu 绝对重定位）
+
+workspace-exclude 的 axnet 以 `--manifest-path` 在宿主运行单元测试时，测试可执行文件
+MUST 以非 PIE 方式链接：依赖图中的 `percpu`（经 axtask 引入）使用绝对寻址
+（`R_X86_64_32S`，符号如 `__PERCPU_SELF_PTR`、`__PERCPU_RUN_QUEUE`、
+`__PERCPU_CURRENT_TASK_PTR`），rust-lld 拒绝将其重定位进 PIE 可执行文件。发行版 gcc
+默认启用 PIE，仅剥离 rustc 传入的 `-pie` 参数并不解除冲突；MUST 对可执行链接显式追加
+`-no-pie`，共享对象链接（proc-macro `.so`）原样透传。热缓存时期不会触发——只有改动
+axnet 触发依赖图冷重建后该冲突才暴露，症状看似产品失败实为链接模型问题。
+
+**证据**: MS06 iter 004 Cycle
+`004-terminal-readiness-and-qemu-acceptance/000-initial.md` Act Response 偏差 D1；
+无 wrapper 时同一命令以 `relocation R_X86_64_32S ... '__PERCPU_SELF_PTR'` 失败，
+使用 wrapper 后 ordinary 348/348、qemu-diagnostics 368/368 通过（exit 0）
+**状态**: ✅ 已验证，2026-08-26
+
+- **触发条件**: 冷重建（清缓存、rustc 变更、或首次在独立 target 目录构建）后运行 axnet 宿主单元测试。
+- **诊断特征**: 链接期报 `relocation R_X86_64_32S cannot be used against symbol '__PERCPU_*'` 即为本条；属环境/链接模型事项，不计入产品失败。
+- **处理原则**: 用按链接种类区分的 linker wrapper（遇 `-shared` 透传，否则追加 `-no-pie`）并以 `RUSTFLAGS="-C linker=<wrapper>"` 运行；wrapper 属一次性本地工具，不入库。
+- **排除的替代方案**: `[profile.dev] pie = false`（当前 cargo 报 unused manifest key 不生效）；全局 `RUSTFLAGS="-C link-arg=-no-pie"`（追加到 `.so` 链接尾部导致 proc-macro 构建失败）；`-C relocation-model=static`（同理破坏 proc-macro `.so`）。
+- **适用边界**: 仅 axnet 独立 target 目录下的宿主 x86_64 测试构建；内核与 RISC-V 构建走根 workspace target，不受影响。
+
+#### Scenario: 冷重建后宿主测试链接报 R_X86_64_32S
+
+- **WHEN** axnet 宿主单元测试在冷重建后报 percpu 符号的 `R_X86_64_32S` 重定位错误
+- **THEN** MUST 使用按链接种类区分的非 PIE linker wrapper 运行同一测试命令
+- **AND** MUST 将该差异记录为执行环境事项，不提升为产品失败或 ENV BLOCK
