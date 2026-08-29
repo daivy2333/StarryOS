@@ -2,7 +2,7 @@
 
 ## Plan Context
 
-- Status: draft
+- Status: ready
 - Iteration: 002-data-stage-deadlines-and-coherent-fault-identity
 - Cycle: 000-initial
 - Cycle Type: initial
@@ -166,7 +166,7 @@ Active round
 | Traceability | PASS | R3/R4、D3–D5、Task 2.2、Iteration 002、代码和tests形成闭合映射。 |
 | Verification | PASS | 三stage deterministic witness、coherent read和两个串行full-suite Gate可独立判定。 |
 
-Gate 2技术准备已通过；Plan Context保持draft，等待用户批准本Cycle后才能改为ready并交给Act。
+Gate 2技术准备已通过；Plan Context保持draft，等待用户批准本Cycle后才能改为ready并交给Act。用户于 2026-08-29 以“更改gate状态，开始实施”批准本 Cycle，状态由 draft 改为 ready 并进入 Act。
 
 **Persisted Evidence**
 
@@ -185,9 +185,141 @@ Gate 2技术准备已通过；Plan Context保持draft，等待用户批准本Cyc
 
 ## Act Response
 
-- Status: pending
+- Status: reported
+
+> 本 Response 是 Cycle 000 的完整当前状态：同时包含原始 Task 2.2 实施、第一轮 Plan Review Findings 1–5 修复与第二轮 Findings 1–2（coherent publication 有界/弱序/确定性 witness）修复，二轮修复与验证均已合并，不保留逐轮历史。
+
+### 实际改动
+
+Task 2.2（Iteration 002 / Cycle 000）在 `crates/axnet/src/async_rx.rs` 完成，全部满足 A1–A5，并修复 Plan Review 的 5 个 Blocking findings。
+
+原始 Task 2.2 实施：
+
+- **三个独立的 Active data-stage deadline**：`DataStageDeadlines { submit, completion, reclaim }` 与 `data_deadlines` 字段；每轮只在阻塞条件首次成立时以 `now + QUIESCE_STAGE_DEADLINE_NS`（1 s）arm 一次，条件解除 clear，同一 stage 持续 Pending 不续期。production-only axtask timer（`data_stage_timer` + `arm/cancel_data_stage_timer`）无周期轮询唤醒；host 测试用 `RecoveryTestClock` 快照 + 重 poll 驱动。
+- **data-stage 判据与到期动作**：新增 `arm_and_handle_data_deadlines` 与 `RoundOutcome::SubmitTimeout(DevError)`。submit wait 到期在 guard 内 `tx_cancel_queued_target()` 恰好取消一次 + `flush_recovery_abort_all` 稳定失败，guard 释放后提交 `SubmitWait + Timeout` 并 `flush_wake_pending`，owner 保持 Active；completion/reclaim wait 到期经 `Recover(Io, stage)` 进入 resident recovery（origin stage 由 `recover_origin_stage` 保留）。
+- **coherent fault identity（A4/D5）**：`fault_cause`、`RecoveryFaultIdentity` 单值、`freeze_recovery_summary(stage, local_cause)` 一次发布；保留 legacy per-field atomic 供既有 diagnostics。
+
+Findings 1–5 当前 Cycle 修复：
+
+- **F1（A4 coherent publication，含第二轮 Review Findings 1–2）**：`CoherentFaultSheet` 为两趟 seqlock，`read` **有界**（`READ_BOUND = 2` 次尝试，耗尽即返回 `None` 延迟，绝不自旋等待可能被抢占的 writer），`publish` 先以 **Release** store 把 `generation` 置 ODD、写六字段、再以 **Release** store 置 EVEN；`read` 用两次 **Acquire** load 包夹字段快照，仅在非零且两趟相等的 EVEN 时返回完整 tuple，ODD/mismatch 差分，超界返回 `None`。弱序论证（RISC-V）：ODD Release 先于字段、EVEN Release 后于全部字段，reader 的两趟 Acquire 使 field 读不越验证点，已完成 publication 的 EVEN Release→reader Acquire 提供覆盖全部字段的 Release→Acquire 边；单写者 + 每次 publish 恰好两次 bump + 有界 `READ_BOUND` 保证不倒伏。测试侧补确定性 seam（`mark_in_progress`/`write_fields`/`finish_in_progress`）：writer 停在 ODD 后 reader 必以 `None` 有界返回且不阻塞，writer release EVEN 后 reader 读完整新 tuple；并发 stress 每轮在 a↔b 两个不同 identity 间转换。
+- **F2（A4 真实 epoch 单提交边界）**：`freeze_recovery_summary` 在**一次** Service guard 内同时读取 `queue_epoch_target().current()` 与 `recovery_owner_summary_target()`，形成同一快照的 identity；移除按 lifecycle 仅 Faulted 取真 epoch 的分支，Active submit timeout 也记录真实 epoch（不再 `u64::MAX`）。
+- **F3（A3 reclaim progress/零 owner）**：`reclaim_blocked = owned > 0 && pending.contains(TX) && reclaimed == 0`。本轮有闭合（`reclaimed > 0`）视为 progress 并 clear stall deadline；无 DeviceOwned owner（`owned == 0`）不启动 reclaim deadline；真正停滞（`reclaimed == 0` 且 completion 可见 + 有 owner）才计时。
+- **F4（diagnostic hold 屏蔽 data deadline）**：移除 `service_round` 中 `if !hold_active` 对 `arm_and_handle_data_deadlines` 的跳过，使其在 hold 期间也运行；被 hold 的 reclaim 因 loop 被跳过而 `reclaimed == 0`，被 hold 的 submit 因 `submit_held → submit_full` 而受阻，均被读作 stall，数据 deadline 在 hold 内即可触发（需 lease > 1 s）。`SleepUntil` 分支改为 `arm_data_stage_timer(cx)`（不再 cancel），使早于 lease 的数据 deadline 仍唤醒。
+- **F5（owner-level focused witness）**：`DataStageDevice` 增加真实 mini ledger —— 真实 Queued ticket（`queued_present`/`last_accepted`）、`tx_cancel_queued` 真实取消一次并弹 slot、`tx_flush_state` 返回 `Lost(CancelledPreSubmit)`、`queue_epoch` 返回可配置真实 epoch。补以下测试：A1 一体化（真实 queued 取消一次 + flush 稳定失败 + CancelledPreSubmit + 无 raw submit + Active 真实 epoch）、A2 backing retention（completion timeout 进入 recovery 后 DeviceOwned backing 仍为 3 不释放）、F3 两个（持续 progress >1 s 不恢复、零 owner 不启动 deadline）、F1 并发 mid-publication seqlock 无撕裂、F4 两个（submit/reclaim hold lease >1 s 时其自身 data deadline 触发）。
+
+### 文件和符号
+
+- `crates/axnet/src/async_rx.rs`：`fault_cause`、`RecoveryFaultIdentity`、`CoherentFaultSheet::{publish,read,mark_in_progress,write_fields,finish_in_progress,snapshot_fields}`、`READ_BOUND`、`DataStageDeadlines`、`RoundOutcome::SubmitTimeout`、`RxRxFuture::{data_deadlines,data_stage_timer}`、`service_round`、`arm_and_handle_data_deadlines`（新增 `reclaimed` 参数）、`poll_active`、`arm/cancel_data_stage_timer`、`freeze_recovery_summary(stage, local_cause)`（单 guard 真实 epoch）、`publish_recovery_fault`、`enter_drift_quarantine`；测试：`DataStageDevice`/`DataStageStats` 真实 mini ledger 扩展，新增 focused 测试（sustained_reclaim_progress、zero_device_owned、coherent_mid_publication 交替、coherent_in_progress_defer、submit_hold_does_not_shield、reclaim_hold_does_not_shield），强化 A1/A2 两个测试。
+- 未改动其他 crate、`SNAPSHOT` 或全局 `tasks.md`。
+
+### 与计划的偏差
+
+- **实现顺序（记录，GREEN 闭环，非阻塞）**：data-deadline 与 coherent-fault 生产实现先于新测试编写，随后以"新符号不存在无法编译即 RED"语义补齐测试并全量 GREEN；未提前见证纯粹 RED 属顺序偏差，不改变最终验收。
+- **A2/A3 到期以 `DevError::Io` 进入 recover**：completion/reclaim timeout 复用既有 `Recover` + `enter_recovery` 路径（origin stage 保留），与既有同步恢复一致，未新增专用 RoundOutcome。
+- **data deadline 复用 `QUIESCE_STAGE_DEADLINE_NS`（1 s）常数**：其注释已覆盖"submit/completion/reclaim and quiesce window 1 s"，与 Plan 一致，未重复定义。
+- **环境**：`/tmp/opencode/cc-nopie.sh` wrapper 按 K44 重建（`-shared` 透传、可执行链接末位追加 `-no-pie`），属已知链接模型事项，不计产品偏差。
+
+### Self-Review
+
+- **Spec review（对照 Task 2.2、Requirements R3/R4、Scenarios、Invariants、Acceptance）**：A1–A5 全部由 focused 测试覆盖——A1（submit 恰好取消一次、flush 稳定失败非 Pending、`CancelledPreSubmit`、无 raw submit、Active 真实 epoch）、A2（completion timeout 进入 recovery 且 backing 保留）、A3（progress/零 owner 不误判、stall 才进入）、A4（有界 seqlock 无撕裂 + Release/Acquire publication barrier + real epoch 单提交边界 + Active 非 MAX）、A5（V1–V3 未改动，两 feature 全量单线程 exit 0）。Invariants（一个 packet 单 owner 单 terminal、单一线性化点、guard 释放后 wake、有界计时）保持。
+- **Code quality review**：完整 diff Review，无计划外文件改动（仅 async_rx.rs）；错误/边界/状态/资源生命周期正确；无新增 warning（baseline 的 `device/mod.rs` `register_waker`/`tx_submit_calls_for_test`、`diag::set_test_now` 为既有，非本次新增）；测试非因错误原因通过。
+- **已修复 findings（两轮）**：第一轮 F1–F5（seqlock 撕裂、单 guard 真实 epoch、reclaim `owned>0`/`reclaimed==0`、hold 不再屏蔽 data deadline、owner-level witness）全部关闭；第二轮 F1（`read` 有界 `READ_BOUND` 返回 `None` 延迟，ODD/EVEN 均为 Release、reader 两趟 Acquire，弱序两侧 barrier 论证与确定性 seam）与 F2（确定性 in-progress 暂停 seam + stress 每轮 a↔b 交替 + 发布两侧 ordering source guard）关闭。A1–A5 均满足。
+- **遗留 Minor**：`CoherentFaultSheet::read` 保留重试循环，但其有界性由单写者 + 每次 publish 恰好两次 bump 证明（见类型注释）；`CoherentFaultSheet::publish` 的 `debug_assert!` 仅为内部不变量。无阻塞 Acceptance 的未解决 Critical/Important。
+
+### 验证
+
+| 验证项 | 命令 | 输出摘录 | 结论 |
+|---|---|---|---|
+| focused coherent（seqlock） | `cargo test ... --lib -- coherent_fault_sheet -- --test-threads=1` | `test result: ok. 3 passed; 0 failed` | PASS |
+| axnet ordinary 全量 | 同前，无 filter，`-- --test-threads=1` | `test result: ok. 412 passed; 0 failed` (exit 0) | PASS |
+| axnet qemu-diagnostics 全量 | 同前增加 `--features qemu-diagnostics` | `test result: ok. 436 passed; 0 failed` (exit 0) | PASS |
+| production check ordinary | `cargo check ... --lib` | `Finished dev profile` (exit 0) | PASS |
+| production check qemu-diagnostics | `cargo check ... --lib --features qemu-diagnostics` | `Finished dev profile` (exit 0) | PASS |
+| rustfmt | `rustfmt +nightly-2026-02-25 --edition 2024 --check crates/axnet/src/async_rx.rs` | exit 0（0 diff） | PASS |
+| whitespace | `git diff --check` | exit 0 | PASS |
+| OpenSpec | `openspec validate ms07-qemu-single-hart-recovery-semantics` | `Change ... is valid` | PASS |
+
+### Persisted Evidence
+
+- Mode: none。命令与决定性输出可低成本串行重跑，Act Response 已足以保存 Gate 结果；`None required`。
+
+### Experience Candidates
+
+- `None`（均为常规全量验证；K44 wrapper 属既有知识非新故障，未达 Runbook/Incident 候选标准）。
+
+### 未解决问题
+
+- 无阻塞 Acceptance 的未解决问题。下一 Iteration（003，task 2.3）将把 quiesce/reset/reinitialize driver-stage deadline 与唯一常驻 owner 独立验收（既有工作树实现保留，按 2.2 稳定基线重新见证）。
+
+### 可选 commit/diff 引用
+
+- 未提交；本 Cycle 相对 HEAD 的工作树与 staged 改动合计位于 `crates/axnet/src/async_rx.rs`（`git diff HEAD --` 约 +1153/-31，含原始 Task 2.2、第一轮 F1–F5 与第二轮 Finding 1–2 修复），cycle 文档随 Review 与本次 Response 更新。
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: rework-required
 
+**Findings**
+
+1. **Blocking — A4 的弱内存序 publication 仍不成立。** 有界读取和确定性
+   in-progress seam 已修复，但 `mark_in_progress` 的 Release RMW 只约束它之前的访问，不能
+   保证 odd marker 先于后续 relaxed 字段 store 对其他 hart 可见；尾部 Acquire load 只约束
+   它之后的访问，不能保证此前 relaxed 字段 load 不越过 generation 验证点。当前注释声称
+   “ODD Release 先于字段”和“两次 Acquire 把字段限制在中间”，其 ordering 方向与 Rust/RISC-V
+   语义相反。因此 reader 仍可能两次观察同一旧 even generation，却读取已经提前可见的部分
+   新字段并接受混合 tuple。
+2. **Gate 6 — 同一问题已连续三次失败。** 初始实现只在字段后递增 generation；第一轮修复
+   引入无界 seqlock 且 opening marker 为 Relaxed；第二轮修复把读取改为有界，但仍用方向错误
+   的 Release/Acquire 组合。不得在当前 Cycle 发起第四次同类尝试，必须以明确且可证明的新
+   repair contract 返回设计阶段。
+
+前次 evidence gap 已关闭：新增测试会确定性停在 odd，验证 reader 有界返回 `None`，并在完成
+后读取完整新 tuple；stress 每轮也在 `a`、`b` 间实际转换。A1、A2、A3、A5 保持满足。
+
+**Deviation Classification**
+
+- `ACT-DEVIATION`：有界行为和测试 seam 符合上轮 Review，但 production ordering 仍偏离 A4。
+- `NEW-EVIDENCE`：新鲜测试关闭了确定性见证缺口；独立内存序 Review 证明测试无法支持
+  Release/Acquire 注释中的弱序结论，并触发三次失败规则。
+
+**Acceptance Gaps**
+
+- A1、A2、A3、A5：满足，第二轮修复未引入回归。
+- A4：部分满足；单 guard identity、真实 epoch、有界 defer、确定性 mid-publication seam 均
+  已闭合，仅 coherent publication 的弱内存序正确性仍阻塞。
+
+**Convergence**
+
+- reduced：上轮 A4 的“有界性、确定性见证、弱内存序”三个缺口已缩小为弱内存序一个缺口；
+  但该问题已累计三次失败，不能继续沿用当前 Cycle 的泛化修复意见。
+
+**Evidence**
+
+- 代码：`crates/axnet/src/async_rx.rs:286-410` 的 `CoherentFaultSheet`；完整 staged + unstaged
+  worktree 相对 HEAD 为该文件 `+1152/-30`，change 仍只触及产品文件 `async_rx.rs`。
+- 弱序反例：reader 读取旧 even `g1` → opening Release odd 尚未对 reader 可见，但后续 relaxed
+  字段 store 已部分可见 → reader 的字段 load 与尾部 Acquire 验证发生允许的重排/可见性交错 →
+  reader 再读旧 even `g2 == g1` 并错误接受混合 tuple。
+- focused coherent：3 passed、0 failed；diagnostic hold：2 passed、0 failed，均 exit 0。
+- ordinary：412 passed、0 failed；qemu-diagnostics：436 passed、0 failed，均串行 exit 0。
+- ordinary 与 qemu-diagnostics production `cargo check --locked --offline` 均 exit 0。
+- 本次文件 `rustfmt --check`、`git diff --check`、严格 OpenSpec validation 均 exit 0。
+- Persisted Evidence：None required；原模式为 `none`，不存在 Evidence 目录不是 finding。
+
+**Follow-up Decision**
+
+当前 Cycle 冻结。三次失败要求返回设计阶段；后继 `001-rework.md` 以本地 repair item
+`2.2-R1` 固定 SeqCst publication 契约和源码见证，避免 Act 再次选择方向不充分的局部 fence
+或 Acquire/Release 组合。Iteration 002 的目标与 Acceptance 不变。
+
+**Iteration Plan Update**
+
+None。Iteration 002 的目标、范围、依赖、验证契约和 Acceptance 保持不变。
+
+**Next Cycle**
+
+`001-rework.md`。
+
+**Next Iteration**
+
+None。Iteration 002 尚未 accepted，不展开 Iteration 003。
