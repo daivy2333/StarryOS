@@ -52,6 +52,8 @@ use axsync::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
 
+#[cfg(feature = "qemu-diagnostics")]
+pub use self::async_rx::{RecoverySnapshotV4, recovery_snapshot_v4};
 use self::{
     async_rx::RX_LIFECYCLE,
     consts::{GATEWAY, IP, IP_PREFIX},
@@ -63,8 +65,8 @@ use self::{
 };
 pub use self::{
     async_rx::{
-        RX_TASK_NAME, RxSnapshot, RxSnapshotV3, publish_queue_event, publish_rx_event, rx_snapshot,
-        rx_snapshot_v3, software_nudge, start_rx_task,
+        RX_TASK_NAME, RxSnapshot, RxSnapshotV3, publish_config_event, publish_queue_event,
+        publish_rx_event, rx_snapshot, rx_snapshot_v3, software_nudge, start_rx_task,
     },
     socket::*,
     stack_runner::{StackSnapshot, stack_snapshot},
@@ -181,6 +183,12 @@ pub fn poll_interfaces() {
 pub fn diagnostic_control(op: u64, lease_ms: u64) -> axdriver::prelude::DevResult {
     use crate::async_rx::{QUEUE_EVENT, ServiceAccess, diagnostic_control_shared};
     diagnostic_control_shared(ServiceAccess::Global, &QUEUE_EVENT, op, lease_ms)
+}
+
+/// Queues one reset request for the unique resident queue owner.
+#[cfg(feature = "qemu-diagnostics")]
+pub fn recovery_reset_request() -> axdriver::prelude::DevResult {
+    async_rx::recovery_reset_request_shared()
 }
 
 /// Reserves the sole C4 flush waiter and returns its future (D8).

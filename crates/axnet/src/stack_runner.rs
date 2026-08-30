@@ -163,6 +163,37 @@ impl StackAccess {
             Self::Injected { listen_table, .. } => listen_table.drain_accept_wakes(),
         }
     }
+
+    /// Publishes a round terminal through the registry paired with the round's
+    /// Service. The registry snapshot and all bridge wakes occur after this
+    /// method has released the Service guard.
+    fn publish_terminal(&self, epoch: u64, code: u64) {
+        let target = match self {
+            Self::Global => {
+                let Some(service) = crate::SERVICE.get() else {
+                    return;
+                };
+                let service = service.lock();
+                let Some(registry) = service.socket_registry() else {
+                    return;
+                };
+                (service.commit_socket_epoch_terminal_for(registry, epoch, code) == Some(true))
+                    .then_some((registry, epoch))
+            }
+            #[cfg(test)]
+            Self::Injected { service, .. } => {
+                let service = service.lock();
+                let Some(registry) = service.socket_registry() else {
+                    return;
+                };
+                (service.commit_socket_epoch_terminal_for(registry, epoch, code) == Some(true))
+                    .then_some((registry, epoch))
+            }
+        };
+        if let Some((registry, epoch)) = target {
+            registry.wake_socket_epoch(epoch);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -438,12 +469,14 @@ impl Future for StackRunnerFuture {
         if outcome.backlog {
             this.telemetry.backlog_round.fetch_add(1, Ordering::Relaxed);
         }
-        if outcome.fault_code != crate::readiness::TERMINAL_NONE {
+        if let Some(fault_epoch) = outcome.fault_epoch {
+            debug_assert_ne!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
             this.telemetry.fault.fetch_add(1, Ordering::Relaxed);
             // Task 3.1: publish the concrete error identity to every public
             // socket. `round` released the Service/SocketSet guards before
             // returning, so no guard is held across these wakes.
-            crate::SOCKET_SET.publish_global_fault_code(outcome.fault_code);
+            this.access
+                .publish_terminal(fault_epoch, outcome.fault_code);
         }
         if outcome.rx_space_woken {
             this.telemetry.rx_space_wake.fetch_add(1, Ordering::Relaxed);
@@ -536,13 +569,14 @@ mod tests {
         task::{Context, Poll, Waker},
     };
 
+    use axdriver::prelude::DevError;
     use axpoll::IoEvents;
     use smoltcp::{
         iface::{SocketHandle, SocketSet},
         socket::tcp::{Socket, State},
         storage::PacketBuffer,
         time::Instant,
-        wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Cidr},
+        wire::{IpAddress, IpEndpoint, IpListenEndpoint, Ipv4Address, Ipv4Cidr},
     };
 
     use super::{
@@ -554,10 +588,11 @@ mod tests {
         async_rx::{QueueEvent, RxLifecycle, RxTaskLifecycle},
         device::{Device, LoopbackDevice, RxStep, TxOutcome, TxPreflight},
         listen_table::ListenTable,
-        readiness::ReadinessBridge,
-        router::{Router, Rule},
+        readiness::{NetworkTerminal, ReadinessBridge},
+        router::{Router, Rule, RxOwnerView},
         service::Service,
         tcp::new_tcp_socket,
+        wrapper::SocketSetWrapper,
     };
 
     const FULL_CHAIN_PORT: u16 = 19555;
@@ -586,6 +621,35 @@ mod tests {
     struct BurstDevice {
         remaining: Arc<AtomicUsize>,
         requires_polling: bool,
+    }
+
+    struct FaultRoundDevice;
+
+    impl Device for FaultRoundDevice {
+        fn name(&self) -> &str {
+            "stack-fault-epoch"
+        }
+
+        fn recv(&mut self, _buffer: &mut PacketBuffer<()>, _timestamp: Instant) -> RxStep {
+            RxStep::Fault(DevError::Io)
+        }
+
+        fn preflight_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> TxPreflight {
+            TxPreflight::Ready
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> TxOutcome {
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+
+        fn register_waker(&self, _waker: &Waker) {}
     }
 
     impl Device for BurstDevice {
@@ -747,6 +811,76 @@ mod tests {
     fn poll_once(future: &mut StackRunnerFuture, waker: &Waker) -> Poll<()> {
         let mut cx = Context::from_waker(waker);
         Pin::new(future).poll(&mut cx)
+    }
+
+    #[test]
+    fn late_stack_fault_uses_round_epoch_and_leaves_new_epoch_fresh() {
+        let registry: &'static SocketSetWrapper<'static> =
+            Box::leak(Box::new(SocketSetWrapper::new()));
+        let listen_table: &'static ListenTable = Box::leak(Box::new(ListenTable::new()));
+        let mut router = Router::new();
+        router.add_device(Box::new(FaultRoundDevice));
+        let mut paired = Service::new_with_listen_table(router, None, listen_table);
+        paired.set_socket_registry(registry);
+        let service = Box::leak(Box::new(spin::Mutex::new(paired)));
+        let sockets = Box::leak(Box::new(spin::Mutex::new(SocketSet::new(alloc::vec![]))));
+        let access = StackAccess::Injected {
+            service,
+            sockets,
+            listen_table,
+        };
+
+        let (old_handle, old_bridge) = registry.add_public(new_tcp_socket());
+        let old_epoch = registry.socket_epoch(old_handle).unwrap();
+        let outcome = access
+            .round(Instant::from_millis_const(0), RxOwnerView::PollingOwned)
+            .unwrap();
+        assert_eq!(outcome.fault_epoch, Some(old_epoch));
+        assert_eq!(
+            outcome.fault_code,
+            crate::readiness::dev_error_code(&DevError::Io)
+        );
+
+        assert_eq!(
+            service.lock().commit_socket_epoch_terminal_for(
+                registry,
+                old_epoch,
+                NetworkTerminal::LinkDown.code(),
+            ),
+            Some(true)
+        );
+        registry.wake_socket_epoch(old_epoch);
+        service
+            .lock()
+            .open_socket_epoch_after_recovery(registry)
+            .unwrap();
+        let (_fresh_handle, fresh_bridge) = registry.add_public(new_tcp_socket());
+        let fresh_wakes = Arc::new(AtomicUsize::new(0));
+        fresh_bridge.register(IoEvents::ERR, &counting_waker(fresh_wakes.clone()));
+
+        access.publish_terminal(outcome.fault_epoch.unwrap(), outcome.fault_code);
+
+        assert_eq!(
+            old_bridge.network_terminal_code(),
+            NetworkTerminal::LinkDown.code()
+        );
+        assert_eq!(
+            fresh_bridge.network_terminal_code(),
+            crate::readiness::TERMINAL_NONE
+        );
+        assert_eq!(fresh_wakes.load(Ordering::Relaxed), 0);
+        assert_eq!(registry.current_socket_epoch(), old_epoch + 1);
+        listen_table
+            .listen_with_epoch(
+                IpListenEndpoint {
+                    addr: None,
+                    port: 18103,
+                },
+                Arc::new(ReadinessBridge::new()),
+                old_epoch + 1,
+                &mut sockets.lock(),
+            )
+            .unwrap();
     }
 
     #[test]
@@ -1166,7 +1300,7 @@ mod tests {
         // Task 5.1 (Iteration 006): the critical section acquires the
         // socket's own registry (`self.sockets()`), production = global.
         assert!(accept_src.contains("self.sockets().inner.lock()"));
-        assert!(accept_src.contains("self.listen_table().accept_with(bound_port, &mut sockets)"));
+        assert!(accept_src.contains("accept_with_epoch(bound_port, &mut sockets)"));
         assert!(accept_src.contains("drop(sockets)"));
         // The wake and software-work publish appear only after the guard
         // drop inside the closure.
@@ -1187,7 +1321,8 @@ mod tests {
         // T2.6-R1 source/ownership witness: a deferred close entry's raw
         // smoltcp slot is owned exclusively by the resident reaper while the
         // entry lives. The ONLY production enqueue site is `TcpSocket::drop`
-        // (exactly one `queue_deferred_removal(` call), so no UDP / listener
+        // (exactly one `queue_deferred_removal_for_epoch(` call), so no
+        // listener
         // / wrapper path can create a deferred entry; the two `remove_raw`
         // calls left in Drop are the no-Service fallback and the immediate
         // branch, both entry-free in the same drop; and the reaper removes
@@ -1198,7 +1333,7 @@ mod tests {
         for _ in 0..100 {
             let tcp = include_str!("tcp.rs");
             assert_eq!(
-                tcp.matches("queue_deferred_removal(").count(),
+                tcp.matches("queue_deferred_removal_for_epoch(").count(),
                 1,
                 "only TcpSocket::drop may enqueue a TCP deferred close"
             );
@@ -1210,7 +1345,7 @@ mod tests {
             );
             let udp = include_str!("udp.rs");
             assert_eq!(
-                udp.matches("queue_deferred_removal(").count(),
+                udp.matches("queue_deferred_removal_for_epoch(").count(),
                 1,
                 "UdpSocket::drop enqueues exactly one deferred close"
             );

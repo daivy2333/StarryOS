@@ -390,6 +390,22 @@ impl Router {
         }
     }
 
+    /// Reads a consistent link snapshot from device `dev` (Task 3.1 / R6).
+    /// `Again` maps through unchanged so the owner retains and retries.
+    pub fn read_link_status(&mut self, dev: usize) -> DevResult<bool> {
+        match self.devices.get_mut(dev) {
+            Some(device) => device.read_link_status(),
+            None => Err(DevError::BadState),
+        }
+    }
+
+    /// Sets or clears the link I/O gate on device `dev` (Task 3.1 / D6).
+    pub fn tx_set_link_hold(&mut self, dev: usize, held: bool) {
+        if let Some(device) = self.devices.get_mut(dev) {
+            device.tx_set_link_hold(held);
+        }
+    }
+
     /// Number of DeviceOwned tickets outstanding on device `dev` (Task 2.2
     /// quiesce drain).
     pub fn tx_device_owned_len(&self, dev: usize) -> u64 {

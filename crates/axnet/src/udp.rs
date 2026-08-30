@@ -23,7 +23,7 @@ use crate::{
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    readiness::{ReadinessBridge, TERMINAL_NONE, effective_terminal_code, terminal_ax_error},
+    readiness::{ReadinessBridge, TERMINAL_NONE, terminal_ax_error},
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
@@ -37,6 +37,8 @@ pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
 /// A UDP socket that provides POSIX-like APIs.
 pub struct UdpSocket {
     handle: SocketHandle,
+    /// SocketEpoch captured when this public handle was registered.
+    socket_epoch: u64,
     readiness: Arc<ReadinessBridge>,
     local_addr: RwLock<Option<IpEndpoint>>,
     peer_addr: RwLock<Option<(IpEndpoint, IpAddress)>>,
@@ -58,6 +60,9 @@ impl UdpSocket {
 
         Self {
             handle,
+            socket_epoch: SOCKET_SET
+                .socket_epoch(handle)
+                .expect("new UDP handle must be registered"),
             readiness,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
@@ -76,6 +81,10 @@ impl UdpSocket {
         let (handle, readiness) = ctx.sockets.add_public(new_udp_socket());
         Self {
             handle,
+            socket_epoch: ctx
+                .sockets
+                .socket_epoch(handle)
+                .expect("new UDP fixture handle must be registered"),
             readiness,
             local_addr: RwLock::new(None),
             peer_addr: RwLock::new(None),
@@ -129,13 +138,11 @@ impl UdpSocket {
         }
     }
 
-    /// Task 3.1: effective stable terminal code — the global data-plane
-    /// fault takes precedence over the socket-local terminal.
+    /// Task 3.2: the bridge owns both the SocketEpoch terminal and any
+    /// socket-local terminal, so old handles keep their identity after a
+    /// later epoch opens.
     fn terminal_code(&self) -> u64 {
-        effective_terminal_code(
-            self.sockets().global_terminal_code(),
-            self.readiness.terminal_code(),
-        )
+        self.readiness.effective_terminal_code()
     }
 
     fn observe_terminal_error(&self) -> Option<AxError> {
@@ -270,6 +277,12 @@ impl Configurable for UdpSocket {
     fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
         use GetSocketOption as O;
 
+        // SO_ERROR is a non-consuming view of the same terminal checked by
+        // poll and I/O. Refresh the cached errno directly so callers do not
+        // need a preceding poll or retry to observe an epoch closure.
+        if matches!(option, O::Error(_)) {
+            let _ = self.observe_terminal_error();
+        }
         if self.general.get_option_inner(option)? {
             return Ok(true);
         }
@@ -309,6 +322,9 @@ impl Configurable for UdpSocket {
 }
 impl SocketOps for UdpSocket {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         let mut local_addr = local_addr.into_ip()?;
         let mut guard = self.local_addr.write();
 
@@ -511,9 +527,11 @@ impl Drop for UdpSocket {
             // socket's own context (test fixture) or the production global.
             if let Some(service) = self.deferred_service() {
                 self.sockets().retire_public(self.handle);
-                service
-                    .lock()
-                    .queue_deferred_removal(self.handle, crate::service::CloseKind::UdpQueued);
+                service.lock().queue_deferred_removal_for_epoch(
+                    self.handle,
+                    crate::service::CloseKind::UdpQueued,
+                    self.socket_epoch,
+                );
                 crate::stack_runner::publish_software_work();
                 return;
             }
@@ -597,11 +615,15 @@ mod tests {
 
     // ── Task 3.1: terminal readiness overlay and terminal-first I/O ─────
 
-    use axerrno::AxError;
+    use axerrno::{AxError, LinuxError};
     use axpoll::Pollable;
 
     use super::UdpSocket;
-    use crate::{readiness, wrapper::SocketTestContext};
+    use crate::{
+        options::{Configurable, GetSocketOption},
+        readiness,
+        wrapper::SocketTestContext,
+    };
 
     /// Task 5.1 (Iteration 006): leaked per-test fixture; removes the R57
     /// global `SOCKET_SET` churn prerequisite.
@@ -647,6 +669,68 @@ mod tests {
             socket.observe_terminal_error(),
             Some(AxError::ConnectionRefused)
         );
+    }
+
+    #[test]
+    fn closed_socket_epoch_is_seen_by_udp_poll_and_io() {
+        let ctx = test_ctx();
+        let socket = UdpSocket::new_with_context(ctx);
+        let epoch = socket.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(epoch, readiness::NetworkTerminal::Deadline)
+        );
+
+        assert!(Pollable::poll(&socket).contains(IoEvents::ERR));
+        assert_eq!(socket.observe_terminal_error(), Some(AxError::TimedOut));
+        let err = SocketOps::send(&socket, &b"ab"[..], SendOptions::default()).unwrap_err();
+        assert_eq!(err, AxError::TimedOut);
+
+        assert_eq!(ctx.sockets.open_next_socket_epoch(), Ok(epoch + 1));
+        let fresh = UdpSocket::new_with_context(ctx);
+        assert!(!Pollable::poll(&fresh).contains(IoEvents::ERR));
+    }
+
+    #[test]
+    fn udp_so_error_reads_epoch_terminal_before_poll_and_repeatedly() {
+        let ctx = test_ctx();
+        let socket = UdpSocket::new_with_context(ctx);
+        let epoch = socket.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(epoch, readiness::NetworkTerminal::Deadline)
+        );
+
+        let mut first = 0;
+        socket
+            .get_option(GetSocketOption::Error(&mut first))
+            .unwrap();
+        let mut second = 0;
+        socket
+            .get_option(GetSocketOption::Error(&mut second))
+            .unwrap();
+        let expected = LinuxError::from(AxError::TimedOut).code();
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+    }
+
+    #[test]
+    fn terminalized_udp_bind_does_not_change_socket_state() {
+        let ctx = test_ctx();
+        let socket = UdpSocket::new_with_context(ctx);
+        let epoch = socket.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(epoch, readiness::NetworkTerminal::Cancelled)
+        );
+
+        let err = SocketOps::bind(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18603)),
+        )
+        .unwrap_err();
+        assert_eq!(err, AxError::Interrupted);
+        assert!(socket.local_addr.read().is_none());
     }
 
     #[test]

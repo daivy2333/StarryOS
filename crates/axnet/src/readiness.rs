@@ -30,6 +30,66 @@ pub(crate) const TERMINAL_NO_MEMORY: u64 = 6;
 pub(crate) const TERMINAL_RESOURCE_BUSY: u64 = 7;
 pub(crate) const TERMINAL_UNSUPPORTED: u64 = 8;
 pub(crate) const TERMINAL_CONNECT_REFUSED: u64 = 9;
+pub(crate) const TERMINAL_CONNECTION_RESET: u64 = 10;
+pub(crate) const TERMINAL_NOT_CONNECTED: u64 = 11;
+pub(crate) const TERMINAL_TIMED_OUT: u64 = 12;
+pub(crate) const TERMINAL_INTERRUPTED: u64 = 13;
+pub(crate) const TERMINAL_OWNERSHIP_FAULT: u64 = 14;
+pub(crate) const TERMINAL_DEVICE_IO: u64 = 15;
+
+/// Stable application-facing terminal identity for one SocketEpoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetworkTerminal {
+    ConnectionReset,
+    LinkDown,
+    Deadline,
+    Cancelled,
+    OwnershipFault,
+    DeviceIo,
+}
+
+impl NetworkTerminal {
+    pub(crate) const fn code(self) -> u64 {
+        match self {
+            Self::ConnectionReset => TERMINAL_CONNECTION_RESET,
+            Self::LinkDown => TERMINAL_NOT_CONNECTED,
+            Self::Deadline => TERMINAL_TIMED_OUT,
+            Self::Cancelled => TERMINAL_INTERRUPTED,
+            Self::OwnershipFault => TERMINAL_OWNERSHIP_FAULT,
+            Self::DeviceIo => TERMINAL_DEVICE_IO,
+        }
+    }
+
+    pub(crate) const fn ax_error(self) -> AxError {
+        match self {
+            Self::ConnectionReset => AxError::ConnectionReset,
+            Self::LinkDown => AxError::NotConnected,
+            Self::Deadline => AxError::TimedOut,
+            Self::Cancelled => AxError::Interrupted,
+            Self::OwnershipFault => AxError::BadState,
+            Self::DeviceIo => AxError::Io,
+        }
+    }
+
+    pub(crate) const fn from_code(code: u64) -> Option<Self> {
+        match code {
+            TERMINAL_CONNECTION_RESET => Some(Self::ConnectionReset),
+            TERMINAL_NOT_CONNECTED => Some(Self::LinkDown),
+            TERMINAL_TIMED_OUT => Some(Self::Deadline),
+            TERMINAL_INTERRUPTED => Some(Self::Cancelled),
+            TERMINAL_OWNERSHIP_FAULT => Some(Self::OwnershipFault),
+            TERMINAL_DEVICE_IO => Some(Self::DeviceIo),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn from_legacy_code(code: u64) -> Self {
+        match code {
+            TERMINAL_BAD_STATE => Self::OwnershipFault,
+            _ => Self::DeviceIo,
+        }
+    }
+}
 
 /// Encodes a concrete [`DevError`] into its stable terminal code. The code is
 /// the identity carried across publication; it survives where a `DevError`
@@ -75,6 +135,12 @@ pub(crate) fn terminal_ax_error(code: u64) -> AxError {
         TERMINAL_RESOURCE_BUSY => AxError::ResourceBusy,
         TERMINAL_UNSUPPORTED => AxError::Unsupported,
         TERMINAL_CONNECT_REFUSED => AxError::ConnectionRefused,
+        TERMINAL_CONNECTION_RESET => AxError::ConnectionReset,
+        TERMINAL_NOT_CONNECTED => AxError::NotConnected,
+        TERMINAL_TIMED_OUT => AxError::TimedOut,
+        TERMINAL_INTERRUPTED => AxError::Interrupted,
+        TERMINAL_OWNERSHIP_FAULT => AxError::BadState,
+        TERMINAL_DEVICE_IO => AxError::Io,
         _ => AxError::Unsupported,
     }
 }
@@ -142,6 +208,8 @@ pub(crate) struct ReadinessBridge {
     /// Task 3.1: first-wins stable terminal code (`TERMINAL_NONE` = none).
     /// Committed strictly before any wake that publishes it.
     terminal_code: AtomicU64,
+    /// Task 3.2: first-wins terminal owned by this bridge's SocketEpoch.
+    network_terminal_code: AtomicU64,
 }
 
 // SAFETY: every member is an internally synchronized `PollSet`; the Arc
@@ -167,12 +235,39 @@ impl ReadinessBridge {
             write,
             terminal,
             terminal_code: AtomicU64::new(TERMINAL_NONE),
+            network_terminal_code: AtomicU64::new(TERMINAL_NONE),
         }
     }
 
     /// Returns the committed stable terminal code, if any.
     pub(crate) fn terminal_code(&self) -> u64 {
         self.terminal_code.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn network_terminal_code(&self) -> u64 {
+        self.network_terminal_code.load(Ordering::Acquire)
+    }
+
+    /// SocketEpoch terminal takes precedence over a socket-local connect
+    /// failure and cannot be cleared by a later epoch opening.
+    pub(crate) fn effective_terminal_code(&self) -> u64 {
+        let network = self.network_terminal_code();
+        if network != TERMINAL_NONE {
+            network
+        } else {
+            self.terminal_code()
+        }
+    }
+
+    pub(crate) fn commit_network_terminal(&self, terminal: NetworkTerminal) -> bool {
+        self.network_terminal_code
+            .compare_exchange(
+                TERMINAL_NONE,
+                terminal.code(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     /// Commits the stable terminal code first-wins; returns whether this
@@ -605,5 +700,23 @@ mod tests {
             super::effective_terminal_code(super::TERMINAL_NONE, super::TERMINAL_NONE),
             super::TERMINAL_NONE
         );
+    }
+
+    #[test]
+    fn network_terminal_maps_each_recovery_category() {
+        use super::NetworkTerminal;
+
+        let cases = [
+            (NetworkTerminal::ConnectionReset, AxError::ConnectionReset),
+            (NetworkTerminal::LinkDown, AxError::NotConnected),
+            (NetworkTerminal::Deadline, AxError::TimedOut),
+            (NetworkTerminal::Cancelled, AxError::Interrupted),
+            (NetworkTerminal::OwnershipFault, AxError::BadState),
+            (NetworkTerminal::DeviceIo, AxError::Io),
+        ];
+        for (terminal, expected) in cases {
+            assert_eq!(terminal.ax_error(), expected);
+            assert_eq!(NetworkTerminal::from_code(terminal.code()), Some(terminal));
+        }
     }
 }

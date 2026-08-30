@@ -1,10 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-28
-> Revision: `aab92f95825cfb8dd9983249bcfe118ab6a3d64c`
+> Updated: 2026-08-29
+> Revision: `596b324b6e7cb78b3a4308b997657b6d0c95d44a`
 > Branch: `net-k3`
-> Worktree: modified（`openspec/specs/knowledge/spec.md` 知识表达压缩未提交）
+> Worktree: modified（MS07 的 `async_rx.rs`/`service.rs` 产品与测试改动、Iteration 003 文档及 Iteration 004 规划文档已 staged；先前 knowledge/spec.md 压缩已不在工作树）
 
 ## 项目身份
 
@@ -48,8 +48,9 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `aab92f95825cfb8dd9983249bcfe118ab6a3d64c`，相对 `origin/net-k3` ahead 1（MS07 单 hart 恢复语义 change 的规划提交，未推送）。
-- 工作树含 `openspec/specs/knowledge/spec.md` 表达压缩的未提交改动；详细里程碑状态见 [`tasks.md`](tasks.md)。
+- 当前 revision 为 `596b324b6e7cb78b3a4308b997657b6d0c95d44a`，相对 `origin/net-k3` ahead 3（MS07 三次实现提交，未推送）。
+- 活跃 change：`ms07-qemu-single-hart-recovery-semantics`（QEMU 单 hart 恢复语义，覆盖 T11 reset/取消/link flap）。Iteration 000–003（recovery substrate、epoch ledger、data-stage deadlines、resident recovery owner）已 accepted；Iteration 004（link/config 控制面，Task 3.1）处于 draft 待批准。
+- 工作树含 MS07 本 Cycle 的 staged 产品/测试改动与 Iteration 004 规划文档；详细里程碑状态见 [`tasks.md`](tasks.md)。
 
 ## 权威入口
 

@@ -1,6 +1,6 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-27 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
+> 任务状态最后同步: 2026-08-29 | 路线规划更新: 2026-08-14 | 分支: net-k3 | grep: `<!-- T{编号} -->`
 > 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS06 与 MS16 已归档。
 
 ---
@@ -23,7 +23,7 @@
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
 | <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ✅ 完成（MS06 Iteration 000 `001-rework` accepted；Tasks 1.1–1.5 全部闭合） |
 | <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ✅ 完成（MS06；最终 Cycle `001-replan` accepted，单 hart QEMU 手工验收全过；host/QEMU 进程证据完整性按用户明确授权豁免） |
-| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ⏳ 待 MS07 change 规划与批准 |
+| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | 🔄 进行中（MS07；Iteration 000–003 accepted，Iteration 004 待批） |
 | <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ⏳ 等待 T11 |
 | <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待 T12 |
 | <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ⏳ 等待 T13 |
@@ -168,7 +168,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS07：QEMU 单 hart 恢复语义
 
-- Status: planned
+- Status: active
 - Outcome: reset、分层取消、阶段化超时和 link flap 下的异步对象生命周期封闭，迟到 completion 不跨 owner epoch 生效。
 - Rationale: 恢复语义必须在 SMP 放大竞态前先形成可故障注入的稳定基线；R53 的单请求 DMA fail-stop 只提供无法安全收敛时的下限，不替代 NIC 多 packet ownership 设计。
 - Dependencies: MS06
@@ -179,7 +179,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 在 waiter、pre-submit、device-owned、各 timeout stage 和 reset failure 注入下，无 UAF、重复回收、永久 Pending、静默丢包或 stale completion 误归属；结论限定于单 hart QEMU/VirtIO 模型。
 - Diagnostic boundary: 失败限制在取消层级、epoch/descriptor/cookie 归属、具体 timeout stage、quiesce 或 reset 状态转换。
 - Split signals: link 管理与设备 reset 形成两个可独立验收且可独立延期的控制面成果。
-- Related changes: None
+- Related changes: `ms07-qemu-single-hart-recovery-semantics`（进行中；Iteration 000–003 accepted，Iteration 004 link/config 控制面 draft 待批准）
 
 ### MS08：QEMU 多 hart 正确性基线
 
@@ -317,4 +317,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前无活跃 change。MS06 已于 2026-08-27 归档并完成 T09–T10；下一项为 MS07，仍需独立 Plan 和用户批准。
+活跃 change：`ms07-qemu-single-hart-recovery-semantics`（QEMU 单 hart 恢复语义，覆盖 T11）。Iteration 000–003（recovery substrate、epoch ticket ledger、data-stage deadlines、resident recovery owner）已 accepted；Iteration 004（link/config 控制面，Task 3.1）draft 待用户批准后进入 Act。该 change accepted 后才收口 MS07。

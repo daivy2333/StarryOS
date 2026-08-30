@@ -641,6 +641,94 @@ fn recovery_gate_and_cancel_cover_arp_pending_pre_submit_paths() {
 }
 
 #[test]
+fn link_gate_is_independent_of_recovery_gate_and_either_blocks_send() {
+    // Task 3.1 / D6: the link gate is independent of the recovery gate. The
+    // send/preflight path rejects while either holds, and clearing one never
+    // clears the other (a link up must not unblock a resetting/faulted plane).
+    let (mut dev, _stats) = make_ethernet();
+    assert!(
+        matches!(
+            dev.send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxOutcome::Accepted { .. }
+        ),
+        "PRECONDITION: initial ARP request accepted"
+    );
+    assert_eq!(dev.tx_pending_len_for_test(), 1);
+
+    // Link down gates the requested-neighbor preflight and direct enqueue.
+    dev.tx_set_link_hold(true);
+    assert!(
+        matches!(
+            dev.preflight_send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxPreflight::Full
+        ),
+        "link-held device must reject the requested-neighbor preflight"
+    );
+    assert!(
+        matches!(
+            dev.send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxOutcome::Full
+        ),
+        "link-held device must reject the direct enqueue"
+    );
+    assert_eq!(dev.tx_pending_len_for_test(), 1);
+
+    // Link up while the recovery gate is held: still gated (compound). This
+    // proves a link-up never clears a still-active recovery/fault hold.
+    dev.tx_set_link_hold(false);
+    dev.tx_set_recovery_hold(true);
+    assert!(
+        matches!(
+            dev.preflight_send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxPreflight::Full
+        ),
+        "recovery-held device must stay gated after a link-up"
+    );
+
+    // Clearing recovery does not clear the link gate; a fresh link-down blocks.
+    dev.tx_set_recovery_hold(false);
+    dev.tx_set_link_hold(true);
+    assert!(
+        matches!(
+            dev.send(
+                IpAddress::Ipv4(PEER_IP),
+                &IPV4_PAYLOAD,
+                Instant::from_millis_const(0)
+            ),
+            TxOutcome::Full
+        ),
+        "a fresh link-down must re-gate independently of recovery"
+    );
+
+    // Both cleared: the already-requested preflight accepts again.
+    dev.tx_set_link_hold(false);
+    assert!(matches!(
+        dev.preflight_send(
+            IpAddress::Ipv4(PEER_IP),
+            &IPV4_PAYLOAD,
+            Instant::from_millis_const(0)
+        ),
+        TxPreflight::Ready
+    ));
+}
+
+#[test]
 fn ipv4_delivers_payload_and_recycles() {
     let (mut dev, stats) = make_ethernet();
     stats.frames.lock().push_back(ipv4_frame_to_us());
@@ -2584,6 +2672,41 @@ fn reclaim_valid_cookie_still_releases_matching_ticket() {
     // Ticket 0 is still live and reclaimable.
     stats.reclaim_cookies.lock().push_back(0);
     assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
+}
+
+#[test]
+fn link_hold_gates_new_send_but_not_device_owned_reclaim() {
+    // Task 3.1 / A4 / D6 (Plan Review Finding 2): a link-down holds the gate
+    // for NEW enqueue/submit, but an already-DeviceOwned ticket must remain
+    // reclaimable — the link gate must not strand completion/resources.
+    let (mut dev, stats) = make_ethernet_with_tx_queue();
+    dev.set_dormant_slots_for_test();
+    // Enqueue + submit a frame so ticket 0 is DeviceOwned and reclaimable.
+    let outcome = dev.send(
+        IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+        &[1u8; 10],
+        Instant::from_millis_const(0),
+    );
+    assert!(matches!(outcome, TxOutcome::Accepted { .. }));
+    assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+
+    // Link down gates a NEW dormant-slot enqueue.
+    dev.tx_set_link_hold(true);
+    assert!(matches!(
+        dev.send(
+            IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+            &[1u8; 10],
+            Instant::from_millis_const(0)
+        ),
+        TxOutcome::Full
+    ));
+
+    // The pre-existing DeviceOwned ticket still reclaims under the link gate.
+    stats.reclaim_cookies.lock().push_back(0);
+    assert!(
+        matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed),
+        "a DeviceOwned ticket must stay reclaimable while the link gate is held"
+    );
 }
 
 // --- Task 3.5: stack TX enqueue wakes the queue owner ---

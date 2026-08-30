@@ -93,6 +93,11 @@ pub struct EthernetDevice {
     /// `Full` so no new Queued ticket enters a data plane being reset. Only
     /// the recovery owner toggles it, under the Service guard.
     recovery_hold: bool,
+    /// Link gate (Task 3.1 / D6): while held (link down), the TX enqueue path
+    /// returns `Full` so no new pre-submit or Queued frame is accepted during
+    /// a link outage. Independent of `recovery_hold`: the send path rejects
+    /// while either holds, and clearing one never clears the other.
+    link_held: bool,
     /// Host-test witness for deferred RX retry counting (Task 3.6).
     #[cfg(test)]
     recv_dormant_calls: AtomicUsize,
@@ -112,6 +117,7 @@ impl EthernetDevice {
             tx_tickets: TicketTracker::new(),
             tx_mode: TxMode::Polling,
             recovery_hold: false,
+            link_held: false,
             #[cfg(test)]
             recv_dormant_calls: AtomicUsize::new(0),
         }
@@ -224,9 +230,9 @@ impl EthernetDevice {
             ethertype: proto,
         };
         let frame_len = repr.buffer_len() + size;
-        // Recovery gate: the resetting NIC must not allocate a new Queued
-        // ticket into a data plane about to be torn down.
-        if self.recovery_hold {
+        // Recovery/link gate: a resetting or link-down NIC must not allocate
+        // a new Queued ticket into a data plane about to be torn down.
+        if self.recovery_hold || self.link_held {
             return TxOutcome::Full;
         }
         if self.tx_slots.preflight(frame_len).is_err() {
@@ -521,7 +527,11 @@ impl EthernetDevice {
             // task alone owns raw TX completions. Readiness depends only on
             // fixed TX slot capacity and checked ticket headroom.
             TxMode::DormantSlots => {
-                if self.recovery_hold || self.tx_slots.is_full() || !self.tx_tickets.can_alloc() {
+                if self.recovery_hold
+                    || self.link_held
+                    || self.tx_slots.is_full()
+                    || !self.tx_tickets.can_alloc()
+                {
                     TxPreflight::Full
                 } else {
                     TxPreflight::Ready
@@ -552,7 +562,7 @@ impl EthernetDevice {
     /// recovery rejects the enqueue so no new pre-submit packet is accepted
     /// into a data plane being reset (F3).
     fn preflight_requested_neighbor(&mut self) -> TxPreflight {
-        if self.recovery_hold || self.pending_packets.is_full() {
+        if self.recovery_hold || self.link_held || self.pending_packets.is_full() {
             TxPreflight::Full
         } else {
             TxPreflight::Ready
@@ -702,10 +712,11 @@ impl Device for EthernetDevice {
                 outcome => return outcome,
             }
         }
-        // F3: the recovery gate must also reject the direct pre-submit enqueue
-        // to `pending_packets` (the already-requested neighbor path), so no new
-        // pre-submit packet enters a data plane being reset.
-        if self.recovery_hold {
+        // Compound gate (D6): a resetting or link-down data plane must also reject
+        // the direct pre-submit enqueue to `pending_packets` (the
+        // already-requested neighbor path), so no new pre-submit packet enters
+        // it. The recovery and link holds are independent; either blocks.
+        if self.recovery_hold || self.link_held {
             return TxOutcome::Full;
         }
         if self.pending_packets.is_full() {
@@ -760,6 +771,13 @@ impl Device for EthernetDevice {
     }
 
     fn tx_submit_one(&mut self) -> TxSubmitStep {
+        // Compound gate (D6): a resetting or link-down data plane must not move
+        // a Queued ticket to DeviceOwned. The recovery and link holds are
+        // independent; either blocks submit so a same-owner round cannot hand a
+        // pre-submit frame to a dead/disappearing data plane.
+        if self.recovery_hold || self.link_held {
+            return TxSubmitStep::Full;
+        }
         let Some((_, ticket, frame)) = self.tx_slots.peek_full() else {
             return TxSubmitStep::Empty;
         };
@@ -884,6 +902,10 @@ impl Device for EthernetDevice {
 
     fn tx_set_recovery_hold(&mut self, held: bool) {
         self.recovery_hold = held;
+    }
+
+    fn tx_set_link_hold(&mut self, held: bool) {
+        self.link_held = held;
     }
 
     fn tx_device_owned_len(&self) -> u64 {

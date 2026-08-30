@@ -101,6 +101,32 @@ fn publish_only_for_causes_with_used_ring_bit() {
     assert!(should_publish_rx(0x07));
 }
 
+#[test]
+fn publish_config_only_for_causes_with_config_change_bit() {
+    // The config-change bit (0x02) has its own independent publication
+    // decision (Task 3.1 / R6 / A1). config-only and combined publish CONFIG;
+    // zero, used-only and unknown-only never publish a fabricated CONFIG.
+    assert!(!should_publish_config(0x00));
+    assert!(!should_publish_config(0x01));
+    assert!(!should_publish_config(0x04));
+    assert!(!should_publish_config(0x0C));
+    assert!(should_publish_config(0x02));
+    assert!(should_publish_config(0x03));
+    assert!(should_publish_config(0x06));
+    assert!(should_publish_config(0x0A));
+}
+
+#[test]
+fn combined_status_publishes_both_used_and_config() {
+    // A combined cause (bits 0 + 1) must retain BOTH publications
+    // independently: one publish is neither dropped nor replaced by the other
+    // (Task 3.1 / A1 / D6).
+    assert!(should_publish_rx(0x03));
+    assert!(should_publish_config(0x03));
+    assert!(should_publish_rx(0x01) && !should_publish_config(0x01));
+    assert!(!should_publish_rx(0x02) && should_publish_config(0x02));
+}
+
 // ── Telemetry ──────────────────────────────────────────────────────────
 
 #[test]

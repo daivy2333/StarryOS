@@ -2,7 +2,7 @@
 
 ## Plan Context
 
-- Status: draft
+- Status: ready
 - Iteration: 003-resident-owner-and-driver-stage-recovery
 - Cycle: 000-initial
 - Cycle Type: initial
@@ -180,8 +180,134 @@ Gate 2 技术检查全部 PASS；Plan Context 保持 draft，等待用户批准�
 
 ## Act Response
 
-- Status: pending
+- Status: reported
+
+**实际改动**
+
+本 Cycle 经两次 Plan Review 返回当前 Cycle 修复；Act Response 为原实施与三轮 rework（budget/begin-stage、A2、A5/rustfmt）合并后的完整当前状态。
+
+Task 2.3（resident recovery owner 与 driver-stage deadlines）在 `crates/axnet/src/async_rx.rs` 与 `crates/axnet/src/service.rs` 完成。工作树中已有的 resident recovery 状态机经独立 witness 验收，并修复其暴露的产品缺口：
+
+1. **quiesce budget self-wake**（gap 3）：`poll_recovery` quiesce grace drain 达到 `RECLAIM_BUDGET` 且仍有 DeviceOwned 未回收（未 drain 亦未到期）时，owner 自醒以便下一 poll 继续收敛，不再等 quiesce 1s timer 或外部 NIC 事件；stall（无回收进展）路径保持不自醒，避免 busy-loop。
+2. **begin-error stage identity**（gap 4）：`recovery_begin_target` 失败在 `quiescing_to_resetting()` 之后。原先 `self.recovery` 仍是 Quiescing，fault stage 误记为 `QUIESCE`（lifecycle 却已 Resetting）。现于 publish 前将 `self.recovery` 置为 `Resetting`，使 begin 失败携带 `RESET` stage，与已推进的 lifecycle 一致。
+3. **A2 rework —— pre-submit 取消 exactly-once**：从 `Service::recovery_begin_target` 移除第二次取消（此前 quiesce 入口取消一次 + begin handoff 再取消一次）。pre-submit cancellation（Queued 与 ARP-pending）现只发生在 quiesce 入口单一线性化点，与 recovery hold 一起封锁新提交；begin 失败与后续 Faulted-resident 均不重复取消。
+4. **A5 rework —— 真实新 epoch enqueue→submit→reclaim**：新增独立 `LedgerRecoveryDevice` fixture，持有项目真实的 `FixedFrameQueue` TX slot + `TicketTracker`（epoch-bound owner ledger）。`send` 真正把 frame 入队并分配 epoch-bound ticket；`tx_submit_one` 把真实 ticket `Queued→DeviceOwned`（记录 epoch）；`tx_reclaim_one` 经 `TxCookie::with_epoch(epoch, ticket)` 释放该 ticket 得 `Reclaimed`（epoch/ticket 不匹配即 owner-drift）。A5 测试通过 `Device::send` seam 产生待提交 frame，证明恢复后 epoch、Reclaimed terminal outcome 与 owner ledger 守恒，而非依赖独立计数。
+
+其余为测试/夹具扩展：`RecoveringDevice` 新增可控 DeviceOwned 数量、reclaim 行为（drain/stall/reclaim-fault）、begin 错误注入、epoch 反映与 wake observer 辅助；`LedgerRecoveryDevice` 复用同一 `ScriptedRecovery`/stats 驱动恢复并用真实 ledger 见证数据路径。
+
+**文件和符号**
+
+- `crates/axnet/src/async_rx.rs`：
+  - 产品：`RxRxFuture::poll_recovery`（quiesce budget self-wake、begin-error RESET stage）。
+  - 测试夹具：`RecoveryDriverStats`（+`device_owned`/`reclaim_error`/`reclaim_stall`/`begin_error`/`submit_epoch`/`submitted_ticket`/`completion_armed`）、`ScriptedRecovery::begin_recovery`（begin_error 注入）、`RecoveringDevice::{tx_submit_one,tx_reclaim_one,tx_slot_pending,tx_close_device_owned,tx_device_owned_len,queue_epoch}`（quiesce 计数语义）、新增 `LedgerRecoveryDevice`（真实 `FixedFrameQueue`+`TicketTracker`）+ `leaked_service_ledger_recovering`。
+  - 测试：`poll_observe` + 9 个新测试（`quiesce_budget_self_wakes_so_backlog_converges`、`quiesce_natural_drain_begins_reset_within_budget`、`quiesce_1s_expiry_begins_reset_with_remaining_owner`、`quiesce_reclaim_fault_quarantines_without_reset`、`reinitialize_stage_timeout_quarantines_owner`、`reinitialize_step_error_quarantines_with_reinit_identity`、`begin_error_quarantines_with_reset_stage`、`recovery_success_reopens_gate_and_serves_new_epoch`、`recovery_success_resumes_new_epoch_send_submit_reclaim`）；并给成功/begin-error 路径补 A2 exactly-once 断言。
+- `crates/axnet/src/service.rs`：`Service::recovery_begin_target` 移除重复取消（A2）。
+
+**与计划的偏差及原因**
+
+- 无计划外范围。所有产品修复均由 Task 2.3 Current-State Evidence（gap 3/4）或 Plan Review 的两项 ACT-DEVIATION（Finding 1 A5、Finding 2 A2）明确要求。
+- 早期实现曾因普通 Active round 的 `tx_reclaim_one` 消耗 one-shot 注入而建精确计数断言，被污染后改为 hold-gated 夹具配合相对 wake 增量断言；这是夹具保真度正确化，非产品语义改变。
+- Plan Review Finding 2（A2）指出的 `cancel_queued_calls == 2` 断言，本属对既有 `recovery_begin_target` 双取消契约的如实记录；rework 改为收敛为 exactly-once 并更新断言为 `== 1`。
+- Plan Review Finding 1（A5，第二轮）指出早前 witness 直接写 `slot_pending` 布尔、用独立计数冒充 ledger。现已回退该计数法，改用真实 `TicketTracker`/`FixedFrameQueue` 的 `LedgerRecoveryDevice`，A5 测试经 `Device::send` seam 产生 frame，submit/reclaim 关联 epoch-bound `TxCookie`，证明 epoch、Reclaimed terminal outcome 与守恒。
+- Plan Review Finding 2（rustfmt，第二轮）指出 `cargo fmt -p axnet-ng -- --check` 因非 workspace member exit 1。现已改用 manifest-scoped `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check`，0 差异，且格式修复仅落在本 Cycle 新增区域。
+- A5 的新 epoch queue I/O witness 在真实 queue/device path 完成 enqueue(send)→submit→reclaim，遵守 Plan Risk note「继续I/O限定为 queue/device path，不提前接受 socket migration」。
+
+**Self-Review**
+
+- Spec compliance：六个 Current-State Evidence gap 全部有 witness；Acceptance A1–A6 逐一闭合：
+  - A1 唯一 owner/spawn/Faulted 驻留；
+  - A2 quiesce pre-submit cancel **exactly-once**（success、begin-error、Faulted-resident 均不重复）+ ≤32 reclaim/budget self-wake/drain-or-expiry/backing 保留；
+  - A3 三 stage deadline 与 stage 身份（含 reset/reinit 独立 timeout/error、begin-error RESET）；
+  - A4 status=0/Recovered 前 backing 保留 + 成功后 ResetAborted/flush/新 epoch；
+  - A5 成功提交 guard 外 wake + **新 epoch enqueue→submit→reclaim 真实数据路径** + owner ledger 守恒 + gate 重开；
+  - A6 兼容回归。
+  - Non-goals（link/config IRQ、socket epoch、QEMU ABI、SMP/真板/性能）未触碰。
+- Code quality：产品改动最小（3 处修复，均在 Task Contract/Change Surface 内）；夹具扩展符合既有风格；无新增 warning（manifest-scoped rustfmt 0 diff、`git diff --check` 干净）；`openspec validate --strict` valid。
+- RED 见证：budget self-wake 与 begin-error stage 两个测试修复前 RED（`c2==c1`、stage `4≠5`），修复后 GREEN；其余 witness-only 测试按期契约允许修复前即 GREEN。
+- 遗留 Minor：无阻塞项；仅确认 `cargo check` 的 `error_from_code`/`dev_error_from_code` 为既有 `pub(crate)` 仅测试使用的 baseline warning，与本 Cycle 无关。
+
+**验证**
+
+| 验证项 | 命令/操作 | 输出摘录 | 结论 |
+|---|---|---|---|
+| axnet ordinary 全量 | `RUSTFLAGS=... cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib -- --test-threads=1` | 422 passed，0 failed | PASS |
+| axnet qemu-diagnostics 全量 | 同上加 `--features qemu-diagnostics` | 446 passed，0 failed | PASS |
+| recovery 过滤集 | `cargo test ... recovery` | 14 passed，0 failed | PASS |
+| A5 新测试 | `cargo test ... recovery_success_resumes` | 1 passed，0 failed | PASS |
+| 下层 axdriver_net | `cargo test --manifest-path crates/axdriver_net/... --lib` | 12 passed，0 failed | PASS |
+| 下层 axdriver_virtio(net) | `cargo test --manifest-path crates/axdriver_virtio/... --features net` | 36 passed，0 failed | PASS |
+| 下层 virtio-drivers(alloc) | `cargo test --manifest-path crates/virtio-drivers/... --features alloc` | 43 passed，0 failed | PASS |
+| production check | `cargo check ... --lib` 及 `--features qemu-diagnostics` | Finished，仅既有 unused warnings | PASS |
+| rustfmt / diff | `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check`、`git diff --check` | 0 diff / 干净（manifest-scoped） | PASS |
+| OpenSpec validate | `openspec validate ms07-qemu-single-hart-recovery-semantics --strict` | valid | PASS |
+
+所有命令在 ordinary 与 qemu-diagnostics 之间串行、`--test-threads=1` 完整退出 0。
+
+**Persisted Evidence**
+
+`None required`（Plan `Persisted Evidence` Mode: none；命令可低成本重跑，Act Response 足以保存 Gate 结果）。
+
+**Experience Candidates**
+
+`None`。
+
+**未解决问题**
+
+None。Iteration 003 达到稳定 baseline：
+
+- quiesce drain/expiry、budget self-wake、begin-error RESET identity、reset/reinitialize 独立 deadline 与错误身份、成功提交的 epoch/gate/wake 顺序均有确定 witness。
+- A2 exactly-once 与 A5 新 epoch enqueue→submit→reclaim 数据路径闭合；guard 外 wake（gap 6）已见证；SocketEpoch 语义仍留 Iteration 005。
+
+**可选 commit/diff 引用**
+
+本 Cycle 改动仅落在工作树（`crates/axnet/src/async_rx.rs`、`crates/axnet/src/service.rs` 与 `003-resident-owner-and-driver-stage-recovery/000-initial.md` 的 Plan Status 翻转），未提交。
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: accepted
+
+**Findings**
+
+None blocking. A5 现在通过实际 `Device::send` seam 将 frame 写入真实 `FixedFrameQueue` 并由 `TicketTracker` 分配当前 QueueEpoch ticket；resident owner 随后完成 Queued → DeviceOwned，使用 epoch-bound `TxCookie` reclaim，最终 `device_owned_len == 0`、epoch 保持 1、flush state 为 `Done`。上次 rustfmt finding 也已闭合。
+
+既有 warning 未由本 Cycle 新增，作为非阻塞 baseline 保留。未发现第二 owner、无界 reclaim/spin、guard 内 wake、status=0 前 backing 释放、stage deadline 续期或 link/socket/QEMU runtime/SMP 范围扩张。
+
+**Deviation Classification**
+
+None。此前两项 `ACT-DEVIATION` 均已按当前 Cycle 反馈修复。
+
+**Acceptance Gaps**
+
+None。A1–A6 均满足。
+
+**Convergence**
+
+reduced to zero：A2 exactly-once、A5 真实 new-epoch enqueue/send → submit → reclaim 与 manifest-scoped rustfmt 全部闭合。
+
+**Evidence**
+
+- Revision：`596b324b6e7cb78b3a4308b997657b6d0c95d44a`；产品与测试改动仍在工作树。
+- A5 focused：1 passed，0 failed，exit 0。
+- axnet ordinary：422 passed，0 failed，exit 0；串行、`--test-threads=1`。
+- axnet qemu-diagnostics：446 passed，0 failed，exit 0；串行、`--test-threads=1`。
+- ordinary 与 qemu-diagnostics production check：均 exit 0，仅既有 warning。
+- `cargo fmt --manifest-path crates/axnet/Cargo.toml -- --check`：exit 0。
+- `git diff --check`：exit 0。
+- 下层 crate 本轮无新 diff；前次 fresh 结果 12/12、36/36、43/43 仍适用。
+- Persisted Evidence：none，符合 Plan。
+
+**Follow-up Decision**
+
+接受 Cycle 000 与 Iteration 003。Task 2.3 已形成 resident recovery stable baseline；按既有 Iteration Map 展开 Iteration 004，不调用 Act。
+
+**Iteration Plan Update**
+
+None。
+
+**Next Cycle**
+
+None。
+
+**Next Iteration**
+
+`../004-link-event-and-queue-policy/000-initial.md`（Plan Context: draft，等待用户审计和批准）。

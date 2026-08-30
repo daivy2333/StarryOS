@@ -355,6 +355,27 @@ pub trait Device: Send + Sync {
         let _ = held;
     }
 
+    /// Reads a consistent link snapshot from the underlying driver (Task 3.1 /
+    /// R6). The driver returns `Again` on a config-generation race; the owner
+    /// retains the cause and retries once per later poll. Devices whose driver
+    /// exposes no recovery control (and thus no link status) report
+    /// `Unsupported`.
+    fn read_link_status(&mut self) -> DevResult<bool> {
+        match self.recovery_control() {
+            Some(control) => control.read_link_status(),
+            None => Err(DevError::Unsupported),
+        }
+    }
+
+    /// Sets or clears the link gate (Task 3.1 / D6). While the link is down
+    /// the device rejects new enqueue/submit (returns `Full`); DeviceOwned
+    /// completions are still reclaimed. This is an independent gate from the
+    /// recovery gate: clearing the link gate never clears a still-active
+    /// recovery/fault hold, and the send path rejects while either holds.
+    fn tx_set_link_hold(&mut self, held: bool) {
+        let _ = held;
+    }
+
     /// Number of DeviceOwned tickets still outstanding on the device (Task
     /// 2.2). The recovery owner consults this during the quiesce drain to
     /// decide when the ledger is stable (all reclaimed) versus still waiting.

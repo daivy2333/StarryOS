@@ -24,7 +24,7 @@ use crate::stack_runner::STACK_EVENT;
 use crate::{
     device::{RxCopyStep, TxReclaimStep, TxSubmitStep},
     router::RxOwnerView,
-    service::Service,
+    service::{LinkStep, Service},
     stack_runner::StackEvent,
     wrapper::SocketSetWrapper,
 };
@@ -50,6 +50,21 @@ pub(crate) struct QueueEvent {
     queue_waker: AtomicWaker,
     waiting: AtomicBool,
     generation: AtomicU64,
+    /// Task 3.1: pending used-ring cause flag. Set by the ISR used publisher,
+    /// cleared by the owner's bounded `take_causes`.
+    cause_used: AtomicBool,
+    /// Task 3.1: pending config-change cause flag. Set by the ISR config
+    /// publisher, cleared by the owner's bounded `take_causes`.
+    cause_config: AtomicBool,
+}
+
+/// The bounded, lock-free cause flags a queue-owner poll takes once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct QueueCauses {
+    /// A used-ring publication is pending.
+    pub used: bool,
+    /// A config-change publication is pending.
+    pub config: bool,
 }
 
 impl QueueEvent {
@@ -58,6 +73,8 @@ impl QueueEvent {
             queue_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(0),
+            cause_used: AtomicBool::new(false),
+            cause_config: AtomicBool::new(false),
         }
     }
 
@@ -67,6 +84,8 @@ impl QueueEvent {
             queue_waker: AtomicWaker::new(),
             waiting: AtomicBool::new(false),
             generation: AtomicU64::new(generation),
+            cause_used: AtomicBool::new(false),
+            cause_config: AtomicBool::new(false),
         }
     }
 
@@ -93,12 +112,38 @@ impl QueueEvent {
         }
     }
 
-    /// Publishes a queue event: wrapping Release increment of the shared
-    /// generation, then wakes the queue owner. Called by the ISR path.
+    /// Publishes a used-ring queue event: stores the used cause flag, wraps
+    /// the shared generation (Release) and wakes the queue owner. Called by the
+    /// ISR path. The used cause is never replaced by a config publish.
     pub(crate) fn publish_event(&self) {
+        self.cause_used.store(true, Ordering::Release);
         self.generation.fetch_add(1, Ordering::Release);
         self.queue_waker.wake();
         RX_TELEMETRY.queue_wake.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Publishes a config-change queue event (Task 3.1): stores the config
+    /// cause flag, wraps the shared generation (Release) and wakes the queue
+    /// owner. A config-only cause must wake the owner even with no used-ring
+    /// completion, and a combined cause keeps both flags so neither publish
+    /// mutates the other.
+    pub(crate) fn publish_config(&self) {
+        self.cause_config.store(true, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::Release);
+        self.queue_waker.wake();
+        RX_TELEMETRY.queue_wake.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Bounded take of the pending cause flags (Task 3.1). The owner runs this
+    /// inside one poll after registering its waker, then reads a consistent
+    /// link snapshot at most once when the config flag is set. An AcqRel swap
+    /// clears both flags; a transient snapshot error ("Again") is retained by
+    /// a re-publish so the next poll retries without losing the cause.
+    pub(crate) fn take_causes(&self) -> QueueCauses {
+        QueueCauses {
+            used: self.cause_used.swap(false, Ordering::AcqRel),
+            config: self.cause_config.swap(false, Ordering::AcqRel),
+        }
     }
 
     /// Publishes a queue-owner work hint: bumps the shared generation
@@ -186,6 +231,57 @@ pub(crate) const SUBMIT_BUDGET: usize = 32;
 /// The one queue notification state. There is exactly one task waiter; Router
 /// space wakes and future queue events share this waker.
 pub(crate) static QUEUE_EVENT: QueueEvent = QueueEvent::new();
+#[cfg(feature = "qemu-diagnostics")]
+static RECOVERY_RESET_REQUEST: spin::Mutex<RecoveryRequestState> =
+    spin::Mutex::new(RecoveryRequestState::new());
+
+/// The one bounded explicit-recovery request.  It shares the lifecycle
+/// transition lock with the resident owner so a request cannot survive a
+/// natural recovery and trigger a second reset after the owner becomes Active
+/// again.
+#[cfg(feature = "qemu-diagnostics")]
+#[derive(Debug, Clone, Copy, Default)]
+struct RecoveryRequestState {
+    pending: bool,
+    owner_claimed: bool,
+}
+
+#[cfg(feature = "qemu-diagnostics")]
+impl RecoveryRequestState {
+    const fn new() -> Self {
+        Self {
+            pending: false,
+            owner_claimed: false,
+        }
+    }
+
+    fn request(&mut self, lifecycle: RxTaskLifecycle) -> DevResult {
+        if lifecycle != RxTaskLifecycle::Active {
+            return Err(DevError::BadState);
+        }
+        if self.pending || self.owner_claimed {
+            return Err(DevError::ResourceBusy);
+        }
+        self.pending = true;
+        Ok(())
+    }
+
+    fn claim(&mut self, lifecycle: RxTaskLifecycle) -> bool {
+        if lifecycle != RxTaskLifecycle::Active || !self.pending || self.owner_claimed {
+            return false;
+        }
+        self.pending = false;
+        self.owner_claimed = true;
+        true
+    }
+
+    /// A natural recovery wins any pending request; an explicit recovery also
+    /// absorbs a request submitted between claim and the lifecycle CAS.
+    fn clear_for_recovery(&mut self) {
+        self.pending = false;
+        self.owner_claimed = false;
+    }
+}
 
 /// The one RX task lifecycle. Loaded by [`poll_interfaces`](crate::poll_interfaces)
 /// to map the RX consumption right each round.
@@ -240,6 +336,8 @@ pub mod recover_stage {
     pub const REINITIALIZE: u64 = 6;
     /// An ownership/identity/ledger drift detected (no reset attempted).
     pub const OWNERSHIP_DRIFT: u64 = 7;
+    /// A checked QEMU control request consumed by the resident owner.
+    pub const EXPLICIT_REQUEST: u64 = 8;
     /// Unclassified recovery fault.
     pub const UNKNOWN: u64 = 0;
 }
@@ -265,7 +363,7 @@ pub mod fault_cause {
 /// another. `queue_epoch` is the software ticket epoch; `available`,
 /// `device_owned` and `quarantined` are the driver's real owner resources at
 /// commit time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RecoveryFaultIdentity {
     /// Stage code from [`recover_stage`] where the owner stopped.
     pub stage: u64,
@@ -694,6 +792,99 @@ pub fn rx_snapshot_v3() -> RxSnapshotV3 {
     rx_snapshot_v3_from(rx_snapshot(), ServiceAccess::Global)
 }
 
+/// Append-only recovery state consumed by the QEMU-only V4 kernel snapshot.
+/// Current owner state and the last historical fault have intentionally
+/// separate validity bits and tuples: they are coherent independently, but
+/// are not asserted to describe the same instant.
+#[cfg(feature = "qemu-diagnostics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoverySnapshotV4 {
+    pub current_valid: u64,
+    pub current_queue_epoch: u64,
+    pub current_socket_epoch: u64,
+    pub current_link_generation: u64,
+    pub current_link_state: u64,
+    pub current_owner_available: u64,
+    pub current_owner_device_owned: u64,
+    pub current_owner_quarantined: u64,
+    pub fault_valid: u64,
+    pub fault_stage: u64,
+    pub fault_cause: u64,
+    pub fault_queue_epoch: u64,
+    pub fault_owner_available: u64,
+    pub fault_owner_device_owned: u64,
+    pub fault_owner_quarantined: u64,
+}
+
+#[cfg(feature = "qemu-diagnostics")]
+pub fn recovery_snapshot_v4() -> RecoverySnapshotV4 {
+    let (
+        current_valid,
+        current_queue_epoch,
+        current_socket_epoch,
+        current_link_generation,
+        current_link_state,
+        current_owner_available,
+        current_owner_device_owned,
+        current_owner_quarantined,
+    ) = crate::SERVICE
+        .get()
+        .map(|mutex| {
+            let mut guard = mutex.lock();
+            let owner = guard.recovery_owner_summary_target();
+            (
+                1,
+                guard.queue_epoch_target().current(),
+                guard.socket_epoch(),
+                guard.link_generation(),
+                guard.link_state_code(),
+                owner.available,
+                owner.device_owned,
+                owner.quarantined,
+            )
+        })
+        .unwrap_or_default();
+    let fault = RX_TELEMETRY.coherent_fault.read();
+    let (
+        fault_valid,
+        fault_stage,
+        fault_cause,
+        fault_queue_epoch,
+        fault_owner_available,
+        fault_owner_device_owned,
+        fault_owner_quarantined,
+    ) = fault
+        .map(|fault| {
+            (
+                1,
+                fault.stage,
+                fault.local_cause,
+                fault.queue_epoch,
+                fault.available,
+                fault.device_owned,
+                fault.quarantined,
+            )
+        })
+        .unwrap_or_default();
+    RecoverySnapshotV4 {
+        current_valid,
+        current_queue_epoch,
+        current_socket_epoch,
+        current_link_generation,
+        current_link_state,
+        current_owner_available,
+        current_owner_device_owned,
+        current_owner_quarantined,
+        fault_valid,
+        fault_stage,
+        fault_cause,
+        fault_queue_epoch,
+        fault_owner_available,
+        fault_owner_device_owned,
+        fault_owner_quarantined,
+    }
+}
+
 /// C5/T4.4-R2 shared V3 assembly seam: builds the V3 payload from a V2 base
 /// snapshot plus a Service access. The public entry and host tests with an
 /// injected Service execute this same path, so a regression to a synthetic
@@ -959,6 +1150,16 @@ pub fn publish_queue_event() {
     QUEUE_EVENT.publish_event();
 }
 
+/// Publish a config-change queue event (Task 3.1 / R6). Called by the ISR path
+/// after ACK when the config-change cause bit is set; the owner wakes and reads
+/// a consistent link snapshot at most once per poll. It sets only the config
+/// cause, so a combined used+config interrupt keeps both flags independent.
+pub fn publish_config_event() {
+    RX_TELEMETRY.isr_publish.fetch_add(1, Ordering::Relaxed);
+    RX_TELEMETRY.isr_wake.fetch_add(1, Ordering::Relaxed);
+    QUEUE_EVENT.publish_config();
+}
+
 /// Backwards-compatible alias for the ISR event publisher.
 pub fn publish_rx_event() {
     publish_queue_event();
@@ -1077,6 +1278,24 @@ pub(crate) fn diagnostic_control_shared(
     drop(guard);
     notify.publish_queue_work();
     Ok(())
+}
+
+/// QEMU-only reset control: atomically queue one request for the resident
+/// owner. The syscall path merely commits this event and wakes that owner; it
+/// never accesses a transport or performs recovery itself.
+#[cfg(feature = "qemu-diagnostics")]
+pub(crate) fn recovery_reset_request_shared() -> DevResult {
+    if crate::SERVICE.get().is_none() {
+        return Err(DevError::BadState);
+    }
+    RECOVERY_RESET_REQUEST.lock().request(RX_LIFECYCLE.load())?;
+    QUEUE_EVENT.publish_queue_work();
+    Ok(())
+}
+
+#[cfg(feature = "qemu-diagnostics")]
+fn claim_recovery_reset_request() -> bool {
+    RECOVERY_RESET_REQUEST.lock().claim(RX_LIFECYCLE.load())
 }
 
 /// The unique RX queue task future.
@@ -1522,7 +1741,31 @@ impl RxRxFuture {
         let Some(mut service) = access.lock() else {
             return Poll::Pending;
         };
+        #[cfg(feature = "qemu-diagnostics")]
+        if claim_recovery_reset_request() {
+            // The ioctl only queued an event.  This resident owner is the sole
+            // context allowed to enter the driver recovery state machine.
+            drop(service);
+            self.enter_recovery(&DevError::Io, recover_stage::EXPLICIT_REQUEST);
+            return self.poll_recovery(cx);
+        }
+        // Task 3.1 / R6: bounded config micro-step. Take the cause flags once
+        // per poll and, on a pending CONFIG cause, read a consistent link
+        // snapshot at most once. A transient `Again` retains the cause (a
+        // re-publish bumps the generation, so whichever sleep path follows
+        // observes the change and retries). A link down/up publishes stack
+        // progress after the round so readiness re-evaluates.
+        let causes = self.notify.take_causes();
+        let mut link_change = false;
+        if causes.config {
+            match service.link_policy_step_target() {
+                LinkStep::Again => self.notify.publish_config(),
+                LinkStep::Down | LinkStep::Up => link_change = true,
+                LinkStep::NoEvent | LinkStep::Unsupported | LinkStep::Fault => {}
+            }
+        }
         let outcome = self.service_round(&mut service);
+        let socket_epoch_wake = service.take_socket_epoch_wake();
         #[cfg(feature = "qemu-diagnostics")]
         let waiting_lease_expiry = if matches!(&outcome, RoundOutcome::WaitSpace(_)) {
             service.diag_lease_expiry()
@@ -1530,7 +1773,10 @@ impl RxRxFuture {
             0
         };
         drop(service);
-        if core::mem::take(&mut self.stack_progress_pending) {
+        if let Some((registry, epoch)) = socket_epoch_wake {
+            registry.wake_socket_epoch(epoch);
+        }
+        if core::mem::take(&mut self.stack_progress_pending) || link_change {
             self.notify.publish_progress();
             self.stack_notify.publish_device();
         }
@@ -1735,7 +1981,15 @@ impl RxRxFuture {
         // Find 2: gate the TX enqueue before any recovery window opens so no
         // new Queued ticket enters a data plane being cleared.
         self.set_recovery_hold(true);
-        if !self.lifecycle.begin_recovery().is_ok() {
+        #[cfg(feature = "qemu-diagnostics")]
+        let lifecycle_transition = {
+            let mut request = RECOVERY_RESET_REQUEST.lock();
+            request.clear_for_recovery();
+            self.lifecycle.begin_recovery()
+        };
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let lifecycle_transition = self.lifecycle.begin_recovery();
+        if !lifecycle_transition.is_ok() {
             self.telemetry.record_last_error_code(
                 rx_error_stage::LIFECYCLE,
                 self.lifecycle.load().code() as u64,
@@ -1755,7 +2009,14 @@ impl RxRxFuture {
             .store(origin_stage, Ordering::Relaxed);
         self.telemetry
             .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
-        self.fault_sink.publish_global_fault(err);
+        // A recoverable reset closes only the current SocketEpoch. The
+        // resident owner will open a fresh epoch after the driver reports
+        // Recovered; old handles therefore remain ConnectionReset forever.
+        let epoch = self.fault_sink.current_socket_epoch();
+        self.publish_fault_epoch_terminal(
+            epoch,
+            crate::readiness::NetworkTerminal::ConnectionReset.code(),
+        );
         self.notify.publish_progress();
         self.stack_notify.publish_device();
         self.cancel_recovery_timer();
@@ -1797,7 +2058,8 @@ impl RxRxFuture {
         self.recovery_deadline = None;
         self.telemetry
             .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
-        self.fault_sink.publish_global_fault(err);
+        let epoch = self.fault_sink.current_socket_epoch();
+        self.publish_fault_epoch_terminal(epoch, crate::readiness::dev_error_code(err));
         self.notify.publish_progress();
         self.stack_notify.publish_device();
         self.cancel_recovery_timer();
@@ -1880,6 +2142,7 @@ impl RxRxFuture {
                         }
                     }
                 }
+                let reclaimed_at_budget = reclaimed >= RECLAIM_BUDGET;
                 let drained = service.device_owned_len_target() == 0;
                 let expired = self
                     .recovery_deadline
@@ -1898,6 +2161,11 @@ impl RxRxFuture {
                             self.arm_recovery_timer(cx);
                         }
                         Err(err) => {
+                            // The reset-begin handoff failed. The lifecycle has
+                            // already committed Active -> Quiescing -> Resetting;
+                            // mirror the recovery state so the fault stage reports
+                            // RESET (not a QUIESCE/lifecycle split).
+                            self.recovery = Some(RecoveryState::Resetting);
                             // F5: commit under the guard, drop, then publish.
                             service.flush_recovery_abort_all(&err);
                             drop(service);
@@ -1905,6 +2173,14 @@ impl RxRxFuture {
                             return Poll::Pending;
                         }
                     }
+                } else if reclaimed_at_budget {
+                    // The bounded budget cut the grace drain short with
+                    // DeviceOwned still outstanding. Self-wake so the owner
+                    // converges on the next poll instead of stalling the backlog
+                    // until the quiesce deadline or an external NIC event.
+                    drop(service);
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
                 }
                 drop(service);
                 Poll::Pending
@@ -1960,6 +2236,9 @@ impl RxRxFuture {
         match service.recovery_step_target() {
             Ok(progress) if progress.stage == axdriver_net::RecoveryStage::Recovered => {
                 let epoch = progress.epoch;
+                if let Err(err) = service.open_socket_epoch_after_recovery(self.fault_sink) {
+                    return RecoveryRound::Fault(err);
+                }
                 service.tx_close_device_owned_target();
                 // Finding 1: settle the old-epoch flush BEFORE the epoch
                 // advances so its outcome is not corrupted by the reset.
@@ -2092,7 +2371,8 @@ impl RxRxFuture {
         self.recovery_deadline = None;
         self.telemetry
             .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
-        self.fault_sink.publish_global_fault(err);
+        let epoch = self.fault_sink.current_socket_epoch();
+        self.publish_fault_epoch_terminal(epoch, crate::readiness::dev_error_code(err));
         self.notify.publish_progress();
         self.stack_notify.publish_device();
         self.cancel_recovery_timer();
@@ -2293,9 +2573,39 @@ impl RxRxFuture {
     /// LIFECYCLE-stage diagnostic but never publishes a fake terminal state.
     fn publish_fatal(&self, err: &DevError) {
         if self.transition_fatal() {
-            self.fault_sink.publish_global_fault(err);
+            let epoch = self.fault_sink.current_socket_epoch();
+            self.publish_fault_epoch_terminal(epoch, crate::readiness::dev_error_code(err));
             self.notify.publish_progress();
             self.stack_notify.publish_device();
+        }
+    }
+
+    /// Commits the registry terminal, applies its first-wins result to hidden
+    /// listener ownership through the paired Service, then wakes matching
+    /// bridges only after the Service guard has been released.
+    fn publish_fault_epoch_terminal(&self, epoch: u64, code: u64) {
+        let mut handled_by_service = false;
+        let mut committed = false;
+        if let Some(service) = self.service.lock() {
+            if let Some(registry) = service.socket_registry() {
+                if core::ptr::eq(registry, self.fault_sink) {
+                    if let Some(did_commit) =
+                        service.commit_socket_epoch_terminal_for(registry, epoch, code)
+                    {
+                        handled_by_service = true;
+                        committed = did_commit;
+                    }
+                }
+            }
+        }
+        if !handled_by_service {
+            committed = self
+                .fault_sink
+                .commit_socket_epoch_fault_code(epoch, code)
+                .is_some_and(|outcome| outcome.committed);
+        }
+        if committed {
+            self.fault_sink.wake_socket_epoch(epoch);
         }
     }
 
@@ -2668,10 +2978,12 @@ mod tests {
     use axdriver::prelude::{DevError, DevResult};
     use axdriver_net::{
         NetQueueControl, NetQueueDirection, NetRecoveryControl, QueueEpoch, RecoveryProgress,
-        RecoveryStage,
+        RecoveryStage, TxCookie,
     };
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
+    #[cfg(feature = "qemu-diagnostics")]
+    use super::RecoveryRequestState;
     use super::{
         ArmObservation, CoherentFaultSheet, DataStageDeadlines, QUEUE_EVENT, QueueEvent,
         RECLAIM_BUDGET, RX_BUDGET, RX_LIFECYCLE, RX_TELEMETRY, RecoveryFaultIdentity,
@@ -2683,11 +2995,12 @@ mod tests {
         device::{
             Device, FlushState, RxCopyStep, RxStep, TicketOutcome, TxOutcome, TxPreflight,
             TxReclaimStep, TxSubmitStep,
+            fixed_queue::{FixedFrameQueue, TicketTracker},
         },
         flush::FlushRecheck,
         readiness,
         router::{Router, RxOwnerView},
-        service::Service,
+        service::{LinkStep, Service},
         stack_runner::StackEvent,
         wrapper::SocketSetWrapper,
     };
@@ -2822,6 +3135,55 @@ mod tests {
         event.publish_event();
         assert_eq!(event.generation(), 0);
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn used_publish_sets_only_used_cause_and_take_clears_it() {
+        let event = super::QueueEvent::new();
+        event.publish_event();
+        let causes = event.take_causes();
+        assert!(causes.used);
+        assert!(!causes.config);
+        assert_eq!(event.take_causes(), super::QueueCauses::default());
+    }
+
+    #[test]
+    fn config_publish_sets_only_config_cause_and_wakes_owner() {
+        let event = super::QueueEvent::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        event.register_queue(&counting_waker(count.clone()));
+        let gen_before = event.generation();
+        event.publish_config();
+        assert_eq!(event.generation(), gen_before + 1);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        let causes = event.take_causes();
+        assert!(!causes.used);
+        assert!(causes.config);
+    }
+
+    #[test]
+    fn combined_used_and_config_retain_both_causes() {
+        // A combined interrupt may wake once but must not drop either cause
+        // (Task 3.1 / A1). Publishing used then config keeps both flags.
+        let event = super::QueueEvent::new();
+        event.publish_event();
+        event.publish_config();
+        let causes = event.take_causes();
+        assert!(causes.used);
+        assert!(causes.config);
+        assert_eq!(event.take_causes(), super::QueueCauses::default());
+    }
+
+    #[test]
+    fn config_cause_is_retained_for_snapshot_retry() {
+        // A transient "Again" snapshot result is retained by a re-publish so
+        // the next poll retries without losing the cause (Task 3.1 / A3).
+        let event = super::QueueEvent::new();
+        event.publish_config();
+        assert!(event.take_causes().config);
+        event.publish_config();
+        assert!(event.take_causes().config);
+        assert_eq!(event.take_causes(), super::QueueCauses::default());
     }
 
     #[test]
@@ -3169,6 +3531,54 @@ mod tests {
     }
 
     #[test]
+    fn config_event_before_register_is_caught_by_arm_recheck() {
+        // Task 3.1 / R6 / A2 (Plan Review Finding 2): a CONFIG cause published
+        // before the owner registers must be observed by the arm/recheck — the
+        // sole owner re-takes the cause instead of sleeping through the change.
+        let notify = QueueEvent::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        notify.publish_config();
+
+        let decision = notify.wait_decision(&counting_waker(count.clone()), || {
+            Ok(ArmObservation::Pending)
+        });
+        assert!(matches!(decision, WaitDecision::Retry));
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn config_event_during_register_window_retries() {
+        // Task 3.1 / R6 / A2 (Plan Review Finding 2): a CONFIG publication
+        // inside the arm/recheck window must force a retry so the owner
+        // re-takes the cause instead of sleeping through the link change.
+        let notify = QueueEvent::new();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        let decision = notify.wait_decision(&counting_waker(count.clone()), || {
+            notify.publish_config();
+            Ok(ArmObservation::Quiescent)
+        });
+        assert!(matches!(decision, WaitDecision::Retry));
+    }
+
+    #[test]
+    fn config_event_after_arm_wakes_sleep_decision() {
+        // Task 3.1 / R6 / A2 (Plan Review Finding 2): a CONFIG publication
+        // after a quiescent sleep decision must wake the owner so the config
+        // cause is serviced on the next poll rather than an indefinite sleep.
+        let notify = QueueEvent::new();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        let decision = notify.wait_decision(&counting_waker(count.clone()), || {
+            Ok(ArmObservation::Quiescent)
+        });
+        assert!(matches!(decision, WaitDecision::Sleep));
+
+        notify.publish_config();
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn event_after_arm_wakes_sleep_decision() {
         let notify = QueueEvent::new();
         let count = Arc::new(AtomicUsize::new(0));
@@ -3457,6 +3867,39 @@ mod tests {
         /// asserts the drift path terminates every outstanding DeviceOwned
         /// ticket as `Fault(OwnershipDrift)` exactly once.
         fault_device_owned_calls: AtomicUsize,
+        /// Outstanding DeviceOwned tickets reported by `tx_device_owned_len`
+        /// and drained by `tx_reclaim_one` (Task 2.3 quiesce witness; 0 means
+        /// the device is already drained, matching the historic fixture).
+        device_owned: core::sync::atomic::AtomicU64,
+        /// One-shot: the next `tx_reclaim_one` faults the quiesce reclaim,
+        /// so the owner must quarantine without a reset (Task 2.3 quiesce
+        /// drift / reclaim-fault witness).
+        reclaim_error: core::sync::atomic::AtomicBool,
+        /// When set, `tx_reclaim_one` reports `Empty` while `device_owned`
+        /// stays positive, modelling a device with no visible completion
+        /// (Task 2.3 1 s-expiry-remaining-owner witness).
+        reclaim_stall: core::sync::atomic::AtomicBool,
+        /// One-shot: the next `begin_recovery` fails, exercising the
+        /// reset-begin fault identity (Task 2.3 begin-error stage witness).
+        begin_error: core::sync::atomic::AtomicBool,
+        /// Epoch observed by a post-recovery TX submit, proving the data path
+        /// runs at the new epoch (Task 2.3 A5 witness).
+        submit_epoch: core::sync::atomic::AtomicU64,
+        /// The ticket identity recorded by a post-recovery submit, reused to
+        /// build the epoch-bound reclaim cookie (Task 2.3 A5 witness).
+        submitted_ticket: core::sync::atomic::AtomicU64,
+        /// One-shot completion on the real TX ledger: when set, the next
+        /// post-recovery `tx_reclaim_one` releases the submitted DeviceOwned
+        /// ticket via an epoch-bound cookie (Task 2.3 A5 witness).
+        completion_armed: core::sync::atomic::AtomicBool,
+        /// Link snapshot reported by `read_link_status` (Task 3.1; true = up).
+        link: AtomicBool,
+        /// Number of `read_link_status` calls observed (at-most-once witness).
+        link_reads: AtomicUsize,
+        /// One-shot: the next `read_link_status` returns `Again` (A3 witness).
+        link_again: AtomicBool,
+        /// Link I/O gate mirror observed by the test (Task 3.1 / D6).
+        link_hold: AtomicBool,
     }
 
     /// Scripted driver recovery machine (mirrors `axdriver_net::RecoveryModel`).
@@ -3500,6 +3943,9 @@ mod tests {
         }
 
         fn begin_recovery(&mut self) -> DevResult<RecoveryProgress> {
+            if self.stats.begin_error.swap(false, Ordering::Relaxed) {
+                return Err(DevError::Io);
+            }
             if self.stage() != 0 {
                 return Err(DevError::BadState);
             }
@@ -3541,7 +3987,11 @@ mod tests {
         }
 
         fn read_link_status(&mut self) -> DevResult<bool> {
-            Err(DevError::Unsupported)
+            self.stats.link_reads.fetch_add(1, Ordering::Relaxed);
+            if self.stats.link_again.swap(false, Ordering::Relaxed) {
+                return Err(DevError::Again);
+            }
+            Ok(self.stats.link.load(Ordering::Relaxed))
         }
     }
 
@@ -3601,7 +4051,23 @@ mod tests {
         }
 
         fn tx_reclaim_one(&mut self) -> TxReclaimStep {
-            TxReclaimStep::Empty
+            // Only the recovery/quiesce drain owns this fixture's DeviceOwned:
+            // the ordinary Active round must not consume reclaim_error or drain
+            // the ledger before the owner enters recovery.
+            if !self.stats.recovery_hold.load(Ordering::Relaxed) {
+                return TxReclaimStep::Empty;
+            }
+            if self.stats.reclaim_error.swap(false, Ordering::Relaxed) {
+                return TxReclaimStep::Fault(DevError::Io);
+            }
+            if self.stats.device_owned.load(Ordering::Relaxed) == 0 {
+                return TxReclaimStep::Empty;
+            }
+            if self.stats.reclaim_stall.load(Ordering::Relaxed) {
+                return TxReclaimStep::Empty;
+            }
+            self.stats.device_owned.fetch_sub(1, Ordering::Relaxed);
+            TxReclaimStep::Reclaimed
         }
 
         fn rx_slot_has_space(&self) -> bool {
@@ -3613,7 +4079,8 @@ mod tests {
         }
 
         fn tx_close_device_owned(&mut self) -> usize {
-            0
+            let closed = self.stats.device_owned.swap(0, Ordering::Relaxed) as usize;
+            closed
         }
 
         fn tx_cancel_queued(&mut self) -> usize {
@@ -3643,12 +4110,24 @@ mod tests {
                 .store(next.current(), Ordering::Relaxed);
         }
 
+        fn queue_epoch(&self) -> QueueEpoch {
+            let mut e = QueueEpoch::MIN;
+            for _ in 0..self.stats.committed_epoch.load(Ordering::Relaxed) {
+                e = e.advance().expect("test epoch headroom");
+            }
+            e
+        }
+
         fn tx_set_recovery_hold(&mut self, held: bool) {
             self.stats.recovery_hold.store(held, Ordering::Relaxed);
         }
 
+        fn tx_set_link_hold(&mut self, held: bool) {
+            self.stats.link_hold.store(held, Ordering::Relaxed);
+        }
+
         fn tx_device_owned_len(&self) -> u64 {
-            0
+            self.stats.device_owned.load(Ordering::Relaxed)
         }
 
         fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
@@ -3674,6 +4153,653 @@ mod tests {
             queue_control: ScriptedControl {
                 stats: queue_stats.clone(),
             },
+        };
+        let mut router = Router::new();
+        let idx = router.add_device(Box::new(device));
+        let service = Service::new(router, Some(idx));
+        (Box::leak(Box::new(spin::Mutex::new(service))), stats)
+    }
+
+    /// A clean RecoveringDevice Service for the Task 3.1 link-policy seam
+    /// (`fault_pending` is NOT forced, so the ordinary Active round runs).
+    fn leaked_service_link() -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
+        let stats = Arc::new(RecoveryDriverStats::default());
+        let queue_stats = Arc::new(ScriptedControlStats::default());
+        let device = RecoveringDevice {
+            stats: stats.clone(),
+            recovery: ScriptedRecovery {
+                stats: stats.clone(),
+            },
+            queue_control: ScriptedControl {
+                stats: queue_stats.clone(),
+            },
+        };
+        let mut router = Router::new();
+        let idx = router.add_device(Box::new(device));
+        let service = Service::new(router, Some(idx));
+        (Box::leak(Box::new(spin::Mutex::new(service))), stats)
+    }
+
+    fn leaked_service_paired_link() -> (
+        &'static spin::Mutex<Service>,
+        &'static SocketSetWrapper<'static>,
+        Arc<RecoveryDriverStats>,
+    ) {
+        let (service, stats) = leaked_service_link();
+        let registry = Box::leak(Box::new(SocketSetWrapper::new()));
+        service.lock().set_socket_registry(registry);
+        (service, registry, stats)
+    }
+
+    // ── Task 3.1 link-policy seam (R6 / D6 / A3 / A5) ───────────────────
+
+    #[test]
+    fn link_policy_down_gates_cancels_presubmit_and_advances_seam() {
+        let (mutex, stats) = leaked_service_link();
+        let mut s = mutex.lock();
+        let gen0 = s.link_generation();
+        let epoch0 = s.socket_epoch();
+        let qepoch0 = s.queue_epoch_target();
+        // A4: a link-down must NOT close DeviceOwned tickets — they keep being
+        // reclaimed until a device reset — so seed some and assert they survive.
+        stats.device_owned.store(3, Ordering::Relaxed);
+        stats.link.store(false, Ordering::Relaxed);
+        let step = s.link_policy_step_target();
+        assert_eq!(step, crate::service::LinkStep::Down);
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+        assert_eq!(stats.cancel_queued_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            stats.device_owned.load(Ordering::Relaxed),
+            3,
+            "link-down reclaims DeviceOwned; it never closes them"
+        );
+        assert_eq!(s.link_generation(), gen0 + 1);
+        assert_eq!(s.socket_epoch(), epoch0 + 1);
+        // A link-down is not a device reset: QueueEpoch is untouched.
+        assert_eq!(s.queue_epoch_target(), qepoch0);
+    }
+
+    #[test]
+    fn link_policy_stable_value_does_not_advance_seam() {
+        let (mutex, stats) = leaked_service_link();
+        stats.link.store(true, Ordering::Relaxed);
+        let mut s = mutex.lock();
+        assert_eq!(s.link_policy_step_target(), crate::service::LinkStep::Up);
+        let gen1 = s.link_generation();
+        let epoch1 = s.socket_epoch();
+        assert_eq!(
+            s.link_policy_step_target(),
+            crate::service::LinkStep::NoEvent
+        );
+        assert_eq!(s.link_generation(), gen1);
+        assert_eq!(s.socket_epoch(), epoch1);
+    }
+
+    #[test]
+    fn link_policy_stable_down_cancels_each_owner_once() {
+        // Task 3.1 / A4 / D6 (Plan Review Finding 2): a link-down transition
+        // must cancel the pre-submit Queued and ARP-pending owners exactly once,
+        // and a subsequent stable-down (same value) must not cancel again or
+        // advance the seam — the gate stays held for the whole down interval.
+        let (mutex, stats) = leaked_service_link();
+        let mut s = mutex.lock();
+        stats.link.store(false, Ordering::Relaxed);
+        assert_eq!(s.link_policy_step_target(), crate::service::LinkStep::Down);
+        assert_eq!(stats.cancel_queued_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+        let gen1 = s.link_generation();
+        let epoch1 = s.socket_epoch();
+        assert_eq!(
+            s.link_policy_step_target(),
+            crate::service::LinkStep::NoEvent
+        );
+        assert_eq!(
+            stats.cancel_queued_calls.load(Ordering::Relaxed),
+            1,
+            "stable down must not re-cancel Queued owners"
+        );
+        assert_eq!(
+            stats.cancel_pending_calls.load(Ordering::Relaxed),
+            1,
+            "stable down must not re-cancel ARP-pending owners"
+        );
+        assert_eq!(s.link_generation(), gen1);
+        assert_eq!(s.socket_epoch(), epoch1);
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn link_policy_again_maps_through_and_counts_one_read() {
+        let (mutex, stats) = leaked_service_link();
+        stats.link_again.store(true, Ordering::Relaxed);
+        let mut s = mutex.lock();
+        assert_eq!(s.link_policy_step_target(), crate::service::LinkStep::Again);
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        assert!(!stats.link_hold.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn link_policy_up_after_down_opens_new_epoch_without_reset() {
+        let (mutex, stats) = leaked_service_link();
+        let mut s = mutex.lock();
+        stats.link.store(false, Ordering::Relaxed);
+        assert_eq!(s.link_policy_step_target(), crate::service::LinkStep::Down);
+        let epoch_down = s.socket_epoch();
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(s.link_policy_step_target(), crate::service::LinkStep::Up);
+        assert!(!stats.link_hold.load(Ordering::Relaxed));
+        assert_eq!(s.socket_epoch(), epoch_down + 1);
+    }
+
+    #[test]
+    fn paired_service_and_registry_keep_epoch_identity_across_flaps() {
+        use crate::{readiness::NetworkTerminal, tcp::new_tcp_socket};
+
+        let (mutex, registry, stats) = leaked_service_paired_link();
+        let qepoch = mutex.lock().queue_epoch_target();
+        let (_, old_bridge) = registry.add_public(new_tcp_socket());
+        let epoch0 = registry.current_socket_epoch();
+
+        stats.link.store(false, Ordering::Relaxed);
+        assert_eq!(mutex.lock().link_policy_step_target(), LinkStep::Down);
+        assert_eq!(mutex.lock().socket_epoch(), registry.current_socket_epoch());
+
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(mutex.lock().link_policy_step_target(), LinkStep::Up);
+        assert_eq!(mutex.lock().socket_epoch(), registry.current_socket_epoch());
+        assert_eq!(registry.current_socket_epoch(), epoch0 + 1);
+
+        let (_, fresh_bridge) = registry.add_public(new_tcp_socket());
+        stats.link.store(false, Ordering::Relaxed);
+        assert_eq!(mutex.lock().link_policy_step_target(), LinkStep::Down);
+        assert_eq!(mutex.lock().socket_epoch(), registry.current_socket_epoch());
+        assert_eq!(
+            fresh_bridge.network_terminal_code(),
+            NetworkTerminal::LinkDown.code()
+        );
+
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(mutex.lock().link_policy_step_target(), LinkStep::Up);
+        let (_, newest_bridge) = registry.add_public(new_tcp_socket());
+        assert_eq!(mutex.lock().socket_epoch(), registry.current_socket_epoch());
+        assert_eq!(
+            newest_bridge.network_terminal_code(),
+            readiness::TERMINAL_NONE
+        );
+        assert_eq!(
+            old_bridge.network_terminal_code(),
+            NetworkTerminal::LinkDown.code()
+        );
+        assert_eq!(
+            fresh_bridge.network_terminal_code(),
+            NetworkTerminal::LinkDown.code()
+        );
+        assert_eq!(mutex.lock().queue_epoch_target(), qepoch);
+    }
+
+    #[test]
+    fn link_policy_socket_epoch_overflow_fail_stops_consistently() {
+        // Task 3.1 / A5 / D1 (Plan Review Finding 1): when the SocketEpoch
+        // checked identity is exhausted, the transition must fail-stop as a
+        // WHOLE: persist the fault, keep the data plane closed, advance and
+        // commit nothing, and never let a later link-up reopen the gate.
+        let (mutex, stats) = leaked_service_link();
+        let mut s = mutex.lock();
+        s.set_socket_epoch_for_test(u64::MAX);
+        let gen_before = s.link_generation();
+        stats.link.store(false, Ordering::Relaxed);
+        // A down transition on an exhausted SocketEpoch must NOT return a
+        // successful Down: it must report the fail-stop directly.
+        assert_eq!(
+            s.link_policy_step_target(),
+            crate::service::LinkStep::Fault,
+            "exhausted seam must fail-stop, not commit a Down transition"
+        );
+        assert!(s.link_seam_fault());
+        assert_eq!(s.socket_epoch(), u64::MAX, "socket epoch must not advance");
+        assert_eq!(
+            s.link_generation(),
+            gen_before,
+            "the other checked identity must not advance on fail-stop"
+        );
+        assert!(
+            stats.link_hold.load(Ordering::Relaxed),
+            "data plane must stay closed on fail-stop"
+        );
+        // After the fail-stop, a later link-up must NOT reopen the gate,
+        // commit an epoch-shifting transition, or advance any identity.
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(
+            s.link_policy_step_target(),
+            crate::service::LinkStep::Fault,
+            "a later link-up must never reopen a fail-stopped seam"
+        );
+        assert!(
+            stats.link_hold.load(Ordering::Relaxed),
+            "the link gate must stay held after a fail-stop"
+        );
+        assert_eq!(s.socket_epoch(), u64::MAX);
+        assert_eq!(s.link_generation(), gen_before);
+    }
+
+    #[test]
+    fn link_policy_link_generation_overflow_fail_stops_and_stays_closed() {
+        // Task 3.1 / A3 / D1 (Plan Review Finding 1/2): LinkGeneration
+        // overflow must fail-stop identically to SocketEpoch — persist the
+        // fault, keep the data plane closed, advance/commit nothing, and never
+        // let a later transition reopen the gate. QueueEpoch stays unchanged.
+        let (mutex, stats) = leaked_service_link();
+        let mut s = mutex.lock();
+        s.set_link_generation_for_test(u64::MAX);
+        let epoch_before = s.socket_epoch();
+        let qepoch = s.queue_epoch_target();
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(
+            s.link_policy_step_target(),
+            crate::service::LinkStep::Fault,
+            "an exhausted LinkGeneration must fail-stop, not commit an Up"
+        );
+        assert!(s.link_seam_fault());
+        assert_eq!(
+            s.link_generation(),
+            u64::MAX,
+            "LinkGeneration must not advance"
+        );
+        assert_eq!(
+            s.socket_epoch(),
+            epoch_before,
+            "the other checked identity must not advance on LinkGeneration fail-stop"
+        );
+        assert!(
+            stats.link_hold.load(Ordering::Relaxed),
+            "a link-up attempt on an exhausted LinkGeneration must not open the gate"
+        );
+        assert_eq!(
+            s.queue_epoch_target(),
+            qepoch,
+            "QueueEpoch must stay unchanged"
+        );
+        // Post-fault permanence: further transitions stay Fail and gate closed.
+        stats.link.store(false, Ordering::Relaxed);
+        assert_eq!(
+            s.link_policy_step_target(),
+            crate::service::LinkStep::Fault,
+            "post-overflow transitions must remain fail-stopped"
+        );
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+        assert_eq!(s.link_generation(), u64::MAX);
+        assert_eq!(s.socket_epoch(), epoch_before);
+    }
+
+    fn preset_queued_owner(mutex: &'static spin::Mutex<Service>) -> (IpAddress, [u8; 16], Instant) {
+        // A real `Device::send` enqueues a Queued ticket into the real
+        // FixedFrameQueue/TicketTracker ledger (the owner awaiting the next
+        // Active submit). Used to prove a seam fail-stop closes Queued
+        // ownership and a same-round submit cannot move it to DeviceOwned.
+        let frame = [0xABu8; 16];
+        let hop = IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(10, 0, 0, 9));
+        let ts = Instant::from_millis(0);
+        let accepted = {
+            let mut s = mutex.lock();
+            s.router_for_test().devices[0].send(hop, &frame, ts)
+        };
+        assert!(matches!(accepted, TxOutcome::Accepted { .. }));
+        let _ = accepted;
+        assert!(mutex.lock().router_for_test().devices[0].tx_slot_pending());
+        (hop, frame, ts)
+    }
+
+    fn drive_link_fault_owner_round(
+        fut: &mut RxRxFuture,
+        notify: &'static super::QueueEvent,
+    ) -> bool {
+        // One owner round with a pending CONFIG cause: register/recheck, take
+        // causes, run the link-policy step (fail-stop on overflow) and then the
+        // normal service_round (reclaim/rx/submit). Returns whether the round
+        // reached the Active data path at all.
+        notify.publish_config();
+        let count = Arc::new(AtomicUsize::new(0));
+        let res = poll_once(fut, count.clone());
+        res.is_pending()
+    }
+
+    #[test]
+    fn link_policy_socket_epoch_overflow_closes_queued_and_blocks_submit() {
+        // Plan Review (rework) Finding: a seam fail-stop must close pre-existing
+        // Queued/ARP-pending ownership AND stop a same-round submit from moving
+        // them to DeviceOwned; already-DeviceOwned tickets still reclaim.
+        let (mutex, stats) = leaked_service_ledger_link();
+        preset_queued_owner(mutex);
+        let qepoch0 = mutex.lock().queue_epoch_target();
+        let submit_calls_before = stats.submitted_ticket.load(Ordering::Relaxed);
+
+        {
+            let mut s = mutex.lock();
+            s.set_socket_epoch_for_test(u64::MAX);
+        }
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        drive_link_fault_owner_round(&mut fut, notify);
+
+        // The fail-stop canceled the pre-existing Queued owner exactly once.
+        assert_eq!(
+            stats.cancel_queued_calls.load(Ordering::Relaxed),
+            1,
+            "fail-stop must cancel the Queued owner exactly once"
+        );
+        assert_eq!(
+            stats.cancel_pending_calls.load(Ordering::Relaxed),
+            1,
+            "fail-stop must cancel ARP-pending exactly once"
+        );
+        // No submit reached DeviceOwned: the Queued slot was closed, not moved.
+        assert_eq!(
+            stats.submitted_ticket.load(Ordering::Relaxed),
+            submit_calls_before,
+            "no driver submit must fire after the SocketEpoch fail-stop"
+        );
+        assert_eq!(
+            mutex.lock().device_owned_len_target(),
+            0,
+            "the Queued owner must not become DeviceOwned after fail-stop"
+        );
+        assert!(
+            stats.link_hold.load(Ordering::Relaxed),
+            "the fail-stop must hold the link gate"
+        );
+        assert_eq!(
+            mutex.lock().queue_epoch_target(),
+            qepoch0,
+            "QueueEpoch must be unchanged by the fail-stop"
+        );
+        assert!(
+            mutex.lock().router_for_test().devices[0].tx_slot_pending() == false,
+            "the Queued slot must be drained by the fail-stop cancel"
+        );
+        // A later link-up must not reopen the data plane.
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(
+            mutex.lock().link_policy_step_target(),
+            crate::service::LinkStep::Fault
+        );
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn link_policy_link_generation_overflow_closes_queued_and_blocks_submit() {
+        // Plan Review (rework) Finding: same as the SocketEpoch overflow but
+        // through the LinkGeneration identity.
+        let (mutex, stats) = leaked_service_ledger_link();
+        preset_queued_owner(mutex);
+        let qepoch0 = mutex.lock().queue_epoch_target();
+        let submit_calls_before = stats.submitted_ticket.load(Ordering::Relaxed);
+
+        {
+            let mut s = mutex.lock();
+            s.set_link_generation_for_test(u64::MAX);
+        }
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        drive_link_fault_owner_round(&mut fut, notify);
+
+        assert_eq!(
+            stats.cancel_queued_calls.load(Ordering::Relaxed),
+            1,
+            "LinkGeneration fail-stop must cancel the Queued owner exactly once"
+        );
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            stats.submitted_ticket.load(Ordering::Relaxed),
+            submit_calls_before,
+            "no driver submit must fire after the LinkGeneration fail-stop"
+        );
+        assert_eq!(mutex.lock().device_owned_len_target(), 0);
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+        assert_eq!(mutex.lock().queue_epoch_target(), qepoch0);
+        assert!(mutex.lock().router_for_test().devices[0].tx_slot_pending() == false);
+        stats.link.store(true, Ordering::Relaxed);
+        assert_eq!(
+            mutex.lock().link_policy_step_target(),
+            crate::service::LinkStep::Fault
+        );
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn owner_config_cause_reads_link_once_and_gates_on_down() {
+        let (mutex, stats) = leaked_service_link();
+        stats.link.store(false, Ordering::Relaxed);
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        notify.publish_config();
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(
+            stats.link_reads.load(Ordering::Relaxed),
+            1,
+            "one config cause"
+        );
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+        assert!(matches!(lifecycle.load(), super::RxTaskLifecycle::Active));
+        assert_eq!(notify.take_causes(), super::QueueCauses::default());
+    }
+
+    #[test]
+    fn owner_config_cause_again_retains_cause_for_next_poll() {
+        let (mutex, stats) = leaked_service_link();
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        stats.link_again.store(true, Ordering::Relaxed);
+        notify.publish_config();
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        // A transient snap-race retained the config cause for the next poll.
+        assert!(notify.take_causes().config);
+    }
+
+    /// A faithful TX-ledger recovery device (Task 2.3 A5 witness): a real
+    /// [`TicketTracker`] (the project's epoch-bound owner ledger) feeding a
+    /// real [`FixedFrameQueue`] TX slot, plus a scripted recovery. `send` truly
+    /// enqueues a frame with an epoch-bound ticket; `tx_submit_one` moves
+    /// Queued -> DeviceOwned (recording the epoch); `tx_reclaim_one` releases
+    /// the DeviceOwned ticket via an epoch-bound `TxCookie` when a completion
+    /// is armed. This proves the recovered data path really moves a frame at
+    /// the new epoch and the owner ledger conserves, instead of relying on
+    /// independent counters.
+    struct LedgerRecoveryDevice {
+        stats: Arc<RecoveryDriverStats>,
+        recovery: ScriptedRecovery,
+        queue_control: ScriptedControl,
+        tx_slots: FixedFrameQueue<64>,
+        tx_tickets: TicketTracker,
+    }
+
+    impl Device for LedgerRecoveryDevice {
+        fn name(&self) -> &str {
+            "ledgerrecover"
+        }
+        fn recv(&mut self, _b: &mut PacketBuffer<()>, _t: Instant) -> RxStep {
+            RxStep::Empty
+        }
+        fn preflight_send(&mut self, _n: IpAddress, _p: &[u8], _t: Instant) -> TxPreflight {
+            TxPreflight::Ready
+        }
+        fn send(&mut self, _n: IpAddress, packet: &[u8], _t: Instant) -> TxOutcome {
+            // Compound gate (D6): the fixture models the product — a resetting
+            // or link-down plane rejects new enqueue.
+            if self.stats.recovery_hold.load(Ordering::Relaxed)
+                || self.stats.link_hold.load(Ordering::Relaxed)
+            {
+                return TxOutcome::Full;
+            }
+            if self.tx_slots.preflight(packet.len()).is_err() || !self.tx_tickets.can_alloc() {
+                return TxOutcome::Full;
+            }
+            let ticket = self.tx_tickets.alloc().expect("test ticket headroom");
+            if self
+                .tx_slots
+                .fill((), Some(ticket), |r| {
+                    r[..packet.len()].copy_from_slice(packet);
+                    Ok(packet.len())
+                })
+                .is_err()
+            {
+                return TxOutcome::Full;
+            }
+            TxOutcome::Accepted {
+                rx_became_ready: false,
+            }
+        }
+        fn rx_copy_one(&mut self) -> RxCopyStep {
+            if self.stats.drift_pending.swap(false, Ordering::Relaxed) {
+                RxCopyStep::Fault(DevError::BadState)
+            } else if self.stats.fault_pending.swap(false, Ordering::Relaxed) {
+                RxCopyStep::Fault(DevError::Io)
+            } else {
+                RxCopyStep::Empty
+            }
+        }
+        fn tx_submit_one(&mut self) -> TxSubmitStep {
+            // Mid-recovery or link-down the I/O gate is held: no new submit can
+            // reach DeviceOwned (D6). This models the product's submit gate.
+            if self.stats.recovery_hold.load(Ordering::Relaxed)
+                || self.stats.link_hold.load(Ordering::Relaxed)
+            {
+                return TxSubmitStep::Full;
+            }
+            let Some((_, Some(ticket), _)) = self.tx_slots.peek_full() else {
+                return TxSubmitStep::Empty;
+            };
+            if !self.tx_tickets.mark_device_owned(ticket) {
+                return TxSubmitStep::Fault(DevError::BadState);
+            }
+            let _ = self.tx_slots.pop();
+            self.stats
+                .submit_epoch
+                .store(self.tx_tickets.current_epoch().current(), Ordering::Relaxed);
+            self.stats.submitted_ticket.store(ticket, Ordering::Relaxed);
+            TxSubmitStep::Submitted
+        }
+        fn tx_reclaim_one(&mut self) -> TxReclaimStep {
+            // No completion until the test arms one.
+            if !self.stats.completion_armed.swap(false, Ordering::Relaxed) {
+                return TxReclaimStep::Empty;
+            }
+            // The reclaim releases the submitted DeviceOwned ticket through
+            // the epoch-bound cookie. A stale/unknown/duplicate cookie is owner
+            // drift, never a success.
+            let ticket = self.stats.submitted_ticket.load(Ordering::Relaxed);
+            let cookie = TxCookie::with_epoch(self.tx_tickets.current_epoch(), ticket);
+            if self.tx_tickets.release_device_owned(cookie) {
+                TxReclaimStep::Reclaimed
+            } else {
+                TxReclaimStep::Fault(DevError::BadState)
+            }
+        }
+        fn rx_slot_has_space(&self) -> bool {
+            true
+        }
+        fn tx_slot_pending(&self) -> bool {
+            !self.tx_slots.is_empty()
+        }
+        fn tx_last_accepted(&self) -> Option<u64> {
+            self.tx_tickets.last_accepted()
+        }
+        fn tx_flush_state(&self, target: Option<u64>) -> FlushState {
+            self.tx_tickets.flush_state(target)
+        }
+        fn queue_epoch(&self) -> QueueEpoch {
+            self.tx_tickets.current_epoch()
+        }
+        fn tx_cancel_queued(&mut self) -> usize {
+            let cancelled = self.tx_tickets.cancel_queued();
+            for _ in 0..cancelled {
+                let _ = self.tx_slots.pop();
+            }
+            self.stats
+                .cancel_queued_calls
+                .fetch_add(1, Ordering::Relaxed);
+            cancelled
+        }
+        fn tx_cancel_pending(&mut self) -> usize {
+            self.stats
+                .cancel_pending_calls
+                .fetch_add(1, Ordering::Relaxed);
+            0
+        }
+        fn tx_close_device_owned(&mut self) -> usize {
+            self.tx_tickets.close_device_owned()
+        }
+        fn tx_fault_device_owned(&mut self, stage: crate::device::TicketFaultStage) -> usize {
+            self.tx_tickets.fault_outstanding(stage)
+        }
+        fn tx_advance_epoch(&mut self, next: QueueEpoch) {
+            self.tx_tickets.advance_epoch(next);
+            self.stats
+                .committed_epoch
+                .store(next.current(), Ordering::Relaxed);
+        }
+        fn tx_set_recovery_hold(&mut self, held: bool) {
+            self.stats.recovery_hold.store(held, Ordering::Relaxed);
+        }
+        fn tx_set_link_hold(&mut self, held: bool) {
+            self.stats.link_hold.store(held, Ordering::Relaxed);
+        }
+        fn tx_device_owned_len(&self) -> u64 {
+            self.tx_tickets.device_owned_len() as u64
+        }
+        fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
+            Some(&mut self.recovery)
+        }
+        fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+            Some(&mut self.queue_control)
+        }
+        fn register_waker(&self, _w: &Waker) {}
+    }
+
+    fn leaked_service_ledger_recovering()
+    -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
+        let stats = Arc::new(RecoveryDriverStats::default());
+        stats.fault_pending.store(true, Ordering::Relaxed);
+        let queue_stats = Arc::new(ScriptedControlStats::default());
+        let device = LedgerRecoveryDevice {
+            stats: stats.clone(),
+            recovery: ScriptedRecovery {
+                stats: stats.clone(),
+            },
+            queue_control: ScriptedControl {
+                stats: queue_stats.clone(),
+            },
+            tx_slots: FixedFrameQueue::new(),
+            tx_tickets: TicketTracker::new(),
+        };
+        let mut router = Router::new();
+        let idx = router.add_device(Box::new(device));
+        let service = Service::new(router, Some(idx));
+        (Box::leak(Box::new(spin::Mutex::new(service))), stats)
+    }
+
+    /// A real-ledger Service in an Active (non-faulting) round with link
+    /// snapshot + link-hold support, so fail-stop tests can preset a real
+    /// Queued owner and prove the same-round submit is blocked.
+    fn leaked_service_ledger_link() -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
+        let stats = Arc::new(RecoveryDriverStats::default());
+        let queue_stats = Arc::new(ScriptedControlStats::default());
+        let device = LedgerRecoveryDevice {
+            stats: stats.clone(),
+            recovery: ScriptedRecovery {
+                stats: stats.clone(),
+            },
+            queue_control: ScriptedControl {
+                stats: queue_stats.clone(),
+            },
+            tx_slots: FixedFrameQueue::new(),
+            tx_tickets: TicketTracker::new(),
         };
         let mut router = Router::new();
         let idx = router.add_device(Box::new(device));
@@ -3931,6 +5057,13 @@ mod tests {
         let waker = counting_waker(count.clone());
         let mut cx = Context::from_waker(&waker);
         Pin::new(fut).poll(&mut cx)
+    }
+
+    fn poll_observe(fut: &mut RxRxFuture, count: Arc<AtomicUsize>) -> (Poll<()>, usize) {
+        let waker = counting_waker(count.clone());
+        let mut cx = Context::from_waker(&waker);
+        let res = Pin::new(fut).poll(&mut cx);
+        (res, count.load(Ordering::Relaxed))
     }
 
     #[cfg(feature = "qemu-diagnostics")]
@@ -5626,6 +6759,10 @@ mod tests {
             !stats.recovery_hold.load(Ordering::Relaxed),
             "gate reopened after commit"
         );
+        // A2: the pre-submit cancellation is exactly-once at the quiesce entry;
+        // the reset-begin handoff and the success commit must not repeat it.
+        assert_eq!(stats.cancel_queued_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -6029,6 +7166,437 @@ mod tests {
         ));
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
         assert!(fut.recovery.is_none());
+    }
+
+    #[test]
+    fn quiesce_budget_self_wakes_so_backlog_converges() {
+        // Task 2.3 / R3-D3 / gap 3: a quiesce backlog larger than the per-poll
+        // RECLAIM_BUDGET must NOT stall until the 1 s expiry. Poll 1 enters
+        // recovery; poll 2, already in Quiescing, reclaims the next bounded
+        // budget and must self-wake (woken grows) so the executor keeps
+        // converging instead of waiting on the timer or an external event.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.device_owned.store(300, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (_lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let (r1, c1) = poll_observe(&mut fut, wakes.clone());
+        assert!(r1.is_pending());
+        assert!(fut.recovery.is_some(), "recovery entered in the first poll");
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.cancel_queued_calls.load(Ordering::Relaxed), 1);
+
+        let (r2, c2) = poll_observe(&mut fut, wakes);
+        assert!(r2.is_pending());
+        assert!(
+            c2 > c1,
+            "a budget-exhausted quiesce poll already in recovery must self-wake to keep converging"
+        );
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 0);
+
+        while stats.device_owned.load(Ordering::Relaxed) != 0 {
+            assert!(matches!(
+                poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+                Poll::Pending
+            ));
+        }
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+    }
+
+    #[test]
+    fn quiesce_natural_drain_begins_reset_within_budget() {
+        // Task 2.3 / R3-D3 / gap 1: a DeviceOwned backlog smaller than the
+        // per-poll budget drains in one poll and the owner goes straight to
+        // Resetting (begin exactly once), never waiting for the quiesce deadline.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.device_owned.store(16, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (_lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.device_owned.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+    }
+
+    #[test]
+    fn quiesce_1s_expiry_begins_reset_with_remaining_owner() {
+        // Task 2.3 / R3-D4 / gap 3: a device with DeviceOwned yet no visible
+        // completion drains nothing. The owner must wait for the 1 s quiesce
+        // deadline (no busy-loop, no begin before it) and begin reset exactly
+        // once at expiry with the full remaining ledger.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.device_owned.store(64, Ordering::Relaxed);
+        stats.reclaim_stall.store(true, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (_lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let (r1, c1) = poll_observe(&mut fut, wakes.clone());
+        assert!(r1.is_pending());
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.device_owned.load(Ordering::Relaxed), 64);
+
+        clock.store(999_000_000);
+        let (r2, c2) = poll_observe(&mut fut, wakes);
+        assert!(r2.is_pending());
+        assert_eq!(
+            c2, c1,
+            "a stalled quiesce must not self-pump before the timer"
+        );
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 0);
+
+        clock.store(1_000_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+    }
+
+    #[test]
+    fn quiesce_reclaim_fault_quarantines_without_reset() {
+        // Task 2.3 / R3-D4 / quiesce drift: a reclaim fault during quiesce must
+        // commit `Faulted` resident (hold held, no begin, no epoch advance) and
+        // record the QUIESCE stage — never mask it with a reset.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.device_owned.store(16, Ordering::Relaxed);
+        stats.reclaim_error.store(true, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(stats.recovery_hold.load(Ordering::Relaxed));
+        assert_eq!(
+            stats.begin_calls.load(Ordering::Relaxed),
+            0,
+            "no reset on reclaim fault"
+        );
+        assert_eq!(stats.committed_epoch.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fut.telemetry.recover_fault_stage.load(Ordering::Relaxed),
+            recover_stage::QUIESCE
+        );
+    }
+
+    #[test]
+    fn reinitialize_stage_timeout_quarantines_owner() {
+        // Task 2.3 / R4-D2 / gap 2: the reinitialize stage owns a distinct 2 s
+        // absolute deadline (re-armed on entry), so a reinit stall must time out
+        // into resident `Faulted` and record the REINITIALIZE identity.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Reinitializing);
+        assert_eq!(fut.recovery_deadline, Some(2_000_000_000));
+
+        stats.stall_stage.store(true, Ordering::Relaxed);
+        clock.store(1_000_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(
+            fut.recovery_deadline,
+            Some(2_000_000_000),
+            "same-stage reinit pending must not renew the absolute deadline"
+        );
+        clock.store(2_000_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert_eq!(
+            fut.telemetry.recover_fault_stage.load(Ordering::Relaxed),
+            recover_stage::REINITIALIZE,
+            "a reinit-stage timeout carries the REINITIALIZE stage identity"
+        );
+    }
+
+    #[test]
+    fn reinitialize_step_error_quarantines_with_reinit_identity() {
+        // Task 2.3 / R4-D2 / gap 2: a driver step error at the reinitialize
+        // stage quarantines the owner resident and records REINITIALIZE.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Reinitializing);
+
+        stats.step_error.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert_eq!(
+            fut.telemetry.recover_fault_stage.load(Ordering::Relaxed),
+            recover_stage::REINITIALIZE
+        );
+    }
+
+    #[test]
+    fn begin_error_quarantines_with_reset_stage() {
+        // Task 2.3 / R4-D2 / gap 4: a failure at the reset-begin handoff must
+        // be reported with the RESET stage, matching the lifecycle that already
+        // advanced `active -> quiescing -> resetting`, not an inconsistent
+        // quiesce-stage identity. A2: the pre-submit cancellation happens
+        // exactly once (at quiesce entry) and never repeats on the reset-begin
+        // handoff or on a later Faulted-resident poll.
+        let (mutex, stats) = leaked_service_recovering();
+        stats.begin_error.store(true, Ordering::Relaxed);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
+        assert!(stats.recovery_hold.load(Ordering::Relaxed));
+        assert_eq!(
+            stats.cancel_queued_calls.load(Ordering::Relaxed),
+            1,
+            "A2: Queued pre-submit tickets are cancelled exactly once, at the quiesce entry"
+        );
+        assert_eq!(
+            stats.cancel_pending_calls.load(Ordering::Relaxed),
+            1,
+            "A2: ARP-pending pre-submit packets are dropped exactly once"
+        );
+        assert_eq!(stats.committed_epoch.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fut.telemetry.recover_fault_stage.load(Ordering::Relaxed),
+            recover_stage::RESET,
+            "a reset-begin failure carries the RESET stage, not a quiesce/lifecycle split"
+        );
+
+        // A later Faulted-resident poll must NOT repeat the cancellation.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.cancel_queued_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+    }
+
+    #[test]
+    fn recovery_success_reopens_gate_and_serves_new_epoch() {
+        // Task 2.3 / R1-A5 / gaps 5 & 6: after a full successful recovery the
+        // device epoch advances, the queue owner ledger is live at the new
+        // epoch, the I/O gate reopens, and the commit wake fires only after the
+        // Service guard is released. A follow-up Active poll stays in service.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let queue_notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let stack_notify: &'static StackEvent = Box::leak(Box::new(StackEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future_with_stack(mutex, queue_notify, stack_notify);
+        fut.recovery_test_clock = Some(clock);
+
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        let unlocked = Arc::new(AtomicBool::new(false));
+        let woken = Arc::new(AtomicUsize::new(0));
+        {
+            let waker = unlock_observing_waker(mutex, unlocked.clone(), woken.clone());
+            let mut cx = Context::from_waker(&waker);
+            assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
+        }
+        assert!(
+            woken.load(Ordering::Relaxed) > 0,
+            "the successful recovery commit publishes a self-wake"
+        );
+        assert!(
+            unlocked.load(Ordering::Relaxed),
+            "the commit self-wake fires only after the Service guard is released"
+        );
+        assert_eq!(stats.committed_epoch.load(Ordering::Relaxed), 1);
+        assert!(
+            !stats.recovery_hold.load(Ordering::Relaxed),
+            "gate reopened"
+        );
+        assert_eq!(fut.recovery, None);
+        assert_eq!(
+            mutex.lock().queue_epoch_target().current(),
+            1,
+            "the queue owner ledger is live at the new epoch"
+        );
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(
+            fut.recovery, None,
+            "the data path keeps serving without re-entering recovery"
+        );
+    }
+
+    #[test]
+    fn recovery_success_resumes_new_epoch_send_submit_reclaim() {
+        // Task 2.3 / R1-A5 / gap 5: after a full successful recovery the data
+        // path must really move a frame at the new epoch through the real
+        // `Device::send` enqueue seam into the epoch-bound `TicketTracker`
+        // ledger: send -> submit (Queued -> DeviceOwned, observing the new
+        // epoch) -> reclaim (DeviceOwned -> released via an epoch-bound cookie,
+        // terminal Reclaimed), with the owner ledger returned to conservation
+        // and the I/O gate reopened.
+        let (mutex, stats) = leaked_service_ledger_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // Drive Quiescing -> Resetting -> Reinitializing -> Recovered (Active).
+        for _ in 0..3 {
+            assert!(matches!(
+                poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+                Poll::Pending
+            ));
+        }
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(
+            stats.committed_epoch.load(Ordering::Relaxed),
+            1,
+            "new epoch committed"
+        );
+        assert!(
+            !stats.recovery_hold.load(Ordering::Relaxed),
+            "gate reopened"
+        );
+        assert_eq!(
+            mutex.lock().queue_epoch_target().current(),
+            1,
+            "the queue owner ledger is live at the new epoch"
+        );
+
+        // A real Device::send enqueues the frame with an epoch-bound ticket.
+        let frame = [0xABu8; 16];
+        let hop = IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(10, 0, 0, 1));
+        let ts = Instant::from_millis(0);
+        let accepted = {
+            let mut s = mutex.lock();
+            s.router_for_test().devices[0].send(hop, &frame, ts)
+        };
+        assert!(
+            matches!(accepted, TxOutcome::Accepted { .. }),
+            "send accepted into the TX slot"
+        );
+        assert!(
+            mutex.lock().router_for_test().devices[0].tx_slot_pending(),
+            "a queued frame awaits submit"
+        );
+
+        // The next Active round submits it: Queued -> DeviceOwned at epoch 1.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        let ticket = stats.submitted_ticket.load(Ordering::Relaxed);
+        assert_eq!(
+            stats.submit_epoch.load(Ordering::Relaxed),
+            1,
+            "post-recovery submit runs at the new epoch"
+        );
+        assert_eq!(ticket, 0, "the first epoch-bound ticket is recorded");
+        assert_eq!(
+            mutex.lock().device_owned_len_target(),
+            1,
+            "the submitted frame is device-owned"
+        );
+        assert!(
+            !mutex.lock().router_for_test().devices[0].tx_slot_pending(),
+            "the submitted slot is consumed"
+        );
+        assert!(
+            matches!(
+                mutex.lock().router_for_test().devices[0].tx_flush_state(Some(ticket)),
+                FlushState::Pending
+            ),
+            "a DeviceOwned ticket not yet reclaimed is pending"
+        );
+
+        // A completion arrives; the next round reclaims it through the
+        // epoch-bound cookie, returning the ledger to conservation with the
+        // Reclaimed terminal outcome (flush reads Done, first_lost stays None).
+        stats.completion_armed.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(
+            mutex.lock().device_owned_len_target(),
+            0,
+            "owner ledger conserved after reclaim"
+        );
+        assert_eq!(
+            mutex.lock().queue_epoch_target().current(),
+            1,
+            "epoch unchanged by a normal reclaim"
+        );
+        assert!(
+            matches!(
+                mutex.lock().router_for_test().devices[0].tx_flush_state(Some(ticket)),
+                FlushState::Done
+            ),
+            "the reclaimed ticket reaches the Reclaimed/Done terminal outcome"
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(
+            fut.recovery, None,
+            "the resident owner stays Active in the new epoch"
+        );
     }
 
     #[derive(Default)]
@@ -6784,5 +8352,44 @@ mod tests {
                 quarantined: 5,
             })
         );
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn explicit_request_is_absorbed_when_natural_recovery_wins() {
+        let lifecycle = drive_to(RxTaskLifecycle::Active);
+        let mut request = RecoveryRequestState::new();
+        request.request(lifecycle.load()).unwrap();
+
+        // This models the natural-fault linearization under the same request
+        // gate: it clears the accepted request before changing lifecycle, so
+        // no request can survive and reset the later Active generation.
+        request.clear_for_recovery();
+        lifecycle.begin_recovery().unwrap();
+        assert!(!request.claim(lifecycle.load()));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Quiescing);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn request_claim_rejects_duplicate_until_recovery_linearizes() {
+        let lifecycle = drive_to(RxTaskLifecycle::Active);
+        let mut request = RecoveryRequestState::new();
+        request.request(lifecycle.load()).unwrap();
+        assert!(matches!(
+            request.request(lifecycle.load()),
+            Err(DevError::ResourceBusy)
+        ));
+        assert!(request.claim(lifecycle.load()));
+        assert!(matches!(
+            request.request(lifecycle.load()),
+            Err(DevError::ResourceBusy)
+        ));
+        request.clear_for_recovery();
+        lifecycle.begin_recovery().unwrap();
+        assert!(matches!(
+            request.request(lifecycle.load()),
+            Err(DevError::BadState)
+        ));
     }
 }

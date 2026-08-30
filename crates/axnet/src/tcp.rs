@@ -22,10 +22,7 @@ use crate::{
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
-    readiness::{
-        ReadinessBridge, TERMINAL_CONNECT_REFUSED, TERMINAL_NONE, effective_terminal_code,
-        terminal_ax_error,
-    },
+    readiness::{ReadinessBridge, TERMINAL_CONNECT_REFUSED, TERMINAL_NONE, terminal_ax_error},
     state::*,
 };
 
@@ -40,6 +37,8 @@ pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
 pub struct TcpSocket {
     state: StateLock,
     handle: SocketHandle,
+    /// SocketEpoch captured when this public handle was registered.
+    socket_epoch: u64,
     readiness: Arc<ReadinessBridge>,
     general: GeneralOptions,
     rx_closed: AtomicBool,
@@ -59,6 +58,9 @@ impl TcpSocket {
         Self {
             state: StateLock::new(State::Idle),
             handle,
+            socket_epoch: SOCKET_SET
+                .socket_epoch(handle)
+                .expect("new TCP handle must be registered"),
             readiness,
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
@@ -76,6 +78,10 @@ impl TcpSocket {
         Self {
             state: StateLock::new(State::Idle),
             handle,
+            socket_epoch: ctx
+                .sockets
+                .socket_epoch(handle)
+                .expect("new TCP fixture handle must be registered"),
             readiness,
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
@@ -132,12 +138,17 @@ impl TcpSocket {
     /// already lives in this socket's SocketSet and returns the public socket.
     /// The adopted socket inherits this socket's registry pair, so the happy
     /// path never leaves the accepting listener's context.
-    fn adopt_from(&self, handle: SocketHandle) -> Self {
+    fn adopt_from(&self, handle: SocketHandle, socket_epoch: u64) -> Self {
         let readiness = Arc::new(ReadinessBridge::new());
-        self.sockets().install_readiness(handle, readiness.clone());
+        self.sockets()
+            .install_readiness_for_epoch(handle, readiness.clone(), socket_epoch);
         Self {
             state: StateLock::new(State::Connected),
             handle,
+            socket_epoch: self
+                .sockets()
+                .socket_epoch(handle)
+                .unwrap_or(self.socket_epoch),
             readiness,
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
@@ -201,13 +212,11 @@ impl TcpSocket {
             .with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
 
-    /// Task 3.1: effective stable terminal code — the global data-plane
-    /// fault takes precedence over the socket-local terminal.
+    /// Task 3.2: the bridge owns both the SocketEpoch terminal and any
+    /// socket-local terminal, so old handles keep their identity after a
+    /// later epoch opens.
     fn terminal_code(&self) -> u64 {
-        effective_terminal_code(
-            self.sockets().global_terminal_code(),
-            self.readiness.terminal_code(),
-        )
+        self.readiness.effective_terminal_code()
     }
 
     /// Returns the stable terminal category and records it for the
@@ -305,6 +314,12 @@ impl Configurable for TcpSocket {
     fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
         use GetSocketOption as O;
 
+        // SO_ERROR is a non-consuming view of the same terminal checked by
+        // poll and I/O. Refresh the cached errno directly so callers do not
+        // need a preceding poll or retry to observe an epoch closure.
+        if matches!(option, O::Error(_)) {
+            let _ = self.observe_terminal_error();
+        }
         if self.general.get_option_inner(option)? {
             return Ok(true);
         }
@@ -359,6 +374,9 @@ impl Configurable for TcpSocket {
 }
 impl SocketOps for TcpSocket {
     fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         let mut local_addr = local_addr.into_ip()?;
         self.state
             .lock(State::Idle)
@@ -474,12 +492,22 @@ impl SocketOps for TcpSocket {
     }
 
     fn listen(&self) -> AxResult {
+        if let Some(err) = self.observe_terminal_error() {
+            return Err(err);
+        }
         if let Ok(guard) = self.state.lock(State::Idle) {
             guard.transit(State::Listening, || {
+                if let Some(err) = self.observe_terminal_error() {
+                    return Err(err);
+                }
                 let bound_endpoint = self.bound_endpoint()?;
                 let mut sockets = self.sockets().inner.lock();
-                self.listen_table()
-                    .listen(bound_endpoint, self.readiness.clone(), &mut sockets)?;
+                self.listen_table().listen_with_epoch(
+                    bound_endpoint,
+                    self.readiness.clone(),
+                    self.socket_epoch,
+                    &mut sockets,
+                )?;
                 drop(sockets);
                 debug!("listening on {}", bound_endpoint);
                 Ok(())
@@ -512,17 +540,23 @@ impl SocketOps for TcpSocket {
             // reconnect after a full backlog never waits for the runner's
             // next reconcile. Wakes publish only after both guards drop.
             let mut sockets = self.sockets().inner.lock();
-            let result = self.listen_table().accept_with(bound_port, &mut sockets);
+            let result = self
+                .listen_table()
+                .accept_with_epoch(bound_port, &mut sockets);
+            if let Ok((handle, socket_epoch)) = result.as_ref() {
+                self.sockets()
+                    .register_pending_epoch_owner(*handle, *socket_epoch);
+            }
             drop(sockets);
             match result {
                 Err(err @ AxError::WouldBlock) => Err(err),
-                Ok(handle) => {
+                Ok((handle, socket_epoch)) => {
                     // Other accept waiters recheck after the entry lock drops;
                     // the refilled idle listener is already armed by the
                     // atomic accept+refill helper.
                     self.readiness.wake(IoEvents::IN);
                     crate::stack_runner::publish_software_work();
-                    let socket = self.adopt_from(handle);
+                    let socket = self.adopt_from(handle, socket_epoch);
                     debug!(
                         "accepted connection from {}, {}",
                         handle,
@@ -749,7 +783,11 @@ impl Drop for TcpSocket {
                 // global. The runner owns the FIN/ACK progress and the final
                 // raw-handle removal; this caller runs zero rounds.
                 if let Some(service) = self.deferred_service() {
-                    service.lock().queue_deferred_removal(self.handle, kind);
+                    service.lock().queue_deferred_removal_for_epoch(
+                        self.handle,
+                        kind,
+                        self.socket_epoch,
+                    );
                 } else {
                     // No Service installed -> no resident runner can reap;
                     // fall back to the safe immediate removal.
@@ -893,11 +931,16 @@ mod tests {
 
     use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use axerrno::AxError;
+    use axerrno::{AxError, LinuxError};
     use axpoll::Pollable;
 
     use super::TcpSocket;
-    use crate::{SocketAddrEx, SocketOps, readiness, wrapper::SocketTestContext};
+    use crate::{
+        SocketAddrEx, SocketOps,
+        options::{Configurable, GetSocketOption},
+        readiness,
+        wrapper::SocketTestContext,
+    };
 
     /// Task 5.1 (Iteration 006): leaked per-test fixture; removes the R57
     /// global `SOCKET_SET`/`LISTEN_TABLE` churn prerequisite.
@@ -948,6 +991,93 @@ mod tests {
             ),
             readiness::TERMINAL_NO_MEMORY
         );
+    }
+
+    #[test]
+    fn closed_socket_epoch_is_seen_by_tcp_poll_and_io() {
+        let ctx = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
+        let epoch = socket.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(epoch, readiness::NetworkTerminal::LinkDown)
+        );
+
+        assert!(Pollable::poll(&socket).contains(IoEvents::ERR));
+        assert_eq!(socket.observe_terminal_error(), Some(AxError::NotConnected));
+        let err = SocketOps::connect(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                9101,
+            )),
+        )
+        .unwrap_err();
+        assert_eq!(err, AxError::NotConnected);
+
+        assert_eq!(ctx.sockets.open_next_socket_epoch(), Ok(epoch + 1));
+        let fresh = TcpSocket::new_with_context(ctx);
+        assert!(!Pollable::poll(&fresh).contains(IoEvents::ERR));
+    }
+
+    #[test]
+    fn tcp_so_error_reads_epoch_terminal_before_poll_and_repeatedly() {
+        let ctx = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
+        let epoch = socket.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(epoch, readiness::NetworkTerminal::LinkDown)
+        );
+
+        let mut first = 0;
+        socket
+            .get_option(GetSocketOption::Error(&mut first))
+            .unwrap();
+        let mut second = 0;
+        socket
+            .get_option(GetSocketOption::Error(&mut second))
+            .unwrap();
+        let expected = LinuxError::from(AxError::NotConnected).code();
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+    }
+
+    #[test]
+    fn terminalized_tcp_bind_and_listen_never_create_hidden_owner() {
+        let ctx = test_ctx();
+        let socket = TcpSocket::new_with_context(ctx);
+        let epoch = socket.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(epoch, readiness::NetworkTerminal::ConnectionReset)
+        );
+        let bind_err = SocketOps::bind(
+            &socket,
+            SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18601)),
+        )
+        .unwrap_err();
+        assert_eq!(bind_err, AxError::ConnectionReset);
+        assert_eq!(ctx.sockets.inner.lock().iter().count(), 1);
+
+        ctx.sockets.open_next_socket_epoch().unwrap();
+        let listener = TcpSocket::new_with_context(ctx);
+        SocketOps::bind(
+            &listener,
+            SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18602)),
+        )
+        .unwrap();
+        let listener_epoch = listener.socket_epoch;
+        assert!(
+            ctx.sockets
+                .close_socket_epoch(listener_epoch, readiness::NetworkTerminal::ConnectionReset)
+        );
+        let raw_before = ctx.sockets.inner.lock().iter().count();
+        assert_eq!(
+            SocketOps::listen(&listener).unwrap_err(),
+            AxError::ConnectionReset
+        );
+        assert_eq!(ctx.sockets.inner.lock().iter().count(), raw_before);
     }
 
     #[test]
