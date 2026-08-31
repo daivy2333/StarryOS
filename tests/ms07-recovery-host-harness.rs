@@ -13,6 +13,10 @@ fn v4_is_an_independent_append_only_wire_and_control_is_qemu_only() {
     assert!(IRQ_LOGIC.contains("pub struct IrqSnapshotV4"));
     assert!(!IRQ_LOGIC.contains("type IrqSnapshotV4"));
     assert!(IRQ.contains("pub fn irq_snapshot_v4()"));
+    assert!(
+        IRQ.contains("v3: irq_snapshot_v3()"),
+        "V4 must copy V3 as its byte-for-byte prefix"
+    );
     assert!(CTL.contains("const NET_IRQ_SNAPSHOT_V4"));
     assert!(CTL.contains("const NET_RECOVERY_RESET_REQUEST"));
     assert!(CTL.contains("#[cfg(feature = \"qemu\")]\n    if cmd == NET_IRQ_SNAPSHOT_V4"));

@@ -114,6 +114,13 @@ MS07 MUST 以未协商 `VIRTIO_F_RING_RESET` 的 VirtIO-MMIO 整设备 reset 为
 
 VirtIO config-change IRQ MUST 在 ack 后发布给 task context；task context MUST 通过一致的 config snapshot 读取 `VIRTIO_NET_S_LINK_UP` 并提交 link generation/state。link down MUST 关闭当前 socket epoch、取消所有 pre-submit packet、阻止新的 software enqueue/driver submit并使 socket I/O 返回 `NotConnected`；已经 device-owned 的 packet MUST 继续由原 queue epoch completion/reclaim，只能用于资源闭合而不能证明 peer delivery。link up MUST 保持当前 queue epoch、推进 socket epoch并只允许新建 socket 恢复 I/O，不得自动触发 device reset。link transition MUST NOT 伪造 used-ring completion，也 MUST NOT 在 ISR 中读取或移动 descriptor。
 
+支持link status的目标在唯一queue owner首次进入可服务状态时 MUST 由task context安排一次相同的一致snapshot读取，使当前link state不永久停留在unknown；`Again` MUST 保留为有界后续工作，不得自旋。首次unknown到up/down的提交 MUST 推进一次link generation，但 MUST NOT 伪造硬件config IRQ或used-ring completion。
+
+#### Scenario: 初始 link snapshot
+- **WHEN** 支持一致link读取的目标完成异步queue owner激活，且尚未收到config-change IRQ
+- **THEN** owner MUST 在task context提交首个up/down snapshot，或在config generation竞争时保留一次有界重试
+- **AND** 已提交Active诊断不得永久报告unknown，ISR telemetry不得把该初始化记作硬件config IRQ
+
 #### Scenario: QEMU link down
 - **WHEN** QEMU monitor 对当前 NIC 执行 `set_link net0 off` 并产生 config-change
 - **THEN** ISR MUST ack/config-publish，task context MUST 观察 link down 并提交新 link generation
@@ -152,6 +159,23 @@ VirtIO config-change IRQ MUST 在 ack 后发布给 task context；task context M
 
 MS07 MUST 以 host/model tests 覆盖 owner lifecycle、epoch ledger、stale/duplicate completion、三层取消、所有 timeout stage、reset success/failure、link state 和 socket epoch；单 hart QEMU VirtIO-MMIO runtime MUST 覆盖真实整设备 reset、`set_link net0 off/on`、reset 前后新旧 socket 结果、双向流量和资源守恒。真实 QEMU 不必产生规范禁止的旧 queue completion，此项 MUST 由 fake transport/model injection 证明。既有 MS01、MS04、MS05、MS06 受影响 Gate MUST 回归，历史 evidence 缺口不得自动提升为 PASS。
 
+runtime资源守恒 MUST 使用driver定义的owner分类。VirtIO健康空闲态的`device_owned`包含常驻RX queue owners，MUST NOT以`device_owned==0`作为idle或资格条件；probe和validator MUST 校验同阶段capacity、owner分类、quarantine及epoch关系。guest peer路径失败 MUST 保留失败的具体syscall阶段与errno，缺少该证据时不得把“peer未收到包”归因为UDP产品缺陷。nonblocking send的`EAGAIN/EWOULDBLOCK` MUST 视为共享absolute deadline内可重试的背压：每次重试前重新等待writable且不得sleep-spin；其他errno MUST 保留并停止猜测修复。若probe自身发生user fault，runtime结论 MUST 同时记录faulting user PC与fault VA并对齐exact ELF，不能把fault VA当作PC或继续使用不可信payload作资格证据。
+
+#### Scenario: nonblocking peer send背压
+- **WHEN** guest peer socket在writable等待后执行nonblocking send且返回`EAGAIN/EWOULDBLOCK`
+- **THEN** probe MUST 使用同一phase absolute deadline重新等待writable并有界重试
+- **AND** deadline耗尽 MUST 报告send阶段和最终errno，不得busy loop或改写为UDP产品故障
+
+#### Scenario: guest probe用户态页故障
+- **WHEN** change-local probe在资格流程前或流程中发生不可处理user page fault
+- **THEN** raw serial MUST 至少记录exact payload对应的user PC、fault VA、access、SP与RA，并用program headers和PC附近反汇编定位首个未解释执行边
+- **AND** 在artifact/runtime不匹配、PC未定位或需要通用loader修复时 MUST 停止资格流程并返回Plan
+
+#### Scenario: 健康 VirtIO 双向 owner 基线
+- **WHEN** VirtIO RX queue已填充`QS`个buffer且TX无在途请求
+- **THEN** owner summary MUST 报告`available=QS`、`device_owned=QS`、`quarantined=0`或与实际固定capacity等价的关系
+- **AND** probe、validator与negative fixtures MUST NOT要求健康态`device_owned==0`或`available+device_owned+quarantined<=QS`
+
 #### Scenario: Host/model fault matrix
 - **WHEN** fake transport 分别注入 stale/duplicate token、status reset 延迟或失败、completion/reclaim stall、config generation 变化和 cancel/submit 交错
 - **THEN** 每项 MUST 命中指定 stage/state 且证明无 UAF、重复回收、owner 混用、永久 Pending或静默丢包
@@ -159,7 +183,7 @@ MS07 MUST 以 host/model tests 覆盖 owner lifecycle、epoch ledger、stale/dup
 
 #### Scenario: 单 hart QEMU reset 与 link flap
 - **WHEN** change-local probe 在单 hart QEMU VirtIO-MMIO 上完成 reset 前流量、受控 reset、reset 后新 socket 流量及 link off/on
-- **THEN** raw serial MUST 包含 revision、环境、阶段 marker、epoch/ledger 摘要、旧 socket terminal、新 socket成功和明确退出码
+- **THEN** raw serial MUST 包含环境、阶段 marker、epoch/ledger 摘要、旧 socket terminal、新 socket成功和明确退出码；不得要求revision/hash/run-id等内容身份绑定
 - **AND** panic、trap、fatal ownership drift、validator mismatch 或任一 workload failure MUST 判定失败
 
 #### Scenario: 兼容性回归

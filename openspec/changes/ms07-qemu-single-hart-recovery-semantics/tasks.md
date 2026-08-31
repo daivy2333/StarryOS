@@ -18,18 +18,18 @@
 ## 2. Iterations 001–003 — Queue Ledger, Deadlines, and Resident Recovery
 
 - [x] 2.1 在 `crates/axnet/src/device` 完成 `(QueueEpoch,ticket)` fixed ledger、`Reclaimed/CancelledPreSubmit/ResetAborted/Fault(stage)` 终结原因与批量 pre-submit cancel；保持 flush drop 只清 waiter，任何非 Reclaimed target 返回稳定错误，并关闭 axnet 全量测试的进程内隔离问题。（R2–R4；Depends on 1.2–1.3；GREEN：cancel/submit 线性化、乱序/stale completion、flush、checked-counter 与 ordinary/diagnostics 串行全量测试通过）
-- [ ] 2.2 为 submit wait、completion wait、reclaim 分别建立 1s absolute deadline，超时按 D3 取消 Queued 或进入 recovery/fault；以单一提交边界冻结 `{stage,cause,queue_epoch,owner_summary}`，禁止用阶段 code 代替计时器或以分散 relaxed atomics 冒充一致 snapshot。（R3–R4；Depends on 2.1；GREEN：deterministic clock 逐段证明 arm、保持、到期、错误映射与 snapshot 一致性）
-- [ ] 2.3 在 `crates/axnet/src/async_rx.rs`、`service.rs`、`router.rs`、`device`验收并修复唯一常驻 `Active/Quiescing/Resetting/Reinitializing/Faulted` owner，以 1s quiesce、2s reset、2s reinitialize absolute deadline 驱动 bounded recovery step；reset 成功推进 QueueEpoch，失败保留 faulted owner/backing 且不退出或 respawn task。（R1–R5；Depends on 2.2；GREEN：deterministic model 覆盖 driver-stage success/timeout、event interleaving、guard 外 wake 与唯一 owner）
+- [x] 2.2 为 submit wait、completion wait、reclaim 分别建立 1s absolute deadline，超时按 D3 取消 Queued 或进入 recovery/fault；以单一提交边界冻结 `{stage,cause,queue_epoch,owner_summary}`，禁止用阶段 code 代替计时器或以分散 relaxed atomics 冒充一致 snapshot。（R3–R4；Depends on 2.1；GREEN：deterministic clock 逐段证明 arm、保持、到期、错误映射与 snapshot 一致性）
+- [x] 2.3 在 `crates/axnet/src/async_rx.rs`、`service.rs`、`router.rs`、`device`验收并修复唯一常驻 `Active/Quiescing/Resetting/Reinitializing/Faulted` owner，以 1s quiesce、2s reset、2s reinitialize absolute deadline 驱动 bounded recovery step；reset 成功推进 QueueEpoch，失败保留 faulted owner/backing 且不退出或 respawn task。（R1–R5；Depends on 2.2；GREEN：deterministic model 覆盖 driver-stage success/timeout、event interleaving、guard 外 wake 与唯一 owner）
 
 ## 3. Iterations 004–005 — Link and Socket Epoch Semantics
 
-- [ ] 3.1 在 `kernel/src/drivers/virtio_net_irq.rs` 与 axnet event/control路径分别发布 used-ring/config-change cause，task context读取一致 link snapshot；link down关闭当前 SocketEpoch、取消 Queued、阻止 enqueue/submit但继续回收 DeviceOwned，link up只推进 SocketEpoch并允许新会话，不 reset QueueEpoch。（R3、R6；Depends on 2.3；GREEN：IRQ logic、config register-recheck、combined cause和link off/on model tests全绿）
-- [ ] 3.2 在 `crates/axnet/src/readiness.rs`、`wrapper.rs`、TCP/UDP/listener/deferred paths引入 epoch-scoped `NetworkTerminal`：旧 epoch映射 `ConnectionReset`，link down映射 `NotConnected`，timeout映射 `TimedOut`，取消映射 `Interrupted`；先提交错误后 wake，恢复后新 socket不继承旧 terminal且旧 socket不复活。（R4、R7；Depends on 3.1；GREEN：多 waiter、handle reuse、listener、deferred retirement、poll后I/O一致性及 ordinary/diagnostics axnet全量 tests通过）
+- [x] 3.1 在 `kernel/src/drivers/virtio_net_irq.rs` 与 axnet event/control路径分别发布 used-ring/config-change cause，task context读取一致 link snapshot；link down关闭当前 SocketEpoch、取消 Queued、阻止 enqueue/submit但继续回收 DeviceOwned，link up只推进 SocketEpoch并允许新会话，不 reset QueueEpoch。（R3、R6；Depends on 2.3；GREEN：IRQ logic、config register-recheck、combined cause和link off/on model tests全绿）
+- [x] 3.2 在 `crates/axnet/src/readiness.rs`、`wrapper.rs`、TCP/UDP/listener/deferred paths引入 epoch-scoped `NetworkTerminal`：旧 epoch映射 `ConnectionReset`，link down映射 `NotConnected`，timeout映射 `TimedOut`，取消映射 `Interrupted`；先提交错误后 wake，恢复后新 socket不继承旧 terminal且旧 socket不复活。（R4、R7；Depends on 3.1；GREEN：多 waiter、handle reuse、listener、deferred retirement、poll后I/O一致性及 ordinary/diagnostics axnet全量 tests通过）
 
 ## 4. Iterations 006–007 — Fault Injection and Single-Hart QEMU Qualification
 
-- [ ] 4.1 新增 versioned QEMU-only recovery control/snapshot、guest probe和纯输出 validator，复用现有 diagnostic lease制造 queue stall，提供 reset trigger与阶段/epoch/ledger/socket/link marker；保持 V1–V3 ABI、validator不启动QEMU且非QEMU build不暴露控制面。（R4–R8；Depends on 3.2；GREEN：Rust/C/Python host seams覆盖marker顺序、negative fixtures、旧ABI和feature gate）
-- [ ] 4.2 执行自动 host/model/build Gate并冻结 revision/artifact identity，再由用户按 R44 在单 hart QEMU 7.0.0 VirtIO-MMIO 上手工验证 reset前流量、queue stall→恢复、旧socket terminal/新socket双向流量及 HMP `set_link net0 off/on`；重跑受影响 MS01/MS04/MS05/MS06并由validator审计完整raw串口与exit。（R8；Depends on 4.1；GREEN：所有自动产品Gate exit 0、手工workload逐项PASS、无panic/trap/owner drift/永久Pending；环境EPERM必须分层而不得伪记产品PASS）
+- [x] 4.1 新增 versioned QEMU-only recovery control/snapshot、guest probe和纯输出 validator，复用现有 diagnostic lease制造 queue stall，提供 reset trigger与阶段/epoch/ledger/socket/link marker；保持 V1–V3 ABI、validator不启动QEMU且非QEMU build不暴露控制面。（R4–R8；Depends on 3.2；GREEN：Rust/C/Python host seams覆盖marker顺序、negative fixtures、旧ABI和feature gate）
+- [ ] 4.2 清除测试工具中的 revision/run-id pin、hash/source-freeze/time-order manifest 层；在唯一 queue owner 激活后提交首个一致 link snapshot；按 VirtIO 双向 owner 模型校验健康态 `QS` 个常驻 RX owner与空闲 TX capacity，而不把 `device_owned==0` 当作 idle；保留直接行为、环境、阶段顺序、deadline、epoch/ledger、terminal 和 exit 判据。guest probe必须先证明exact ELF可稳定执行：页故障至少记录user PC、fault VA、SP/RA并与program headers和反汇编对齐；peer路径记录socket/connect/send/recv阶段及errno，`EAGAIN/EWOULDBLOCK`只能在同一absolute deadline内通过poll后有界重试，其他errno不得猜测产品修复。自动host/model/build Gate通过后，由用户按R44在single-hart QEMU 7.0.0 VirtIO-MMIO上手工验证reset前流量、queue stall→恢复、旧socket terminal/新socket双向流量及HMP `set_link net0 off/on`，并重跑受影响MS01/MS04/MS05/MS06；一次性FAIL/BLOCKED现场也保存最小raw serial/pcap。（R6、R8；Depends on 4.1；GREEN：初始link为已提交up/down、probe/validator owner判据与真实driver ledger一致、probe无未解释trap且syscall结果可归因、自动产品Gate exit 0、手工workload逐项PASS、无panic/trap/owner drift/永久Pending；环境EPERM必须分层而不得伪记产品PASS）
 
 ## Task Contracts
 
@@ -151,7 +151,7 @@
 - Depends on: 3.2。
 - Targets: `kernel/src/syscall/fs/ctl.rs`、IRQ snapshot structs、`tests/ms07_*`、`scripts/ms07-*`、Makefile host-test guards。
 - Current behavior: V3 snapshot、diagnostic hold和flush存在；无reset/link/socket epoch ABI；MS06 validator只审计旧协议。
-- Required behavior: 新命令/结构使用新version，不改V1–V3 layout；probe按阶段输出确定marker；validator纯审计并拒绝缺失/乱序/错误revision/FAIL；非qemu feature不可见。
+- Required behavior: 新命令/结构使用新version，不改V1–V3 layout；probe按阶段输出确定marker；validator纯审计并拒绝缺失/乱序/FAIL；非qemu feature不可见。
 - Preserve: existing ioctl数字和ABI、2s lease crash safety、R44手工QEMU、raw serial为事实源。
 - Forbidden: validator import socket/subprocess或启动QEMU；复用旧V3字段改变含义；probe sleep-poll内部axnet。
 - Test witness: C/Python/Rust RED fixtures覆盖所有case和negative protocol。
@@ -163,15 +163,15 @@
 
 - Requirement/Scenario: R8 host matrix、runtime、compatibility。
 - Depends on: 4.1且所有自动产品Gate通过。
-- Targets: 无额外产品实现；执行全量Gate、冻结artifact，用户手工QEMU与validator。
+- Targets: 测试与证据工具精简、guest ELF/页故障与socket syscall诊断、全量Gate、用户手工QEMU与validator；没有fault PC或精确errno时不修改UDP或loader产品语义。
 - Current behavior: MS06 frozen runtime全过但不覆盖reset/link；R44禁止agent自动驱动QEMU网络测试。
-- Required behavior: 同一revision下先证明reset前流量，再触发stall/reset，验证旧socket terminal和新socket双向；HMP off/on分别见证NotConnected与新socket恢复；回归MS01/MS04/MS05/MS06。
+- Required behavior: probe先稳定完成startup与分阶段socket/send witness；若nonblocking send返回`EAGAIN/EWOULDBLOCK`，在同一absolute deadline内重新poll并有界重试。随后同一次手工session先证明reset前流量，再触发stall/reset，验证旧socket terminal和新socket双向；HMP off/on分别见证NotConnected与新socket恢复；回归MS01/MS04/MS05/MS06。
 - Preserve: 单hart、MMIO、user-net、LOG=warn、串口与host结果不混淆；历史waiver不提升。
-- Forbidden: 用host/model替代真实MMIO结果；用guest completion声明peer delivery；缺exit/marker仍判PASS。
-- Test witness: 自动Gate全部GREEN后，构建`make ARCH=riscv64 build`并冻结hash；用户以相同配置`make ARCH=riscv64 justrun`和HMP执行协议。
+- Forbidden: 用host/model替代真实MMIO结果；用guest completion声明peer delivery；把fault VA当PC；缺errno先改UDP/loader；无deadline busy retry；缺exit/marker仍判PASS。
+- Test witness: 清理前相关工具self-test为GREEN；清理后source guard确认目标测试路径无revision/run-id pin或hash/source-freeze/time-order实现，自动Gate全部GREEN；用户紧接构建以相同配置运行`make ARCH=riscv64 justrun`和HMP协议。
 - GREEN condition: validator exit 0，所有case/回归明确PASS，无panic/trap/fatal drift/permanent Pending；old/new epoch与ledger守恒可见。
 - Verification: driver/transport/axnet/smoltcp相关全量、host seams、kernel build、raw QEMU validator；每项输出和exit写Act Response。
-- Stop when: 自动产品Gate失败、artifact/revision漂移、QEMU环境不满足单hart/MMIO，或用户未提供手工runtime；不得降级结论。
+- Stop when: runtime bytes与exact ELF不匹配、页故障根因需要通用loader修复、send返回非`EAGAIN/EWOULDBLOCK`错误且现有契约未覆盖、自动产品Gate失败、QEMU环境不满足单hart/MMIO，或用户未提供手工runtime；不得降级结论。
 
 ## Iteration Plan
 
@@ -235,16 +235,16 @@
 - Depends on: Iteration 005
 - Stable baseline: append-only QEMU recovery控制面、probe marker和纯输出validator形成可冻结、可负向测试的资格协议。
 - Verification boundary: Rust/C/Python host seams、negative fixtures、旧ABI、feature gate、host-test可运行部分和kernel build通过。
-- Diagnostic boundary: versioned ioctl/snapshot、guest probe协议、validator规则与artifact identity。
+- Diagnostic boundary: versioned ioctl/snapshot、guest probe协议与validator规则。
 - Non-goals: 自动或手工QEMU资格结论。
 
 ### Iteration 007: Single-hart QEMU qualification
 
 - Tasks: 4.2
 - Depends on: Iteration 006
-- Stable baseline: 同一revision/artifact在单hartQEMU VirtIO-MMIO上证明reset、queue stall、link flap、old/new socket和回归结果。
-- Verification boundary: 自动Gate先绿，随后用户手工runtime raw serial由validator判定；环境与产品结论分层。
-- Diagnostic boundary: QEMU命令/环境、runtime marker、raw serial、MS01/MS04/MS05/MS06回归。
+- Stable baseline: 精简后的行为型测试协议以已初始化 link snapshot 和真实双向 owner ledger，在单hartQEMU VirtIO-MMIO上证明reset、queue stall、link flap、old/new socket和回归结果。
+- Verification boundary: host/model先证明初始 link commit、`QS` 常驻RX owner与probe/validator契约；自动Gate全绿后，用户手工runtime raw serial由validator判定；环境与产品结论分层。
+- Diagnostic boundary: queue owner首次link读取、VirtIO RX/TX owner分类、guest exact ELF/program headers/fault PC与socket/connect/send/recv errno、nonblocking deadline重试、QEMU命令/环境、runtime marker、raw serial/pcap、MS01/MS04/MS05/MS06回归。
 - Non-goals: 自动QEMU runner、SMP、PCI/DWMAC/真板、性能。
 
 ## Balance Audit
@@ -254,7 +254,7 @@
 - Iteration 002单独完成三个data wait deadline和coherent fault identity；这些计时语义必须先于driver reset生命周期，避免再次用stage label代替timer。
 - Iteration 003只验收常驻owner与driver stages；工作树中已有实现可以保留，但必须在2.2稳定后独立证明，而不能据“代码已存在”提前接受。
 - Iteration 004与005分开，因为IRQ/link cause和socket registry是不同锁域、不同失败模式，任一都可形成独立host稳定基线。
-- Iteration 006先冻结可负向验证的ABI/probe/validator协议，Iteration 007再消费同一artifact做一次性真实QEMU资格，避免工具实现与环境运行混成一个重Cycle。
+- Iteration 006先形成可负向验证的ABI/probe/validator协议；Iteration 007移除不直接证明行为的身份/指纹层，修正首次link与双向owner的runtime契约，再执行一次性真实QEMU资格，避免把证据工程或错误的零owner假设当成产品结果。
 - 每个task只归属一个Iteration，依赖均指向前序稳定结果；拆分依据是状态、所有权和验证边界，不是测试或文件数量。
 
 ## Requirements Traceability Matrix
@@ -266,6 +266,6 @@
 | R3 | waiter drop、queued cancel、device-owned cancel、submit交错 | D4 | 2.1、2.2、3.1 | 001、002、004 | `flush::FlushFuture`；`TicketTracker`；`EthernetDevice::tx_submit_one` | cancel/submit linearization；data timeout；reset/link bulk cancel | None | Covered |
 | R4 | 六阶段timeout和稳定错误 | D2、D3、D5 | 1.2、2.1、2.2、2.3、3.2、4.1 | 000–006 | recovery progress；queue clock；`readiness::NetworkTerminal`；snapshot ABI | deterministic clock每stage；poll后I/O；validator marker | None | Covered |
 | R5 | reset成功/未确认、NEEDS_RESET、IRQ交错 | D2、D3 | 1.1、1.3、2.3 | 000、003 | `Transport`；`VirtIONetRaw`；`VirtIoNetDev`；queue owner | delayed/never-zero、reinit failure、backing quarantine | None | Covered |
-| R6 | link down/up、combined cause | D1、D6 | 1.1、1.3、3.1 | 000、004 | config generation/status；VirtIO ISR；axnet link state | generation retry；IRQ cause matrix；QEMU HMP off/on | None | Covered |
+| R6 | 初始link、link down/up、combined cause | D1、D6 | 1.1、1.3、3.1、4.2 | 000、004、007 | config generation/status；VirtIO ISR；queue owner初始link commit；axnet link state | generation retry；首次snapshot；IRQ cause matrix；QEMU HMP off/on | None | Covered |
 | R7 | 旧socket、新socket、terminal-before-wake | D1、D5、D7 | 3.2 | 005 | `SocketSetWrapper`；TCP/UDP/listener/readiness | epoch closure、late add、multiwaiter、handle reuse、deferred cleanup | None | Covered |
-| R8 | host fault matrix、QEMU、兼容回归 | D8 | 4.1、4.2 | 006、007 | fake transports；QEMU ioctl/probe/validator；Makefile gates | crate/full host tests；single-hart raw serial；MS01/04/05/06 | None | Covered |
+| R8 | host fault matrix、双向owner语义、QEMU、兼容回归 | D8 | 4.1、4.2 | 006、007 | fake transports；VirtIO owner summary；QEMU ioctl/probe/validator；Makefile gates | owner model + C/Python fixtures；single-hart raw serial；MS01/04/05/06 | None | Covered |

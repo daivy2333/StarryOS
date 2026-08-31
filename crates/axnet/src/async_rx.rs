@@ -283,6 +283,16 @@ impl RecoveryRequestState {
     }
 }
 
+#[cfg(feature = "qemu-diagnostics")]
+fn with_recovery_request_transition<T>(
+    request: &spin::Mutex<RecoveryRequestState>,
+    transition: impl FnOnce() -> T,
+) -> T {
+    let mut request = request.lock();
+    request.clear_for_recovery();
+    transition()
+}
+
 /// The one RX task lifecycle. Loaded by [`poll_interfaces`](crate::poll_interfaces)
 /// to map the RX consumption right each round.
 pub(crate) static RX_LIFECYCLE: RxLifecycle = RxLifecycle::new();
@@ -818,6 +828,43 @@ pub struct RecoverySnapshotV4 {
 
 #[cfg(feature = "qemu-diagnostics")]
 pub fn recovery_snapshot_v4() -> RecoverySnapshotV4 {
+    recovery_snapshot_v4_from(ServiceAccess::Global)
+}
+
+/// Reads the current V4 identity tuple from a [`Service`] under one guard:
+/// queue epoch, socket epoch, link generation/state and the live owner ledger.
+#[cfg(feature = "qemu-diagnostics")]
+fn read_v4_current(service: &mut Service) -> (u64, u64, u64, u64, u64, u64, u64) {
+    let owner = service.recovery_owner_summary_target();
+    (
+        service.queue_epoch_target().current(),
+        service.socket_epoch(),
+        service.link_generation(),
+        service.link_state_code(),
+        owner.available,
+        owner.device_owned,
+        owner.quarantined,
+    )
+}
+
+/// Injectable V4 assembly seam (A2 rework): the current queue/socket/link/owner
+/// tuple is read under a SINGLE Service guard from the supplied access; the
+/// historical coherent fault is read independently. The two tuples are valid
+/// and coherent per-side and must never be read as one instant. A missing
+/// Service publishes `current_valid = 0` (no forged healthy values).
+#[cfg(feature = "qemu-diagnostics")]
+pub(crate) fn recovery_snapshot_v4_from(access: ServiceAccess) -> RecoverySnapshotV4 {
+    let current = match access {
+        ServiceAccess::Global => crate::SERVICE.get().map(|mutex| {
+            let mut guard = mutex.lock();
+            read_v4_current(&mut guard)
+        }),
+        #[cfg(test)]
+        ServiceAccess::Injected(mutex) => {
+            let mut guard = mutex.lock();
+            Some(read_v4_current(&mut guard))
+        }
+    };
     let (
         current_valid,
         current_queue_epoch,
@@ -827,23 +874,10 @@ pub fn recovery_snapshot_v4() -> RecoverySnapshotV4 {
         current_owner_available,
         current_owner_device_owned,
         current_owner_quarantined,
-    ) = crate::SERVICE
-        .get()
-        .map(|mutex| {
-            let mut guard = mutex.lock();
-            let owner = guard.recovery_owner_summary_target();
-            (
-                1,
-                guard.queue_epoch_target().current(),
-                guard.socket_epoch(),
-                guard.link_generation(),
-                guard.link_state_code(),
-                owner.available,
-                owner.device_owned,
-                owner.quarantined,
-            )
-        })
-        .unwrap_or_default();
+    ) = match current {
+        Some((q, s, l, ls, avail, owned, quar)) => (1, q, s, l, ls, avail, owned, quar),
+        None => (0, 0, 0, 0, 0, 0, 0, 0),
+    };
     let fault = RX_TELEMETRY.coherent_fault.read();
     let (
         fault_valid,
@@ -1311,6 +1345,11 @@ pub(crate) struct RxRxFuture {
     notify: &'static QueueEvent,
     stack_notify: &'static StackEvent,
     stack_progress_pending: bool,
+    /// P2 / R6: set when the owner has activated but has NOT yet committed a
+    /// consistent initial link snapshot. Cleared once the first
+    /// `link_policy_step_target` resolves (Up/Down/Unsupported/Fault/NoEvent);
+    /// retained on `Again` so the next bounded poll retries.
+    initial_link_pending: bool,
     telemetry: &'static RxTelemetry,
     /// Task 3.1: publication target for terminal queue faults. Production
     /// points at the global socket registry; tests inject a local wrapper.
@@ -1714,6 +1753,11 @@ impl RxRxFuture {
         self.transition_preflight(preflight_ok);
         drop(service);
         if preflight_ok {
+            // P2 / R6: the resident owner must commit a consistent initial link
+            // snapshot in task context on activation, independent of any
+            // hardware CONFIG IRQ cause (a configuration-change interrupt may
+            // never fire until the link later flaps).
+            self.initial_link_pending = true;
             self.poll_active(cx)
         } else {
             Poll::Ready(())
@@ -1750,18 +1794,30 @@ impl RxRxFuture {
             return self.poll_recovery(cx);
         }
         // Task 3.1 / R6: bounded config micro-step. Take the cause flags once
-        // per poll and, on a pending CONFIG cause, read a consistent link
-        // snapshot at most once. A transient `Again` retains the cause (a
-        // re-publish bumps the generation, so whichever sleep path follows
-        // observes the change and retries). A link down/up publishes stack
-        // progress after the round so readiness re-evaluates.
+        // per poll and, on a pending CONFIG cause or an unresolved initial-link
+        // flag, read a consistent link snapshot at most once. A transient
+        // `Again` retains the cause (a re-publish bumps the generation, so
+        // whichever sleep path follows observes the change and retries) and
+        // keeps the initial-link flag for the next bounded poll. A link down/up
+        // publishes stack progress after the round so readiness re-evaluates.
         let causes = self.notify.take_causes();
         let mut link_change = false;
-        if causes.config {
+        if causes.config || self.initial_link_pending {
             match service.link_policy_step_target() {
-                LinkStep::Again => self.notify.publish_config(),
-                LinkStep::Down | LinkStep::Up => link_change = true,
-                LinkStep::NoEvent | LinkStep::Unsupported | LinkStep::Fault => {}
+                LinkStep::Again => {
+                    // Retain the retry work: re-publish the CONFIG cause to
+                    // self-wake. An initial-link `Again` keeps its pending flag
+                    // (only the non-Again arms below clear it), so the next
+                    // bounded poll retries the very first snapshot.
+                    self.notify.publish_config();
+                }
+                LinkStep::Down | LinkStep::Up => {
+                    self.initial_link_pending = false;
+                    link_change = true;
+                }
+                LinkStep::NoEvent | LinkStep::Unsupported | LinkStep::Fault => {
+                    self.initial_link_pending = false;
+                }
             }
         }
         let outcome = self.service_round(&mut service);
@@ -1982,11 +2038,10 @@ impl RxRxFuture {
         // new Queued ticket enters a data plane being cleared.
         self.set_recovery_hold(true);
         #[cfg(feature = "qemu-diagnostics")]
-        let lifecycle_transition = {
-            let mut request = RECOVERY_RESET_REQUEST.lock();
-            request.clear_for_recovery();
-            self.lifecycle.begin_recovery()
-        };
+        let lifecycle_transition =
+            with_recovery_request_transition(&RECOVERY_RESET_REQUEST, || {
+                self.lifecycle.begin_recovery()
+            });
         #[cfg(not(feature = "qemu-diagnostics"))]
         let lifecycle_transition = self.lifecycle.begin_recovery();
         if !lifecycle_transition.is_ok() {
@@ -2042,7 +2097,15 @@ impl RxRxFuture {
         // F2: commit `Faulted` first, then freeze the summary, so
         // `freeze_recovery_summary` observes the Faulted lifecycle and records
         // the real software ticket epoch instead of `u64::MAX`.
-        if !self.lifecycle.recover_fault().is_ok() {
+        // A1 rework: absorb any pending/claimed request on the Active->Faulted seam.
+        #[cfg(feature = "qemu-diagnostics")]
+        let lifecycle_transition =
+            with_recovery_request_transition(&RECOVERY_RESET_REQUEST, || {
+                self.lifecycle.recover_fault()
+            });
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let lifecycle_transition = self.lifecycle.recover_fault();
+        if !lifecycle_transition.is_ok() {
             self.telemetry.record_last_error_code(
                 rx_error_stage::LIFECYCLE,
                 self.lifecycle.load().code() as u64,
@@ -2612,7 +2675,16 @@ impl RxRxFuture {
     /// Records an illegal `Active -> Faulted` transition as LIFECYCLE-stage.
     /// Returns whether the transition committed.
     fn transition_fatal(&self) -> bool {
-        match self.lifecycle.fatal() {
+        // A1 rework: the Active->Faulted terminal path absorbs any pending
+        // explicit recovery request on the same seam that commits the
+        // transition, so an accepted request cannot survive to a later
+        // Active generation.
+        #[cfg(feature = "qemu-diagnostics")]
+        let lifecycle_transition =
+            with_recovery_request_transition(&RECOVERY_RESET_REQUEST, || self.lifecycle.fatal());
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let lifecycle_transition = self.lifecycle.fatal();
+        match lifecycle_transition {
             Ok(()) => true,
             Err(TransitionError::Illegal(state)) => {
                 self.telemetry
@@ -2705,6 +2777,7 @@ fn spawn_rx_task() {
                 notify: &QUEUE_EVENT,
                 stack_notify: &STACK_EVENT,
                 stack_progress_pending: false,
+                initial_link_pending: false,
                 telemetry: &RX_TELEMETRY,
                 fault_sink: &crate::SOCKET_SET,
                 #[cfg(feature = "qemu-diagnostics")]
@@ -2983,7 +3056,7 @@ mod tests {
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
     #[cfg(feature = "qemu-diagnostics")]
-    use super::RecoveryRequestState;
+    use super::recovery_snapshot_v4_from;
     use super::{
         ArmObservation, CoherentFaultSheet, DataStageDeadlines, QUEUE_EVENT, QueueEvent,
         RECLAIM_BUDGET, RX_BUDGET, RX_LIFECYCLE, RX_TELEMETRY, RecoveryFaultIdentity,
@@ -2991,6 +3064,11 @@ mod tests {
         SUBMIT_BUDGET, ServiceAccess, SpaceDecision, StartError, TransitionError, WaitDecision,
         fault_cause, recover_stage, rx_error_code, rx_error_stage, software_nudge_impl, start_with,
     };
+    #[cfg(feature = "qemu-diagnostics")]
+    use super::{RECOVERY_RESET_REQUEST, RecoveryRequestState, with_recovery_request_transition};
+
+    #[cfg(feature = "qemu-diagnostics")]
+    static RECOVERY_REQUEST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use crate::{
         device::{
             Device, FlushState, RxCopyStep, RxStep, TicketOutcome, TxOutcome, TxPreflight,
@@ -3898,6 +3976,9 @@ mod tests {
         link_reads: AtomicUsize,
         /// One-shot: the next `read_link_status` returns `Again` (A3 witness).
         link_again: AtomicBool,
+        /// One-shot: the next `read_link_status` returns `Unsupported`,
+        /// modelling a driver without link control (P2 non-blocking witness).
+        link_unsupported: AtomicBool,
         /// Link I/O gate mirror observed by the test (Task 3.1 / D6).
         link_hold: AtomicBool,
     }
@@ -3990,6 +4071,9 @@ mod tests {
             self.stats.link_reads.fetch_add(1, Ordering::Relaxed);
             if self.stats.link_again.swap(false, Ordering::Relaxed) {
                 return Err(DevError::Again);
+            }
+            if self.stats.link_unsupported.swap(false, Ordering::Relaxed) {
+                return Err(DevError::Unsupported);
             }
             Ok(self.stats.link.load(Ordering::Relaxed))
         }
@@ -4143,6 +4227,9 @@ mod tests {
 
     fn leaked_service_recovering() -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
         let stats = Arc::new(RecoveryDriverStats::default());
+        // A functional NIC is link-up by default; only link-specific tests
+        // choose a down/up state explicitly.
+        stats.link.store(true, Ordering::Relaxed);
         stats.fault_pending.store(true, Ordering::Relaxed);
         let queue_stats = Arc::new(ScriptedControlStats::default());
         let device = RecoveringDevice {
@@ -4164,6 +4251,9 @@ mod tests {
     /// (`fault_pending` is NOT forced, so the ordinary Active round runs).
     fn leaked_service_link() -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
         let stats = Arc::new(RecoveryDriverStats::default());
+        // A functional NIC is link-up by default; only link-specific tests
+        // choose a down/up state explicitly.
+        stats.link.store(true, Ordering::Relaxed);
         let queue_stats = Arc::new(ScriptedControlStats::default());
         let device = RecoveringDevice {
             stats: stats.clone(),
@@ -4602,6 +4692,131 @@ mod tests {
         assert!(notify.take_causes().config);
     }
 
+    #[test]
+    fn owner_activation_commits_initial_link_without_config_cause() {
+        // P2 / R6: the resident owner must commit a consistent initial link
+        // snapshot in task context on activation, even when no CONFIG IRQ cause
+        // has arrived. Without a CONFIG cause the owner never called
+        // `link_policy_step_target`, so the link stayed unknown (<<< RED).
+        let (mutex, stats) = leaked_service_link();
+        stats.link.store(true, Ordering::Relaxed);
+        let gen0 = mutex.lock().link_generation();
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(
+            stats.link_reads.load(Ordering::Relaxed),
+            1,
+            "activation must read the initial link once without a CONFIG cause"
+        );
+        assert_eq!(mutex.lock().link_generation(), gen0 + 1);
+        assert_eq!(mutex.lock().link_state_code(), 1);
+        assert!(!stats.link_hold.load(Ordering::Relaxed));
+        // The initial read is self-initiated (P2 / R6): it must NOT fabricate a
+        // hardware CONFIG IRQ cause or touch the shared event cause flags.
+        assert_eq!(notify.take_causes(), super::QueueCauses::default());
+    }
+
+    #[test]
+    fn owner_activation_initial_link_down_commits_and_gates() {
+        // P2 / R6 / D6: if the device is actually down at activation, the owner
+        // must commit the down state (closing the SocketEpoch seam and holding
+        // the I/O gate) rather than forcing "up" for boot convenience.
+        let (mutex, stats) = leaked_service_link();
+        stats.link.store(false, Ordering::Relaxed);
+        let gen0 = mutex.lock().link_generation();
+        let qepoch0 = mutex.lock().queue_epoch_target();
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(mutex.lock().link_state_code(), 0);
+        assert_eq!(mutex.lock().link_generation(), gen0 + 1);
+        assert!(stats.link_hold.load(Ordering::Relaxed));
+        // An initial down is a link event, not a device reset.
+        assert_eq!(mutex.lock().queue_epoch_target(), qepoch0);
+    }
+
+    #[test]
+    fn owner_activation_initial_link_again_retries_until_commit() {
+        // P2 / A3: a transient config-generation race on the very first read is
+        // retained and retried once per later bounded poll (no spinning, no
+        // lost event), then commits once the snapshot is consistent.
+        let (mutex, stats) = leaked_service_link();
+        stats.link.store(true, Ordering::Relaxed);
+        let gen0 = mutex.lock().link_generation();
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        stats.link_again.store(true, Ordering::Relaxed);
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            mutex.lock().link_generation(),
+            gen0,
+            "Again must not commit"
+        );
+        // A transient first-read race retains the retry work by re-publishing
+        // the CONFIG cause (self-wake), exactly like a later CONFIG `Again`.
+        assert!(notify.take_causes().config);
+        // Second bounded poll: the one-shot `Again` is consumed, the snapshot
+        // is now consistent, and the initial link commits exactly once.
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 2);
+        assert_eq!(mutex.lock().link_generation(), gen0 + 1);
+        assert_eq!(mutex.lock().link_state_code(), 1);
+        assert!(!stats.link_hold.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn owner_activation_initial_link_does_not_repeat_after_commit() {
+        // P2 / no-repeat: once the initial link has committed, the owner must
+        // NOT re-read it on later polls without a new CONFIG cause (the flag is
+        // cleared), so LinkGeneration is not advanced spuriously.
+        let (mutex, stats) = leaked_service_link();
+        stats.link.store(true, Ordering::Relaxed);
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        let gen1 = mutex.lock().link_generation();
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(
+            stats.link_reads.load(Ordering::Relaxed),
+            1,
+            "initial link must not be re-read without a CONFIG cause"
+        );
+        assert_eq!(mutex.lock().link_generation(), gen1);
+    }
+
+    #[test]
+    fn owner_activation_initial_link_unsupported_does_not_block_owner() {
+        // P2 / Unsupported: a driver without link control reports the initial
+        // link as `Unsupported`; the owner stays Active and keeps servicing,
+        // with the link snapshot left unknown (no fabricated up) and no gate.
+        let (mutex, stats) = leaked_service_link();
+        stats.link_unsupported.store(true, Ordering::Relaxed);
+        let gen0 = mutex.lock().link_generation();
+        let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
+        let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let count = Arc::new(AtomicUsize::new(0));
+        let res = poll_once(&mut fut, count.clone());
+        assert!(res.is_pending());
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(mutex.lock().link_generation(), gen0);
+        assert_eq!(mutex.lock().link_state_code(), u64::MAX);
+        assert!(!stats.link_hold.load(Ordering::Relaxed));
+    }
+
     /// A faithful TX-ledger recovery device (Task 2.3 A5 witness): a real
     /// [`TicketTracker`] (the project's epoch-bound owner ledger) feeding a
     /// real [`FixedFrameQueue`] TX slot, plus a scripted recovery. `send` truly
@@ -4765,6 +4980,9 @@ mod tests {
     fn leaked_service_ledger_recovering()
     -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
         let stats = Arc::new(RecoveryDriverStats::default());
+        // A functional NIC is link-up by default; only link-specific tests
+        // choose a down/up state explicitly.
+        stats.link.store(true, Ordering::Relaxed);
         stats.fault_pending.store(true, Ordering::Relaxed);
         let queue_stats = Arc::new(ScriptedControlStats::default());
         let device = LedgerRecoveryDevice {
@@ -4789,6 +5007,9 @@ mod tests {
     /// Queued owner and prove the same-round submit is blocked.
     fn leaked_service_ledger_link() -> (&'static spin::Mutex<Service>, Arc<RecoveryDriverStats>) {
         let stats = Arc::new(RecoveryDriverStats::default());
+        // A functional NIC is link-up by default; only link-specific tests
+        // choose a down/up state explicitly.
+        stats.link.store(true, Ordering::Relaxed);
         let queue_stats = Arc::new(ScriptedControlStats::default());
         let device = LedgerRecoveryDevice {
             stats: stats.clone(),
@@ -5005,6 +5226,7 @@ mod tests {
             notify,
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
+            initial_link_pending: false,
             telemetry,
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
@@ -5036,6 +5258,7 @@ mod tests {
             notify,
             stack_notify,
             stack_progress_pending: false,
+            initial_link_pending: false,
             telemetry,
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
@@ -5190,6 +5413,7 @@ mod tests {
             notify,
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
+            initial_link_pending: false,
             telemetry,
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
@@ -5459,6 +5683,7 @@ mod tests {
             notify: queue_notify,
             stack_notify,
             stack_progress_pending: false,
+            initial_link_pending: false,
             telemetry: Box::leak(Box::new(RxTelemetry::new())),
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
@@ -5888,6 +6113,7 @@ mod tests {
             notify: Box::leak(Box::new(QueueEvent::new())),
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
+            initial_link_pending: false,
             telemetry,
             fault_sink: sink,
             #[cfg(feature = "qemu-diagnostics")]
@@ -5957,6 +6183,7 @@ mod tests {
             notify: Box::leak(Box::new(QueueEvent::new())),
             stack_notify: Box::leak(Box::new(StackEvent::new())),
             stack_progress_pending: false,
+            initial_link_pending: false,
             telemetry,
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
@@ -7734,6 +7961,7 @@ mod tests {
     ) {
         let stats = Arc::new(DataStageStats::default());
         let rec = Arc::new(RecoveryDriverStats::default());
+        rec.link.store(true, Ordering::Relaxed);
         let ctl = Arc::new(ScriptedControlStats::default());
         let device = DataStageDevice {
             stats: stats.clone(),
@@ -8391,5 +8619,189 @@ mod tests {
             request.request(lifecycle.load()),
             Err(DevError::BadState)
         ));
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn terminal_transition_holds_request_gate_through_lifecycle_commit() {
+        let lifecycle = drive_to(RxTaskLifecycle::Active);
+        let request = spin::Mutex::new(RecoveryRequestState::new());
+        request.lock().request(RxTaskLifecycle::Active).unwrap();
+
+        let committed = with_recovery_request_transition(&request, || {
+            assert!(
+                request.try_lock().is_none(),
+                "request gate reopened before lifecycle commit"
+            );
+            lifecycle.fatal()
+        });
+
+        assert!(committed.is_ok());
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        let mut request = request.lock();
+        assert!(!request.pending && !request.owner_claimed);
+        assert!(matches!(
+            request.request(lifecycle.load()),
+            Err(DevError::BadState)
+        ));
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn pending_request_absorbed_when_drift_quarantines_owner() {
+        // A1 rework: a checked explicit recovery request left pending when the
+        // owner leaves Active via the ownership-drift quarantine must be
+        // absorbed on the SAME seam that commits `Active -> Faulted`, so it
+        // cannot survive into a later Active generation and trigger a second
+        // reset. This is the real owner transition seam (drift_pending device),
+        // not a standalone `RecoveryRequestState` unit check.
+        let _test_guard = RECOVERY_REQUEST_TEST_LOCK.lock().unwrap();
+        RECOVERY_RESET_REQUEST.lock().clear_for_recovery();
+        let (mutex, stats) = leaked_service_recovering();
+        stats.drift_pending.store(true, Ordering::Relaxed);
+        RECOVERY_RESET_REQUEST
+            .lock()
+            .request(RxTaskLifecycle::Active)
+            .unwrap();
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        let mut req = RECOVERY_RESET_REQUEST.lock();
+        assert!(
+            !req.pending && !req.owner_claimed,
+            "explicit request must not survive Active->Faulted drift quarantine"
+        );
+        assert!(
+            req.request(RxTaskLifecycle::Active).is_ok(),
+            "accepted request slot was not freed"
+        );
+        req.clear_for_recovery();
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn pending_request_absorbed_when_owner_ends_in_faulted_terminal() {
+        // A1 rework: the `Active -> Faulted` non-recovery terminal path
+        // (`publish_fatal`/`transition_fatal`) must clear a pending explicit
+        // request at the same seam that commits the transition, so the accepted
+        // request cannot survive into a later generation. This drives the real
+        // `Fault` round outcome (arm error on a satisfying-service device).
+        let _test_guard = RECOVERY_REQUEST_TEST_LOCK.lock().unwrap();
+        RECOVERY_RESET_REQUEST.lock().clear_for_recovery();
+        let (mutex, _, control) = leaked_service(vec![RxStep::Empty], true);
+        control.arm_error.store(true, Ordering::Relaxed);
+        RECOVERY_RESET_REQUEST
+            .lock()
+            .request(RxTaskLifecycle::Active)
+            .unwrap();
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Ready(())
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
+        let mut req = RECOVERY_RESET_REQUEST.lock();
+        assert!(
+            !req.pending && !req.owner_claimed,
+            "explicit request must not survive Active->Faulted terminal path"
+        );
+        assert!(
+            req.request(RxTaskLifecycle::Active).is_ok(),
+            "accepted request slot was not freed"
+        );
+        req.clear_for_recovery();
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn v4_injected_seam_reads_current_and_fault_tuples_separately() {
+        // A2 rework: the V4 current tuple must be assembled by the injectable
+        // seam exactly as the one-guard Service read (queue/socket/link/owner),
+        // and the historical coherent fault must be a separate, unchanged tuple
+        // even when it disagrees with the current ledger.
+        let (mutex, stats) = leaked_service_link();
+        let src_current_available = stats.owner_available.load(Ordering::Relaxed);
+        let historical = RecoveryFaultIdentity {
+            stage: recover_stage::OWNERSHIP_DRIFT,
+            local_cause: fault_cause::OWNERSHIP_DRIFT,
+            queue_epoch: 0,
+            available: src_current_available.wrapping_add(1),
+            device_owned: 7,
+            quarantined: 13,
+        };
+        // Publish the historical fault first (overwriting any residue from a
+        // sibling test), then read the snapshot once: current comes from the
+        // injected one-guard Service read, fault from the separate coherent sheet.
+        // `RX_TELEMETRY.coherent_fault` is process-global: serialize the V4
+        // fault tests so parallel runs do not race it.
+        let _test_guard = RECOVERY_REQUEST_TEST_LOCK.lock().unwrap();
+        RX_TELEMETRY.coherent_fault.publish(historical);
+        let v4 = recovery_snapshot_v4_from(ServiceAccess::Injected(mutex));
+        assert_eq!(v4.current_valid, 1, "present Service must be current-valid");
+        {
+            let mut s = mutex.lock();
+            let owner = s.recovery_owner_summary_target();
+            assert_eq!(v4.current_queue_epoch, s.queue_epoch_target().current());
+            assert_eq!(v4.current_socket_epoch, s.socket_epoch());
+            assert_eq!(v4.current_link_generation, s.link_generation());
+            assert_eq!(v4.current_link_state, s.link_state_code());
+            assert_eq!(v4.current_owner_available, owner.available);
+            assert_eq!(v4.current_owner_device_owned, owner.device_owned);
+            assert_eq!(v4.current_owner_quarantined, owner.quarantined);
+        }
+        assert_eq!(v4.fault_valid, 1);
+        assert_eq!(v4.fault_stage, historical.stage);
+        assert_eq!(v4.fault_cause, historical.local_cause);
+        assert_eq!(v4.fault_queue_epoch, historical.queue_epoch);
+        assert_eq!(v4.fault_owner_available, historical.available);
+        assert_eq!(v4.fault_owner_device_owned, historical.device_owned);
+        assert_eq!(v4.fault_owner_quarantined, historical.quarantined);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn v4_fault_epoch_zero_is_a_valid_historical_fault() {
+        // A2 rework: QueueEpoch 0 is a legitimate epoch; a fault at epoch 0 must
+        // stay `fault_valid = 1` with `fault_queue_epoch == 0` (no validity bit
+        // abuse of a zero sentinel). `coherent_fault` is process-global: serialize.
+        let _test_guard = RECOVERY_REQUEST_TEST_LOCK.lock().unwrap();
+        let (mutex, ..) = leaked_service_link();
+        RX_TELEMETRY.coherent_fault.publish(RecoveryFaultIdentity {
+            stage: recover_stage::RESET,
+            local_cause: fault_cause::TIMEOUT,
+            queue_epoch: 0,
+            available: 2,
+            device_owned: 0,
+            quarantined: 9,
+        });
+        let v4 = recovery_snapshot_v4_from(ServiceAccess::Injected(mutex));
+        assert_eq!(v4.fault_valid, 1, "epoch 0 must not be read as no-fault");
+        assert_eq!(v4.fault_queue_epoch, 0);
+        assert_eq!(v4.fault_stage, recover_stage::RESET);
+    }
+
+    #[cfg(feature = "qemu-diagnostics")]
+    #[test]
+    fn v4_missing_service_is_current_invalid_without_forged_values() {
+        // A2 rework: a missing Service (`ServiceAccess::Global` before install)
+        // must publish `current_valid = 0` and no forged healthy epoch/link/owner
+        // value, rather than pretending an empty tuple is a healthy observation.
+        assert!(
+            crate::SERVICE.get().is_none(),
+            "these host tests never install the global Service"
+        );
+        // `coherent_fault` is process-global and read by the shared seam: serialize.
+        let _test_guard = RECOVERY_REQUEST_TEST_LOCK.lock().unwrap();
+        let v4 = recovery_snapshot_v4_from(ServiceAccess::Global);
+        assert_eq!(v4.current_valid, 0);
+        assert_eq!(v4.current_queue_epoch, 0);
+        assert_eq!(v4.current_socket_epoch, 0);
+        assert_eq!(v4.current_link_generation, 0);
+        assert_eq!(v4.current_owner_available, 0);
+        assert_eq!(v4.current_owner_device_owned, 0);
+        assert_eq!(v4.current_owner_quarantined, 0);
     }
 }

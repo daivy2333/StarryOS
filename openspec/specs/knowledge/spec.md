@@ -445,7 +445,7 @@ axnet 触发依赖图冷重建后该冲突才暴露，症状看似产品失败�
 
 - **触发条件**: 冷重建（清缓存、rustc 变更、或首次在独立 target 目录构建）后运行 axnet 宿主单元测试。
 - **诊断特征**: 链接期报 `relocation R_X86_64_32S cannot be used against symbol '__PERCPU_*'` 即为本条；属环境/链接模型事项，不计入产品失败。
-- **处理原则**: 用按链接种类区分的 linker wrapper（遇 `-shared` 透传，否则追加 `-no-pie`）并以 `RUSTFLAGS="-C linker=<wrapper>"` 运行；wrapper 属一次性本地工具，不入库。
+- **处理原则**: 用按链接种类区分的 linker wrapper（遇 `-shared` 透传，否则追加 `-no-pie`）并以 `RUSTFLAGS="-C linker=<wrapper>"` 运行。wrapper 已入库为 `scripts/cc-nopie.sh`（不再是一次性 `/tmp` 工具；本批验证终点 `05528313`）。
 - **排除的替代方案**: `[profile.dev] pie = false`（当前 cargo 报 unused manifest key 不生效）；全局 `RUSTFLAGS="-C link-arg=-no-pie"`（追加到 `.so` 链接尾部导致 proc-macro 构建失败）；`-C relocation-model=static`（同理破坏 proc-macro `.so`）。
 - **适用边界**: 仅 axnet 独立 target 目录下的宿主 x86_64 测试构建；内核与 RISC-V 构建走根 workspace target，不受影响。
 

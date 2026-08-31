@@ -99,6 +99,8 @@ submit wait、completion wait 和 reclaim 各使用 1 秒 deadline。submit time
 
 **Decision**：ISR 对 used-ring 和 config-change 分别发布位于同一 AtomicWaker/recheck协议下的 event flags。task context 通过 transport `config_generation before → status → config_generation after` 单次尝试读取一致 snapshot；不一致返回 `Again` 并 self-wake，不在一个 poll 内无界循环。确认 link down 后关闭当前 SocketEpoch、取消 Queued tickets、阻止 software enqueue 和 driver submit，返回 `NotConnected`；旧 DeviceOwned 仍由同一 QueueEpoch completion/reclaim以便释放资源。link up只推进 SocketEpoch、重新检查/武装 queue和stack，允许新 socket；不自动 reset设备，也不恢复旧 socket。
 
+唯一 queue owner 在首次发布可服务的 Active 状态时也必须安排一次相同的一致 link snapshot 微步骤；这不是伪造 config IRQ，也不读取 ISR 中的 config。初始读取为 `Again` 时保留工作并由 owner 后续有界重试；支持 link status 的目标不得永久停留在 `None/u64::MAX`。首个已提交状态从未知变为 up/down 时推进一次 `LinkGeneration`，后续 HMP down/up仍各推进一次。
+
 **Reason**：VirtIO TX completion 只证明 buffer 可复用，link down 时仍可能 completion但不能证明 peer delivery。socket epoch closure消除静默接受，同时保持不需要重建设备的 link 管理独立成果。
 
 **Impact**：IRQ event模型、raw driver link accessor、Service enqueue preflight、socket registry和 QEMU marker更新。config-only IRQ仍不搬 descriptor。
@@ -118,6 +120,10 @@ submit wait、completion wait 和 reclaim 各使用 1 秒 deadline。submit time
 ### D8：model 与真实 QEMU 的证明职责分开
 
 **Decision**：fake transport/adapter/axnet clock tests负责 stale/duplicate completion、status不归零、config generation变化、阶段 deadline和 cancel/submit交错；真实 QEMU负责规范内可观察的 status reset/reinitialize、真实 config IRQ/link off-on和 reset前后流量。QEMU-only control新增 versioned recovery command/snapshot，不修改已有 V1-V3 ABI；validator保持纯输出审计，HMP `set_link`由手工 runbook步骤执行。
+
+V4 owner字段沿用driver contract而不是把 `device_owned`解释为纯TX inflight。VirtIO健康空闲态包含`QS`个已提交RX buffer，因此典型基线为`available=QS`、`device_owned=QS`、`quarantined=0`；TX在途会减少`available`并增加`device_owned`，二者之和不受单个`QS`约束。probe和validator必须比较同阶段基线、quarantine与reset/link关系，不得要求健康态`device_owned==0`。guest peer失败只有在分别记录`socket`、`connect`、`send`或`recv`阶段及errno后才能归因；peer未收到包本身不能证明UDP产品缺陷。socket type使用`SOCK_NONBLOCK`；`EAGAIN/EWOULDBLOCK`通过poll/send循环在既有absolute deadline内有界重试，不新增sleep或独立预算。
+
+change-local probe本身是runtime事实源的一部分。若它发生user page fault，fault记录必须同时包含保存的user PC、fault VA、access、SP和RA，并以exact ELF的program headers、symbol和PC附近指令建立地址账本；fault VA不得当作PC。无法证明runtime artifact与静态ELF一致，或首个未解释执行边落入通用loader责任时，本Iteration停止并返回Plan，不借机修改loader。
 
 **Reason**：合规设备 reset 后不应访问旧 queue，不能要求真实 QEMU制造非法 stale completion；同时 model不能替代真实 MMIO reset和 config IRQ。
 
@@ -155,7 +161,7 @@ submit wait、completion wait 和 reclaim 各使用 1 秒 deadline。submit time
 - [socket epoch改造影响 listener/deferred cleanup] → 单独 Iteration覆盖 TCP/UDP/listener、多 waiter、handle reuse和deferred retirement，再进入 QEMU。
 - [reset成功但 reinitialize失败] → 设备已停止后 backing可安全由driver持有，但数据面保持 Faulted；本 change不自动重试。
 - [sandbox禁止 loopback self-test] → Act先尝试完整 Gate；若仍是精确 `EPERM`，记录环境分层并运行全部无 socket子 Gate，任何编译/断言/validator失败仍阻塞。
-- [真实 QEMU手工步骤的操作时序] → versioned marker明确何时执行 HMP off/on和何时发 reset ioctl；validator拒绝缺失、乱序或旧 revision输出。
+- [真实 QEMU手工步骤的操作时序] → versioned marker明确何时执行 HMP off/on和何时发 reset ioctl；validator拒绝缺失、乱序、错误环境或失败输出，不用revision/hash绑定运行身份。
 
 ## Migration Plan
 

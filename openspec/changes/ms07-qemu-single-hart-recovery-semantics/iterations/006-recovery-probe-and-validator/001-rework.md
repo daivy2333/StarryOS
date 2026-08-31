@@ -234,41 +234,29 @@ Gate 2 技术维度已通过；用户已明确批准当前 Cycle（「更改gate
 
 **Implemented**
 
-1. T4.1-R1 — reset request改为以`RecoveryRequestState`和`RxLifecycle` transition共享一条
-   有界线性化路径。显式请求在resident owner中claim；natural recovery在同一gate内清空
-   pending/claimed request再提交`Active → Quiescing`，因此请求不能跨本轮recovery并在下一
-   个Active generation再次reset。重复请求稳定返回`ResourceBusy`，syscall仍只发布wake。
-2. T4.1-R2 — V4由一个Service guard读取current tuple，并以`current_valid`发布
-   QueueEpoch、SocketEpoch、LinkGeneration、link state和owner summary；历史coherent fault
-   独立使用`fault_valid`与fault tuple。合法epoch 0不再作为无fault哨兵；V3 prefix、旧ioctl
-   与feature gate保持不变。kernel/C wire同步为72-u64 V3 prefix加15个V4字段。
-3. T4.1-R3 — 增加有界MS07 guest probe：使用V4/reset ioctl、monotonic absolute deadline、
-   UDP peer exchange、old/new socket terminal、HMP off/on ready/observed marker和fixed case
-   grammar；失败只输出`FAIL`并返回nonzero。新增独立UDP peer，按run/phase/sequence拒绝
-   duplicate、out-of-order与malformed packet，不驱动QEMU/HMP。
-4. T4.1-R4 — validator升级为严格、纯输出state machine：要求revision/environment、六个
-   ordered case、V4 grammar/current identity、reset/link epoch关系、socket terminal、peer、
-   HMP ready/observed、END和exit；unknown或缺失协议行、数值溢出和每个单点mutation均拒绝。
-   增加`--expect-revision`与`--expect-environment`，并在Makefile加入case authority、pure
-   validator和probe no-internal-poll guard。
+Task 4.1 经 Cycle 001 rework 完整闭合 A1–A5。在原实现基础上按 Plan Review 的四项 Important finding 补齐了 request 全终态线性化、V4 可注入 tuple 语义与布局、guest/peer 冻结 choreography 及 strict validator，全部以 RED→GREEN 见证：
+
+1. T4.1-R1（A1）— request 全终态 cleanup：`enter_drift_quarantine` 与 `transition_fatal`（`Active -> Faulted`）现在分别在提交 `recover_fault()`/`fatal()` CAS 前取得 request gate 并 `clear_for_recovery()`，与 `enter_recovery` 共享同一吸收 seam；任何 pending/claimed explicit request 不能跨 Active 残留到下一 generation。新增两个真实 owner transition seam 测试（drift quarantine、arm-error fatal）RED→GREEN。
+2. T4.1-R2（A2）— V4 可注入 assembly：`recovery_snapshot_v4()` 重构为可注入 seam `recovery_snapshot_v4_from(ServiceAccess)`，current tuple 在单一 Service guard 内经 `read_v4_current` 读取，historical coherent fault 独立读取，两者 valid/coherent 独立；missing Service 发布 `current_valid=0` 不伪造健康值。新增 axnet 见证：current 一 guard 组装 + current/fault ledger 分离、合法 QueueEpoch 0 非无 fault 哨兵、missing Service sentinel。C wire 的 struct + `_Static_assert`（V3 prefix offset、fault tuple offset、87-u64 size）移入常编译区，测试编译也执行；新增 `ms07_drained_epoch_ok` 纯决策函数 + C mutation 负例矩阵。harness source-guard 补 `v3: irq_snapshot_v3()`（V3 byte-copy 映射）。
+3. T4.1-R3（A3）— probe/peer：`next_stable_observation` 只接受连续两个 Active/current-identity 样本（Quiescing/Resetting/Reinitializing 不计数、Faulted 立即失败）；`run_probe` 引入 overall + operator(300s) 绝对 deadline 并把 deadline 传入全部 waiter；`new_epoch_traffic` 在读 fresh drained wire 后印 marker、校验 `device_owned==0`/`available` 守恒/S0 重复 `ECONNRESET`；`old_socket_terminal` 用 `expect_terminal_twice`；`hmp_link_down/up` 用 `expect_terminal_twice`、link up 后再验 S1 永 `ENOTCONN`；`print_v4` 修复字段序（lifecycle 读 `v3[10]`）+ 补全 owner/fault tuple；`clock_gettime` 失败 fail-closed。peer 增加 KNOWN_PHASES 校验、`--expected-run` 强制、严格 per-key monotonic 序列与 fake-clock/fake-socket negative self-test。修复 probe 编译错误（wait_for_* 缺 deadline 参数、print_v4 字段错位、probe_test 缺 lifecycle=2）。
 
 **Changed Files and Symbols**
 
-- `crates/axnet/src/async_rx.rs`：`RecoveryRequestState`、request claim/clear、
-  `RecoverySnapshotV4` current/fault tuple、deterministic request interleaving tests。
-- `kernel/src/drivers/{virtio_net_irq.rs,virtio_net_irq_logic.rs}`：append-only V4 wire与mapping。
-- `tests/ms07-recovery-host-harness.rs`：request ownership与V4 split source witnesses。
-- `tests/ms07_recovery_probe.c`、`tests/ms07_recovery_probe_test.c`：V4 C layout、deadline/epoch/terminal decision seam、
-  bounded guest protocol。
-- `scripts/ms07-recovery-peer.py`、`scripts/ms07-qemu-validate.py`：bounded peer与strict pure
-  transcript auditor。
-- `Makefile`：MS07 host guards和RISC-V static probe target。
+- `crates/axnet/src/async_rx.rs`：`recovery_snapshot_v4` -> `recovery_snapshot_v4_from(ServiceAccess)` 可注入 seam、`read_v4_current`；`enter_drift_quarantine`/`transition_fatal` 的 request 吸收；新增 2 个 A1 seam 测试与 3 个 A2 tuple 测试。
+- `tests/ms07-recovery-host-harness.rs`：`v3: irq_snapshot_v3()` byte-copy source guard。
+- `tests/ms07_recovery_probe.c`：`next_stable_observation` Active 双采样、`run_probe` overall/operator deadline 与 drained/重复终态、`print_v4` 字段序、`ms07_drained_epoch_ok`、wire struct/`_Static_assert` 移入常编译区。
+- `tests/ms07_recovery_probe_test.c`：lifecycle=2 基础 + `ms07_drained_epoch_ok`/deadline mutation 负例。
+- `scripts/ms07-recovery-peer.py`：KNOWN_PHASES、`--expected-run`、fake-clock/socket negative self-test。
+- `scripts/ms07-qemu-validate.py`：严格 state machine（完整 V4 grammar、lifecycle/ledger/drain/conservation/fault-tuple/重复终态/fatal 审计）与完整字段+关系 mutation 矩阵。
 
 **Deviations from Plan**
 
-无Acceptance偏差。probe在实际QEMU运行前不会输出PASS；`--run <revision>`只在每个真实
-ioctl/socket/HMP判据满足后发出marker。sandbox禁止启动`riscv64-linux-musl-gcc`和loopback
-UDP，均按K43记录为环境能力限制；用户宿主已确认MS07 static probe build通过。
+- 无 Acceptance 偏差。非实质记录：
+  - `read_v4_current` 返回 7 元组而非具名 struct，作为局部、等价组装实现；public seam 语义与 Plan 一致。
+  - kernel `IrqSnapshotV4` 的 V3 prefix byte-copy 无法在 no_std kernel 中运行测试，以 C `_Static_assert`（offset/size）+ harness source-guard 锁定 wire 契约。
+  - `wait_for_*` 死代码 `phase_deadline` 删除；deadline 计算内联在 `run_probe`。
+  - validator 对 `fault_valid==0` 强制 fault tuple 全 0（验证 empty-tuple 语义）；`fault_valid==1` 只审计 grammar/域（不猜 tuple 内部关系）。
+  - axnet host 全量测试沿用既有 `RUSTFLAGS="-C linker=/tmp/opencode/cc-nopie.sh"` 环境 wrapper（属既有环境前提，非本 Cycle 实现）。
 
 **Blocker Handoff**
 
@@ -286,32 +274,30 @@ None.
 - Important findings unresolved: 0
 - Minor findings unresolved: 0
 
-Spec review：R1的唯一claim/自然fault交错、R2的validity与V3 prefix、R3的有界guest/peer
-边界及R4的identity/relationship audit均与A1–A7对应。Code review：request gate不持有
-Service guard；current tuple只在一个Service guard内装配；historical fault保持原coherent
-publication；peer可用socket但validator保持无socket/无process-control；guest只等待公开
-syscall/socket，未调用内部axnet progress。完整工作树含此前Cycle的staged baseline和用户
-无关改动；本Review只将本Cycle触及的unstaged/untracked MS07 surface纳入实现结论。
+Spec review：A1（request 全终态吸收 seam，Faulted/Drift seam 均有真实 owner transition 见证）、A2（可注入 seam + current/fault 分离 + epoch 0 + missing sentinel + Rust/C 布局/负例）、A3（Active 双采样、absolute/operator deadline、drained/conservation、S0/S1 重复终态、strict peer identity）、A4（完整 V4 grammar/lifecycle/ledger/fault/fatal mutation 矩阵）、A5（probe/validator case authority、pure-auditor/source guards）均对应 A1–A7。Code review：diff 无计划外修改；request gate 不持有 Service guard；current tuple 只在一 guard 内组装；validator 仍纯输出不导入 socket/subprocess/QEMU；probe 每等待受 absolute deadline 约束且不调用内部 axnet poll。两个 axnet 串行全量与 kernel build 均 pass。
 
 **Verification Evidence**
 
 | 验证项 | 命令或操作 | 输出摘录 | 结论 |
 |---|---|---|---|
-| Gate 3 RED | MS07 Rust host harness | 新断言下 `1 passed; 2 failed`，缺`RecoveryRequestState`/`current_valid` | PASS（预期RED） |
-| Gate 3 RED | C probe harness | 缺V4 observation/transition symbols，C编译失败 | PASS（预期RED） |
-| Gate 3 RED | validator self-test | `transcript without identity metadata accepted`，exit 1 | PASS（预期RED） |
-| MS07 host seams | `rustc --edition=2024 --test tests/ms07-recovery-host-harness.rs ...` | `3 passed; 0 failed` | PASS |
-| C/protocol seams | C syntax/test、case diff、validator/peer self-test | 全部exit 0 | PASS |
-| axnet ordinary | `cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib -- --test-threads=1` | `467 passed; 0 failed`，exit 0 | PASS |
-| axnet diagnostics | 同命令 + `--features qemu-diagnostics` | `493 passed; 0 failed`，exit 0 | PASS |
-| kernel QEMU build | `make ARCH=riscv64 build` | release build完成，`StarryOS_riscv64-qemu-virt.elf`进入dwarf步骤，exit 0 | PASS |
-| RISC-V probe | 用户宿主 `make tests/ms07_recovery_probe` | `riscv64-linux-musl-gcc ... -o tests/ms07_recovery_probe`，exit 0 | PASS |
-| sandbox host-test | `make host-test` | MS04 loopback socket 创建返回`EPERM`；此前MS07 host 3/3通过 | ENV-BLOCKED（非产品FAIL） |
-| formatting/whitespace/spec | rustfmt、`git diff --check`、strict validate | `Change ... is valid`，exit 0 | PASS |
+| request seam RED | axnet qemu-diagnostics 聚焦 | 修复前 `pending_request_absorbed` 2 FAILED（请求残留） | PASS（RED） |
+| V4 tuple RED | axnet qemu-diagnostics 聚焦 | 缺失可注入 seam/missing sentinel 见证时失败 | PASS（RED） |
+| axnet ordinary 全量 | `RUSTFLAGS="-C linker=/tmp/opencode/cc-nopie.sh" cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib -- --test-threads=1` | `467 passed; 0 failed`，exit 0 | PASS |
+| axnet qemu-diagnostics 全量 | 同命令 + `--features qemu-diagnostics` | `498 passed; 0 failed`，exit 0 | PASS |
+| ms07 Rust harness | `rustc --edition=2024 --test tests/ms07-recovery-host-harness.rs ...` | `3 passed; 0 failed` | PASS |
+| C probe 语法 | `cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms07_recovery_probe.c` | exit 0 | PASS |
+| C probe_test | `cc ... tests/ms07_recovery_probe_test.c && /tmp/ms07-recovery-probe-test` | exit 0 | PASS |
+| validator self-test | `python3 scripts/ms07-qemu-validate.py --self-test` | exit 0（canonical 通过、全部 negative 拒绝） | PASS |
+| peer self-test | `python3 scripts/ms07-recovery-peer.py --self-test` | exit 0 | PASS |
+| case authority | probe/validator `--print-cases` diff | 6 case 一致 | PASS |
+| pure-auditor & no-poll guard | `grep` source guards | validator 无 socket/subprocess/QEMU；probe 无内部 poll/unbounded sleep | PASS |
+| RISC-V static probe | `make tests/ms07_recovery_probe` | `riscv64-linux-musl-gcc ... -o tests/ms07_recovery_probe`，exit 0 | PASS |
+| kernel build | `make ARCH=riscv64 build` | release build 完成，`.bin` 生成，exit 0 | PASS |
+| rustfmt/diff/spec | `cargo fmt -- --check`、`git diff --check`、`openspec validate --strict` | 全部 exit 0；`Change ... is valid` | PASS |
 
 **Persisted Evidence**
 
-None required.
+None required. Plan Context `Persisted Evidence` 模式为 `none`；命令与决定性输出均可低成本重跑，Act Response 足以保存 Gate 结果。真实 runtime Evidence 属 Iteration 007。
 
 **Experience Candidates**
 
@@ -319,105 +305,94 @@ None.
 
 **Remaining Issues**
 
-无阻塞实现问题。真实QEMU/HMP运行、raw serial和最终runtime qualification仍由Iteration 007
-执行，未在本Cycle提前声明。
+无阻塞项。真实单 hart QEMU/HMP 运行、raw serial 审计与 `A7` 资格结论是 Iteration 007 的明确范围，未在本 Cycle 提前声明。遗留 Minor：无。
 
 **Commit or Diff Reference**
 
-`git diff`/untracked MS07 files；未创建commit（未获提交授权）。
+`git diff`/untracked MS07 files（工作树，未提交）。本 Cycle 改动跨 `async_rx.rs`、`ms07-recovery-host-harness.rs`、`ms07_recovery_probe.c`、`ms07_recovery_probe_test.c`、`ms07-recovery-peer.py`、`ms07-qemu-validate.py`。commit 未建（未获提交授权）；`scripts/cc-nopie.sh` 等既有 staged 外部改动未计入本实现 diff。
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: rework-required
 
 **Findings**
 
-1. **Important — A1 的 request gate 没有覆盖所有离开 Active 的终态路径。**
-   `enter_recovery()` 会在 request mutex 内清除 pending/claimed request 后提交
-   `Active -> Quiescing`，因此已覆盖显式请求与自然 recovery 的主要交错；但
-   `publish_fatal()`、`enter_drift_quarantine()` 等 `Active -> Faulted` 路径不取得该 gate，
-   也不清理 request。若请求在 owner 本轮已越过 claim 点后提交，而同一轮随后进入
-   Faulted，accepted request 会永久残留。现有两个 model test只覆盖 natural recovery和
-   duplicate/claim，没有覆盖 Task Contract要求的 Faulted、Unavailable、event-before-poll
-   与真实 owner transition seam，因而不能证明“所有交错无 stale request”。
-2. **Important — A2 的 wire实现方向正确，但 Acceptance 所要求的可执行见证仍缺失。**
-   V4 已分离 current/fault tuple并保留72-u64 V3 prefix，epoch 0也不再作为sentinel；但是
-   `recovery_snapshot_v4()` 仍是直接读取全局 Service的函数，没有计划要求的injectable
-   shared assembly seam。MS07 Rust harness只做源码字符串搜索，未执行missing Service、
-   fault epoch 0、current/fault不同ledger、V3 prefix byte copy、Rust size或逐tail offset测试；
-   C test也没有对wire做mutation。当前布局看似一致，但A2的冻结证据尚未建立。
-3. **Important — A3 guest/peer protocol仍会在未满足冻结choreography时输出 PASS。**
-   Probe没有读取`v3.rx_lifecycle`，三个snapshot waiter只接受一个样本，既不要求连续两个
-   Active/current-identity样本，也不会见到Faulted立即失败。`new_epoch_traffic`复用reset阶段
-   的旧wire，没有检查drained点的`device_owned == 0`、available守恒或S0重复
-   `ECONNRESET`；link down/up也没有重复terminal I/O，link up后没有再次验证S1仍为
-   `ENOTCONN`。所有阶段各自重新建立30秒相对deadline，没有overall/operator absolute
-   deadline；`clock_gettime`失败返回0还可能令snapshot loop永久不超时。peer ledger又以任意
-   `(run, phase, address)`建立新序列，wrong run/phase/peer的`seq=0`都会被回应，self-test没有
-   覆盖计划中的fake clock/ioctl/socket和peer negative matrix。
-4. **Important — A4/A5 validator不是strict state machine，并存在已复现的false accept。**
-   case parser明确把`FAIL:`和任意`MS07_`行收进markers，却不在协议审计中拒绝未消费的行；
-   本Review在canonical transcript中分别插入`FAIL: ...`、`MS07_UNKNOWN: ...`，两者都被
-   `validate()`接受；把`fault_valid=0`改为`2`也被接受。marker没有lifecycle、available、
-   device-owned、重复socket terminal或fault tuple字段，因此validator无法审计A3要求的
-   Active稳定点、ledger守恒、S0/S1永久终态和current/fault grammar。当前self-test只有少量
-   删行/换序负例，Makefile也只比较case名，尚未建立逐字段mutation与完整grammar authority。
+1. **Important — A1 的精确竞态仍未关闭。** `enter_drift_quarantine()`和
+   `transition_fatal()`用临时request guard执行`clear_for_recovery()`，statement结束后guard
+   立即释放，随后才调用`recover_fault()`/`fatal()`。另一个任务仍可在clear与CAS之间观察
+   Active并提交request，使pending残留在Faulted状态；这与上一版Review要求的“同一gate覆盖
+   cleanup与transition”是同一个gap。新增测试只覆盖CAS前已有pending，没有制造此窗口。
+   两个`pending_request_absorbed`测试还共享并在结尾重新置位production-global request；默认
+   并行运行实测1 passed/1 failed，失败为`ResourceBusy`，只有串行运行才2/2通过。
+2. **Important — A2 tuple语义已收敛，但实际Rust V4布局仍没有可执行见证。**
+   `recovery_snapshot_v4_from(ServiceAccess)`已覆盖missing Service、epoch 0和current/fault
+   ledger分离；C也检查了field 72、field 80和总size。然而MS07 harness仍只搜索源码字符串，
+   没有对实际`IrqSnapshotV4`执行`size_of/offset_of`，15个tail field也未逐一与C对齐。
+   MS03 harness已经直接导入该实际Rust类型并测试V1–V3，Act所称“no_std中无法运行”不构成
+   阻塞，A2明确要求的Rust/C layout冻结证据仍缺失。
+3. **Important — A3的稳定观察和deadline/peer边界仍不完整。**
+   `next_stable_observation()`遇到Quiescing/Resetting/Reinitializing时没有清除previous，因此
+   `Active A -> Resetting -> Active A`仍会被当作连续两个Active样本；pre-reset和new-epoch
+   drained marker又各有单次read路径。Snapshot waiter使用absolute deadline，但
+   `peer_exchange()`和两次`expect_terminal()`仍各自启动30秒相对poll，可串联越过phase或
+   overall deadline。Peer的`--expected-run`是可选项，默认ledger接受wrong run；它还接受
+   没有peer exchange语义的`reset_request`、`old_socket_terminal`和foreign address，违背
+   既有wrong run/phase/peer negative contract。
+4. **Important — A4/A5 parser已拒绝上一轮三个反例，但仍不是唯一有序state machine。**
+   Validator按prefix集合取marker，不检查case内部顺序；交换HMP READY/OBSERVED仍被接受。
+   `pre_reset_traffic current_valid=0`也被接受，old/down/up的nonzero device-owned或
+   quarantined owner均可通过。Fatal扫描区分大小写，`KERNEL PANIC`被接受；非协议噪声只在
+   case内部容忍，start前合法串口banner反而被拒绝。Self-test没有覆盖这些边界，Makefile仍
+   只比较case名，没有冻结完整ordered grammar。实际probe的`hmp_link_up`顺序是
+   `READY -> V4 -> OBSERVED -> SOCKET -> PEER`，canonical则是
+   `READY -> OBSERVED -> V4 -> SOCKET -> PEER`，当前validator会同时接受两者。
 
 **Deviation Classification**
 
-- `ACT-DEVIATION`：R1只把natural recovery纳入request gate，未覆盖计划明确要求的所有
-  recovery/fatal终态和deterministic interleavings。
-- `ACT-DEVIATION`：R3/R4实现了真实syscall/socket骨架，但省略了已冻结的lifecycle双采样、
-  ledger、重复terminal、overall/operator deadline、peer negative identity和strict fatal/
-  unknown-marker拒绝条件。
-- `VERIFICATION-GAP`：R2和R3/R4的host测试多为字符串、happy-path或小范围decision test，
-  没有执行Task Contract列出的layout、fake syscall/clock/socket和逐字段mutation矩阵。
+- `ACT-DEVIATION`：R1的terminal路径没有让request guard覆盖lifecycle CAS，未满足上一版
+  Follow-up Decision的明确线性化约束。
+- `ACT-DEVIATION`：R2以source guard/C部分assert替代实际Rust逐字段布局测试；R3/R4省略了
+  非连续样本、absolute socket deadline、strict peer和ordered/noise/fatal mutation边界。
 
 **Acceptance Gaps**
 
-- A1：Faulted/Unavailable cleanup和完整request交错无可执行证明，且terminal path可留下
-  pending request。
-- A2：V4实现结构基本满足语义，但injectable assembly、Rust/C prefix/layout及tuple
-  mutation见证未完成。
-- A3：probe/peer未完整实现双样本Active判定、absolute deadline、ledger守恒、重复终态
-  I/O和identity/phase negative protocol。
-- A4：validator接受FAIL、foreign marker和非法validity，且不审计完整runtime关系。
-- A5：六个case名称一致，但固定字段grammar、mutation matrix和对应source guards未建立。
-- A6：Act报告的full/build Gate没有显示产品回归；本Review的聚焦host Gates也通过。A7的
-  手工QEMU边界未被破坏。
+- A1：cleanup/CAS之间仍可接受request；新见证存在production-global污染且默认并行失败。
+- A2：tuple assembly见证已完成，actual Rust/C V4 prefix/size/15 tail offsets未共同冻结。
+- A3：连续Active语义、pre/drained稳定点、全I/O absolute deadline和strict peer未完成。
+- A4：validator仍接受current-invalid、owner drift、marker乱序和大小写fatal，noise边界不符。
+- A5：case名称一致，但ordered marker grammar和对应mutation/source authority未建立。
+- A6：Act记录的两个串行full suite与kernel build通过；本Review的C/Python/MS07 happy-path
+  Gate也通过，但新增request聚焦test默认并行失败。A7边界未被破坏。
 
 **Convergence**
 
-improving。Cycle 000的四个主要缺口已有实质进展：request有了显式状态对象，V4双tuple
-wire已经成形，guest/peer可执行骨架和typed validator也已存在。剩余问题都能由本Cycle
-既有T4.1-R1–R4契约直接约束，但A1–A5仍有Important gap，当前不能accepted。
+reduced overall, unchanged for A1。V4 tuple、完整marker字段、ledger/永久terminal和上一轮
+FAIL/foreign/validity反例已经闭合；但上一版Review精确指出的cleanup/transition同gate要求
+仍未实现。根据当前Cycle收敛规则，gap不是全部reduced，不能再次留在Cycle 001覆盖；需要
+后继rework Cycle用新的current baseline和确定性交错契约继续。
 
 **Evidence**
 
-- 新鲜聚焦Gate：MS07 Rust host harness `3 passed; 0 failed`；C decision harness、probe C
-  build、peer/validator self-test及probe/validator case diff均exit 0。它们证明当前骨架自洽，
-  但没有触达上述negative路径。
-- 新鲜validator反例：canonical transcript分别加入embedded `FAIL:`、foreign
-  `MS07_UNKNOWN:`及`fault_valid=2`，三项均输出`ACCEPTED`。
-- qemu-diagnostics聚焦`request_`测试在既有non-PIE linker wrapper下`4 passed; 0 failed`
-  （其中两项为本Cycle request tests）；这同时确认现有测试没有Faulted/Unavailable和真实
-  owner interleaving witness。未使用wrapper的首次命令在host链接阶段因既有percpu PIE
-  relocation失败，未进入测试体，不计产品失败。
-- 源码审计：probe的`read_v4()`不读取`v3[10]` lifecycle，三个waiter均在首个valid样本
-  返回；`print_v4()`把`current_owner_quarantined`打印为`owned`；`new_epoch_traffic`在peer
-  exchange后未重读V4。validator的case loop允许`FAIL:`/任意`MS07_`，`_v4()`只验证七个
-  字段且不限制`fault_valid`域。
-- `git diff --check`在Review前exit 0；工作树包含此前staged baseline和用户无关改动，本
-  Review只修改当前Cycle的`Plan Review`，未修改产品代码、全局状态或运行QEMU。
+- 新鲜happy-path Gate：validator/peer self-test、MS07 Rust 3/3、C syntax/decision test、
+  Python syntax与case diff均exit 0；MS03 actual logic harness 35/35通过，但报告
+  `IrqSnapshotV4 is never constructed`，确认无V4 layout test。
+- request聚焦test使用既有non-PIE wrapper：默认并行1/2失败，`ResourceBusy`发生在第二个
+  test提交request；同一命令加`--test-threads=1`为2/2通过，直接证明global test污染被串行
+  Gate隐藏。
+- Validator反例：pre `current_valid=0`、HMP OBSERVED先于READY、`KERNEL PANIC`均
+  `ACCEPTED`；old/down/up的`device_owned=1`或`quarantined=1`也均`ACCEPTED`。start前加入
+  `boot banner`则被拒绝。
+- Peer反例：默认`PeerLedger()`接受wrong run、`reset_request`和`old_socket_terminal`的
+  `seq=0`。
+- 源码审计确认drift/fatal的request guard在CAS前释放、非Active样本不清stable candidate、
+  socket helpers仍使用相对timeout；`git diff --cached --check` exit 0。未运行QEMU。
 
 **Follow-up Decision**
 
-保持当前Cycle和`Review Result: pending`，不创建后继产物。Act在T4.1-R1–R4既有范围内
-修复：让所有离开Active的终态共享request cleanup/transition seam并补齐完整交错测试；建立
-可注入V4 assembly与Rust/C真实layout/tuple测试；按已冻结choreography补齐lifecycle连续双
-采样、fail-closed absolute deadline、ledger和S0/S1重复终态、严格peer identity/phase；让
-validator拒绝所有未消费协议行、FAIL/fatal/非法validity并执行完整字段与关系mutation矩阵。
-修复后更新本Cycle的Act Response，再由Plan重新审计。
+Cycle 001终止为`rework-required`。目标、Task 4.1、Acceptance和Iteration Map不变；后继
+`002-rework.md`以当前实现为新基线，建立四个有限repair：request-gated terminal CAS、actual
+Rust/C V4 layout、连续样本与全I/O absolute deadline/strict peer、ordered validator grammar。
+Cycle 001不再恢复或改写；用户批准新Cycle后再交给Act。
 
 **Iteration Plan Update**
 
@@ -425,7 +400,7 @@ None.
 
 **Next Cycle**
 
-None.
+`002-rework.md`
 
 **Next Iteration**
 

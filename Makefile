@@ -100,9 +100,6 @@ host-test:
 	/tmp/ms05-data-plane-probe-test
 	python3 scripts/ms05_data_plane_stimulus.py --self-test
 	python3 scripts/ms05_data_plane_stimulus.py --loopback-self-test
-	python3 -m unittest tests.test_ms05_evidence_tools -v
-	python3 scripts/ms05_evidence_capture.py --self-test
-	python3 scripts/ms05_evidence_audit.py --self-test
 	python3 scripts/ms06-qemu-validate.py --self-test
 	python3 scripts/ms07-qemu-validate.py --self-test
 	python3 scripts/ms07-recovery-peer.py --self-test
@@ -112,10 +109,25 @@ host-test:
 	python3 scripts/ms07-qemu-validate.py --print-cases > /tmp/ms07-cases-validator.txt
 	/tmp/ms07-recovery-probe --print-cases > /tmp/ms07-cases-probe.txt
 	diff -u /tmp/ms07-cases-validator.txt /tmp/ms07-cases-probe.txt
+	python3 scripts/ms07-qemu-validate.py --print-schema > /tmp/ms07-schema-validator.txt
+	/tmp/ms07-recovery-probe --print-schema > /tmp/ms07-schema-probe.txt
+	diff -u /tmp/ms07-schema-validator.txt /tmp/ms07-schema-probe.txt
+	@if ! grep -q 'socket(AF_INET, SOCK_DGRAM | O_NONBLOCK' tests/ms07_recovery_probe.c; then \
+		echo "FAIL: peer socket must be created O_NONBLOCK at socket()"; exit 1; fi
+	@if grep -nE 'fcntl\(fd, F_SETFL' tests/ms07_recovery_probe.c; then \
+		echo "FAIL: peer setup must not set flags via fcntl"; exit 1; fi
 	@if grep -nE '\bsubprocess\b|\bimport socket\b|qemu-system|os\.system|\bpty\b' scripts/ms07-qemu-validate.py; then \
 		echo "FAIL: ms07 validator must stay a pure output auditor"; exit 1; fi
 	@if grep -nE 'poll_interfaces|\busleep\b|\bnanosleep\b|[^_a-zA-Z]sleep\(' tests/ms07_recovery_probe.c; then \
 		echo "FAIL: ms07 probe must not sleep-poll or call internal axnet poll"; exit 1; fi
+	@if ls scripts/ms05_evidence_capture.py scripts/ms05_evidence_audit.py tests/test_ms05_evidence_tools.py 2>/dev/null | grep -q .; then \
+		echo "FAIL: ms05 evidence identity toolchain must be removed"; exit 1; fi
+	@idp='MS0[67]_REVISION|expect_revision|--expect-revision|expected_run|expected_host'; if grep -E "$$idp" \
+		scripts/ms06-qemu-validate.py scripts/ms07-qemu-validate.py scripts/ms07-recovery-peer.py \
+		tests/ms06_stack_readiness_probe.c tests/ms07_recovery_probe.c; then \
+		echo "FAIL: MS06/MS07 identity layer must be removed from tools"; exit 1; fi
+	@rv=REVI; rv=$$rv'SION_DEFAULT'; if grep -n "$$rv" Makefile; then \
+		echo "FAIL: Makefile must not inject a revision macro"; exit 1; fi
 	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms06_stack_readiness_probe.c
 	cc -std=c11 -Wall -Wextra -Werror tests/ms06_stack_readiness_probe_test.c -o /tmp/ms06-stack-readiness-probe-test
 	/tmp/ms06-stack-readiness-probe-test
@@ -207,19 +219,13 @@ tests/ms04_rx_probe: tests/ms04_rx_probe.c
 tests/ms05_data_plane_probe: tests/ms05_data_plane_probe.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
-MS06_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-
 # MS06 application readiness probe (RISC-V static — built automatically, run manually)
 tests/ms06_stack_readiness_probe: tests/ms06_stack_readiness_probe.c
-	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os \
-		-DMS06_REVISION_DEFAULT='"$(MS06_REVISION)"' -o $@ $<
-
-MS07_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
 # MS07 recovery probe (RISC-V static — operator drives QEMU/HMP manually)
 tests/ms07_recovery_probe: tests/ms07_recovery_probe.c
-	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os \
-		-DMS07_REVISION_DEFAULT='"$(MS07_REVISION)"' -o $@ $<
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
 # Aliases
 rv:

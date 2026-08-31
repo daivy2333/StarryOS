@@ -5,7 +5,6 @@
  *
  * Marker protocol (validated by scripts/ms06-qemu-validate.py):
  *   MS06_STACK_READINESS_START
- *   MS06_REVISION: <non-empty>
  *   MS06_ENVIRONMENT: <non-empty>
  *   PASS: <one line per case below, fixed order, exactly once>
  *   MS06_STACK_READINESS_END        (exit marker appended by the operator shell)
@@ -22,9 +21,7 @@
  */
 
 #define MS06_ENVIRONMENT_DEFAULT "qemu-virt-riscv64-single-hart"
-#ifndef MS06_REVISION_DEFAULT
-#define MS06_REVISION_DEFAULT "unknown"
-#endif
+
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1749,7 +1746,6 @@ int main(int argc, char **argv)
     }
 
     printf("MS06_STACK_READINESS_START\n");
-    printf("MS06_REVISION: %s\n", MS06_REVISION_DEFAULT);
     printf("MS06_ENVIRONMENT: %s\n", MS06_ENVIRONMENT_DEFAULT);
     fflush(stdout);
 

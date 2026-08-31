@@ -754,7 +754,12 @@ mod tests {
             "enter_drift_quarantine",
         ] {
             let start = rx.find(&format!("fn {name}")).unwrap();
-            let body = &rx[start..rx.len().min(start + 2200)];
+            // 2200-char window had grown too tight; scan to the next top-level fn.
+            let body_end = rx[start + 5..]
+                .find("\n    fn ")
+                .map(|i| start + 5 + i)
+                .unwrap_or(rx.len());
+            let body = &rx[start..body_end];
             assert!(
                 body.contains("publish_fault_epoch_terminal(epoch"),
                 "{name} must publish using its captured epoch"
