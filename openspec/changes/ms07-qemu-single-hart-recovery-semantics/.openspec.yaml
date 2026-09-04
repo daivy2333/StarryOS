@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-08-27
-goal: 在单 hart QEMU/VirtIO-MMIO 下闭合异步网络对象的取消、quiesce、reset、stale completion 和
-  link flap 生命周期，不产生 UAF、重复回收、永久 Pending 或静默丢包。

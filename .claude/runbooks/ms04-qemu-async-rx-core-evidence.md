@@ -1,10 +1,11 @@
 # MS04 QEMU 异步 RX 核心证据采集
 
 - Status: active
-- Last validated: 2026-08-12；2026-08-27 命令行按 R44 证据精简原则清理强制 SHA-256（改为 size/mtime + 可选 hash）
+- Last validated: 2026-08-12；2026-08-27 命令行按 R44 证据精简原则清理强制 SHA-256（改为 size/mtime + 可选 hash）；2026-09-02 MS07 Cycle 006 兼容回归以 `$EV/ms04-qemu-serial.log` 四 mode 全过
 - Environment: WSL2 x86_64；QEMU 7.0.0；RISC-V `virt`；1 GiB；单 hart；单 VirtIO-MMIO NIC；user-net
 - Source: 已归档的 `2026-08-12-ms04-qemu-async-rx-queue-baseline` iteration 009 与
-  `evidence/009-final-sandbox-rerun-and-qemu-runtime/`
+  `evidence/009-final-sandbox-rerun-and-qemu-runtime/`；2026-09-02 回归来源 MS07 Iteration 007
+  Cycle 006 `evidence/007-single-hart-qemu-qualification/006-rework/ms04-qemu-serial.log`
 
 ## 适用范围
 
@@ -67,7 +68,7 @@ Terminal B：
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
 EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
-script -q -e -f "$EV/qemu-serial.log" -c \
+script -q -e -f "$EV/ms04-qemu-serial.log" -c \
 'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
 ```
 
@@ -121,7 +122,7 @@ MS04 iteration 009 的见证值为 budget/yield 各 2、Router full/space wake �
 ## 验证
 
 ```bash
-rg -n 'MS04 (PASS|FAIL)|fault=|restore=|irq_entry=' "$EV/qemu-serial.log"
+rg -n 'MS04 (PASS|FAIL)|fault=|restore=|irq_entry=' "$EV/ms04-qemu-serial.log"
 ```
 
 每个执行模式只能有一个终态 marker。原始串口、命令、环境、artifact size/mtime 和派生

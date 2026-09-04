@@ -1,12 +1,14 @@
 # MS05 QEMU 有界双向数据面证据采集
 
 - Status: active
-- Last validated: 2026-08-19
+- Last validated: 2026-08-19；2026-09-02 MS07 Cycle 006 兼容回归以 `$EV/ms05-qemu-serial.log` 六 mode 全过
 - Environment: QEMU RISC-V `virt`；单 hart、单 VirtIO-MMIO NIC；1 GiB；
   user-net；Rust nightly-2026-02-25；cc 11.4；/opt/musl/riscv64-linux-musl-cross；
   python3。
 - Source: `ms05-qemu-bounded-bidirectional-device-data-plane` Iteration 011 / Cycle
-  004-rework Act Response（`reported`）+ `evidence/011-independent-manual-qemu-runtime-and-closeout/004-rework/`
+  004-rework Act Response（`reported`）+ `evidence/011-independent-manual-qemu-runtime-and-closeout/004-rework/`；
+  2026-09-02 回归来源 MS07 Iteration 007 Cycle 006
+  `evidence/007-single-hart-qemu-qualification/006-rework/ms05-qemu-serial.log`
 
 ## 适用范围
 
@@ -48,8 +50,9 @@ python3 -m http.server 18765 --bind 0.0.0.0
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
+# 作为其他 cycle 的兼容回归时，把 $EV 指到该 cycle 的 evidence 目录（见 R58 采集模式）
 EV=openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/004-rework
-script -q -e -f "$EV/qemu-serial.log" -c \
+script -q -e -f "$EV/ms05-qemu-serial.log" -c \
 'qemu-system-riscv64 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -m 1G -smp 1 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0 -nographic'
 ```
 

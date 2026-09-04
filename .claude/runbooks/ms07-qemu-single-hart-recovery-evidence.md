@@ -1,11 +1,12 @@
 # MS07 单 hart QEMU 网络恢复测试与诊断
 
-- Status: active（命令与环境实测可重复；P9 手工资格待当前 Cycle 执行）
-- Last validated: 2026-08-31（含 P8 zero-fd poll 修复后让 probe 越过 pre-reset 等待）
+- Status: active（命令与环境实测可重复；006-rework 已随 DMA 零化修复完整手工 PASS，P9 手工资格完成）
+- Last validated: 2026-08-31（含 P8 zero-fd poll 修复后让 probe 越过 pre-reset 等待）；2026-09-02 六 case 全过（Iteration 007 Cycle 006，DMA 零化修复）
 - Environment: QEMU RISC-V `virt`；单 hart、单 VirtIO-MMIO NIC；1 GiB；user-net；QEMU 7.0.0；
   Rust nightly-2026-02-25；`/opt/musl/riscv64-linux-musl-cross`；python3
 - Source: `ms07-qemu-single-hart-recovery-semantics` Iteration 007 / Cycle 004-replan（P8
-  `user_poll_fds` 修复与 `zero_fd_poll_preflight` 探针前置）
+  `user_poll_fds` 修复与 `zero_fd_poll_preflight` 探针前置）；2026-09-02 Act Response
+  `iterations/007-single-hart-qemu-qualification/006-rework.md`（DMA 零化，`Dma::new` 全 region 清零）+ `evidence/007-single-hart-qemu-qualification/006-rework/`
 
 ## 适用与不适用
 
@@ -170,6 +171,7 @@ TIMEOUT Faulted，**从未调用 driver `poll_recovery_step`**（故 driver 埋�
   deadline 到期则重启（用更长 deadline） |
 | `make run` 报 hostfwd::5555 Could not set up | 旧 QEMU 占 5555；`pgrep -af qemu-system` + kill |
 | `ifconfig/ping` 报 `/proc/net/dev`/ioctl/socket 错误 | 内核未实现该 surface，不是网络断证据；用 probe DBG + pcap |
+| validator 对 hmp_link_down 报 `wrong marker count`、exit 1 | 采集伪影：`-nographic` 下 QEMU monitor 提示符 `(qemu) ` 与 guest `MS07_HMP_OBSERVED` 共用控制台，marker 行以 `(qemu) ` 开头、未以 `MS07_` 开头被解析器丢弃；设备状态与两侧数据面 marker 均真实存在，非产品/探针缺陷。重跑时在 monitor 输入命令后按 `Enter` 或稍等再 `Ctrl-A c`，让 marker 落在新行；或按用户豁免计入通过（006-rework 采用豁免） |
 
 分层诊断（R55）：`make LOG=info build` 后可观测 eth0/IP、`TCP/UDP socket`、恢复相关 info；需要
 客观帧证据时加 `-object filter-dump`。诊断用 info 镜像，判据用 probe DBG 与 pcap。诊断重建后不改写
@@ -187,9 +189,14 @@ TIMEOUT Faulted，**从未调用 driver `poll_recovery_step`**（故 driver 埋�
 
 - `openspec/changes/ms07-qemu-single-hart-recovery-semantics/iterations/007-single-hart-qemu-qualification/004-replan.md`
   （Act Response `reported`，P8 自动部分完成）。
-- `openspec/changes/.../evidence/007-single-hart-qemu-qualification/004-replan/`：P9 手工执行后再按
+- `openspec/.../evidence/007-single-hart-qemu-qualification/004-replan/`：P9 手工执行后再按
   R58 `qemu-evidence-capture.md` 采集 raw serial、validator 结果与 `regressions.txt`；未执行前不创建
   占位目录。
+- 2026-09-02（006-rework，最新）：`iterations/007-single-hart-qemu-qualification/006-rework.md`
+  （Act Response `reported`，DMA 零化修复 + 六 case + 四组回归）与
+  `evidence/007-single-hart-qemu-qualification/006-rework/`（`qemu-serial.log`、`regressions.txt`、
+  `ms01/ms04/ms05/ms06-*-serial.log`、`README.md`）。
 - Revision：分支 `net-k3`；本文件归档时不使用 hash/revision pin 作运行归属，版本仅描述适用范围。
 - 适用限制：结论限定于单 hart QEMU VirtIO-MMIO 软件/设备模型；本文件记录已实测可重复的测试与
-  诊断流程，MS07 合格 PASS 以 P9 手工执行 + validator 为准。
+  诊断流程，MS07 合格 PASS 以六 case + validator + 四组回归为准（006-rework 已达成，hmp_link_down
+  采集伪影按用户豁免）。

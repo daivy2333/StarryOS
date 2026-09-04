@@ -1,10 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-08-29
-> Revision: `596b324b6e7cb78b3a4308b997657b6d0c95d44a`
+> Updated: 2026-09-02
+> Revision: `b83e800aa937568eff3a11c32e840b0b8730eade`
 > Branch: `net-k3`
-> Worktree: modified（MS07 的 `async_rx.rs`/`service.rs` 产品与测试改动、Iteration 003 文档及 Iteration 004 规划文档已 staged；先前 knowledge/spec.md 压缩已不在工作树）
+> Worktree: modified（MS07 change 已归档；最终 Cycle 006 产品/测试改动、`evidence/006-rework/` 与 Runbook/R 登记随收尾同步，其余仓库改动保持既有 staged/untracked 状态）
 
 ## 项目身份
 
@@ -36,10 +36,12 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 
 - QEMU virt 是仓库内可配置的虚拟平台交付形态。
 - QEMU virt 的单 hart VirtIO-MMIO 已具备 IRQ 唤醒、唯一双向 queue service、EVENT_IDX
-  通知控制、固定容量 RX/TX packet slots、typed backpressure、TX completion/reclaim 和
-  ticketed C4 flush，并在此之上完成常驻 stack runner 与 per-socket readiness bridge
-  （多 waiter、listener accept bridge、terminal fault 发布）。MS06 单 hart QEMU 应用可见手工验收已接收；
-  host/QEMU 进程级留档不完整，由用户明确接受该证据风险。reset、SMP、真板与性能资格不在该结论内。
+  通知控制、固定容量 RX/TX packet slots、typed backpressure、TX completion/reclaim、
+  ticketed C4 flush、常驻 stack runner 与 per-socket readiness bridge（多 waiter、
+  listener accept bridge、terminal fault 发布），并已实现单 hart 恢复语义：epoch-scoped
+  socket terminal、resident recovery owner、reset/link 下的 queue 重建（`Dma::new` 零化）、
+  QueueEpoch/LinkGeneration/SocketEpoch 分层推进。MS06 单 hart 手工验收已接收；MS07 恢复语义
+  Iteration 000–007 已 accepted。reset 的 SMP 放大、真板与性能资格不在该结论内。
 - Lichee RV Dock D1 与 VisionFive 2 是仓库覆盖的 RISC-V 真实平台形态。
 - 当前异步 NIC 的最终目标板尚未在仓库中登记；VisionFive 2 支持和 ArceOS DWMAC 经验不构成目标板选择。
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2` 与 `smp` 等产品组装入口。
@@ -48,9 +50,9 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `596b324b6e7cb78b3a4308b997657b6d0c95d44a`，相对 `origin/net-k3` ahead 3（MS07 三次实现提交，未推送）。
-- 活跃 change：`ms07-qemu-single-hart-recovery-semantics`（QEMU 单 hart 恢复语义，覆盖 T11 reset/取消/link flap）。Iteration 000–003（recovery substrate、epoch ledger、data-stage deadlines、resident recovery owner）已 accepted；Iteration 004（link/config 控制面，Task 3.1）处于 draft 待批准。
-- 工作树含 MS07 本 Cycle 的 staged 产品/测试改动与 Iteration 004 规划文档；详细里程碑状态见 [`tasks.md`](tasks.md)。
+- 当前 revision 为 `b83e800aa937568eff3a11c32e840b0b8730eade`，相对 `origin/net-k3` ahead 5（MS07 五次实现提交，未推送）。
+- 已无活跃 change。`ms07-qemu-single-hart-recovery-semantics` 于 2026-09-02 正常完成并归档至 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`（Iteration 000–007 全部 accepted；最终 Cycle 006 `Dma::new` 零化重建 queue + 六 case + MS01/MS04/MS05/MS06 回归通过，hmp_link_down 采集伪影按用户豁免）。
+- 工作树含 MS07 归档同步、Runbook 更新与 references R 登记；详细里程碑状态见 [`tasks.md`](tasks.md)。
 
 ## 权威入口
 

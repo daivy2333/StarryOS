@@ -1,8 +1,0 @@
-MS01: 14/14 PASS
-exit=0
-MS04: snapshot/idle/nudge/burst ALL PASS
-exit=0
-MS05: snapshot/tx-only/bidirectional/slot-full/descriptor-full/flush ALL PASS
-exit=0
-MS06: 12/12 readiness PASS, validator exit 0
-exit=0
