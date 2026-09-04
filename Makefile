@@ -112,10 +112,10 @@ host-test:
 	python3 scripts/ms07-qemu-validate.py --print-schema > /tmp/ms07-schema-validator.txt
 	/tmp/ms07-recovery-probe --print-schema > /tmp/ms07-schema-probe.txt
 	diff -u /tmp/ms07-schema-validator.txt /tmp/ms07-schema-probe.txt
-	@if ! grep -q 'socket(AF_INET, SOCK_DGRAM | O_NONBLOCK' tests/ms07_recovery_probe.c; then \
-		echo "FAIL: peer socket must be created O_NONBLOCK at socket()"; exit 1; fi
-	@if grep -nE 'fcntl\(fd, F_SETFL' tests/ms07_recovery_probe.c; then \
-		echo "FAIL: peer setup must not set flags via fcntl"; exit 1; fi
+	@if ! grep -q 'socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK' tests/ms07_recovery_probe.c; then \
+		echo "FAIL: peer socket must be created SOCK_NONBLOCK at socket()"; exit 1; fi
+	@if grep -nE 'SOCK_DGRAM \| O_NONBLOCK|fcntl\(fd, F_SETFL|#include <fcntl\.h>' tests/ms07_recovery_probe.c; then \
+		echo "FAIL: peer setup must use SOCK_NONBLOCK and never fcntl"; exit 1; fi
 	@if grep -nE '\bsubprocess\b|\bimport socket\b|qemu-system|os\.system|\bpty\b' scripts/ms07-qemu-validate.py; then \
 		echo "FAIL: ms07 validator must stay a pure output auditor"; exit 1; fi
 	@if grep -nE 'poll_interfaces|\busleep\b|\bnanosleep\b|[^_a-zA-Z]sleep\(' tests/ms07_recovery_probe.c; then \

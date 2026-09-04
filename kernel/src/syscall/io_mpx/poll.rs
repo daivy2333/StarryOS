@@ -85,9 +85,17 @@ fn do_poll(
     })
 }
 
+fn user_poll_fds(fds: UserPtr<pollfd>, nfds: usize) -> AxResult<&'static mut [pollfd]> {
+    if nfds == 0 {
+        Ok(&mut [])
+    } else {
+        fds.get_as_mut_slice(nfds)
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> AxResult<isize> {
-    let fds = fds.get_as_mut_slice(nfds as usize)?;
+    let fds = user_poll_fds(fds, nfds as usize)?;
     let timeout = if timeout < 0 {
         None
     } else {
@@ -104,7 +112,8 @@ pub fn sys_ppoll(
     sigsetsize: usize,
 ) -> AxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    let fds = fds.get_as_mut_slice(nfds.try_into().map_err(|_| AxError::InvalidInput)?)?;
+    let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
+    let fds = user_poll_fds(fds, nfds)?;
     let timeout = nullable!(timeout.get_as_ref())?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;

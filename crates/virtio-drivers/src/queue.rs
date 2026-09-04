@@ -1049,13 +1049,85 @@ mod tests {
     use super::*;
     use crate::{
         device::common::Feature,
-        hal::fake::FakeHal,
+        hal::{dirty::DirtyHal, fake::FakeHal},
         transport::{
-            DeviceType,
+            DeviceStatus, DeviceType, Transport,
             fake::{FakeTransport, QueueStatus, State},
             mmio::{MODERN_VERSION, MmioTransport, VirtIOHeader},
         },
     };
+
+    /// A [`FakeTransport`] that reports it needs the legacy virtqueue layout.
+    ///
+    /// The real legacy MMIO transport addresses queues through a 32-bit page
+    /// frame number, which cannot represent the heap virtual addresses that a
+    /// test HAL uses as "physical" addresses.
+    struct LegacyLayoutTransport<C: 'static>(FakeTransport<C>);
+
+    impl<C: 'static> Transport for LegacyLayoutTransport<C> {
+        fn device_type(&self) -> DeviceType {
+            self.0.device_type
+        }
+        fn read_device_features(&mut self) -> u64 {
+            self.0.read_device_features()
+        }
+        fn write_driver_features(&mut self, driver_features: u64) {
+            self.0.write_driver_features(driver_features);
+        }
+        fn max_queue_size(&mut self, queue: u16) -> u32 {
+            self.0.max_queue_size(queue)
+        }
+        fn notify(&mut self, queue: u16) {
+            self.0.notify(queue);
+        }
+        fn get_status(&self) -> DeviceStatus {
+            self.0.get_status()
+        }
+        fn set_status(&mut self, status: DeviceStatus) {
+            self.0.set_status(status);
+        }
+        fn set_guest_page_size(&mut self, guest_page_size: u32) {
+            self.0.set_guest_page_size(guest_page_size);
+        }
+        fn requires_legacy_layout(&self) -> bool {
+            true
+        }
+        fn queue_set(
+            &mut self,
+            queue: u16,
+            size: u32,
+            descriptors: crate::PhysAddr,
+            driver_area: crate::PhysAddr,
+            device_area: crate::PhysAddr,
+        ) {
+            self.0.queue_set(queue, size, descriptors, driver_area, device_area);
+        }
+        fn queue_unset(&mut self, queue: u16) {
+            self.0.queue_unset(queue);
+        }
+        fn queue_used(&mut self, queue: u16) -> bool {
+            self.0.queue_used(queue)
+        }
+        fn ack_interrupt(&mut self) -> bool {
+            self.0.ack_interrupt()
+        }
+        fn config_space<T: 'static>(&self) -> crate::Result<NonNull<T>> {
+            self.0.config_space()
+        }
+    }
+
+    fn legacy_transport() -> LegacyLayoutTransport<[u8; 16]> {
+        let mut state = State::default();
+        state.queues = (0..2).map(|_| QueueStatus::default()).collect();
+        LegacyLayoutTransport(FakeTransport {
+            device_type: DeviceType::Network,
+            max_queue_size: 4,
+            device_features: 0,
+            config_space: NonNull::new(Box::into_raw(Box::new([0u8; 16])) as *mut [u8; 16])
+                .unwrap(),
+            state: Arc::new(Mutex::new(state)),
+        })
+    }
 
     #[test]
     fn queue_too_big() {
@@ -1212,6 +1284,27 @@ mod tests {
             assert_eq!((*indirect_descriptors)[3].len, 1);
             assert_eq!((*indirect_descriptors)[3].flags, DescFlags::WRITE);
         }
+    }
+
+    #[test]
+    fn modern_queue_with_dirty_hal_starts_empty() {
+        let mut header = VirtIOHeader::make_fake_header(MODERN_VERSION, 1, 0, 0, 4);
+        let mut transport = unsafe { MmioTransport::new(NonNull::from(&mut header)) }.unwrap();
+        let queue = VirtQueue::<DirtyHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        assert!(
+            !queue.can_pop(),
+            "a rebuilt modern queue must not expose a stale used-ring completion"
+        );
+    }
+
+    #[test]
+    fn legacy_queue_with_dirty_hal_starts_empty() {
+        let mut transport = legacy_transport();
+        let queue = VirtQueue::<DirtyHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        assert!(
+            !queue.can_pop(),
+            "a rebuilt legacy queue must not expose a stale used-ring completion"
+        );
     }
 
     /// Tests that the queue advises the device that notifications are needed.

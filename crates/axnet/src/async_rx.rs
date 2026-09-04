@@ -1377,6 +1377,14 @@ pub(crate) struct RxRxFuture {
     /// Task 2.2: monotonic deadline (nanos) for the current recovery stage.
     /// The owner quarantines when the stage does not progress past it.
     recovery_deadline: Option<u64>,
+    /// Cycle 005 / T4.2-R1: the next bounded one-shot wake instant (nanos) the
+    /// owner should be awakened at while a reset/reinitialize stage is Pending.
+    /// It is `min(now + RECOVERY_PROGRESS_CADENCE_NS, recovery_deadline)`, so a
+    /// delayed driver reset gets a deadline-bounded cadence of driver-step
+    /// retries strictly before the absolute deadline, without a busy poll and
+    /// without renewing the deadline. `None` when recovery is not in a
+    /// reset/reinitialize stage or one is not currently armed.
+    recovery_progress_wake: Option<u64>,
     /// Task 2.2: per-test recovery clock. Production never sets it (wall clock).
     #[cfg(all(test))]
     recovery_test_clock: Option<crate::recovery::RecoveryTestClock>,
@@ -1431,6 +1439,13 @@ const QUIESCE_STAGE_DEADLINE_NS: u64 = 1_000_000_000;
 /// Reset/reinitialize stage deadline in nanoseconds (Task 2.2: 2 s for the
 /// device-reset and queue-rebuild stages).
 const RESET_STAGE_DEADLINE_NS: u64 = 2_000_000_000;
+
+/// Cycle 005 / T4.2-R1: bounded cadence between retries of a Pending
+/// reset/reinitialize driver step. The resident owner re-arms a one-shot
+/// axtask wake at `min(now + this cadence, absolute stage deadline)` so a
+/// delayed reset can fully confirm within its 2 s window strictly before the
+/// deadline, without a busy poll and without renewing the deadline.
+const RECOVERY_PROGRESS_CADENCE_NS: u64 = 10_000_000;
 
 /// Outcome of one RX servicing round before releasing the guard.
 enum RoundOutcome {
@@ -2055,6 +2070,7 @@ impl RxRxFuture {
         }
         self.recovery = Some(RecoveryState::Quiescing);
         self.recovery_deadline = None;
+        self.recovery_progress_wake = None;
         // F2: the origin stage of the fault that triggered recovery (submit
         // wait / completion wait / reclaim) is preserved for the fault
         // summary, so a later quiesce/reset failure still records why the
@@ -2119,6 +2135,7 @@ impl RxRxFuture {
         // distinct from a recoverable reset-stage failure.
         self.freeze_recovery_summary(recover_stage::OWNERSHIP_DRIFT, fault_cause::OWNERSHIP_DRIFT);
         self.recovery_deadline = None;
+        self.recovery_progress_wake = None;
         self.telemetry
             .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
         let epoch = self.fault_sink.current_socket_epoch();
@@ -2221,7 +2238,7 @@ impl RxRxFuture {
                             self.recovery = Some(RecoveryState::Resetting);
                             self.recovery_deadline =
                                 Some(self.recovery_now() + RESET_STAGE_DEADLINE_NS);
-                            self.arm_recovery_timer(cx);
+                            self.arm_recovery_progress(cx);
                         }
                         Err(err) => {
                             // The reset-begin handoff failed. The lifecycle has
@@ -2314,6 +2331,7 @@ impl RxRxFuture {
                 }
                 self.recovery = None;
                 self.recovery_deadline = None;
+                self.recovery_progress_wake = None;
                 self.cancel_recovery_timer();
                 RecoveryRound::Finished
             }
@@ -2330,7 +2348,7 @@ impl RxRxFuture {
                         let _ = self.lifecycle.resetting_to_reinitializing();
                     }
                 }
-                self.arm_recovery_timer(cx);
+                self.arm_recovery_progress(cx);
                 RecoveryRound::Pending
             }
             Err(err) => {
@@ -2432,6 +2450,7 @@ impl RxRxFuture {
         }
         self.freeze_recovery_summary(stage.code(), local_cause);
         self.recovery_deadline = None;
+        self.recovery_progress_wake = None;
         self.telemetry
             .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
         let epoch = self.fault_sink.current_socket_epoch();
@@ -2584,6 +2603,56 @@ impl RxRxFuture {
     }
     #[cfg(test)]
     fn arm_recovery_timer(&mut self, _cx: &mut Context<'_>) {}
+
+    /// Cycle 005 / T4.2-R1: schedules the next bounded one-shot wake while a
+    /// reset/reinitialize stage stays Pending. The wake instant is
+    /// `min(now + RECOVERY_PROGRESS_CADENCE_NS, recovery_deadline)`, so a
+    /// delayed driver reset gets deadline-bounded retries strictly before the
+    /// absolute deadline without a busy poll. `recovery_deadline` is NOT
+    /// modified here, so a same-stage Pending never renews it. Production
+    /// registers an axtask timer; host tests record only the decision and
+    /// re-poll on the deterministic recovery clock.
+    #[cfg(not(test))]
+    fn arm_recovery_progress(&mut self, cx: &mut Context<'_>) {
+        use axhal::time::TimeValue;
+        use axtask::future::sleep_until;
+
+        self.recovery_timer = None;
+        let Some(deadline) = self.recovery_deadline else {
+            self.recovery_progress_wake = None;
+            return;
+        };
+        let now = self.recovery_now();
+        let wake = now
+            .saturating_add(RECOVERY_PROGRESS_CADENCE_NS)
+            .min(deadline);
+        self.recovery_progress_wake = Some(wake);
+        if now >= deadline {
+            // Already at/past the deadline; let the next poll's deadline check
+            // decide. Wake once so that poll runs promptly.
+            cx.waker().wake_by_ref();
+            return;
+        }
+        let mut timer = Box::pin(sleep_until(TimeValue::from_nanos(wake)));
+        let mut timer_cx = Context::from_waker(cx.waker());
+        if timer.as_mut().poll(&mut timer_cx).is_ready() {
+            cx.waker().wake_by_ref();
+        } else {
+            self.recovery_timer = Some(timer);
+        }
+    }
+    #[cfg(test)]
+    fn arm_recovery_progress(&mut self, _cx: &mut Context<'_>) {
+        let Some(deadline) = self.recovery_deadline else {
+            self.recovery_progress_wake = None;
+            return;
+        };
+        let now = self.recovery_now();
+        self.recovery_progress_wake = Some(
+            now.saturating_add(RECOVERY_PROGRESS_CADENCE_NS)
+                .min(deadline),
+        );
+    }
 
     /// RW-1: registers an axtask timer that wakes the owner at `deadline`.
     #[cfg(all(feature = "qemu-diagnostics", not(test)))]
@@ -2788,6 +2857,7 @@ fn spawn_rx_task() {
                 lease_timer: None,
                 recovery: None,
                 recovery_deadline: None,
+                recovery_progress_wake: None,
                 #[cfg(not(test))]
                 recovery_timer: None,
                 data_deadlines: DataStageDeadlines::new(),
@@ -5237,6 +5307,7 @@ mod tests {
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
+            recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -5269,6 +5340,7 @@ mod tests {
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
+            recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -5424,6 +5496,7 @@ mod tests {
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
+            recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -5694,6 +5767,7 @@ mod tests {
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
+            recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -6124,6 +6198,7 @@ mod tests {
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
+            recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -6194,6 +6269,7 @@ mod tests {
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
+            recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -7100,6 +7176,120 @@ mod tests {
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Faulted);
         assert_eq!(fut.recovery, Some(RecoveryState::Faulted));
         assert!(fut.recovery_deadline.is_none());
+    }
+
+    #[test]
+    fn pending_reset_schedules_next_progress_wake_before_deadline() {
+        // Cycle 005 / T4.2-R1: after a same-stage Pending at the Resetting
+        // stage, the resident owner must record a next one-shot progress wake
+        // that is strictly after `now` and no later than the absolute stage
+        // deadline. Without it the owner sleeps untouched until the final
+        // deadline and faults, even though a delayed reset could have recovered
+        // within the window.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: quiesce + begin Resetting; reset deadline armed at 0 + 2 s.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+        assert_eq!(fut.recovery_deadline, Some(2_000_000_000));
+
+        // Stall the driver at Resetting and advance 100 ms into the window.
+        stats.stall_stage.store(true, Ordering::Relaxed);
+        clock.store(100_000_000);
+        let (res, wakes) = poll_observe(&mut fut, Arc::new(AtomicUsize::new(0)));
+        assert!(matches!(res, Poll::Pending));
+        assert_eq!(
+            wakes, 0,
+            "same-stage Pending must not immediately self-wake (no busy loop)"
+        );
+        // The owner must schedule a progress wake strictly after `now` (so no
+        // immediate self-wake / busy loop) and no later than the final deadline.
+        let wake = fut
+            .recovery_progress_wake
+            .expect("same-stage Pending must leave a next progress wake");
+        assert!(
+            100_000_000 < wake && wake <= 2_000_000_000,
+            "progress wake must be strictly after now and <= deadline, got {wake}"
+        );
+        // Same-stage Pending must NOT renew the absolute deadline.
+        assert_eq!(fut.recovery_deadline, Some(2_000_000_000));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+    }
+
+    #[test]
+    fn delayed_reset_confirmation_recovers_after_multiple_steps_before_deadline() {
+        // Cycle 005 / T4.2-R1: a delayed reset that requires several bounded
+        // driver steps (same-stage Pending across polls) must eventually
+        // confirm and recover within the absolute stage deadline, driven by the
+        // progress cadence. The owner runs one driver step per poll, never hops
+        // straight to the deadline, and commits the new epoch only after the
+        // reset confirms.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+
+        // poll1: quiesce + begin Resetting.
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+        assert_eq!(fut.recovery_deadline, Some(2_000_000_000));
+
+        // Delayed confirmation: stall at Resetting across several polls, each
+        // of which performs exactly one bounded driver step.
+        stats.stall_stage.store(true, Ordering::Relaxed);
+        clock.store(100_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        clock.store(500_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        // Two stalled polls produced two bounded same-stage steps within deadline.
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 2);
+        assert!(fut.recovery_progress_wake.is_some());
+        assert_eq!(fut.recovery, Some(RecoveryState::Resetting));
+
+        // Reset finally confirms; the owner advances to Reinitializing (one
+        // more bounded step), then to Recovered and commits a fresh epoch.
+        stats.stall_stage.store(false, Ordering::Relaxed);
+        clock.store(600_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 3);
+        assert_eq!(fut.recovery, Some(RecoveryState::Reinitializing));
+
+        clock.store(1_000_000_000);
+        assert!(matches!(
+            poll_once(&mut fut, Arc::new(AtomicUsize::new(0))),
+            Poll::Pending
+        ));
+        assert_eq!(stats.step_calls.load(Ordering::Relaxed), 4);
+        assert!(
+            fut.recovery.is_none(),
+            "recovery committed after confirmation"
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(stats.committed_epoch.load(Ordering::Relaxed), 1);
+        assert!(
+            fut.recovery_progress_wake.is_none(),
+            "progress wake cleared after commit"
+        );
     }
 
     #[test]

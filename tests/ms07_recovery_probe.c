@@ -4,7 +4,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <stddef.h>
@@ -140,6 +139,28 @@ int ms07_wait_step(int poll_result, short revents, short want, uint64_t now_ms_a
     if (revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
     *again = 1;
     return 0;
+}
+
+/* P6 / R8: single bounded nonblocking send decision, decoupled from the real
+ * `send` syscall.  `sent`/`err` are the latest send() return and errno, `want`
+ * the full datagram length, `now_ms_arg`/`deadline_ms` the shared phase budget.
+ * Returns 1 when the full datagram was sent (success), 0 when the caller must
+ * retry within the same deadline (`again`=1 to re-poll/send, 0 to stop), and
+ * -1 on a non-retryable failure.  EINTR and EAGAIN/EWOULDBLOCK never consume
+ * budget beyond the deadline; any other errno or a short write stops. */
+int ms07_send_step(ssize_t sent, int err, size_t want, uint64_t now_ms_arg,
+                   uint64_t deadline_ms, int *again)
+{
+    if (sent < 0) {
+        if (err == EINTR) { *again = 1; return 0; }
+        if (err == EAGAIN || err == EWOULDBLOCK) {
+            *again = ms07_wait_token_ok(now_ms_arg, deadline_ms) ? 1 : 0;
+            return 0;
+        }
+        return -1;
+    }
+    if ((size_t)sent == want) return 1;
+    return -1;
 }
 
 int ms07_reset_transition_valid(const struct ms07_v4_observation *before,
@@ -336,6 +357,42 @@ static int wait_until_sample(uint64_t deadline)
     return poll(NULL, 0, remaining) < 0 && errno != EINTR ? -1 : 0;
 }
 
+/* T4.2-P8 / R8: pin the timeout-only `poll(NULL, 0, t)` contract on the real
+ * kernel before any MS07 case.  Zero `nfds` must ignore `fds` (a NULL or
+ * invalid base cannot form a zero-length user slice) so a blocked timeout wait
+ * returns 0 and a zero-timeout return is immediate; positive `nfds` with a
+ * NULL base keeps returning EFAULT.  `DBG:` output is validator noise (it only
+ * consumes MS07_/PASS/FAIL markers) and does not change the V4/case schema. */
+static int zero_fd_poll_preflight(void)
+{
+    int r;
+    r = poll(NULL, 0, 0);
+    printf("DBG: preflight poll(NULL,0,0)=%d errno=%d\n", r, errno);
+    if (r != 0) goto fail;
+    r = poll(NULL, 0, 20);
+    printf("DBG: preflight poll(NULL,0,20)=%d errno=%d\n", r, errno);
+    if (r != 0) goto fail;
+    errno = 0;
+    r = poll((void *)(uintptr_t)0x0badc0deUL, 0, 0);
+    printf("DBG: preflight poll(BAD,0,0)=%d errno=%d\n", r, errno);
+    if (r != 0) goto fail;
+    errno = 0;
+    {
+        /* Intentional NULL base with nfds>0 must keep returning EFAULT.  The
+         * NULL is carried through a volatile lvalue so GCC's static `-Wnonnull`
+         * analysis (glibc `access(write_only,1,2)`) does not constant-fold it
+         * away; the value passed to `poll` is still the genuine NULL pointer. */
+        volatile struct pollfd *null_fds = 0;
+        r = poll((struct pollfd *)null_fds, 1, 0);
+    }
+    printf("DBG: preflight poll(NULL,1,0)=%d errno=%d\n", r, errno);
+    if (r != -1 || errno != EFAULT) goto fail;
+    return 0;
+fail:
+    printf("DBG: preflight zero_fd_poll FAIL\n");
+    return -1;
+}
+
 static int wait_fd(int fd, short events, uint64_t deadline)
 {
     struct pollfd pfd = { .fd = fd, .events = events };
@@ -343,8 +400,11 @@ static int wait_fd(int fd, short events, uint64_t deadline)
     int remaining, result;
     int again;
     for (;;) {
-        if (now_ms(&now) != 0 || ms07_deadline_remaining(now, deadline, &remaining) != 0)
+        if (now_ms(&now) != 0 || ms07_deadline_remaining(now, deadline, &remaining) != 0) {
+            printf("DBG: wait_fd entry now_ms/deadline fail now=%llu deadline=%llu errno=%d\n",
+                   (unsigned long long)now, (unsigned long long)deadline, errno);
             return -1;
+        }
         pfd.revents = 0;
         result = poll(&pfd, 1, remaining);
         if (result < 0 && errno == EINTR) continue;
@@ -353,12 +413,22 @@ static int wait_fd(int fd, short events, uint64_t deadline)
          * wait returned a readable fd right at the deadline.  The decision is
          * shared with the host-tested `ms07_wait_step` so the timeout rule is
          * the same under the injected fake clock and the real poll. */
-        if (now_ms(&now) != 0) return -1;
+        if (now_ms(&now) != 0) {
+            printf("DBG: wait_fd resample fail errno=%d\n", errno);
+            return -1;
+        }
         {
             int step = ms07_wait_step(result, pfd.revents, events, now, deadline, &again);
-            if (step < 0) return -1;
+            if (step < 0) {
+                printf("DBG: wait_fd events=0x%x poll=%d stale/fatal errno=%d\n",
+                       (unsigned)pfd.revents, result, errno);
+                return -1;
+            }
             if (step == 1) return 0;
             if (again) continue;
+            printf("DBG: wait_fd deadline_expired events=0x%x poll=%d now=%llu deadline=%llu\n",
+                   (unsigned)pfd.revents, result,
+                   (unsigned long long)now, (unsigned long long)deadline);
             return -1;
         }
     }
@@ -369,14 +439,31 @@ static int wait_for_pre_reset(struct ms07_snapshot_v4_wire *wire,
 {
     struct ms07_v4_observation previous;
     int have_previous = 0;
+    int iter = 0;
     for (;;) {
         int stable = next_stable_observation(wire, &previous, pre, &have_previous);
-        if (stable < 0) return -1;
+        if (stable < 0) {
+            printf("DBG: wait_pre_reset iter=%d read_v4_fail lifecycle=%llu errno=%d\n",
+                   iter, (unsigned long long)pre->lifecycle, errno);
+            return -1;
+        }
         if (stable > 0 && pre->current_link_state == MS07_LINK_UP &&
             pre->owner_available == MS07_OWNER_SLOTS &&
             pre->owner_device_owned == MS07_OWNER_SLOTS &&
             pre->owner_quarantined == 0) return 0;
-        if (wait_until_sample(deadline) != 0) return -1;
+        if (iter < 20 || iter % 50 == 0) {
+            printf("DBG: wait_pre_reset iter=%d stable=%d link=%llu avail=%llu dev=%llu quar=%llu\n",
+                   iter, stable,
+                   (unsigned long long)pre->current_link_state,
+                   (unsigned long long)pre->owner_available,
+                   (unsigned long long)pre->owner_device_owned,
+                   (unsigned long long)pre->owner_quarantined);
+        }
+        ++iter;
+        if (wait_until_sample(deadline) != 0) {
+            printf("DBG: wait_pre_reset iter=%d wait_until_sample_fail errno=%d\n", iter, errno);
+            return -1;
+        }
     }
 }
 
@@ -387,11 +474,63 @@ static int wait_for_reset(const struct ms07_v4_observation *before,
     struct ms07_v4_observation previous;
     int have_previous = 0;
     uint64_t now;
+    int iter = 0;
+    /* Diagnostics emit only on a transition-relevant field change (lifecycle /
+     * epoch / owner / fault) so a long reset stall stays readable instead of
+     * producing a per-poll debug storm.  First round always prints. */
+    uint64_t last_lifecycle = before->lifecycle, last_avail = before->owner_available;
+    uint64_t last_dev = before->owner_device_owned, last_quar = before->owner_quarantined;
+    uint64_t last_q = before->current_queue_epoch, last_s = before->current_socket_epoch;
+    uint64_t last_fstage = UINT64_MAX, last_fcause = UINT64_MAX;
     while (now_ms(&now) == 0 && now < deadline) {
         int stable = next_stable_observation(wire, &previous, after, &have_previous);
-        if (stable < 0) return -1;
+        if (stable < 0) {
+            printf("DBG: wait_for_reset iter=%d ABORT lifecycle=%llu q=%llu s=%llu avail=%llu dev=%llu quar=%llu fvalid=%llu fstage=%llu fcause=%llu\n",
+                   iter,
+                   (unsigned long long)after->lifecycle,
+                   (unsigned long long)after->current_queue_epoch,
+                   (unsigned long long)after->current_socket_epoch,
+                   (unsigned long long)after->owner_available,
+                   (unsigned long long)after->owner_device_owned,
+                   (unsigned long long)after->owner_quarantined,
+                   (unsigned long long)wire->fault_valid,
+                   (unsigned long long)wire->fault_stage,
+                   (unsigned long long)wire->fault_cause);
+            return -1;
+        }
         if (stable > 0 && ms07_reset_transition_valid(before, after)) return 0;
+        uint64_t stage = wire->fault_stage, cause = wire->fault_cause;
+        int transition = after->lifecycle != last_lifecycle ||
+            after->current_queue_epoch != last_q ||
+            after->current_socket_epoch != last_s ||
+            after->owner_available != last_avail ||
+            after->owner_device_owned != last_dev ||
+            after->owner_quarantined != last_quar ||
+            stage != last_fstage || cause != last_fcause;
+        if (iter == 0 || transition) {
+            printf("DBG: wait_for_reset iter=%d lifecycle=%llu q=%llu s=%llu link=%s avail=%llu dev=%llu quar=%llu fvalid=%llu fstage=%llu fcause=%llu\n",
+                   iter,
+                   (unsigned long long)after->lifecycle,
+                   (unsigned long long)after->current_queue_epoch,
+                   (unsigned long long)after->current_socket_epoch,
+                   after->current_link_state == MS07_LINK_UP ? "up" : "down",
+                   (unsigned long long)after->owner_available,
+                   (unsigned long long)after->owner_device_owned,
+                   (unsigned long long)after->owner_quarantined,
+                   (unsigned long long)wire->fault_valid,
+                   (unsigned long long)stage,
+                   (unsigned long long)cause);
+        }
+        last_lifecycle = after->lifecycle;
+        last_avail = after->owner_available;
+        last_dev = after->owner_device_owned;
+        last_quar = after->owner_quarantined;
+        last_q = after->current_queue_epoch;
+        last_s = after->current_socket_epoch;
+        last_fstage = stage;
+        last_fcause = cause;
         if (wait_until_sample(deadline) != 0) return -1;
+        ++iter;
     }
     return -1;
 }
@@ -462,23 +601,49 @@ static int peer_exchange(int fd, const char *phase, uint64_t deadline)
     int n = snprintf(payload, sizeof(payload), "phase=%s seq=0", phase);
     ssize_t sent;
     uint64_t now;
-    if (n < 0 || (size_t)n >= sizeof(payload)) return -1;
-    if (wait_fd(fd, POLLOUT, deadline) != 0) {
-        printf("DBG: peer_socket stage=pollout phase=%s errno=%d\n", phase, errno);
+    if (n < 0 || (size_t)n >= sizeof(payload)) {
+        printf("DBG: peer_socket stage=build phase=%s n=%d\n", phase, n);
         return -1;
     }
-    if (now_ms(&now) != 0 || !ms07_io_allowed(now, deadline)) return -1;
-    do sent = send(fd, payload, (size_t)n, MSG_DONTWAIT); while (sent < 0 && errno == EINTR);
-    if (sent != n) {
-        printf("DBG: peer_socket stage=send phase=%s errno=%d sent=%zd want=%d\n",
-               phase, errno, sent, n);
-        return -1;
+    int again, st;
+    uint64_t attempt = 0;
+    for (;;) {
+        if (wait_fd(fd, POLLOUT, deadline) != 0) {
+            printf("DBG: peer_socket stage=pollout phase=%s errno=%d\n", phase, errno);
+            return -1;
+        }
+        /* Re-sample after the wait; a wake at/after the deadline must not be
+         * followed by I/O.  EAGAIN/EWOULDBLOCK re-enters wait_fd under the
+         * SAME deadline (bounded, no sleep or spin); other errno stops. */
+        if (now_ms(&now) != 0 || !ms07_io_allowed(now, deadline)) {
+            printf("DBG: peer_socket stage=send-gate phase=%s now=%llu deadline=%llu errno=%d\n",
+                   phase, (unsigned long long)now, (unsigned long long)deadline, errno);
+            return -1;
+        }
+        printf("DBG: peer_socket stage=issuing-send phase=%s attempt=%llu\n", phase,
+                   (unsigned long long)attempt);
+        sent = send(fd, payload, (size_t)n, MSG_DONTWAIT);
+        printf("DBG: peer_socket stage=send-return phase=%s sent=%zd errno=%d\n",
+               phase, sent, errno);
+        again = 0;
+        st = ms07_send_step(sent, errno, (size_t)n, now, deadline, &again);
+        if (st == 1) break;
+        if (st < 0 || !again) {
+            printf("DBG: peer_socket stage=send phase=%s errno=%d sent=%zd want=%d\n",
+                   phase, errno, sent, n);
+            return -1;
+        }
+        ++attempt;
     }
     if (wait_fd(fd, POLLIN, deadline) != 0) {
         printf("DBG: peer_socket stage=recv-wait phase=%s errno=%d\n", phase, errno);
         return -1;
     }
-    if (now_ms(&now) != 0 || !ms07_io_allowed(now, deadline)) return -1;
+    if (now_ms(&now) != 0 || !ms07_io_allowed(now, deadline)) {
+        printf("DBG: peer_socket stage=recv-gate phase=%s now=%llu deadline=%llu errno=%d\n",
+               phase, (unsigned long long)now, (unsigned long long)deadline, errno);
+        return -1;
+    }
     char reply[sizeof(payload)];
     ssize_t got;
     do got = recv(fd, reply, sizeof(reply), MSG_DONTWAIT); while (got < 0 && errno == EINTR);
@@ -487,15 +652,19 @@ static int peer_exchange(int fd, const char *phase, uint64_t deadline)
                phase, errno, got, n);
         return -1;
     }
-    return memcmp(payload, reply, (size_t)n) == 0 ? 0 : -1;
+    if (memcmp(payload, reply, (size_t)n) != 0) {
+        printf("DBG: peer_socket stage=echo-mismatch phase=%s\n", phase);
+        return -1;
+    }
+    return 0;
 }
 
 static int open_peer_socket(void)
 {
-    /* P3 / R8: create the socket non-blocking directly (the kernel supports
-     * `O_NONBLOCK` in the socket type), then handle the socket() and connect()
+    /* P6 / R8: create the socket non-blocking directly via the socket API
+     * `SOCK_NONBLOCK` flag (no fcntl), then handle the socket() and connect()
      * failures separately so raw serial can name the exact failing stage. */
-    int fd = socket(AF_INET, SOCK_DGRAM | O_NONBLOCK, 0);
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     struct sockaddr_in peer;
     if (fd < 0) {
         printf("DBG: peer_socket stage=socket errno=%d\n", errno);
@@ -542,6 +711,7 @@ static int run_probe(void)
     int old_socket = -1, new_socket = -1, newest_socket = -1;
     uint64_t now, overall_deadline, operator_deadline, deadline;
     printf("MS07_RECOVERY_START\nMS07_ENVIRONMENT: %s\n", MS07_ENVIRONMENT_DEFAULT);
+    if (zero_fd_poll_preflight() != 0) return fail_case("zero_fd_poll_preflight", "poll");
     if (now_ms(&now) != 0 || MS07_OVERALL_DEADLINE_MS > UINT64_MAX - now)
         return fail_case("setup", "clock");
     overall_deadline = now + MS07_OVERALL_DEADLINE_MS;
@@ -570,9 +740,12 @@ static int run_probe(void)
     if (make_deadline(overall_deadline, MS07_PHASE_DEADLINE_MS, &deadline) != 0)
         return fail_case("pre_reset_traffic", "deadline");
     old_socket = open_peer_socket();
-    if (old_socket < 0 || wait_for_pre_reset(&wire, &pre, deadline) != 0 ||
-        peer_exchange(old_socket, "pre_reset_traffic", deadline) != 0)
-        return fail_case("pre_reset_traffic", "precondition");
+    if (old_socket < 0)
+        return fail_case("pre_reset_traffic", "open_peer_socket");
+    if (wait_for_pre_reset(&wire, &pre, deadline) != 0)
+        return fail_case("pre_reset_traffic", "wait_for_pre_reset");
+    if (peer_exchange(old_socket, "pre_reset_traffic", deadline) != 0)
+        return fail_case("pre_reset_traffic", "peer_exchange");
     print_v4("pre_reset_traffic", &wire);
     printf("MS07_PEER: case=pre_reset_traffic result=ok\nPASS: pre_reset_traffic\n");
     printf("MS07_CASE_START: reset_request\n");

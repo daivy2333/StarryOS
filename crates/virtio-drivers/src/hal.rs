@@ -1,4 +1,6 @@
 #[cfg(test)]
+pub(crate) mod dirty;
+#[cfg(test)]
 pub mod fake;
 
 use crate::{Error, Result, PAGE_SIZE};
@@ -32,6 +34,15 @@ impl<H: Hal> Dma<H> {
         let (paddr, vaddr) = H::dma_alloc(pages, direction);
         if paddr == 0 {
             return Err(Error::DmaError);
+        }
+        // Zero the whole owned region before it is exposed to a virtqueue or device, so reused
+        // pages cannot surface stale queue state (for example a used-ring index) as completions.
+        //
+        // SAFETY: `vaddr` points to `pages * PAGE_SIZE` bytes of contiguous memory that was just
+        // exclusively allocated for `Self` and is not yet aliased by any other reference. `paddr
+        // != 0` was checked above, and failure was returned instead of dropping into this block.
+        unsafe {
+            core::ptr::write_bytes(vaddr.as_ptr(), 0, pages * PAGE_SIZE);
         }
         Ok(Self {
             paddr,
@@ -149,4 +160,26 @@ pub enum BufferDirection {
     DeviceToDriver,
     /// The buffer may be read or written by both the device and the driver.
     Both,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hal::dirty::DirtyHal;
+
+    #[test]
+    fn dma_zeroes_the_entire_region_for_every_direction() {
+        for direction in [
+            BufferDirection::DriverToDevice,
+            BufferDirection::DeviceToDriver,
+            BufferDirection::Both,
+        ] {
+            let dma = Dma::<DirtyHal>::new(2, direction).unwrap();
+            let region = unsafe { dma.raw_slice().as_mut() };
+            assert!(
+                region.iter().all(|&byte| byte == 0),
+                "{direction:?}: DMA region was not zeroed over its full extent before exposure"
+            );
+        }
+    }
 }

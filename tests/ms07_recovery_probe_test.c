@@ -96,6 +96,40 @@ int main(void) {
         assert(!ms07_io_allowed(deadline, deadline));
     }
 
+    /* P6 / R8: nonblocking UDP send readiness.  A post-POLLOUT send may
+     * legitimately return EAGAIN/EWOULDBLOCK; that must re-enter the wait
+     * within the SAME absolute deadline instead of failing the phase.  EINTR
+     * retries, any other errno and a short write stop; a full datagram is
+     * success.  `ms07_send_step` is the same decision `peer_exchange` uses,
+     * so these drive the production nonblocking rule under a fake clock. */
+    {
+        uint64_t deadline = 100;
+        int again = 0;
+        /* Full datagram sent: success. */
+        assert(ms07_send_step((ssize_t)4, 0, 4, 90, deadline, &again) == 1);
+        /* EAGAIN within budget: retry allowed (re-enter wait, same deadline). */
+        again = 1;
+        assert(ms07_send_step((ssize_t)-1, EAGAIN, 4, 90, deadline, &again) == 0);
+        assert(again == 1);
+        /* EAGAIN at/after deadline: must not arm a retry that would consume
+         * budget and never pass the deadline. */
+        again = 1;
+        assert(ms07_send_step((ssize_t)-1, EAGAIN, 4, 101, deadline, &again) == 0);
+        assert(again == 0);
+        /* EWOULDBLOCK treated identically to EAGAIN. */
+        again = 1;
+        assert(ms07_send_step((ssize_t)-1, EWOULDBLOCK, 4, 95, deadline, &again) == 0);
+        assert(again == 1);
+        /* EINTR: retry within budget. */
+        again = 1;
+        assert(ms07_send_step((ssize_t)-1, EINTR, 4, 98, deadline, &again) == 0);
+        assert(again == 1);
+        /* Other errno (e.g. ENOTCONN) is terminal, stage/errno kept by caller. */
+        assert(ms07_send_step((ssize_t)-1, ENOTCONN, 4, 90, deadline, &again) == -1);
+        /* Short write is terminal; never auto-resend a partial datagram. */
+        assert(ms07_send_step((ssize_t)2, 0, 4, 90, deadline, &again) == -1);
+    }
+
     /* A5: the link-down conservation baseline.  A link flap does not own or
      * release packet slots, so `available` must be conserved ACROSS the down
      * transition.  The reset snapshot still holds the transient in-flight slot

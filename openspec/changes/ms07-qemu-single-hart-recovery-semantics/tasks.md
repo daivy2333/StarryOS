@@ -163,15 +163,15 @@
 
 - Requirement/Scenario: R8 host matrix、runtime、compatibility。
 - Depends on: 4.1且所有自动产品Gate通过。
-- Targets: 测试与证据工具精简、guest ELF/页故障与socket syscall诊断、全量Gate、用户手工QEMU与validator；没有fault PC或精确errno时不修改UDP或loader产品语义。
-- Current behavior: MS06 frozen runtime全过但不覆盖reset/link；R44禁止agent自动驱动QEMU网络测试。
-- Required behavior: probe先稳定完成startup与分阶段socket/send witness；若nonblocking send返回`EAGAIN/EWOULDBLOCK`，在同一absolute deadline内重新poll并有界重试。随后同一次手工session先证明reset前流量，再触发stall/reset，验证旧socket terminal和新socket双向；HMP off/on分别见证NotConnected与新socket恢复；回归MS01/MS04/MS05/MS06。
-- Preserve: 单hart、MMIO、user-net、LOG=warn、串口与host结果不混淆；历史waiver不提升。
-- Forbidden: 用host/model替代真实MMIO结果；用guest completion声明peer delivery；把fault VA当PC；缺errno先改UDP/loader；无deadline busy retry；缺exit/marker仍判PASS。
-- Test witness: 清理前相关工具self-test为GREEN；清理后source guard确认目标测试路径无revision/run-id pin或hash/source-freeze/time-order实现，自动Gate全部GREEN；用户紧接构建以相同配置运行`make ARCH=riscv64 justrun`和HMP协议。
+- Targets: `kernel/src/syscall/io_mpx/poll.rs`的零`nfds`参数归一化；测试与证据工具精简；guest ELF/页故障与socket syscall诊断；全量Gate、用户手工QEMU与validator。没有fault PC或精确errno时不修改UDP或loader产品语义。
+- Current behavior: probe的可信fault与nonblocking send前置已完成；RISC-V musl `poll(NULL, 0, timeout)`实际发出`ppoll` syscall 73，`sys_ppoll`仍对零长度NULL `fds`调用`get_as_mut_slice(0)`并返回`EFAULT`，使runtime停在`wait_for_pre_reset`。x86_64 `sys_poll`存在同构入口；`do_poll`的空集合timer路径已可用。
+- Required behavior: `nfds==0`时`sys_ppoll`与x86_64 `sys_poll`都忽略`fds`并把安全空slice交给现有`do_poll`；`nfds>0`继续校验用户范围，timeout与signal路径不变。focused witness通过后，probe完成startup与分阶段socket/send，再在同一次手工session证明reset前流量、stall/reset、旧socket terminal、新socket双向、HMP off/on及MS01/MS04/MS05/MS06回归。
+- Preserve: 单hart、MMIO、user-net、LOG=warn、串口与host结果不混淆；现有`do_poll` timer/signal语义、正`nfds`的`EFAULT`、P5/P6实现、历史waiver不提升。
+- Forbidden: 修改通用`UserPtr::get_as_mut_slice`以从NULL构造零长度Rust slice；用nanosleep或probe特判绕过产品缺陷；用host/model替代真实MMIO结果；用guest completion声明peer delivery；缺exit/marker仍判PASS。
+- Test witness: `003-replan` Evidence中`poll(NULL,0,remaining) -> EFAULT(14)`是修改前target RED；新增focused逻辑/source witness覆盖两个syscall入口，并在QEMU验证零timeout、有限timeout、零`nfds`忽略无效指针及正`nfds` NULL仍`EFAULT`。自动Gate全部GREEN后，用户运行`make ARCH=riscv64 justrun`和HMP协议。
 - GREEN condition: validator exit 0，所有case/回归明确PASS，无panic/trap/fatal drift/permanent Pending；old/new epoch与ledger守恒可见。
-- Verification: driver/transport/axnet/smoltcp相关全量、host seams、kernel build、raw QEMU validator；每项输出和exit写Act Response。
-- Stop when: runtime bytes与exact ELF不匹配、页故障根因需要通用loader修复、send返回非`EAGAIN/EWOULDBLOCK`错误且现有契约未覆盖、自动产品Gate失败、QEMU环境不满足单hart/MMIO，或用户未提供手工runtime；不得降级结论。
+- Verification: poll focused witness、driver/transport/axnet/smoltcp相关全量、host seams、kernel build、raw QEMU validator；每项输出和exit写Act Response。
+- Stop when: 空集合无法由现有timer/signal路径有界唤醒、修复必须改变通用用户内存契约、runtime bytes与exact ELF不匹配、出现未覆盖产品错误、自动产品Gate失败、QEMU环境不满足单hart/MMIO，或用户未提供手工runtime；不得降级结论。
 
 ## Iteration Plan
 
@@ -242,9 +242,9 @@
 
 - Tasks: 4.2
 - Depends on: Iteration 006
-- Stable baseline: 精简后的行为型测试协议以已初始化 link snapshot 和真实双向 owner ledger，在单hartQEMU VirtIO-MMIO上证明reset、queue stall、link flap、old/new socket和回归结果。
-- Verification boundary: host/model先证明初始 link commit、`QS` 常驻RX owner与probe/validator契约；自动Gate全绿后，用户手工runtime raw serial由validator判定；环境与产品结论分层。
-- Diagnostic boundary: queue owner首次link读取、VirtIO RX/TX owner分类、guest exact ELF/program headers/fault PC与socket/connect/send/recv errno、nonblocking deadline重试、QEMU命令/环境、runtime marker、raw serial/pcap、MS01/MS04/MS05/MS06回归。
+- Stable baseline: 零`nfds`的poll/ppoll timeout语义不再阻断probe；精简后的行为型测试协议以已初始化link snapshot和真实双向owner ledger，在单hart QEMU VirtIO-MMIO上证明reset、queue stall、link flap、old/new socket和回归结果。
+- Verification boundary: focused syscall witness先证明零`nfds`忽略`fds`且正`nfds`仍校验地址；host/model再证明初始link commit、`QS`常驻RX owner与probe/validator契约；自动Gate全绿后，用户手工runtime raw serial由validator判定。
+- Diagnostic boundary: RISC-V `poll -> ppoll` ABI、用户指针归一化、空集合timer、queue owner首次link读取、VirtIO RX/TX owner分类、guest exact ELF/fault PC与socket errno、QEMU runtime marker、raw serial/pcap及MS01/MS04/MS05/MS06回归。
 - Non-goals: 自动QEMU runner、SMP、PCI/DWMAC/真板、性能。
 
 ## Balance Audit
@@ -268,4 +268,4 @@
 | R5 | reset成功/未确认、NEEDS_RESET、IRQ交错 | D2、D3 | 1.1、1.3、2.3 | 000、003 | `Transport`；`VirtIONetRaw`；`VirtIoNetDev`；queue owner | delayed/never-zero、reinit failure、backing quarantine | None | Covered |
 | R6 | 初始link、link down/up、combined cause | D1、D6 | 1.1、1.3、3.1、4.2 | 000、004、007 | config generation/status；VirtIO ISR；queue owner初始link commit；axnet link state | generation retry；首次snapshot；IRQ cause matrix；QEMU HMP off/on | None | Covered |
 | R7 | 旧socket、新socket、terminal-before-wake | D1、D5、D7 | 3.2 | 005 | `SocketSetWrapper`；TCP/UDP/listener/readiness | epoch closure、late add、multiwaiter、handle reuse、deferred cleanup | None | Covered |
-| R8 | host fault matrix、双向owner语义、QEMU、兼容回归 | D8 | 4.1、4.2 | 006、007 | fake transports；VirtIO owner summary；QEMU ioctl/probe/validator；Makefile gates | owner model + C/Python fixtures；single-hart raw serial；MS01/04/05/06 | None | Covered |
+| R8 | host fault matrix、零nfds poll timeout、双向owner语义、QEMU、兼容回归 | D8 | 4.1、4.2 | 006、007 | fake transports；`io_mpx::poll`；VirtIO owner summary；QEMU ioctl/probe/validator；Makefile gates | poll focused witness；owner model + C/Python fixtures；single-hart raw serial；MS01/04/05/06 | None | Covered |
