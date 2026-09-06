@@ -55,22 +55,149 @@ impl core::ops::BitOrAssign for NetQueueDirection {
     }
 }
 
+/// A checked, monotonic device-reset epoch.
+///
+/// Each confirmed full-device reset advances the epoch. Completions and cookies
+/// are bound to an epoch so stale or duplicate completions from an older
+/// generation can never be attributed to the current one. The counter is
+/// [`QueueEpoch::MAX`]-bounded and fails closed on exhaustion instead of
+/// wrapping.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QueueEpoch(u64);
+
+impl QueueEpoch {
+    /// The minimum epoch, used by drivers that do not participate in recovery.
+    pub const MIN: Self = Self(0);
+    /// The maximum epoch before a driver must treat the counter as exhausted.
+    pub const MAX: Self = Self(u64::MAX);
+
+    /// Returns the raw epoch value.
+    pub const fn current(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the next epoch, or `None` when the counter is exhausted so the
+    /// caller fails closed instead of wrapping.
+    pub const fn advance(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(next) => Some(Self(next)),
+            None => None,
+        }
+    }
+}
+
 /// Opaque identity supplied by the queue owner and returned on TX completion.
 ///
-/// This value identifies an owner-side slot; it is deliberately unrelated to
-/// a transport descriptor, ring index, or device token.
+/// This value identifies an owner-side slot and the device-reset
+/// [`QueueEpoch`] it was submitted under; it is deliberately unrelated to a
+/// transport descriptor, ring index, or device token. The epoch and the
+/// owner-side ticket can be recovered separately so a completion is only
+/// accepted for the current generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TxCookie(u64);
+pub struct TxCookie {
+    epoch: QueueEpoch,
+    ticket: u64,
+}
 
 impl TxCookie {
-    /// Creates a cookie from an owner-side identity.
+    /// Creates a cookie carrying only an owner-side identity in the minimum
+    /// epoch, equivalent to [`TxCookie::with_epoch`] with a default epoch.
     pub const fn new(value: u64) -> Self {
-        Self(value)
+        Self {
+            epoch: QueueEpoch::MIN,
+            ticket: value,
+        }
     }
 
     /// Returns the owner-side identity.
     pub const fn value(self) -> u64 {
-        self.0
+        self.ticket
+    }
+
+    /// Creates a cookie binding an owner-side identity to a device-reset epoch.
+    pub const fn with_epoch(epoch: QueueEpoch, ticket: u64) -> Self {
+        Self { epoch, ticket }
+    }
+
+    /// Returns the device-reset epoch this cookie was submitted under.
+    pub const fn epoch(self) -> QueueEpoch {
+        self.epoch
+    }
+
+    /// Returns the owner-side ticket.
+    pub const fn ticket(self) -> u64 {
+        self.ticket
+    }
+}
+
+/// The stage a full-device recovery flow is currently in.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RecoveryStage {
+    /// The device is healthy and not recovering.
+    #[default]
+    Idle,
+    /// A device reset has been initiated and is being confirmed.
+    Resetting,
+    /// The queues and buffers are being rebuilt after a confirmed reset.
+    Reinitializing,
+    /// Recovery completed; the queue epoch has advanced.
+    Recovered,
+    /// Recovery failed; the driver quarantined its resources and refuses new
+    /// submissions until reset.
+    Faulted,
+}
+
+/// Structured progress of a recovery flow: the current stage and the target
+/// epoch it is moving toward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveryProgress {
+    /// The current recovery stage.
+    pub stage: RecoveryStage,
+    /// The epoch the recovery operates on (the next epoch once recovered).
+    pub epoch: QueueEpoch,
+}
+
+/// A snapshot of which resources the driver owns after a recovery step, used to
+/// prove conservation (nothing leaked, duplicated, or double-reclaimed).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OwnerSummary {
+    /// Resources the driver can hand out right now.
+    pub available: u64,
+    /// Resources owned by the device path (submitted, not yet reclaimed).
+    pub device_owned: u64,
+    /// Resources quarantined by the driver in a fault state.
+    pub quarantined: u64,
+}
+
+/// Transport-neutral, bounded control of a NIC's full-device recovery flow.
+///
+/// Implementations drive a device reset and reinitialization in bounded steps:
+/// each call performs at most one device status write/read or one queue rebuild
+/// unit, and never spins or blocks. Nesting the owner object's epoch ledger is
+/// the responsibility of the higher layers, not this control.
+pub trait NetRecoveryControl {
+    /// Returns the current recovery progress.
+    fn progress(&self) -> RecoveryProgress;
+
+    /// Initiates a recovery from an idle device.
+    fn begin_recovery(&mut self) -> DevResult<RecoveryProgress>;
+
+    /// Advances an in-progress recovery by one bounded step.
+    fn poll_recovery_step(&mut self) -> DevResult<RecoveryProgress>;
+
+    /// Returns the current resource ownership summary.
+    fn owner_summary(&self) -> OwnerSummary;
+
+    /// Reads the device's link state under a config-generation guard, returning
+    /// a consistent snapshot or a retryable error when a device config update
+    /// raced the read.
+    ///
+    /// Exposed through the recovery control so a generic control path holding a
+    /// [`dyn NetRecoveryControl`] can request a transport-neutral link snapshot
+    /// without reaching into a concrete transport or MMIO layout. Drivers that
+    /// cannot observe a link state fail closed instead of fabricating one.
+    fn read_link_status(&mut self) -> DevResult<bool> {
+        Err(DevError::Unsupported)
     }
 }
 
@@ -221,6 +348,14 @@ pub trait NetDriverOps: BaseDriverOps {
 
     /// Returns single-step TX queue operations when supported by the driver.
     fn tx_queue(&mut self) -> Option<&mut dyn NetTxQueue> {
+        None
+    }
+
+    /// Returns this NIC's full-device recovery-control interface, when the
+    /// driver supports an explicit, bounded recovery flow. The default reports
+    /// no recovery control; drivers that cannot recover fail closed instead of
+    /// pretending to support it.
+    fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
         None
     }
 
@@ -451,6 +586,184 @@ mod tests {
         assert!(both.contains(NetQueueDirection::RX));
         assert!(both.contains(NetQueueDirection::TX));
         assert_eq!(TxCookie::new(7).value(), 7);
+    }
+
+    // ── Recovery contract (R1/R2/R4): epoch-scoped cookie, typed stages ──
+
+    #[test]
+    fn default_recovery_accessor_is_none_and_epoch_starts_at_min() {
+        let mut dev = DummyNet;
+        assert!(dev.recovery_control().is_none());
+        assert_eq!(QueueEpoch::default(), QueueEpoch::MIN);
+        assert_eq!(QueueEpoch::MIN.current(), 0);
+    }
+
+    #[test]
+    fn epoch_advances_and_cookie_splits_epoch_and_ticket() {
+        let next = QueueEpoch::MIN.advance().expect("epoch advances");
+        assert_eq!(next.current(), 1);
+
+        let cookie = TxCookie::with_epoch(next, 99);
+        assert_eq!(cookie.epoch(), next);
+        assert_eq!(cookie.ticket(), 99);
+        assert_eq!(cookie.value(), 99);
+
+        // Legacy cookie binds to the minimum epoch but keeps its identity.
+        let legacy = TxCookie::new(7);
+        assert_eq!(legacy.value(), 7);
+        assert_eq!(legacy.epoch(), QueueEpoch::MIN);
+        assert_eq!(legacy.ticket(), 7);
+    }
+
+    #[test]
+    fn epoch_exhaustion_fails_closed_instead_of_wrapping() {
+        assert_eq!(QueueEpoch::MAX.advance(), None);
+    }
+
+    /// A minimal driver-local recovery state machine proving the contract
+    /// drives stages and refuses out-of-sequence steps.
+    struct RecoveryModel {
+        epoch: QueueEpoch,
+        stage: RecoveryStage,
+    }
+
+    impl Default for RecoveryModel {
+        fn default() -> Self {
+            Self {
+                epoch: QueueEpoch::MIN,
+                stage: RecoveryStage::Idle,
+            }
+        }
+    }
+
+    impl NetRecoveryControl for RecoveryModel {
+        fn progress(&self) -> RecoveryProgress {
+            RecoveryProgress {
+                stage: self.stage,
+                epoch: self.epoch,
+            }
+        }
+
+        fn begin_recovery(&mut self) -> DevResult<RecoveryProgress> {
+            if self.stage != RecoveryStage::Idle {
+                return Err(DevError::BadState);
+            }
+            self.stage = RecoveryStage::Resetting;
+            Ok(self.progress())
+        }
+
+        fn poll_recovery_step(&mut self) -> DevResult<RecoveryProgress> {
+            match self.stage {
+                RecoveryStage::Resetting => {
+                    self.stage = RecoveryStage::Reinitializing;
+                    Ok(self.progress())
+                }
+                RecoveryStage::Reinitializing => {
+                    self.stage = RecoveryStage::Recovered;
+                    self.epoch = self.epoch.advance().ok_or(DevError::BadState)?;
+                    Ok(self.progress())
+                }
+                _ => Err(DevError::BadState),
+            }
+        }
+
+        fn owner_summary(&self) -> OwnerSummary {
+            OwnerSummary::default()
+        }
+    }
+
+    struct RecoveringNet {
+        recovery: RecoveryModel,
+    }
+
+    impl BaseDriverOps for RecoveringNet {
+        fn device_name(&self) -> &str {
+            "recovering-net"
+        }
+
+        fn device_type(&self) -> DeviceType {
+            DeviceType::Net
+        }
+    }
+
+    impl NetDriverOps for RecoveringNet {
+        fn mac_address(&self) -> EthernetAddress {
+            EthernetAddress([0; 6])
+        }
+        fn can_transmit(&self) -> bool {
+            false
+        }
+        fn can_receive(&self) -> bool {
+            false
+        }
+        fn rx_queue_size(&self) -> usize {
+            0
+        }
+        fn tx_queue_size(&self) -> usize {
+            0
+        }
+        fn recycle_rx_buffer(&mut self, _rx_buf: NetBufPtr) -> DevResult {
+            Ok(())
+        }
+        fn recycle_tx_buffers(&mut self) -> DevResult {
+            Ok(())
+        }
+        fn transmit(&mut self, _tx_buf: NetBufPtr) -> DevResult {
+            Ok(())
+        }
+        fn receive(&mut self) -> DevResult<NetBufPtr> {
+            Err(DevError::Again)
+        }
+        fn alloc_tx_buffer(&mut self, _size: usize) -> DevResult<NetBufPtr> {
+            Err(DevError::NoMemory)
+        }
+
+        fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
+            Some(&mut self.recovery)
+        }
+    }
+
+    #[test]
+    fn link_accessor_fails_closed_when_driver_cannot_observe() {
+        // R6: a generic control path holding only `dyn NetRecoveryControl` must
+        // be able to request the link snapshot; a driver that exposes recovery
+        // but no link observation fails closed instead of fabricating a state.
+        let mut dev = RecoveringNet {
+            recovery: RecoveryModel::default(),
+        };
+        let control = dev
+            .recovery_control()
+            .expect("recovery control missing");
+        assert!(matches!(
+            control.read_link_status(),
+            Err(DevError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn recovery_accessor_drives_bounded_step_machine() {
+        let mut dev = RecoveringNet {
+            recovery: RecoveryModel::default(),
+        };
+        let control = dev.recovery_control().expect("recovery control missing");
+        assert_eq!(control.progress().stage, RecoveryStage::Idle);
+        assert!(control.begin_recovery().is_ok());
+        assert_eq!(control.progress().stage, RecoveryStage::Resetting);
+
+        // Two bounded steps complete recovery and advance the epoch.
+        assert_eq!(
+            control.poll_recovery_step().unwrap().stage,
+            RecoveryStage::Reinitializing
+        );
+        let done = control.poll_recovery_step().unwrap();
+        assert_eq!(done.stage, RecoveryStage::Recovered);
+        assert_eq!(done.epoch.current(), 1);
+
+        // A recovered/idle device refuses further steps (bounded, no spin).
+        assert!(matches!(
+            control.poll_recovery_step(),
+            Err(DevError::BadState)
+        ));
     }
 
     #[derive(Default)]

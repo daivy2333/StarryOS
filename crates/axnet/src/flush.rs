@@ -21,6 +21,12 @@ use embassy_sync::waitqueue::AtomicWaker;
 use crate::async_rx::ServiceAccess;
 
 /// The synchronously-captured flush target and its sole waiter identity.
+///
+/// The flush is additionally anchored to the data-plane epoch it was created
+/// under (kept on the [`FlushWaiter`]): a reset that advances the epoch while
+/// the flush is pending must fail that flush (its old-epoch packets were
+/// cancelled/aborted), never let it read a false success from the new epoch's
+/// empty ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FlushTicket {
     pub(crate) identity: u64,
@@ -42,17 +48,25 @@ pub(crate) fn error_from_code(code: u64) -> DevError {
 pub(crate) struct FlushWaiter {
     identity: u64,
     target: Option<u64>,
+    epoch: axdriver_net::QueueEpoch,
     waker: AtomicWaker,
     fault: Option<u64>,
+    /// Set under the Service guard by the recovery owner right before the
+    /// epoch advances, when this flush's target was verifiably fully reclaimed
+    /// (so the flush may still succeed) — this prevents the epoch advance from
+    /// turning a settled success into a Lost or vice versa.
+    sealed_done: bool,
 }
 
 impl FlushWaiter {
-    pub(crate) fn new(identity: u64, target: Option<u64>) -> Self {
+    pub(crate) fn new(identity: u64, target: Option<u64>, epoch: axdriver_net::QueueEpoch) -> Self {
         Self {
             identity,
             target,
+            epoch,
             waker: AtomicWaker::new(),
             fault: None,
+            sealed_done: false,
         }
     }
 
@@ -61,8 +75,9 @@ impl FlushWaiter {
         self.waker.register(waker);
     }
 
-    /// Wake sources: a reclaim that may satisfy the target, or any terminal
-    /// submit/reclaim fault. The waker wakes at most once per registration.
+    /// Wake sources: a reclaim that may satisfy the target, any terminal
+    /// submit/reclaim fault, or a recovery cancel/reset that settles the
+    /// outcome. The waker wakes at most once per registration.
     pub(crate) fn wake(&self) {
         self.waker.wake();
     }
@@ -75,6 +90,10 @@ impl FlushWaiter {
         self.target
     }
 
+    pub(crate) fn epoch(&self) -> axdriver_net::QueueEpoch {
+        self.epoch
+    }
+
     pub(crate) fn take_fault_code(&mut self) -> Option<u64> {
         self.fault.take()
     }
@@ -82,6 +101,29 @@ impl FlushWaiter {
     pub(crate) fn set_fault(&mut self, err: &DevError) {
         self.fault = Some(error_code(err));
         self.waker.wake();
+    }
+
+    /// Commits a terminal fault code without waking the waiter (F5): the
+    /// recovery owner uses this inside the Service guard to record the outcome,
+    /// then wakes the waiter only after the guard is released and every
+    /// lifecycle/epoch/ledger result is committed. A flush that is never woken
+    /// after a commit would pend forever, so the caller must pair this with a
+    /// deferred [`Self::wake`] after release.
+    pub(crate) fn commit_fault(&mut self, err: &DevError) {
+        self.fault = Some(error_code(err));
+    }
+
+    /// Seals the flush as a successful reclaim WITHOUT waking the waiter (F5):
+    /// the recovery owner commits the outcome inside the Service guard and
+    /// defers the wake until after the guard is released and the epoch/active
+    /// result is committed, so a woken observer never sees a half-committed
+    /// state.
+    pub(crate) fn commit_sealed_done(&mut self) {
+        self.sealed_done = true;
+    }
+
+    pub(crate) fn is_sealed_done(&self) -> bool {
+        self.sealed_done
     }
 }
 
@@ -174,6 +216,7 @@ mod tests {
     };
 
     use axdriver::prelude::DevError;
+    use axdriver_net::TxCookie;
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
 
     use super::{FlushFuture, flush_new};
@@ -278,8 +321,24 @@ mod tests {
             self.inner.tracker.lock().last_accepted()
         }
 
-        fn tx_flush_done(&self, target: Option<u64>) -> bool {
-            self.inner.tracker.lock().flush_done(target)
+        fn tx_flush_state(&self, target: Option<u64>) -> crate::device::FlushState {
+            self.inner.tracker.lock().flush_state(target)
+        }
+
+        fn queue_epoch(&self) -> axdriver_net::QueueEpoch {
+            self.inner.tracker.lock().current_epoch()
+        }
+
+        fn tx_cancel_queued(&mut self) -> usize {
+            self.inner.tracker.lock().cancel_queued()
+        }
+
+        fn tx_close_device_owned(&mut self) -> usize {
+            self.inner.tracker.lock().close_device_owned()
+        }
+
+        fn tx_advance_epoch(&mut self, next: axdriver_net::QueueEpoch) {
+            self.inner.tracker.lock().advance_epoch(next);
         }
 
         fn slot_ledger(&self) -> crate::device::SlotLedger {
@@ -319,7 +378,12 @@ mod tests {
             let Some(cookie) = self.inner.reclaim_cookies.lock().pop_front() else {
                 return TxReclaimStep::Empty;
             };
-            if self.inner.tracker.lock().release_device_owned(cookie) {
+            if self
+                .inner
+                .tracker
+                .lock()
+                .release_device_owned(TxCookie::new(cookie))
+            {
                 TxReclaimStep::Reclaimed
             } else {
                 TxReclaimStep::Fault(DevError::BadState)
@@ -662,7 +726,7 @@ mod tests {
             let dev = &mut guard.router_for_test().devices[0];
             dev.tx_submit_one();
         }
-        let mut guard = service.lock();
+        let guard = service.lock();
         let ledger = guard.v3_slot_ledger();
         assert_eq!(ledger.live, 2);
         assert_eq!(ledger.queued, 1);
@@ -692,7 +756,7 @@ mod tests {
             drop(fut);
         }
         {
-            let mut guard = service.lock();
+            let guard = service.lock();
             // One busy rejection, one cancel (drop before completion).
             assert_eq!(guard.v3_flush_counters(), [0, 0, 1, 1]);
         }
@@ -710,7 +774,117 @@ mod tests {
                 core::task::Poll::Ready(Ok(()))
             ));
         }
-        let mut guard = service.lock();
+        let guard = service.lock();
         assert_eq!(guard.v3_flush_counters(), [1, 0, 1, 1]);
+    }
+
+    #[test]
+    fn lost_target_fails_flush_stably_without_persisting_fault() {
+        // Task 2.1 / A3: a packet loss within the flush target must fail the
+        // flush stably and never leave it Pending, but must not set the
+        // persistent RW-3 fault so a later generation can succeed.
+        let (service, inner) = leaked_service();
+        let a = inner.tracker.lock().alloc().unwrap();
+        // `b` is the flush target (last_accepted); its allocation establishes
+        // the target ordering, later cancelled via `tx_cancel_queued`.
+        let _b = inner.tracker.lock().alloc().unwrap();
+        {
+            let mut guard = service.lock();
+            let dev = &mut guard.router_for_test().devices[0];
+            inner.queued.lock().push_back(a);
+            assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+            assert_eq!(dev.tx_cancel_queued(), 1); // cancels the still-Queued `b`
+        }
+        let mut fut = flush_new(ServiceAccess::Injected(service)).unwrap();
+        assert!(matches!(
+            poll_once(&mut fut),
+            core::task::Poll::Ready(Err(DevError::BadState))
+        ));
+        // Reclaiming `a` alone cannot satisfy the target because `b` was lost;
+        // a retried flush still fails via the ledger (never Pending forever).
+        inner.reclaim_cookies.lock().push_back(a);
+        {
+            let mut guard = service.lock();
+            let dev = &mut guard.router_for_test().devices[0];
+            assert!(matches!(dev.tx_reclaim_one(), TxReclaimStep::Reclaimed));
+        }
+        let mut fut2 = flush_new(ServiceAccess::Injected(service)).unwrap();
+        assert!(matches!(
+            poll_once(&mut fut2),
+            core::task::Poll::Ready(Err(DevError::BadState))
+        ));
+    }
+
+    #[test]
+    fn pending_old_epoch_flush_after_reset_fails_stably_not_success() {
+        // Finding 1 / A3: a flush still pending when the data plane resets must
+        // return a stable non-success once it observes the reset, and the epoch
+        // advance must never turn the old-epoch waiter's packet loss into a
+        // false success from the new epoch's empty ledger.
+        let (service, inner) = leaked_service();
+        // `a` becomes DeviceOwned; `b` is the last_accepted flush target.
+        let a = inner.tracker.lock().alloc().unwrap();
+        let b = inner.tracker.lock().alloc().unwrap();
+        inner.queued.lock().push_back(a);
+        {
+            let mut guard = service.lock();
+            let dev = &mut guard.router_for_test().devices[0];
+            assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+        }
+        // Register and pend a flush while both `a` (DeviceOwned) and `b`
+        // (Queued) are live under epoch N.
+        let mut fut = flush_new(ServiceAccess::Injected(service)).unwrap();
+        assert!(matches!(poll_once(&mut fut), core::task::Poll::Pending));
+
+        // The reset closes `a` (ResetAborted), cancels `b` (CancelledPreSubmit)
+        // and advances the epoch with no live tickets left.
+        let e1;
+        {
+            let mut guard = service.lock();
+            let dev = &mut guard.router_for_test().devices[0];
+            inner.queued.lock().push_back(b);
+            assert_eq!(dev.tx_close_device_owned(), 1);
+            assert_eq!(dev.tx_cancel_queued(), 1);
+            let cur = guard.router_for_test().queue_epoch(0);
+            e1 = cur.advance().expect("epoch headroom");
+            guard.router_for_test().tx_advance_epoch(0, e1);
+        }
+        // The old-epoch pending flush must NOT become a false success.
+        assert!(
+            matches!(
+                poll_once(&mut fut),
+                core::task::Poll::Ready(Err(DevError::BadState))
+            ),
+            "old-epoch flush must fail stably, not succeed off the new epoch"
+        );
+    }
+
+    #[test]
+    fn lost_flush_does_not_leak_into_new_epoch() {
+        // Task 2.1 / A3 epoch isolation: after a reset advances the epoch, a
+        // fresh flush must not inherit the earlier generation's loss.
+        let (service, inner) = leaked_service();
+        let a = inner.tracker.lock().alloc().unwrap();
+        // `_b` is also the last_accepted target before the reset; its allocation
+        // establishes the loss-free fresh-generation flush target.
+        let _b = inner.tracker.lock().alloc().unwrap();
+        let e1;
+        {
+            let mut guard = service.lock();
+            let dev = &mut guard.router_for_test().devices[0];
+            inner.queued.lock().push_back(a);
+            assert!(matches!(dev.tx_submit_one(), TxSubmitStep::Submitted));
+            assert_eq!(dev.tx_close_device_owned(), 1); // closes DeviceOwned `a`
+            assert_eq!(dev.tx_cancel_queued(), 1); // cancels Queued `b`
+            let cur = guard.router_for_test().queue_epoch(0);
+            e1 = cur.advance().expect("epoch headroom");
+            guard.router_for_test().tx_advance_epoch(0, e1);
+            assert_eq!(guard.router_for_test().queue_epoch(0), e1);
+        }
+        let mut fut = flush_new(ServiceAccess::Injected(service)).unwrap();
+        assert!(matches!(
+            poll_once(&mut fut),
+            core::task::Poll::Ready(Ok(()))
+        ));
     }
 }

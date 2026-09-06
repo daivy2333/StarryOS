@@ -91,6 +91,9 @@ pub enum Error {
     ConfigSpaceTooSmall,
     /// The device doesn't have any config space, but the driver expects some.
     ConfigSpaceMissing,
+    /// The config space changed during a generation-guarded read; the caller
+    /// should re-read.
+    Retry,
     /// Error from the socket device.
     SocketDeviceError(device::socket::SocketError),
 }
@@ -126,6 +129,7 @@ impl Display for Error {
                     "The device doesn't have any config space, but the driver expects some"
                 )
             }
+            Self::Retry => write!(f, "Config space changed during read, retry"),
             Self::SocketDeviceError(e) => write!(f, "Error from the socket device: {e:?}"),
         }
     }

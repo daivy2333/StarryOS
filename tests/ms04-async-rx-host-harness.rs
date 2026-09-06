@@ -300,6 +300,13 @@ mod virtio_irq_guard {
             .find("publish_queue_event")
             .or_else(|| handler.find("publish_rx_event"))
             .ok_or("handler does not publish used-ring queue events")?;
+        // Task 3.1 / R6: the config-change bit has its own independent
+        // publication seam. Requiring the config publisher keeps a config-only
+        // (or combined) cause from being silently swallowed by the used-ring
+        // gate.
+        let config_publish_pos = handler
+            .find("publish_config_event")
+            .ok_or("handler does not publish config-change queue events (Task 3.1)")?;
         let restore_pos = handler
             .find("restore_violation")
             .ok_or("handler does not observe restore violations")?;
@@ -309,11 +316,13 @@ mod virtio_irq_guard {
 
         if !(record_pos < ack_pos
             && ack_pos < publish_pos
-            && publish_pos < enabled_entry_pos
+            && publish_pos < config_publish_pos
+            && config_publish_pos < enabled_entry_pos
             && enabled_entry_pos < restore_pos)
         {
             return Err(
-                "handler order must be record -> ACK -> publish -> entry/restore checks".into(),
+                "handler order must be record -> ACK -> used -> config -> entry/restore checks"
+                    .into(),
             );
         }
 

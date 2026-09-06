@@ -3,9 +3,15 @@ use zerocopy::AsBytes;
 
 use super::{
     Config, EthernetAddress, Features, MIN_BUFFER_LEN, NET_HDR_SIZE, QUEUE_RECEIVE, QUEUE_TRANSMIT,
-    SUPPORTED_FEATURES, VirtioNetHdr,
+    SUPPORTED_FEATURES, Status, VirtioNetHdr,
 };
-use crate::{Error, Result, hal::Hal, queue::VirtQueue, transport::Transport, volatile::volread};
+use crate::{
+    Error, Result,
+    hal::Hal,
+    queue::VirtQueue,
+    transport::{DeviceStatus, Transport},
+    volatile::volread,
+};
 
 /// Raw driver for a VirtIO network device.
 ///
@@ -20,6 +26,13 @@ pub struct VirtIONetRaw<H: Hal, T: Transport, const QUEUE_SIZE: usize> {
     mac: EthernetAddress,
     recv_queue: VirtQueue<H, QUEUE_SIZE>,
     send_queue: VirtQueue<H, QUEUE_SIZE>,
+    /// A partially-built replacement queue retained after a failed recovery
+    /// prepare. Its DMA address has already been handed to the transport by
+    /// `queue_set`, so it must stay alive (never dropped as a local) until the
+    /// device has confirmed it stopped or the raw device is dropped; otherwise
+    /// the transport would reference freed memory. When the peer queue also
+    /// builds, this is cleared and the pair is committed.
+    pending_send: Option<VirtQueue<H, QUEUE_SIZE>>,
 }
 
 impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZE> {
@@ -59,12 +72,112 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
             mac,
             recv_queue,
             send_queue,
+            pending_send: None,
         })
     }
 
     /// Acknowledge interrupt.
     pub fn ack_interrupt(&mut self) -> bool {
         self.transport.ack_interrupt()
+    }
+
+    /// Initiates a full device reset by writing the empty device status.
+    pub fn begin_reset(&mut self) {
+        self.transport.begin_reset();
+    }
+
+    /// Reports whether the device has confirmed it stopped accessing its
+    /// queues after a [`Self::begin_reset`].
+    pub fn reset_confirmed(&self) -> bool {
+        self.transport.reset_confirmed()
+    }
+
+    /// Reads back the device status register.
+    ///
+    /// Exposed so a control path (e.g. an adapter test or a recovery owner) can
+    /// observe whether `DRIVER_OK` has been published, without reaching into the
+    /// transport's private status type.
+    pub fn device_status(&self) -> DeviceStatus {
+        self.transport.get_status()
+    }
+
+    /// Rebuilds the device queues after a *confirmed* device reset, without yet
+    /// publishing `DRIVER_OK`.
+    ///
+    /// Re-runs the VirtIO initialization sequence (feature negotiation and queue
+    /// creation) against the same transport and replaces the old queues, which
+    /// frees their DMA backing. Re-run only after [`Transport::reset_confirmed`]
+    /// (the confirmation boundary is enforced inside this primitive).
+    ///
+    /// This is the *prepare* phase of a transactional recovery: it installs the
+    /// replacement queues so RX/TX packet backing can be filled against them, but
+    /// does **not** set `DEVICE_OK`/`DRIVER_OK`. [`Self::commit_driver_ok`] must
+    /// be called only after the caller has fully refilled every slot, so a partial
+    /// rebuild or partial refill never leaves an armed device DMAing into a
+    /// partially populated queue.
+    ///
+    /// If the transmit queue builds but the receive queue fails, the built
+    /// transmit queue is retained in [`Self::pending_send`] (never dropped as a
+    /// local) until it can be committed or the device confirms it stopped again,
+    /// so the transport never references freed DMA.
+    pub fn reinit_prepare(&mut self) -> Result<()> {
+        if !self.transport.reset_confirmed() {
+            return Err(Error::NotReady);
+        }
+        let negotiated = self.transport.begin_init(SUPPORTED_FEATURES);
+        // Build the transmit queue first and retain it on a partial failure:
+        // its DMA address is already registered with the transport.
+        let new_send = VirtQueue::new(
+            &mut self.transport,
+            QUEUE_TRANSMIT,
+            negotiated.contains(Features::RING_INDIRECT_DESC),
+            negotiated.contains(Features::RING_EVENT_IDX),
+        );
+        let new_send = match new_send {
+            Ok(q) => q,
+            Err(e) => return Err(e),
+        };
+        let new_recv = match VirtQueue::new(
+            &mut self.transport,
+            QUEUE_RECEIVE,
+            negotiated.contains(Features::RING_INDIRECT_DESC),
+            negotiated.contains(Features::RING_EVENT_IDX),
+        ) {
+            Ok(q) => q,
+            Err(e) => {
+                // Retain the built transmit queue so its registered DMA address
+                // stays alive (no free-while-registered). It is released when the
+                // device confirms it stopped or when this raw is dropped.
+                self.pending_send = Some(new_send);
+                return Err(e);
+            }
+        };
+        // Both queues built: replace the old (confirmed-stopped) queues. The old
+        // backing is freed now that the device is confirmed not to access them.
+        self.send_queue = new_send;
+        self.recv_queue = new_recv;
+        Ok(())
+    }
+
+    /// Commits a prepared [`Self::reinit_prepare`] by publishing `DRIVER_OK`.
+    ///
+    /// Call only after every RX/TX slot has been refilled against the replacement
+    /// queues; never before the replacement queue is armed to be trampling-free.
+    pub fn commit_driver_ok(&mut self) -> Result<()> {
+        self.transport.finish_init();
+        Ok(())
+    }
+
+    /// Reads the device's net configuration `status` (link state) under a
+    /// config-generation guard, returning a consistent snapshot or
+    /// [`Error::Retry`] when a device config update raced the read.
+    pub fn read_link_status(&mut self) -> Result<bool> {
+        self.transport.read_config_snapshot(|transport| {
+            let config = transport.config_space::<Config>()?;
+            // SAFETY: `config` points to the valid VirtIO MMIO config space for
+            // the duration of the read; the volatile read observes device state.
+            Ok(unsafe { volread!(config, status).contains(Status::LINK_UP) })
+        })
     }
 
     /// Disable interrupts.
@@ -314,5 +427,323 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> Drop for VirtIONetRaw<H, T, 
         // after they have been freed.
         self.transport.queue_unset(QUEUE_RECEIVE);
         self.transport.queue_unset(QUEUE_TRANSMIT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::alloc::{alloc_zeroed, dealloc};
+    use core::{
+        alloc::Layout,
+        any::TypeId,
+        cell::{Cell, RefCell},
+        ptr::NonNull,
+    };
+
+    use super::*;
+    use crate::{
+        BufferDirection, Hal, PAGE_SIZE, PhysAddr,
+        transport::{DeviceStatus, DeviceType, Transport},
+        volatile::ReadOnly,
+    };
+
+    // Per-test-thread DMA accounting. A Rust test runs on its own thread, so
+    // `thread_local!` gives each test isolated allocation/deallocation counts
+    // instead of the shared global statics that previously made parallel runs
+    // nondeterministic. The set `LIVE_ADDRS` records which allocations are still
+    // alive so a witness can check that a transport-registered queue address
+    // still points at a live allocation (address-aware, not just a count).
+    thread_local! {
+        static DMA_ALLOCS: Cell<usize> = const { Cell::new(0) };
+        static DMA_DEALLOCS: Cell<usize> = const { Cell::new(0) };
+        static LIVE_ADDRS: RefCell<alloc::collections::BTreeSet<PhysAddr>> =
+            const { RefCell::new(alloc::collections::BTreeSet::new()) };
+    }
+
+    /// Bumps and returns the allocating Hal's live DMA count for the current
+    /// test thread.
+    fn dma_alive_count() -> usize {
+        DMA_ALLOCS.get() - DMA_DEALLOCS.get()
+    }
+
+    /// A Hal that counts DMA allocations and deallocations so tests can prove
+    /// queue backing is conserved across a reinit.
+    #[derive(Debug)]
+    struct CountingHal;
+
+    unsafe impl Hal for CountingHal {
+        fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
+            DMA_ALLOCS.set(DMA_ALLOCS.get() + 1);
+            let layout = Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE).unwrap();
+            let ptr = unsafe { alloc_zeroed(layout) };
+            let paddr = ptr as PhysAddr;
+            LIVE_ADDRS.with(|s| {
+                s.borrow_mut().insert(paddr);
+            });
+            (paddr, NonNull::new(ptr).unwrap())
+        }
+
+        unsafe fn dma_dealloc(paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
+            DMA_DEALLOCS.set(DMA_DEALLOCS.get() + 1);
+            LIVE_ADDRS.with(|s| {
+                s.borrow_mut().remove(&paddr);
+            });
+            let layout = Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE).unwrap();
+            unsafe { dealloc(vaddr.as_ptr(), layout) }
+            0
+        }
+
+        unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
+            NonNull::new(paddr as *mut u8).unwrap()
+        }
+
+        unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
+            buffer.as_ptr() as *const u8 as PhysAddr
+        }
+
+        unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {}
+    }
+
+    /// A transport that models a real MMIO device: writing empty status resets
+    /// the device, which clears its queue registers (so a later `VirtQueue::new`
+    /// sees the queue as unused); `defer_reset` holds the reset pending.
+    #[derive(Debug)]
+    struct RecoveryTransport {
+        config: Config,
+        status: DeviceStatus,
+        queue_addr: [Option<(PhysAddr, PhysAddr, PhysAddr)>; 2],
+        gen: u8,
+        defer_reset: bool,
+        fail_recv_reinit: bool,
+    }
+
+    impl Transport for RecoveryTransport {
+        fn device_type(&self) -> DeviceType {
+            DeviceType::Network
+        }
+        fn read_device_features(&mut self) -> u64 {
+            0
+        }
+        fn write_driver_features(&mut self, _driver_features: u64) {}
+        fn max_queue_size(&mut self, _queue: u16) -> u32 {
+            4
+        }
+        fn notify(&mut self, _queue: u16) {}
+        fn get_status(&self) -> DeviceStatus {
+            self.status
+        }
+        fn set_status(&mut self, status: DeviceStatus) {
+            if status.is_empty() {
+                if self.defer_reset {
+                    return;
+                }
+                self.status = status;
+                self.queue_addr = [None, None];
+                return;
+            }
+            self.status = status;
+        }
+        fn set_guest_page_size(&mut self, _guest_page_size: u32) {}
+        fn requires_legacy_layout(&self) -> bool {
+            false
+        }
+        fn queue_set(
+            &mut self,
+            queue: u16,
+            _size: u32,
+            descriptors: PhysAddr,
+            driver_area: PhysAddr,
+            device_area: PhysAddr,
+        ) {
+            self.queue_addr[queue as usize] = Some((descriptors, driver_area, device_area));
+        }
+        fn queue_unset(&mut self, queue: u16) {
+            self.queue_addr[queue as usize] = None;
+        }
+        fn queue_used(&mut self, queue: u16) -> bool {
+            self.queue_addr[queue as usize].is_some() || (self.fail_recv_reinit && queue == 0)
+        }
+        fn ack_interrupt(&mut self) -> bool {
+            false
+        }
+        fn config_space<T: 'static>(&self) -> Result<NonNull<T>> {
+            if TypeId::of::<T>() == TypeId::of::<Config>() {
+                Ok(NonNull::from(&self.config).cast())
+            } else {
+                Err(Error::ConfigSpaceMissing)
+            }
+        }
+        fn config_generation(&self) -> Option<u8> {
+            Some(self.gen)
+        }
+    }
+
+    fn recovery_transport(status: Status) -> RecoveryTransport {
+        RecoveryTransport {
+            config: Config {
+                mac: ReadOnly::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]),
+                status: ReadOnly::new(status),
+                max_virtqueue_pairs: ReadOnly::new(0),
+                mtu: ReadOnly::new(1500),
+            },
+            status: DeviceStatus::empty(),
+            queue_addr: [None, None],
+            gen: 0,
+            defer_reset: false,
+            fail_recv_reinit: false,
+        }
+    }
+
+    #[test]
+    fn reinit_rebuilds_queues_without_leaking_dma_backing() {
+        DMA_ALLOCS.set(0);
+        DMA_DEALLOCS.set(0);
+        LIVE_ADDRS.with(|s| s.borrow_mut().clear());
+
+        let mut dev: VirtIONetRaw<CountingHal, RecoveryTransport, 4> =
+            VirtIONetRaw::new(recovery_transport(Status::empty())).unwrap();
+        let alive_after_new = dma_alive_count();
+        assert!(alive_after_new > 0, "queues allocate DMA backing");
+
+        // Driver initiates reset; device confirms it stopped (clearing queues).
+        dev.begin_reset();
+        assert!(dev.reset_confirmed(), "reset acknowledged");
+
+        dev.reinit_prepare().unwrap();
+        dev.commit_driver_ok().unwrap();
+
+        let alive_after_reinit = dma_alive_count();
+        assert_eq!(
+            alive_after_reinit, alive_after_new,
+            "no DMA backing leaked or duplicated across reinit"
+        );
+        assert!(DMA_DEALLOCS.get() > 0, "old queues were freed");
+        assert!(dev.can_send(), "rebuilt send queue is usable");
+    }
+
+    #[test]
+    fn deferred_unconfirmed_reset_forbids_reinit() {
+        // Contract: reinit (which frees old backing) must not run while the
+        // device has not confirmed it stopped. A transport whose reset is held
+        // pending by `defer_reset` reports a non-empty status even after a
+        // reset write, so `reset_confirmed` stays false and `reinit` must
+        // refuse without touching DMA backing.
+        let mut transport = recovery_transport(Status::empty());
+        transport.defer_reset = true;
+        DMA_ALLOCS.set(0);
+        DMA_DEALLOCS.set(0);
+        LIVE_ADDRS.with(|s| s.borrow_mut().clear());
+        let mut dev: VirtIONetRaw<CountingHal, RecoveryTransport, 4> =
+            VirtIONetRaw::new(transport).unwrap();
+        let alive_after_new = dma_alive_count();
+        dev.begin_reset();
+        assert!(
+            !dev.reset_confirmed(),
+            "a pending reset must not allow freeing old backing"
+        );
+        assert!(
+            dev.reinit_prepare().is_err(),
+            "reinit must refuse while the reset is unconfirmed"
+        );
+        assert_eq!(
+            dma_alive_count(),
+            alive_after_new,
+            "a refused reinit must not allocate or free any DMA backing"
+        );
+    }
+
+    #[test]
+    fn link_status_reads_consistent_net_config_status() {
+        let mut link_up: VirtIONetRaw<CountingHal, RecoveryTransport, 4> =
+            VirtIONetRaw::new(recovery_transport(Status::LINK_UP)).unwrap();
+        assert!(link_up.read_link_status().unwrap(), "link up is reported");
+
+        let mut link_down: VirtIONetRaw<CountingHal, RecoveryTransport, 4> =
+            VirtIONetRaw::new(recovery_transport(Status::empty())).unwrap();
+        assert!(
+            !link_down.read_link_status().unwrap(),
+            "link down is not reported"
+        );
+    }
+
+    /// `reinit_prepare` must not publish `DRIVER_OK`: the adapter refills every
+    /// slot against the replacement queues only after prepare, and commit is the
+    /// single point that arms the device.
+    #[test]
+    fn reinit_prepare_does_not_publish_driver_ok_until_commit() {
+        let mut dev: VirtIONetRaw<CountingHal, RecoveryTransport, 4> =
+            VirtIONetRaw::new(recovery_transport(Status::empty())).unwrap();
+        dev.begin_reset();
+        assert!(dev.reset_confirmed(), "reset acknowledged");
+
+        dev.reinit_prepare().unwrap();
+        let after_prepare = dev.transport.get_status();
+        assert!(
+            !after_prepare.contains(DeviceStatus::DRIVER_OK),
+            "prepare must not arm the device (status {:?})",
+            after_prepare
+        );
+
+        dev.commit_driver_ok().unwrap();
+        let after_commit = dev.transport.get_status();
+        assert!(
+            after_commit.contains(DeviceStatus::DRIVER_OK),
+            "commit publishes DRIVER_OK (status {:?})",
+            after_commit
+        );
+    }
+
+    /// A partial queue construction (send builds, receive fails) must retain the
+    /// built send queue's DMA backing under a live owner: the registered address
+    /// must never be freed while the transport still references it. The witness
+    /// is address-aware: it checks the queue address the transport registered
+    /// against the set of allocations that are still alive, rather than only
+    /// comparing an aggregate count (which a concurrent test could perturb).
+    #[test]
+    fn partial_reinit_retains_send_backing_and_does_not_driver_ok() {
+        DMA_ALLOCS.set(0);
+        DMA_DEALLOCS.set(0);
+        LIVE_ADDRS.with(|s| s.borrow_mut().clear());
+        let transport = recovery_transport(Status::empty());
+        let mut dev: VirtIONetRaw<CountingHal, RecoveryTransport, 4> =
+            VirtIONetRaw::new(transport).unwrap();
+        // Enable the receive-rebuild failure only after a successful initial
+        // bring-up, so it exercises the recovery prepare path, not `new`.
+        dev.transport.fail_recv_reinit = true;
+
+        dev.begin_reset();
+        assert!(dev.reset_confirmed(), "reset acknowledged");
+
+        // The receive rebuild fails, but the successfully-built send queue must
+        // be retained (not dropped as a local) so its DMA survives.
+        assert!(dev.reinit_prepare().is_err());
+        assert!(
+            dev.pending_send.is_some(),
+            "partial send queue must be retained while the transport references it"
+        );
+        assert!(
+            !dev.transport.get_status().contains(DeviceStatus::DRIVER_OK),
+            "no DRIVER_OK after a failed partial rebuild"
+        );
+        // Address-aware: the send-queue descriptor address the transport
+        // registered during the partial prepare must still point at a live
+        // allocation (never freed while the transport references it).
+        let registered_send_addr = dev.transport.queue_addr[1]
+            .map(|(descriptors, ..)| descriptors)
+            .expect("send queue registered during the partial prepare");
+        assert!(
+            LIVE_ADDRS.with(|s| s.borrow().contains(&registered_send_addr)),
+            "the transport-registered send address must still be live (address {:x})",
+            registered_send_addr
+        );
+
+        drop(dev);
+        // Dropping the raw frees every allocation, including the retained partial
+        // queue; nothing leaks.
+        assert_eq!(
+            dma_alive_count(),
+            0,
+            "no DMA backing leaked after the raw is dropped"
+        );
     }
 }

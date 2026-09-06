@@ -23,6 +23,25 @@ fn now() -> Instant {
 
 pub(crate) const STACK_STAGE_BUDGET: usize = 32;
 
+/// Outcome of one bounded link-snapshot policy step (Task 3.1 / R6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkStep {
+    /// No config cause was pending, or the link value did not change.
+    NoEvent,
+    /// A link-down transition closed the SocketEpoch seam and gated the queue.
+    Down,
+    /// A link-up transition opened a new SocketEpoch entry and ungated the
+    /// queue (without clearing a still-active recovery/fault hold).
+    Up,
+    /// A config-generation race; the owner retains the cause and retries on a
+    /// later poll.
+    Again,
+    /// The target driver exposes no link control.
+    Unsupported,
+    /// A non-transient link read error (cause consumed; no gate change).
+    Fault,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StageStep {
     Idle,
@@ -71,6 +90,9 @@ pub(crate) struct StackRoundOutcome {
     /// stage of this round (`readiness::TERMINAL_NONE` = none). The error
     /// identity must reach the public fault publisher uncollapsed.
     pub(crate) fault_code: u64,
+    /// SocketEpoch observed in the same Service critical section that
+    /// produced `fault_code`. A quiet round carries no terminal target.
+    pub(crate) fault_epoch: Option<u64>,
     pub(crate) protocol_deadline: Option<Instant>,
     pub(crate) requires_polling: bool,
     /// Task 2.6 replan: deferred-close entries examined this round (≤
@@ -129,6 +151,8 @@ impl CloseKind {
 struct DeferredRemoval {
     handle: SocketHandle,
     kind: CloseKind,
+    /// SocketEpoch captured when the public owner was dropped.
+    epoch: u64,
 }
 
 /// Observable result of one bounded deferred-retirement stage.
@@ -199,6 +223,9 @@ pub struct Service {
     /// global. `new()` points this at the global table.
     #[cfg(test)]
     listen_table: &'static crate::listen_table::ListenTable,
+    /// Registry paired with this Service's SocketEpoch seam. Production uses
+    /// the singleton; tests may attach an isolated fixture registry.
+    socket_registry: Option<&'static crate::wrapper::SocketSetWrapper<'static>>,
     /// Raw TCP handles whose close commit still needs peer ACK; the runner
     /// reaps each exactly once when its smoltcp state proves confirmation.
     deferred_removals: alloc::vec::Vec<DeferredRemoval>,
@@ -216,6 +243,22 @@ pub struct Service {
     /// completed (or the Service was created), so the next round may start a
     /// fresh sweep even without protocol progress.
     deferred_dirty: bool,
+    /// Task 3.1: last consistent link snapshot (`None` = never read yet). A
+    /// value change advances `link_generation` and closes/opens `socket_epoch`.
+    link_state: Option<bool>,
+    /// Task 3.1: monotonic checked link-generation counter; advances exactly
+    /// once per link-state transition (A3).
+    link_generation: u64,
+    /// Task 3.1 / D1: monotonic checked SocketEpoch seam. A link-down closes
+    /// the current epoch (old sockets terminate); a link-up opens a new epoch
+    /// (new sockets usable). Iteration 005 binds public handles to this.
+    socket_epoch: u64,
+    /// Task 3.1: persisted checked-epoch overflow marker. Once set, seam
+    /// advances stop (fail-stop) instead of wrapping an identity.
+    link_seam_fault: bool,
+    /// Epoch whose terminal was committed quietly during the current
+    /// Service-guarded link step; the owner wakes it after dropping the guard.
+    socket_epoch_wake: Option<u64>,
 }
 impl Service {
     pub fn new(mut router: Router, target_dev: Option<usize>) -> Self {
@@ -243,10 +286,25 @@ impl Service {
             diag_test_clock: None,
             #[cfg(test)]
             listen_table: &*crate::LISTEN_TABLE,
+            socket_registry: {
+                #[cfg(test)]
+                {
+                    None
+                }
+                #[cfg(not(test))]
+                {
+                    Some(&*crate::SOCKET_SET)
+                }
+            },
             deferred_removals: alloc::vec::Vec::new(),
             deferred_cursor: 0,
             deferred_remaining: 0,
             deferred_dirty: false,
+            link_state: None,
+            link_generation: 0,
+            socket_epoch: 0,
+            link_seam_fault: false,
+            socket_epoch_wake: None,
         }
     }
 
@@ -273,6 +331,16 @@ impl Service {
         service
     }
 
+    /// Test-only pairing for an isolated SocketSet/ListenTable fixture.
+    #[cfg(test)]
+    pub(crate) fn set_socket_registry(
+        &mut self,
+        registry: &'static crate::wrapper::SocketSetWrapper<'static>,
+    ) {
+        self.socket_registry = Some(registry);
+        self.socket_epoch = registry.current_socket_epoch();
+    }
+
     /// Task 5.2 (Iteration 006): attaches a per-test fixture clock so this
     /// Service's lease deadline reads the fixture's time instead of the
     /// process-global `diag::diag_now()`. Test-only; production never sets it.
@@ -291,9 +359,24 @@ impl Service {
     /// the runner's `SERVICE -> SOCKET_SET` order. Duplicate requests are
     /// collapsed to one entry.
     pub(crate) fn queue_deferred_removal(&mut self, handle: SocketHandle, kind: CloseKind) {
+        let epoch = self.socket_epoch;
+        self.queue_deferred_removal_for_epoch(handle, kind, epoch);
+    }
+
+    /// Enqueues a deferred removal with the epoch captured by its public
+    /// owner. The current Service epoch may already have advanced by Drop.
+    pub(crate) fn queue_deferred_removal_for_epoch(
+        &mut self,
+        handle: SocketHandle,
+        kind: CloseKind,
+        epoch: u64,
+    ) {
         if !self.deferred_removals.iter().any(|d| d.handle == handle) {
-            self.deferred_removals
-                .push(DeferredRemoval { handle, kind });
+            self.deferred_removals.push(DeferredRemoval {
+                handle,
+                kind,
+                epoch,
+            });
             // A fresh entry is a reason to start a new sweep even if the
             // previous sweep completed without any protocol progress.
             self.deferred_dirty = true;
@@ -396,8 +479,8 @@ impl Service {
                     self.deferred_removals.swap_remove(idx);
                     reclaimed += 1;
                     info!(
-                        "deferred reap: socket {} ({:?}) reclaimed",
-                        entry.handle, entry.kind
+                        "deferred reap: socket {} ({:?}, epoch {}) reclaimed",
+                        entry.handle, entry.kind, entry.epoch
                     );
                 }
                 DeferredVerdict::Drop => {
@@ -542,6 +625,8 @@ impl Service {
             Some(err) => crate::readiness::dev_error_code(err),
             None => dispatch.fault_code,
         };
+        let fault_epoch =
+            (fault_code != crate::readiness::TERMINAL_NONE).then_some(self.socket_epoch);
         StackRoundOutcome {
             work: router_rx.processed + ingress.processed + egress.processed + dispatch.processed,
             backlog: router_rx.backlog
@@ -554,6 +639,7 @@ impl Service {
             rx_space_woken,
             tx_enqueued,
             fault_code,
+            fault_epoch,
             protocol_deadline,
             requires_polling,
             deferred_checked: deferred.checked,
@@ -646,6 +732,347 @@ impl Service {
         self.router.tx_reclaim_one(dev)
     }
 
+    /// Target's current device-reset epoch (Task 2.1 recovery owner).
+    pub(crate) fn queue_epoch_target(&self) -> axdriver_net::QueueEpoch {
+        match self.target_dev {
+            Some(dev) => self.router.queue_epoch(dev),
+            None => axdriver_net::QueueEpoch::MIN,
+        }
+    }
+
+    /// Cancels every current-epoch `Queued` ticket on the target, returning
+    /// the count (Task 2.1). Called by the queue task under the Service guard
+    /// at the recovery linearization point.
+    pub(crate) fn tx_cancel_queued_target(&mut self) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_cancel_queued(dev),
+            None => 0,
+        }
+    }
+
+    /// Drops every pre-submit packet waiting in the ARP/neighbor pending
+    /// storage on the target, returning the count (Task 2.2, F3). Linearized
+    /// with `tx_cancel_queued_target` under the Service guard so no pending
+    /// pre-submit packet survives into a new epoch and is auto-sent after
+    /// recovery.
+    pub(crate) fn tx_cancel_pending_target(&mut self) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_cancel_pending(dev),
+            None => 0,
+        }
+    }
+
+    /// Closes every remaining `DeviceOwned` ticket on the target as
+    /// `ResetAborted` after a confirmed reset, returning the count (Task 2.1).
+    pub(crate) fn tx_close_device_owned_target(&mut self) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_close_device_owned(dev),
+            None => 0,
+        }
+    }
+
+    /// Resident-fault closure of every `DeviceOwned` ticket on the target
+    /// device with the committed bounded stage identity (Task 2.1 / F4).
+    /// Backing stays quarantined.
+    pub(crate) fn tx_fault_device_owned_target(
+        &mut self,
+        stage: crate::device::TicketFaultStage,
+    ) -> usize {
+        match self.target_dev {
+            Some(dev) => self.router.tx_fault_device_owned(dev, stage),
+            None => 0,
+        }
+    }
+
+    /// Advances the target's software ticket epoch after a confirmed reset
+    /// (Task 2.1). Callers must hold the guard.
+    pub(crate) fn tx_advance_epoch_target(&mut self, next: axdriver_net::QueueEpoch) {
+        if let Some(dev) = self.target_dev {
+            self.router.tx_advance_epoch(dev, next);
+        }
+    }
+
+    /// Sets or clears the recovery I/O gate on the target (Task 2.2): while
+    /// held, the device's TX enqueue path rejects new sends, so no new Queued
+    /// ticket enters a data plane being reset. Callers must hold the guard.
+    pub(crate) fn tx_set_recovery_hold_target(&mut self, held: bool) {
+        if let Some(dev) = self.target_dev {
+            self.router.tx_set_recovery_hold(dev, held);
+        }
+    }
+
+    /// Number of DeviceOwned tickets still outstanding on the target (Task
+    /// 2.2 quiesce drain). Callers must hold the guard.
+    pub(crate) fn device_owned_len_target(&self) -> u64 {
+        match self.target_dev {
+            Some(dev) => self.router.tx_device_owned_len(dev),
+            None => 0,
+        }
+    }
+
+    /// Whether the target device exposes a transport-neutral recovery control
+    /// that the queue owner can drive. Devices without one must fail closed:
+    /// the owner cannot pretend to recover them.
+    pub(crate) fn target_can_recover(&mut self) -> bool {
+        let Some(dev) = self.target_dev else {
+            return false;
+        };
+        self.router.recovery_control(dev).is_some()
+    }
+
+    /// Initiates the target's recovery: cancels every current-epoch `Queued`
+    /// ticket, then starts the driver's bounded recovery flow. Callers must
+    /// hold the guard. The returned epoch is the one recovery is moving to.
+    ///
+    /// A device without recovery support must fail-closed; the queue must not
+    /// pretend to recover it.
+    pub(crate) fn recovery_begin_target(&mut self) -> DevResult<axdriver_net::QueueEpoch> {
+        let Some(dev) = self.target_dev else {
+            return Err(DevError::BadState);
+        };
+        if !self.target_can_recover() {
+            return Err(DevError::Unsupported);
+        }
+        // The pre-submit cancellation (Queued tickets AND ARP-pending packets)
+        // already happened exactly once at the quiesce entry, linearized with
+        // the recovery hold; the reset-begin handoff must NOT re-cancel (A2).
+        let Some(control) = self.router.recovery_control(dev) else {
+            return Err(DevError::Unsupported);
+        };
+        control.begin_recovery().map(|p| p.epoch)
+    }
+
+    /// Advances the target's in-progress recovery by at most one bounded
+    /// driver step. Callers must hold the guard. Returns the recovery progress;
+    /// the caller decides whether to keep polling, publish a new epoch on
+    /// `Recovered`, or fail-closed.
+    pub(crate) fn recovery_step_target(&mut self) -> DevResult<axdriver_net::RecoveryProgress> {
+        let Some(dev) = self.target_dev else {
+            return Err(DevError::BadState);
+        };
+        let Some(control) = self.router.recovery_control(dev) else {
+            return Err(DevError::Unsupported);
+        };
+        control.poll_recovery_step()
+    }
+
+    /// F2: reads the driver's current ownership summary (available /
+    /// device-owned / quarantined resources) so a recovery fault freezes a
+    /// structured ledger snapshot instead of a generic error. Callers hold the
+    /// guard; a device without a recovery control reports the all-zero summary.
+    pub(crate) fn recovery_owner_summary_target(&mut self) -> axdriver_net::OwnerSummary {
+        let Some(dev) = self.target_dev else {
+            return axdriver_net::OwnerSummary::default();
+        };
+        self.router
+            .recovery_control(dev)
+            .map(|control| control.owner_summary())
+            .unwrap_or(axdriver_net::OwnerSummary::default())
+    }
+
+    /// Reads the target's consistent link snapshot (Task 3.1 / R6). `Again`
+    /// maps through unchanged so the queue owner retains the CONFIG cause and
+    /// retries once per later poll. `Unsupported` is reported when the driver
+    /// has no link control. Caller holds the Service guard.
+    pub(crate) fn read_link_status_target(&mut self) -> DevResult<bool> {
+        match self.target_dev {
+            Some(dev) => self.router.read_link_status(dev),
+            None => Err(DevError::BadState),
+        }
+    }
+
+    /// Sets or clears the target's independent link I/O gate (Task 3.1 / D6).
+    /// Caller holds the Service guard. The gate is combined with the recovery
+    /// gate at the device: clearing the link gate never clears a recovery/fault
+    /// hold, and the send path rejects while either holds.
+    pub(crate) fn tx_set_link_hold_target(&mut self, held: bool) {
+        if let Some(dev) = self.target_dev {
+            self.router.tx_set_link_hold(dev, held);
+        }
+    }
+
+    /// Task 3.1 / R6 / D6: one coherent link-policy step on the target.
+    ///
+    /// Reads a consistent link snapshot. On a down transition the current
+    /// SocketEpoch seam is closed, new enqueue/submit are gated and pre-submit
+    /// state is cancelled, while DeviceOwned ownership keeps being reclaimed.
+    /// On an up transition a new SocketEpoch entry is opened and the link gate
+    /// cleared (a recovery/fault hold stays, compound gate). `QueueEpoch` is
+    /// never advanced. LinkGeneration advances exactly once per value change.
+    /// Caller holds the Service guard and has already taken the CONFIG cause.
+    pub(crate) fn link_policy_step_target(&mut self) -> LinkStep {
+        // The paired registry is the SocketEpoch identity source. Keep the
+        // Service observer aligned before checking overflow or committing a
+        // link transition; a down/up cycle must never advance the two seams
+        // independently.
+        if let Some(registry) = self.socket_registry {
+            self.socket_epoch = registry.current_socket_epoch();
+        }
+        // Fail-stop the seam BEFORE any transition work: once either checked
+        // identity is exhausted (or was already faulted), no transition may
+        // advance, commit a success or reopen the data plane. The hold keeps
+        // the gate closed permanently; at the fail-stop linearization point we
+        // cancel queued + ARP-pending exactly once so a same-round submit
+        // cannot move them to DeviceOwned. DeviceOwned stays open for reclaim
+        // and QueueEpoch is never advanced (A5 / D1).
+        if self.link_seam_fault || self.link_generation == u64::MAX || self.socket_epoch == u64::MAX
+        {
+            let entering = !self.link_seam_fault;
+            self.link_seam_fault = true;
+            self.tx_set_link_hold_target(true);
+            if entering {
+                self.tx_cancel_queued_target();
+                self.tx_cancel_pending_target();
+            }
+            return LinkStep::Fault;
+        }
+        let link = match self.read_link_status_target() {
+            Ok(link) => link,
+            Err(DevError::Again) => return LinkStep::Again,
+            Err(DevError::Unsupported) => return LinkStep::Unsupported,
+            Err(_) => return LinkStep::Fault,
+        };
+        if self.link_state == Some(link) {
+            return LinkStep::NoEvent;
+        }
+        let down = !link;
+        if down {
+            // Link below: close the current SocketEpoch seam and gate the
+            // queue so no new pre-submit/Queued frame enters a dead link.
+            // DeviceOwned tickets stay open and keep being reclaimed.
+            self.tx_set_link_hold_target(true);
+            self.tx_cancel_queued_target();
+            self.tx_cancel_pending_target();
+            if let Some(registry) = self.socket_registry {
+                if self.commit_socket_epoch_terminal_for(
+                    registry,
+                    self.socket_epoch,
+                    crate::readiness::NetworkTerminal::LinkDown.code(),
+                ) == Some(true)
+                {
+                    self.socket_epoch_wake = Some(self.socket_epoch);
+                }
+            }
+        } else {
+            // The initial link snapshot describes the already-open epoch. A
+            // later up transition follows a down transition and must open the
+            // next registry epoch before the link gate is released.
+            if self.link_state == Some(false) {
+                if let Some(registry) = self.socket_registry {
+                    let Ok(next_epoch) = registry.open_next_socket_epoch() else {
+                        self.link_seam_fault = true;
+                        self.tx_set_link_hold_target(true);
+                        self.tx_cancel_queued_target();
+                        self.tx_cancel_pending_target();
+                        return LinkStep::Fault;
+                    };
+                    self.socket_epoch = next_epoch;
+                }
+            }
+            // Link up: ungate. Never clear a still-active recovery/fault hold
+            // (compound gate at the device).
+            self.tx_set_link_hold_target(false);
+        }
+        self.link_generation += 1;
+        if self.socket_registry.is_none() && (down || self.link_state == Some(false)) {
+            self.socket_epoch += 1;
+        }
+        self.link_state = Some(link);
+        if down { LinkStep::Down } else { LinkStep::Up }
+    }
+
+    /// Returns the paired registry without retaining the Service guard. The
+    /// stack runner uses this to publish and wake outside all Service locks.
+    pub(crate) fn socket_registry(
+        &self,
+    ) -> Option<&'static crate::wrapper::SocketSetWrapper<'static>> {
+        self.socket_registry
+    }
+
+    /// Commits one registry terminal, then marks hidden listener ownership
+    /// with the registry's first-wins result while the paired Service guard
+    /// serializes competing publishers. The caller wakes only when this call
+    /// committed, after releasing the Service guard.
+    pub(crate) fn commit_socket_epoch_terminal_for(
+        &self,
+        registry: &'static crate::wrapper::SocketSetWrapper<'static>,
+        epoch: u64,
+        code: u64,
+    ) -> Option<bool> {
+        if !self
+            .socket_registry
+            .is_some_and(|paired| core::ptr::eq(paired, registry))
+        {
+            return None;
+        }
+        let outcome = registry.commit_socket_epoch_fault_code(epoch, code)?;
+        self.listen_table()
+            .mark_epoch_closed_with_terminal(epoch, outcome.terminal);
+        Some(outcome.committed)
+    }
+
+    /// Opens the Service-side SocketEpoch after a resident recovery has
+    /// already committed its terminal on the supplied registry.
+    pub(crate) fn open_socket_epoch_after_recovery(
+        &mut self,
+        registry: &'static crate::wrapper::SocketSetWrapper<'static>,
+    ) -> Result<(), DevError> {
+        if self.socket_epoch == u64::MAX {
+            return Err(DevError::BadState);
+        }
+        self.socket_epoch = registry
+            .open_next_socket_epoch()
+            .map_err(|_| DevError::BadState)?;
+        Ok(())
+    }
+
+    /// Takes the link-down wake notification without retaining the Service
+    /// guard. The caller must invoke `wake_socket_epoch` after dropping it.
+    pub(crate) fn take_socket_epoch_wake(
+        &mut self,
+    ) -> Option<(&'static crate::wrapper::SocketSetWrapper<'static>, u64)> {
+        let epoch = self.socket_epoch_wake.take()?;
+        self.socket_registry.map(|registry| (registry, epoch))
+    }
+
+    /// Current checked SocketEpoch seam value (Task 3.1 / D1; test observer).
+    pub(crate) fn socket_epoch(&self) -> u64 {
+        self.socket_epoch
+    }
+
+    /// Current checked LinkGeneration value (Task 3.1 / A3; test observer).
+    pub(crate) fn link_generation(&self) -> u64 {
+        self.link_generation
+    }
+
+    /// Stable V4 snapshot encoding: 0 down, 1 up, `u64::MAX` when no
+    /// consistent config snapshot has been committed yet.
+    pub(crate) fn link_state_code(&self) -> u64 {
+        match self.link_state {
+            Some(false) => 0,
+            Some(true) => 1,
+            None => u64::MAX,
+        }
+    }
+
+    /// Forces the SocketEpoch seam for the checked-overflow witness (test).
+    #[cfg(test)]
+    pub(crate) fn set_socket_epoch_for_test(&mut self, v: u64) {
+        self.socket_epoch = v;
+    }
+
+    /// Forces the LinkGeneration seam for the checked-overflow witness (test).
+    #[cfg(test)]
+    pub(crate) fn set_link_generation_for_test(&mut self, v: u64) {
+        self.link_generation = v;
+    }
+
+    /// Whether the checked seam epoch overflowed and failed-stop (test).
+    #[cfg(test)]
+    pub(crate) fn link_seam_fault(&self) -> bool {
+        self.link_seam_fault
+    }
+
     /// RX-slot-space recheck, callable only while holding the Service guard.
     ///
     /// The queue task's RX copy stage stops without reaping when the fixed
@@ -693,7 +1120,8 @@ impl Service {
             Some(dev) => self.router.tx_last_accepted(dev),
             None => None,
         };
-        self.flush_waiter = Some(FlushWaiter::new(identity, target));
+        let epoch = self.queue_epoch_target();
+        self.flush_waiter = Some(FlushWaiter::new(identity, target, epoch));
         Ok(FlushTicket { identity, target })
     }
 
@@ -711,6 +1139,9 @@ impl Service {
     /// Rechecks flush completion under the guard. A `Stale` result means the
     /// waiter identity no longer owns the slot.
     pub(crate) fn flush_recheck(&mut self, identity: u64, target: Option<u64>) -> FlushRecheck {
+        // Captured before the `&mut waiter` borrow so the epoch comparison and
+        // the waiters' mutable methods do not conflict on `self`.
+        let current_epoch = self.queue_epoch_target();
         let Some(waiter) = &mut self.flush_waiter else {
             return FlushRecheck::Stale;
         };
@@ -723,16 +1154,43 @@ impl Service {
             self.flush_waiter = None;
             return FlushRecheck::Faulted(err);
         }
-        let done = match self.target_dev {
-            Some(dev) => self.router.tx_flush_done(dev, target),
-            None => true,
-        };
-        if done {
+        // Finding 1: a successful flush sealed by the recovery owner before the
+        // epoch advanced survives the reset; the epoch advance must not turn it
+        // into a false Lost, nor a pending old-epoch flush into a false success.
+        if waiter.is_sealed_done() {
             self.flush_success += 1;
             self.flush_waiter = None;
-            FlushRecheck::Done
-        } else {
-            FlushRecheck::Pending
+            return FlushRecheck::Done;
+        }
+        // A flush still pending whose data-plane epoch advanced without being
+        // sealed can never have fully reclaimed its target (the reset aborted
+        // whatever was still in flight), so it must fail, never read a false
+        // success from the new epoch's empty ledger.
+        if waiter.epoch() != current_epoch {
+            self.flush_error += 1;
+            self.flush_waiter = None;
+            return FlushRecheck::Faulted(DevError::BadState);
+        }
+        // Task 2.1: epoch-scoped outcome. `Lost` is a packet-loss terminal on a
+        // ticket within scope; it fails this flush stably but does NOT set the
+        // persistent device fault, so a later generation's flush can succeed.
+        let state = match self.target_dev {
+            Some(dev) => self.router.tx_flush_state(dev, target),
+            None => crate::device::FlushState::Done,
+        };
+        match state {
+            crate::device::FlushState::Done => {
+                self.flush_success += 1;
+                self.flush_waiter = None;
+                FlushRecheck::Done
+            }
+            crate::device::FlushState::Pending => FlushRecheck::Pending,
+            crate::device::FlushState::Lost(outcome) => {
+                let err = Self::lost_outcome_error(outcome);
+                self.flush_error += 1;
+                self.flush_waiter = None;
+                FlushRecheck::Faulted(err)
+            }
         }
     }
 
@@ -750,17 +1208,88 @@ impl Service {
     }
 
     /// Publishes flush progress after a successful reclaim: wakes the sole
-    /// waiter when its target is now satisfied. Caller holds the guard.
+    /// waiter when its target is now satisfied or a packet-loss outcome makes
+    /// it permanently unsatisfiable. Caller holds the guard.
     pub(crate) fn flush_progress(&mut self) {
         let Some(waiter) = &self.flush_waiter else {
             return;
         };
-        let done = match self.target_dev {
-            Some(dev) => self.router.tx_flush_done(dev, waiter.target()),
+        let wake = match self.target_dev {
+            Some(dev) => matches!(
+                self.router.tx_flush_state(dev, waiter.target()),
+                crate::device::FlushState::Done | crate::device::FlushState::Lost(_)
+            ),
             None => true,
         };
-        if done {
+        if wake {
             waiter.wake();
+        }
+    }
+
+    /// F5: settles the sole flush waiter for the closing epoch, right before
+    /// the recovery owner advances the device epoch. Commits the outcome
+    /// WITHOUT waking: the caller must wake the waiter via
+    /// [`Self::flush_wake_pending`] only after dropping the Service guard and
+    /// committing the epoch/lifecycle, so a woken observer never sees a
+    /// half-committed state.
+    pub(crate) fn flush_recovery_close(&mut self) {
+        if self.flush_waiter.is_none() {
+            return;
+        }
+        if self
+            .flush_waiter
+            .as_ref()
+            .is_some_and(|w| w.epoch() != self.queue_epoch_target())
+        {
+            return;
+        }
+        let state = match self.target_dev {
+            Some(dev) => self
+                .router
+                .tx_flush_state(dev, self.flush_waiter.as_ref().unwrap().target()),
+            None => crate::device::FlushState::Done,
+        };
+        if let Some(waiter) = &mut self.flush_waiter {
+            match state {
+                crate::device::FlushState::Done => waiter.commit_sealed_done(),
+                crate::device::FlushState::Lost(outcome) => {
+                    waiter.commit_fault(&Self::lost_outcome_error(outcome))
+                }
+                crate::device::FlushState::Pending => waiter.commit_fault(&DevError::BadState),
+            }
+        }
+    }
+
+    /// F5: fails the sole flush waiter with a stable error but does NOT wake.
+    /// The recovery owner commits the fault inside the guard, then wakes via
+    /// [`Self::flush_wake_pending`] after releasing the guard. A flush that is
+    /// never woken after a commit would pend forever, so the recovery owner
+    /// must pair this with that deferred wake.
+    pub(crate) fn flush_recovery_abort_all(&mut self, err: &DevError) {
+        if let Some(waiter) = &mut self.flush_waiter {
+            waiter.commit_fault(err);
+        }
+    }
+
+    /// F5: wakes the sole flush waiter if a commit is outstanding. MUST be
+    /// called only after the Service guard is dropped and the caller has
+    /// committed every ledger/epoch/lifecycle result, so the wake callback
+    /// observes a fully-committed state.
+    pub(crate) fn flush_wake_pending(&self) {
+        if let Some(waiter) = &self.flush_waiter {
+            waiter.wake();
+        }
+    }
+
+    /// Stable error returned by a flush whose target was lost to a packet
+    /// cancel/reset/fault outcome (Task 2.1). Distinct from the persistent
+    /// device fault so a recovered generation's flush can still succeed.
+    fn lost_outcome_error(outcome: crate::device::TicketOutcome) -> DevError {
+        match outcome {
+            crate::device::TicketOutcome::CancelledPreSubmit
+            | crate::device::TicketOutcome::ResetAborted
+            | crate::device::TicketOutcome::Fault(_) => DevError::BadState,
+            crate::device::TicketOutcome::Reclaimed => DevError::BadState,
         }
     }
 
@@ -1162,6 +1691,18 @@ mod tests {
         assert!(!CloseKind::LastAck.is_confirmed(State::FinWait2));
         assert!(!CloseKind::LastAck.is_confirmed(State::FinWait1));
         assert!(!CloseKind::LastAck.is_confirmed(State::CloseWait));
+    }
+
+    #[test]
+    fn deferred_removal_retains_the_owner_socket_epoch() {
+        let mut service = Service::new(Router::new(), None);
+        let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
+        let handle = sockets.add(crate::tcp::new_tcp_socket());
+
+        service.queue_deferred_removal_for_epoch(handle, CloseKind::Active, 19);
+
+        assert_eq!(service.deferred_removals.len(), 1);
+        assert_eq!(service.deferred_removals[0].epoch, 19);
     }
 
     #[test]
@@ -1711,6 +2252,7 @@ mod tests {
         assert!(outcome.backlog);
         assert!(outcome.self_yield);
         assert_eq!(outcome.fault_code, crate::readiness::TERMINAL_NONE);
+        assert_eq!(outcome.fault_epoch, None);
         assert_eq!(
             service
                 .router_for_test()
@@ -1738,6 +2280,7 @@ mod tests {
             outcome.fault_code,
             crate::readiness::dev_error_code(&DevError::Io)
         );
+        assert_eq!(outcome.fault_epoch, Some(service.socket_epoch));
         assert!(!outcome.self_yield);
     }
 
@@ -1765,6 +2308,7 @@ mod tests {
             outcome.fault_code,
             crate::readiness::dev_error_code(&DevError::Io)
         );
+        assert_eq!(outcome.fault_epoch, Some(service.socket_epoch));
         assert!(service.router_for_test().tx_faulted());
     }
 
@@ -1844,9 +2388,9 @@ mod tests {
         threads.push(std::thread::spawn(move || {
             for _ in 0..ITERS {
                 // Fixed connect order: Service first (route), then SocketSet.
-                let mut guard = service.lock();
+                let guard = service.lock();
                 let _src = guard.get_source_address(&IpAddress::v4(127, 0, 0, 1));
-                let mut set = sockets.lock();
+                let set = sockets.lock();
                 let _ = set.iter().count();
                 drop(set);
                 drop(guard);
@@ -1857,9 +2401,9 @@ mod tests {
         let done = listener_done.clone();
         threads.push(std::thread::spawn(move || {
             for _ in 0..ITERS {
-                let mut guard = service.lock();
+                let guard = service.lock();
                 {
-                    let mut set = sockets.lock();
+                    let set = sockets.lock();
                     let _ = set.iter().count();
                 }
                 let mut e = entry.lock();

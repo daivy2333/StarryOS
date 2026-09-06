@@ -10,7 +10,6 @@ an acceptable MS06 witness.
 Marker grammar (canonical order, each exactly once):
 
     MS06_STACK_READINESS_START
-    MS06_REVISION: <non-empty>
     MS06_ENVIRONMENT: <non-empty>
     PASS: tcp-timer
     PASS: udp-progress
@@ -19,9 +18,9 @@ Marker grammar (canonical order, each exactly once):
     MS06_HARNESS_EXIT: 0
 
 Any FAIL line, timeout metadata, missing/duplicated/out-of-order/unknown case,
-partial success, missing/empty/duplicated revision or environment record, or
-missing/nonzero/duplicated exit marker makes the transcript invalid. The error
-message names the first decisive difference.
+partial success, missing/empty/duplicated environment record, or missing/nonzero/
+duplicated exit marker makes the transcript invalid. The error message names the
+first decisive difference.
 """
 
 from __future__ import annotations
@@ -32,7 +31,6 @@ import sys
 
 START = "MS06_STACK_READINESS_START"
 END = "MS06_STACK_READINESS_END"
-REVISION_PREFIX = "MS06_REVISION:"
 ENVIRONMENT_PREFIX = "MS06_ENVIRONMENT:"
 EXIT_PREFIX = "MS06_HARNESS_EXIT:"
 FOREIGN_WORKLOAD_START = "MS01_SOCKET_BASELINE_START"
@@ -75,7 +73,6 @@ def validate_output(
     output: str,
     *,
     timed_out: bool = False,
-    expect_revision: str | None = None,
     expect_environment: str | None = None,
 ) -> None:
     """Validate a full saved transcript; raise InvalidTranscript on any gap."""
@@ -112,19 +109,18 @@ def validate_output(
     body = lines[start_at + 1 : end_at]
     tail = lines[end_at + 1 :]
 
-    revision: str | None = None
     environment: str | None = None
     passed: list[str] = []
     remaining = list(EXPECTED_CASES)
-    phase = 0  # 0: awaiting REVISION; 1: awaiting ENVIRONMENT; 2+: awaiting PASS n
+    phase = 0  # 0: awaiting ENVIRONMENT; 1+: awaiting PASS n
 
     for raw_line in body:
         line = _normalize(raw_line)
         if line.startswith("PASS:"):
             name = line[len("PASS:"):].strip()
-            if phase < 2:
+            if phase < 1:
                 raise InvalidTranscript(
-                    f"PASS marker {name!r} appears before revision/environment metadata"
+                    f"PASS marker {name!r} appears before the environment record"
                 )
             if not remaining:
                 raise InvalidTranscript(f"unexpected PASS marker {name!r}: all 12 cases already reported")
@@ -137,30 +133,18 @@ def validate_output(
                 )
             else:
                 raise InvalidTranscript(f"unknown or duplicated PASS marker {name!r}")
-        elif line.startswith(REVISION_PREFIX):
-            if revision is not None:
-                raise InvalidTranscript("revision record is duplicated")
-            if phase != 0:
-                raise InvalidTranscript(
-                    "revision record appears after the environment record or PASS markers"
-                )
-            value = line[len(REVISION_PREFIX):].strip()
-            if not value:
-                raise InvalidTranscript("revision record is empty")
-            revision = value
-            phase = 1
         elif line.startswith(ENVIRONMENT_PREFIX):
             if environment is not None:
                 raise InvalidTranscript("environment record is duplicated")
-            if phase != 1:
+            if phase != 0:
                 raise InvalidTranscript(
-                    "environment record appears before the revision record or after PASS markers"
+                    "environment record appears after a PASS marker"
                 )
             value = line[len(ENVIRONMENT_PREFIX):].strip()
             if not value:
                 raise InvalidTranscript("environment record is empty")
             environment = value
-            phase = 2
+            phase = 1
         elif line.startswith("FAIL:"):
             raise InvalidTranscript(f"payload reported a failure: {line}")
         elif line.startswith("MS06_"):
@@ -172,14 +156,8 @@ def validate_output(
             f"witness ended early: {len(passed)}/12 cases passed; "
             f"{remaining[0]!r} and later are missing (partial success)"
         )
-    if revision is None:
-        raise InvalidTranscript("revision record is missing")
     if environment is None:
         raise InvalidTranscript("environment record is missing")
-    if expect_revision is not None and revision != expect_revision:
-        raise InvalidTranscript(
-            f"revision mismatch: recorded {revision!r}, expected {expect_revision!r}"
-        )
     if expect_environment is not None and environment != expect_environment:
         raise InvalidTranscript(
             f"environment mismatch: recorded {environment!r}, expected {expect_environment!r}"
@@ -222,7 +200,6 @@ def validate_output(
 
 def _transcript(
     *,
-    revision: str = "r0",
     environment: str = "qemu-virt",
     cases: tuple[str, ...] = EXPECTED_CASES,
     noise_before: str = "",
@@ -235,7 +212,6 @@ def _transcript(
     if noise_before:
         lines.append(noise_before)
     lines.append(START)
-    lines.append(f"{REVISION_PREFIX} {revision}")
     lines.append(f"{ENVIRONMENT_PREFIX} {environment}")
     if noise_middle:
         lines.append(noise_middle)
@@ -257,7 +233,7 @@ def self_test() -> None:
     good = _transcript(noise_before="starry:~# ./ms06", noise_middle="", noise_after="starry:~#")
     validate_output(good)
     validate_output(
-        good, expect_revision="r0", expect_environment="qemu-virt"
+        good, expect_environment="qemu-virt"
     )
 
     def rejected(sample: str, **kwargs: object) -> None:
@@ -319,7 +295,6 @@ def self_test() -> None:
     indented_fail_before_meta = transcript_lines([
         START,
         indented("FAIL: drifted-into-body"),
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES],
         END,
@@ -330,7 +305,6 @@ def self_test() -> None:
     indented_ms06_before_meta = transcript_lines([
         START,
         indented("MS06_UNKNOWN: x"),
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES],
         END,
@@ -340,7 +314,6 @@ def self_test() -> None:
 
     indented_pass_after_end = transcript_lines([
         START,
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES],
         END,
@@ -351,7 +324,6 @@ def self_test() -> None:
 
     indented_fail_after_exit = transcript_lines([
         START,
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES],
         END,
@@ -360,30 +332,15 @@ def self_test() -> None:
     ])
     rejected(indented_fail_after_exit)
 
-    # Revision / environment metadata.
-    no_revision = good.replace(f"{REVISION_PREFIX} r0\n", "")
-    rejected(no_revision)
-    rejected(good.replace(f"{REVISION_PREFIX} r0", f"{REVISION_PREFIX} "))
-    rejected(
-        good.replace(
-            f"{ENVIRONMENT_PREFIX} qemu-virt\n",
-            f"{ENVIRONMENT_PREFIX} qemu-virt\n{REVISION_PREFIX} r0\n",
-        )
-    )
+    # Environment metadata.
     no_environment = good.replace(f"{ENVIRONMENT_PREFIX} qemu-virt\n", "")
     rejected(no_environment)
-    swapped_metadata = good.replace(
-        f"{REVISION_PREFIX} r0\n{ENVIRONMENT_PREFIX} qemu-virt\n",
-        f"{ENVIRONMENT_PREFIX} qemu-virt\n{REVISION_PREFIX} r0\n",
-    )
-    rejected(swapped_metadata)
     rejected(
         good.replace(
             f"{EXIT_PREFIX}0\n",
             f"{EXIT_PREFIX}0\n{ENVIRONMENT_PREFIX} qemu-virt\n",
         )
     )
-    rejected(good, expect_revision="r9")
     rejected(good, expect_environment="bare-metal")
 
     # Exit contract.
@@ -392,12 +349,11 @@ def self_test() -> None:
     rejected(good.replace(f"{EXIT_PREFIX}0\n", f"{EXIT_PREFIX}0\n{EXIT_PREFIX}0\n"))
     rejected(_transcript(exit_line=f"PASS: waiter-64\n{EXIT_PREFIX}0"))
 
-    # Protocol phase order (Plan Review A1): START -> REVISION -> ENVIRONMENT
+    # Protocol phase order (Plan Review A1): START -> ENVIRONMENT
     # -> 12 PASS -> END -> EXIT. Any marker outside its phase is rejected.
     passes_before_meta = transcript_lines([
         START,
         *[f"PASS: {c}" for c in EXPECTED_CASES],
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         END,
         f"{EXIT_PREFIX}0",
@@ -406,19 +362,18 @@ def self_test() -> None:
 
     pass_between_meta = transcript_lines([
         START,
-        f"{REVISION_PREFIX} r0",
+        f"{ENVIRONMENT_PREFIX} qemu-virt",
         "PASS: tcp-timer",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES[1:]],
         END,
         f"{EXIT_PREFIX}0",
     ])
-    rejected(pass_between_meta)
+    rejected(pass_between_meta)  # environment must be unique and before any PASS
 
     metadata_after_pass = transcript_lines([
         START,
         "PASS: tcp-timer",
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES[1:]],
         END,
@@ -428,7 +383,6 @@ def self_test() -> None:
 
     exit_before_end = transcript_lines([
         START,
-        f"{REVISION_PREFIX} r0",
         f"{ENVIRONMENT_PREFIX} qemu-virt",
         *[f"PASS: {c}" for c in EXPECTED_CASES],
         f"{EXIT_PREFIX}0",
@@ -449,7 +403,7 @@ def self_test() -> None:
         "PASS: tcp-timer\n", "\x1b[0mPASS: tcp-timer\n\x1b[0m", 1
     )
     validate_output(ansi_good)
-    validate_output(ansi_good, expect_revision="r0", expect_environment="qemu-virt")
+    validate_output(ansi_good, expect_environment="qemu-virt")
     # Printable prefix/suffix is never stripped: only ESC control sequences are.
     rejected(_transcript().replace(START + "\n", "x" + START + "\n", 1))
     rejected(_transcript().replace(END + "\n", END + "x\n", 1))
@@ -471,7 +425,7 @@ def self_test() -> None:
         1,
     )
     validate_output(foreign_tail)
-    validate_output(foreign_tail, expect_revision="r0", expect_environment="qemu-virt")
+    validate_output(foreign_tail, expect_environment="qemu-virt")
     rejected(_transcript().replace(END + "\n", END + "\nPASS: tcp-timer\n", 1))
     rejected(foreign_tail.replace(
         "MS01_SOCKET_BASELINE_START\n",
@@ -488,8 +442,6 @@ def main() -> int:
     parser.add_argument("--print-cases", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--timed-out", action="store_true",
                         help="the saved run hit its overall timeout")
-    parser.add_argument("--expect-revision", default=None,
-                        help="fail unless MS06_REVISION equals this value")
     parser.add_argument("--expect-environment", default=None,
                         help="fail unless MS06_ENVIRONMENT equals this value")
     parser.add_argument("transcript", nargs="?",
@@ -514,7 +466,6 @@ def main() -> int:
         validate_output(
             output,
             timed_out=args.timed_out,
-            expect_revision=args.expect_revision,
             expect_environment=args.expect_environment,
         )
     except InvalidTranscript as error:

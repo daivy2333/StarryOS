@@ -84,13 +84,21 @@ fn net_irq_handler() {
         TELEMETRY.ack_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Publish used-ring queue events only after ACK telemetry. The used
-    // ring is direction-ambiguous, so the ISR publishes one generic event;
-    // the queue task resolves RX/TX under the shared lock (MS05 T3.3).
-    // config-only, unknown-only and zero never publish (D5).
-    if virtio_net_irq_logic::should_publish_rx(status) {
+    // Publish used-ring and config-change queue events only after ACK
+    // telemetry. Each cause has an independent gate (Task 3.1/R6): the used
+    // ring is direction-ambiguous (the queue task resolves RX/TX), while a
+    // config-only cause wakes the owner to read a consistent link snapshot.
+    // unknown-only and zero never publish (D5).
+    let publish_used = virtio_net_irq_logic::should_publish_rx(status);
+    let publish_config = virtio_net_irq_logic::should_publish_config(status);
+    if publish_used || publish_config {
         let before = axhal::asm::irqs_enabled();
-        axnet::publish_queue_event();
+        if publish_used {
+            axnet::publish_queue_event();
+        }
+        if publish_config {
+            axnet::publish_config_event();
+        }
         let after = axhal::asm::irqs_enabled();
         let irq_state = virtio_net_irq_logic::observe_irq_state(before, after);
         if irq_state.enabled_on_entry {
@@ -360,4 +368,29 @@ pub fn irq_snapshot_v3() -> virtio_net_irq_logic::IrqSnapshotV3 {
     s.drop_unsupported_address = v3.drop_unsupported_address;
     s.drop_frame_too_large = v3.drop_frame_too_large;
     s
+}
+
+/// QEMU-only append-only recovery snapshot.  V1–V3 remain separate ioctl
+/// types; V4 only appends the identity that the MS07 probe needs.
+#[cfg(feature = "qemu")]
+pub fn irq_snapshot_v4() -> virtio_net_irq_logic::IrqSnapshotV4 {
+    let recovery = axnet::recovery_snapshot_v4();
+    virtio_net_irq_logic::IrqSnapshotV4 {
+        v3: irq_snapshot_v3(),
+        current_valid: recovery.current_valid,
+        current_queue_epoch: recovery.current_queue_epoch,
+        current_socket_epoch: recovery.current_socket_epoch,
+        current_link_generation: recovery.current_link_generation,
+        current_link_state: recovery.current_link_state,
+        current_owner_available: recovery.current_owner_available,
+        current_owner_device_owned: recovery.current_owner_device_owned,
+        current_owner_quarantined: recovery.current_owner_quarantined,
+        fault_valid: recovery.fault_valid,
+        fault_stage: recovery.fault_stage,
+        fault_cause: recovery.fault_cause,
+        fault_queue_epoch: recovery.fault_queue_epoch,
+        fault_owner_available: recovery.fault_owner_available,
+        fault_owner_device_owned: recovery.fault_owner_device_owned,
+        fault_owner_quarantined: recovery.fault_owner_quarantined,
+    }
 }

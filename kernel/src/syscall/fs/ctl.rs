@@ -30,11 +30,15 @@ const UART_TXDBG_RESET: u32 = 0x5458_4432;
 const NET_IRQ_SNAPSHOT_V1: u32 = 0x4e49_4431;
 const NET_IRQ_SNAPSHOT_V2: u32 = 0x4e49_4432;
 const NET_IRQ_SNAPSHOT_V3: u32 = 0x4e49_4433;
+#[cfg(feature = "qemu")]
+const NET_IRQ_SNAPSHOT_V4: u32 = 0x4e49_4434;
 const NET_RX_SOFTWARE_NUDGE: u32 = 0x4e49_4e31;
 #[cfg(feature = "qemu")]
 const NET_DIAGNOSTIC_CONTROL: u32 = 0x4e49_4331;
 #[cfg(feature = "qemu")]
 const NET_FLUSH: u32 = 0x4e49_4631;
+#[cfg(feature = "qemu")]
+const NET_RECOVERY_RESET_REQUEST: u32 = 0x4e49_5231;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -124,6 +128,12 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV3).vm_write(snapshot)?;
         return Ok(0);
     }
+    #[cfg(feature = "qemu")]
+    if cmd == NET_IRQ_SNAPSHOT_V4 {
+        let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v4();
+        (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV4).vm_write(snapshot)?;
+        return Ok(0);
+    }
     #[cfg(not(feature = "lichee-d1"))]
     if cmd == NET_RX_SOFTWARE_NUDGE {
         axnet::software_nudge();
@@ -137,6 +147,15 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         let payload = (arg as *const [u64; 2]).vm_read()?;
         axnet::diagnostic_control(payload[0], payload[1]).map_err(|err| match err {
             axdriver::prelude::DevError::InvalidParam => AxError::InvalidInput,
+            axdriver::prelude::DevError::ResourceBusy => AxError::WouldBlock,
+            _ => AxError::Io,
+        })?;
+        return Ok(0);
+    }
+    #[cfg(feature = "qemu")]
+    if cmd == NET_RECOVERY_RESET_REQUEST {
+        axnet::recovery_reset_request().map_err(|err| match err {
+            axdriver::prelude::DevError::BadState => AxError::BadState,
             axdriver::prelude::DevError::ResourceBusy => AxError::WouldBlock,
             _ => AxError::Io,
         })?;

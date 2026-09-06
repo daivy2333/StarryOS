@@ -1,9 +1,9 @@
 # MS06 QEMU 应用可见异步网络栈验收
 
 - Status: active
-- Last validated: 2026-08-27
+- Last validated: 2026-08-27；2026-09-02 MS07 Cycle 006 兼容回归 12/12 + validator exit 0（证据 `006-rework/ms06-qemu-serial.log`）
 - Environment: QEMU 7.0.0；RISC-V `virt`；1 GiB；单 hart；单 VirtIO-MMIO NIC；user-net；`LOG=warn`；Rust nightly-2026-02-25
-- Source: `ms06-application-visible-async-network-stack` Iteration 008 / Cycle `001-replan` Act Response（`reported`）+ `evidence/008-single-hart-qemu-acceptance/001-replan/`
+- Source: `ms06-application-visible-async-network-stack` Iteration 008 / Cycle `001-replan` Act Response（`reported`）+ `evidence/008-single-hart-qemu-acceptance/001-replan/`；2026-09-02 回归来源 MS07 Iteration 007 Cycle 006 `evidence/007-single-hart-qemu-qualification/006-rework/ms06-qemu-serial.log`
 
 ## 适用范围
 
@@ -28,12 +28,23 @@ cd /home/daivy/projects/serial/work/StarryOS/tests
 python3 -m http.server 18765 --bind 0.0.0.0
 ```
 
-Terminal B — 启动 QEMU（已冻结镜像，`justrun` 不重建；从 boot 开始录完整串口）：
+Terminal B — 启动 QEMU（已冻结镜像，不重建；从 boot 开始录完整串口到 `$EV/ms06-qemu-serial.log`）：
+
+先设短变量，避免长路径被终端换行拆断：
 
 ```bash
 cd /home/daivy/projects/serial/work/StarryOS
-script -q -e -f /tmp/ms06-qemu-serial.log -c 'make ARCH=riscv64 justrun'
+EV=openspec/changes/<change>/evidence/<iteration>/<cycle>
+mkdir -p "$EV"
 ```
+
+```bash
+cd /home/daivy/projects/serial/work/StarryOS
+script -q -e -f "$EV/ms06-qemu-serial.log" -c 'qemu-system-riscv64 -m 1G -smp 1 -machine virt -bios default -kernel StarryOS_riscv64-qemu-virt.bin -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=make/disk.img -device virtio-net-device,netdev=net0 -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 -nographic'
+```
+
+> 与 `make ARCH=riscv64 justrun` 等价但不重建产物；需先 `make ARCH=riscv64 build` 冻结
+> 镜像。作为其他 cycle 的兼容回归时 `$EV` 指该 cycle 的 evidence 目录（见 R58）。
 
 出现 `starry:~#` 后按失败即停顺序逐条输入，每个 workload 后显式发布 exit：
 
@@ -89,9 +100,10 @@ wget -q -O /tmp/ms05 http://10.0.2.2:18765/ms05_data_plane_probe && chmod +x /tm
 MS06 用 validator 对完整 raw 串口判定（不得人工摘录）：
 
 ```bash
-python3 scripts/ms06-qemu-validate.py --expect-revision <HEAD> \
-  --expect-environment qemu-virt-riscv64-single-hart /tmp/ms06-qemu-serial.log
+python3 scripts/ms06-qemu-validate.py --expect-environment qemu-virt-riscv64-single-hart "$EV/ms06-qemu-serial.log"
 ```
+
+（validator 已移除 `--expect-revision` 身份层；按项目 identity 清理不再传 revision。）
 
 - MS06：12 个唯一 `PASS:`（固定顺序）、`MS06_STACK_READINESS_END`、`MS06_HARNESS_EXIT: 0`；
   validator exit 0。
@@ -110,7 +122,7 @@ python3 scripts/ms06-qemu-validate.py --expect-revision <HEAD> \
 | `wget: Connection refused` | HTTP server 必须 `--bind 0.0.0.0` |
 | `wget` 挂起 | 数据面问题；用 R55 分层诊断，或 debugfs 离线注入 probe |
 | MS05 `reason=handshake` | host stimulus 未先启动；重启 stimulus 再跑该 mode |
-| artifact 被 `make run` 重建 | 先 `make build` 后 `make justrun`；重建后需重新冻结身份 |
+| artifact 被 `make run` 重建 | 先 `make build` 冻结镜像，再用终端 B 的直连 qemu 命令（不复用 `make run`）拉起新 session |
 | 长路径换行拆断 | 用短变量 `$EV`；保留意外文件，核对后合并 |
 
 ## 回滚
@@ -123,7 +135,8 @@ server `Ctrl-C`。进程残留先 `pgrep -af` 核对，再对确认的单个 PID
 - 来源：`ms06-application-visible-async-network-stack` Iteration 008 / Cycle `001-replan`
   Act Response（`reported`）+ `evidence/008-single-hart-qemu-acceptance/001-replan/`
   （README、qemu-runtime-markers.md、host-runtime-results.md）。
-- 完整 raw 串口：`/tmp/ms06-iteration-008-cycle-001-qemu-serial.log`（262 行 / 86,643 B）。
+- 完整 raw 串口：`/tmp/ms06-iteration-008-cycle-001-qemu-serial.log`（262 行 / 86,643 B）；
+  2026-09-02 回归串口 `evidence/007-single-hart-qemu-qualification/006-rework/ms06-qemu-serial.log`。
 - Revision：HEAD `1d0313ad8d0f36d918d1a101dd0ceda5c2ba336b`（net-k3）。
 - 适用限制：结论只覆盖 single-hart QEMU VirtIO-MMIO 软件/设备模型；不扩大到 reset、SMP、
   PCI/DWMAC、真板或性能。

@@ -87,6 +87,16 @@ pub fn should_publish_rx(status: u8) -> bool {
     (status & 0x01) != 0
 }
 
+/// Whether a raw status byte must publish a config-change queue event
+/// (Task 3.1 / R6 / A1).
+///
+/// Only causes carrying the config-change bit (0x02) publish:
+/// config-only, config+unknown and combined each publish exactly once;
+/// used-only, unknown-only and zero never publish a fabricated CONFIG cause.
+pub fn should_publish_config(status: u8) -> bool {
+    (status & 0x02) != 0
+}
+
 /// Diagnostic classification of the IRQ enable state around the RX wake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrqStateObservation {
@@ -438,4 +448,28 @@ pub struct IrqSnapshotV3 {
     pub drop_unsupported_address: u64,
     /// `TxDropReason::FrameTooLarge` counter.
     pub drop_frame_too_large: u64,
+}
+
+/// QEMU-only MS07 recovery snapshot. `v3` is an immutable byte-for-byte
+/// prefix. The appended current and historical-fault tuples are independently
+/// coherent and explicitly valid; consumers must not treat them as one instant.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrqSnapshotV4 {
+    pub v3: IrqSnapshotV3,
+    pub current_valid: u64,
+    pub current_queue_epoch: u64,
+    pub current_socket_epoch: u64,
+    pub current_link_generation: u64,
+    pub current_link_state: u64,
+    pub current_owner_available: u64,
+    pub current_owner_device_owned: u64,
+    pub current_owner_quarantined: u64,
+    pub fault_valid: u64,
+    pub fault_stage: u64,
+    pub fault_cause: u64,
+    pub fault_queue_epoch: u64,
+    pub fault_owner_available: u64,
+    pub fault_owner_device_owned: u64,
+    pub fault_owner_quarantined: u64,
 }

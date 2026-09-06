@@ -101,6 +101,32 @@ fn publish_only_for_causes_with_used_ring_bit() {
     assert!(should_publish_rx(0x07));
 }
 
+#[test]
+fn publish_config_only_for_causes_with_config_change_bit() {
+    // The config-change bit (0x02) has its own independent publication
+    // decision (Task 3.1 / R6 / A1). config-only and combined publish CONFIG;
+    // zero, used-only and unknown-only never publish a fabricated CONFIG.
+    assert!(!should_publish_config(0x00));
+    assert!(!should_publish_config(0x01));
+    assert!(!should_publish_config(0x04));
+    assert!(!should_publish_config(0x0C));
+    assert!(should_publish_config(0x02));
+    assert!(should_publish_config(0x03));
+    assert!(should_publish_config(0x06));
+    assert!(should_publish_config(0x0A));
+}
+
+#[test]
+fn combined_status_publishes_both_used_and_config() {
+    // A combined cause (bits 0 + 1) must retain BOTH publications
+    // independently: one publish is neither dropped nor replaced by the other
+    // (Task 3.1 / A1 / D6).
+    assert!(should_publish_rx(0x03));
+    assert!(should_publish_config(0x03));
+    assert!(should_publish_rx(0x01) && !should_publish_config(0x01));
+    assert!(!should_publish_rx(0x02) && should_publish_config(0x02));
+}
+
 // ── Telemetry ──────────────────────────────────────────────────────────
 
 #[test]
@@ -603,6 +629,64 @@ fn snapshot_v3_is_a_distinct_struct_never_aliased_to_v2() {
     const LOGIC: &str = include_str!("../kernel/src/drivers/virtio_net_irq_logic.rs");
     assert!(LOGIC.contains("pub struct IrqSnapshotV3"));
     assert!(!LOGIC.contains("type IrqSnapshotV3 = IrqSnapshotV2"));
+}
+
+#[test]
+fn snapshot_v4_preserves_v3_and_appends_the_fixed_recovery_tail() {
+    assert_eq!(core::mem::offset_of!(IrqSnapshotV4, v3), 0);
+    assert_eq!(core::mem::size_of::<IrqSnapshotV3>(), 72 * 8);
+    assert_eq!(core::mem::size_of::<IrqSnapshotV4>(), 87 * 8);
+    assert_eq!(
+        core::mem::align_of::<IrqSnapshotV4>(),
+        core::mem::align_of::<u64>()
+    );
+
+    for (actual, field) in [
+        (core::mem::offset_of!(IrqSnapshotV4, current_valid), 72usize),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, current_queue_epoch),
+            73,
+        ),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, current_socket_epoch),
+            74,
+        ),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, current_link_generation),
+            75,
+        ),
+        (core::mem::offset_of!(IrqSnapshotV4, current_link_state), 76),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, current_owner_available),
+            77,
+        ),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, current_owner_device_owned),
+            78,
+        ),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, current_owner_quarantined),
+            79,
+        ),
+        (core::mem::offset_of!(IrqSnapshotV4, fault_valid), 80),
+        (core::mem::offset_of!(IrqSnapshotV4, fault_stage), 81),
+        (core::mem::offset_of!(IrqSnapshotV4, fault_cause), 82),
+        (core::mem::offset_of!(IrqSnapshotV4, fault_queue_epoch), 83),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, fault_owner_available),
+            84,
+        ),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, fault_owner_device_owned),
+            85,
+        ),
+        (
+            core::mem::offset_of!(IrqSnapshotV4, fault_owner_quarantined),
+            86,
+        ),
+    ] {
+        assert_eq!(actual, field * 8, "V4 field {field} moved");
+    }
 }
 
 #[test]

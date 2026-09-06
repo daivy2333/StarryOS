@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
-    sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     task::Waker,
 };
 
@@ -14,7 +14,9 @@ use smoltcp::{
 };
 
 use crate::{
-    consts::LISTEN_QUEUE_SIZE, readiness::ReadinessBridge, service::STACK_STAGE_BUDGET,
+    consts::LISTEN_QUEUE_SIZE,
+    readiness::{self, NetworkTerminal, ReadinessBridge},
+    service::STACK_STAGE_BUDGET,
     tcp::new_tcp_socket,
 };
 
@@ -81,6 +83,9 @@ struct ReconcileCursor {
 
 struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
+    /// SocketEpoch captured when the public listener created this hidden
+    /// session. Accepted sockets inherit it even if adoption is delayed.
+    socket_epoch: u64,
     accept: Arc<ReadinessBridge>,
     idle: Option<SocketHandle>,
     queue: VecDeque<ListenSlot>,
@@ -194,8 +199,19 @@ impl ListenTableEntryInner {
         signals: &Arc<HeadSignals>,
         sockets: &mut SocketSet<'_>,
     ) -> Self {
+        Self::new_for_epoch(listen_endpoint, accept, 0, signals, sockets)
+    }
+
+    fn new_for_epoch(
+        listen_endpoint: IpListenEndpoint,
+        accept: Arc<ReadinessBridge>,
+        socket_epoch: u64,
+        signals: &Arc<HeadSignals>,
+        sockets: &mut SocketSet<'_>,
+    ) -> Self {
         let mut entry = Self {
             listen_endpoint,
+            socket_epoch,
             accept,
             idle: None,
             queue: VecDeque::with_capacity(LISTEN_QUEUE_SIZE),
@@ -369,6 +385,15 @@ pub struct ListenTable {
     /// T2.8-R1: pre-reserved exact-head-signal ring shared by every entry's
     /// hidden-socket waker; consumed by the runner after each ingress packet.
     head_signals: Arc<HeadSignals>,
+    /// Highest SocketEpoch whose hidden listener sessions are closed. The
+    /// sentinel means no closure has been requested yet.
+    closed_through_epoch: AtomicU64,
+    /// Terminal associated with the most recent closed epoch marker. The
+    /// public owner normally supplies the exact bridge terminal first; this
+    /// fallback also rejects a concurrent late listen with a stable error.
+    closed_terminal: AtomicU64,
+    /// Causes the next bounded reconcile pass even without protocol progress.
+    epoch_closure_pending: AtomicBool,
 }
 
 impl ListenTable {
@@ -387,6 +412,9 @@ impl ListenTable {
             reconcile_cursor: Mutex::new(ReconcileCursor::default()),
             structure_generation: AtomicU64::new(0),
             head_signals: Arc::new(HeadSignals::new()),
+            closed_through_epoch: AtomicU64::new(u64::MAX),
+            closed_terminal: AtomicU64::new(readiness::TERMINAL_NONE),
+            epoch_closure_pending: AtomicBool::new(false),
         }
     }
 
@@ -398,19 +426,27 @@ impl ListenTable {
         &self,
         listen_endpoint: IpListenEndpoint,
         accept: Arc<ReadinessBridge>,
+        socket_epoch: u64,
         sockets: &mut SocketSet<'_>,
     ) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
+
+        let closed_through = self.closed_through_epoch.load(Ordering::Acquire);
+        if closed_through != u64::MAX && socket_epoch <= closed_through {
+            let code = self.closed_terminal.load(Ordering::Acquire);
+            return Err(readiness::terminal_ax_error(code));
+        }
 
         let mut entry = self.tcp[port as usize].lock();
         if entry.is_some() {
             warn!("socket already listening on port {port}");
             return Err(AxError::AddrInUse);
         }
-        *entry = Some(Box::new(ListenTableEntryInner::new(
+        *entry = Some(Box::new(ListenTableEntryInner::new_for_epoch(
             listen_endpoint,
             accept,
+            socket_epoch,
             &self.head_signals,
             sockets,
         )));
@@ -430,7 +466,19 @@ impl ListenTable {
         accept: Arc<ReadinessBridge>,
         sockets: &mut SocketSet<'_>,
     ) -> AxResult {
-        self.listen_to(listen_endpoint, accept, sockets)
+        self.listen_to(listen_endpoint, accept, 0, sockets)
+    }
+
+    /// Registers a listener with the SocketEpoch that owns its hidden
+    /// session. This is the epoch-aware entry point used by public TCP.
+    pub fn listen_with_epoch(
+        &self,
+        listen_endpoint: IpListenEndpoint,
+        accept: Arc<ReadinessBridge>,
+        socket_epoch: u64,
+        sockets: &mut SocketSet<'_>,
+    ) -> AxResult {
+        self.listen_to(listen_endpoint, accept, socket_epoch, sockets)
     }
 
     /// Unregisters a listener whose hidden sockets live in the caller-owned
@@ -442,6 +490,23 @@ impl ListenTable {
         }
         self.active_ports.lock().retain(|&active| active != port);
         self.structure_generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// Records that hidden listener sessions at or below `epoch` are no
+    /// longer valid. Reconcile performs the bounded raw-handle cleanup under
+    /// the established Service -> SocketSet -> entry order.
+    pub(crate) fn mark_epoch_closed(&self, epoch: u64) {
+        self.mark_epoch_closed_with_terminal(epoch, NetworkTerminal::LinkDown);
+    }
+
+    pub(crate) fn mark_epoch_closed_with_terminal(&self, epoch: u64, terminal: NetworkTerminal) {
+        let previous = self.closed_through_epoch.load(Ordering::Acquire);
+        if previous == u64::MAX || epoch > previous {
+            self.closed_terminal
+                .store(terminal.code(), Ordering::Release);
+            self.closed_through_epoch.store(epoch, Ordering::Release);
+        }
+        self.epoch_closure_pending.store(true, Ordering::Release);
     }
 
     fn listen_entry(&self, port: u16) -> Arc<Mutex<Option<Box<ListenTableEntryInner>>>> {
@@ -469,6 +534,7 @@ impl ListenTable {
     ) -> ListenerReconcileOutcome {
         let mut staged = Vec::new();
         let mut checked = 0usize;
+        let mut retired_ports = Vec::new();
         {
             let mut cursor = self.reconcile_cursor.lock();
             if cursor.sweeping && protocol_progressed {
@@ -491,6 +557,7 @@ impl ListenTable {
             let ports = self.active_ports.lock();
             if ports.is_empty() {
                 cursor.sweeping = false;
+                self.epoch_closure_pending.store(false, Ordering::Release);
                 return ListenerReconcileOutcome::default();
             }
             // A listen/unlisten or external queue removal since the pass began
@@ -506,7 +573,8 @@ impl ListenTable {
             // Start a fresh pass only when there is a reason: a latched
             // rescan or protocol progress. A quiet idle table parks.
             if !cursor.sweeping {
-                if !cursor.rescan && !protocol_progressed {
+                let closure_pending = self.epoch_closure_pending.load(Ordering::Acquire);
+                if !cursor.rescan && !protocol_progressed && !closure_pending {
                     return ListenerReconcileOutcome::default();
                 }
                 cursor.sweeping = true;
@@ -521,7 +589,25 @@ impl ListenTable {
                     break;
                 }
                 let port = ports[cursor.port];
-                match self.tcp[port as usize].lock().as_mut() {
+                let mut entry_guard = self.tcp[port as usize].lock();
+                let closed_through = self.closed_through_epoch.load(Ordering::Acquire);
+                if closed_through != u64::MAX
+                    && entry_guard
+                        .as_ref()
+                        .is_some_and(|entry| entry.socket_epoch <= closed_through)
+                {
+                    let entry = entry_guard
+                        .take()
+                        .expect("closed listener entry disappeared under its guard");
+                    entry.cleanup(sockets);
+                    retired_ports.push(port);
+                    cursor.port += 1;
+                    cursor.slot = 0;
+                    cursor.head_visited = false;
+                    checked += 1;
+                    continue;
+                }
+                match entry_guard.as_mut() {
                     None => {
                         // Port unlistened between rounds: advance without a
                         // token; the next call's generation check restarts.
@@ -587,7 +673,15 @@ impl ListenTable {
                     cursor.generation = self.structure_generation.load(Ordering::Acquire);
                 } else {
                     cursor.sweeping = false;
+                    self.epoch_closure_pending.store(false, Ordering::Release);
                 }
+            }
+            drop(ports);
+            if !retired_ports.is_empty() {
+                self.active_ports
+                    .lock()
+                    .retain(|port| !retired_ports.contains(port));
+                self.structure_generation.fetch_add(1, Ordering::Release);
             }
             if !staged.is_empty() {
                 self.pending_accept_wakes.lock().extend(staged);
@@ -674,6 +768,17 @@ impl ListenTable {
     /// inside the guard. Waking the accept bridge and publishing software
     /// work happen after this returns, when the caller's guards are dropped.
     pub fn accept_with(&self, port: u16, sockets: &mut SocketSet<'_>) -> AxResult<SocketHandle> {
+        self.accept_with_epoch(port, sockets)
+            .map(|(handle, _)| handle)
+    }
+
+    /// Consumes one listener slot and returns the raw handle together with
+    /// the epoch of the hidden listener session that produced it.
+    pub(crate) fn accept_with_epoch(
+        &self,
+        port: u16,
+        sockets: &mut SocketSet<'_>,
+    ) -> AxResult<(SocketHandle, u64)> {
         let entry = self.listen_entry(port);
         let mut table = entry.lock();
         let Some(entry) = table.as_mut() else {
@@ -710,7 +815,10 @@ impl ListenTable {
             entry.idle.is_some()
         );
         match slot.state {
-            SlotState::Ready => Ok(slot.handle.expect("ready listener slot without handle")),
+            SlotState::Ready => Ok((
+                slot.handle.expect("ready listener slot without handle"),
+                entry.socket_epoch,
+            )),
             SlotState::Reset => {
                 debug!("accept failed: connection reset");
                 Err(AxError::ConnectionReset)
@@ -879,11 +987,15 @@ mod tests {
         task::Waker,
     };
 
+    use axerrno::AxError;
     use axpoll::IoEvents;
     use smoltcp::{iface::SocketSet, wire::IpListenEndpoint};
 
     use super::{LISTEN_QUEUE_SIZE, ListenSlot, ListenTable, ListenTableEntryInner, SlotState};
-    use crate::{readiness::ReadinessBridge, tcp::new_tcp_socket};
+    use crate::{
+        readiness::{NetworkTerminal, ReadinessBridge},
+        tcp::new_tcp_socket,
+    };
 
     #[derive(Default)]
     struct CountWake(Arc<AtomicUsize>);
@@ -920,6 +1032,62 @@ mod tests {
         )));
         table.active_ports.lock().push(port);
         (table, sockets, bridge)
+    }
+
+    #[test]
+    fn listener_session_records_its_socket_epoch() {
+        let table = ListenTable::new();
+        let bridge = Arc::new(ReadinessBridge::new());
+        let mut sockets = SocketSet::new(vec![]);
+        table
+            .listen_with_epoch(endpoint(18082), bridge, 7, &mut sockets)
+            .unwrap();
+
+        let entry = table.tcp[18082].lock();
+        assert_eq!(entry.as_ref().unwrap().socket_epoch, 7);
+    }
+
+    #[test]
+    fn closed_listener_epoch_is_reclaimed_by_bounded_reconcile() {
+        let table = ListenTable::new();
+        let bridge = Arc::new(ReadinessBridge::new());
+        let mut sockets = SocketSet::new(vec![]);
+        table
+            .listen_with_epoch(endpoint(18081), bridge, 3, &mut sockets)
+            .unwrap();
+        assert_eq!(sockets.iter().count(), 1);
+
+        table.mark_epoch_closed(3);
+        let first = table.reconcile(&mut sockets, false);
+        assert_eq!(first.checked, 1);
+        assert!(table.can_listen(18081));
+        assert_eq!(sockets.iter().count(), 0);
+        assert_eq!(table.reconcile(&mut sockets, false).checked, 0);
+    }
+
+    #[test]
+    fn closed_listener_epoch_rejects_late_owner_before_insertion() {
+        let table = ListenTable::new();
+        let bridge = Arc::new(ReadinessBridge::new());
+        let mut sockets = SocketSet::new(vec![]);
+        table.mark_epoch_closed_with_terminal(5, NetworkTerminal::ConnectionReset);
+
+        assert_eq!(
+            table.listen_with_epoch(endpoint(18086), bridge, 5, &mut sockets),
+            Err(AxError::ConnectionReset)
+        );
+        assert!(table.can_listen(18086));
+        assert_eq!(sockets.iter().count(), 0);
+
+        table
+            .listen_with_epoch(
+                endpoint(18087),
+                Arc::new(ReadinessBridge::new()),
+                6,
+                &mut sockets,
+            )
+            .unwrap();
+        assert!(!table.can_listen(18087));
     }
 
     /// Closes the idle hidden socket and returns false when there is none.

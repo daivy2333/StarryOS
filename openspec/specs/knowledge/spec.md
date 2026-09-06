@@ -15,7 +15,7 @@ ISR MUST 最小化：读 ISR -> 禁用中断 -> AtomicWaker::wake() -> 返回。
 
 **Legacy**: L12, L107, L128 | **状态**: ✅ 已验证（ISR 最小化原则在全部 UART 驱动验证阶段通过）
 
-- **模式**: ISR 中读 ISR 寄存器判断 InterruptType，禁用 RX/TX 中断防止重入，分别唤醒 rx_waker/tx_waker。
+- **模式**: ISR 读 ISR 寄存器判 InterruptType；禁用 RX/TX 中断防重入；分别唤醒 rx_waker/tx_waker。
 - **安全约束**: ISR 中无阻塞、无锁、MMIO read/write 安全。
 - **选型对比**（L128）：
 
@@ -190,7 +190,7 @@ UART 已验证经验 MUST 可迁移到 NIC：最小 ISR、register-recheck、显
 
 ### Requirement: K42 — 并发测试污染：症状、定位与隔离
 
-`no_std`/内核 crate 的 host 单元测试引入新的生产态全局共享状态（静态 `AtomicXxx` 单例、fake clock 等）时，MUST 同时设计测试隔离边界。生产代码路径（如 queue future 的每轮调度）读取该全局状态时，任何并行测试写它都会污染兄弟测试。诊断特征是**单测单独跑全过、全量并行跑失败、失败集合不稳定**（每次运行失败测试不同）。修复 MUST 优先走"实例注入"（生产用全局引用、测试注入各自独立实例），其次才是共享隔离边界（SERIAL）。
+`no_std`/内核 crate 的 host 单元测试引入新的生产态全局共享状态（静态 `AtomicXxx` 单例、fake clock 等）时，MUST 同时设计测试隔离边界。生产代码路径（如 queue future 的每轮调度）读取该全局状态时，任何并行测试写它都会污染兄弟测试（诊断特征见下 ①–③）。修复 MUST 优先走"实例注入"（生产用全局引用、测试注入各自独立实例），其次才是共享隔离边界（SERIAL）。
 
 **证据**: `ms05-qemu-bounded-bidirectional-device-data-plane` iter 007 `001-rework.md` Act Response；`crates/axnet/src/async_rx.rs` 的 `RxRxFuture::diag` 注入、`diag.rs` 的 `TEST_NOW`
 **状态**: ✅ 已验证，2026-08-15
@@ -445,7 +445,7 @@ axnet 触发依赖图冷重建后该冲突才暴露，症状看似产品失败�
 
 - **触发条件**: 冷重建（清缓存、rustc 变更、或首次在独立 target 目录构建）后运行 axnet 宿主单元测试。
 - **诊断特征**: 链接期报 `relocation R_X86_64_32S cannot be used against symbol '__PERCPU_*'` 即为本条；属环境/链接模型事项，不计入产品失败。
-- **处理原则**: 用按链接种类区分的 linker wrapper（遇 `-shared` 透传，否则追加 `-no-pie`）并以 `RUSTFLAGS="-C linker=<wrapper>"` 运行；wrapper 属一次性本地工具，不入库。
+- **处理原则**: 用按链接种类区分的 linker wrapper（遇 `-shared` 透传，否则追加 `-no-pie`）并以 `RUSTFLAGS="-C linker=<wrapper>"` 运行。wrapper 已入库为 `scripts/cc-nopie.sh`（不再是一次性 `/tmp` 工具；本批验证终点 `05528313`）。
 - **排除的替代方案**: `[profile.dev] pie = false`（当前 cargo 报 unused manifest key 不生效）；全局 `RUSTFLAGS="-C link-arg=-no-pie"`（追加到 `.so` 链接尾部导致 proc-macro 构建失败）；`-C relocation-model=static`（同理破坏 proc-macro `.so`）。
 - **适用边界**: 仅 axnet 独立 target 目录下的宿主 x86_64 测试构建；内核与 RISC-V 构建走根 workspace target，不受影响。
 
