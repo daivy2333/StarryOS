@@ -231,6 +231,19 @@ tests/ms07_recovery_probe: tests/ms07_recovery_probe.c
 tests/demo_chat_client: tests/demo_chat_client.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
+# Baidu probe client — guest payload for scripts/baidu_ping_server.py
+tests/baidu_probe_client: tests/baidu_probe_client.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
+# Baidu probe client — host decision-core tests (no guest needed)
+baidu-probe-client-test: tests/baidu_probe_client_test.c tests/baidu_probe_client.c
+	cc -std=c11 -Wall -Wextra -Werror tests/baidu_probe_client_test.c -o /tmp/baidu-probe-client-test
+	/tmp/baidu-probe-client-test
+
+# Baidu probe server — host decision-core tests (stdlib only)
+baidu-ping-server-test: scripts/baidu_ping_server.py
+	python3 -c "import scripts.baidu_ping_server as m; assert m.parse_ping_rtt('time=33.3 ms') == 33.3; assert m.parse_ping_rtt('junk') is None; assert m.format_result(True, 1.5, 2.0).startswith('BAIDU_PROBE_OK'); assert m.format_result(False, None, 2.0).startswith('BAIDU_PROBE_UNREACHABLE'); print('baidu-ping-server OK')"
+
 # Demo host-guest chat client — host decision-core tests (no guest needed)
 demo-chat-client-test: tests/demo_chat_client_test.c tests/demo_chat_client.c
 	cc -std=c11 -Wall -Wextra -Werror tests/demo_chat_client_test.c -o /tmp/demo-chat-client-test
