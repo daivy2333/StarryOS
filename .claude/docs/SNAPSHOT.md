@@ -1,10 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-09-02
-> Revision: `b83e800aa937568eff3a11c32e840b0b8730eade`
-> Branch: `net-k3`
-> Worktree: modified（MS07 change 已归档；最终 Cycle 006 产品/测试改动、`evidence/006-rework/` 与 Runbook/R 登记随收尾同步，其余仓库改动保持既有 staged/untracked 状态）
+> Updated: 2026-09-16
+> Revision: `04fc3ce5101ebf6a2e30b91e7fc6512c2a17f8a3`
+> Branch: `k3`
+> Worktree: clean
 
 ## 项目身份
 
@@ -49,10 +49,10 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 
 ## 仓库现场
 
-- 当前 Git 分支为 `net-k3`。
-- 当前 revision 为 `b83e800aa937568eff3a11c32e840b0b8730eade`，相对 `origin/net-k3` ahead 5（MS07 五次实现提交，未推送）。
+- 当前 Git 分支为 `k3`（后续工作在此分支进行；`net-k3` 已合入同级提交，不再使用）。
+- 当前 revision 为 `04fc3ce5101ebf6a2e30b91e7fc6512c2a17f8a3`，与 `origin/net-k3` 一致（MS07 归档同步、Runbook 更新与 R 登记已提交；`origin/k3` 尚未创建）。
 - 已无活跃 change。`ms07-qemu-single-hart-recovery-semantics` 于 2026-09-02 正常完成并归档至 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`（Iteration 000–007 全部 accepted；最终 Cycle 006 `Dma::new` 零化重建 queue + 六 case + MS01/MS04/MS05/MS06 回归通过，hmp_link_down 采集伪影按用户豁免）。
-- 工作树含 MS07 归档同步、Runbook 更新与 references R 登记；详细里程碑状态见 [`tasks.md`](tasks.md)。
+- 工作树干净（无 staged/untracked 改动）；详细里程碑状态见 [`tasks.md`](tasks.md)。
 
 ## 权威入口
 
