@@ -7,6 +7,8 @@
 > Status: MS16 规划输入，不是已批准 change
 > See also: [网络开发总览](async-network-project-overview.md)、[异步网络路线](starryos-async-network-roadmap.md)、[网络开发策略](starryos-network-development-strategy.md)、[MS03 设计](../../openspec/changes/archive/2026-08-03-ms03-virtio-mmio-diagnostic-irq-baseline/design.md)、[QEMU 网络 Runbook](../runbooks/qemu-network-testing.md)、[MS02 Runbook](../runbooks/ms02-virtio-mmio-evidence.md)、[MS03 Runbook](../runbooks/ms03-virtio-mmio-irq-evidence.md)、[UART benchmark](../../tests/benchmark.c)、[MS02 Evidence](../../openspec/changes/archive/2026-07-29-ms02-virtio-mmio-polling-baseline/evidence/003-policy-coverage-and-runtime-evidence/README.md)
 
+> ⚠️ STALE [2026-09-17] — workload 与指标设计仍可参考，但 run identity、artifact/source hash、manifest 资格和配置身份握手与当前禁止身份型证据工程的规则冲突；相关规格和工具完成独立清理前不得照搬这些机制。
+
 本文定义异步网卡开发前的轮询基线。目标是固定 workload、指标、完成语义和 Evidence，使 MS04、QEMU 和真板沿用同一套测试口径。
 
 本文不实现 benchmark，也不产生性能结论。MS01、MS02 和 MS03 已归档，roadmap 已将 MS16 放在 MS03 与 MS04 之间。

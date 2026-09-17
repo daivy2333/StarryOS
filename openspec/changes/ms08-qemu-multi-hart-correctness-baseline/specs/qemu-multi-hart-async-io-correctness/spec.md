@@ -26,6 +26,13 @@
 - **THEN** policy MUST 只返回有效集合中的 ID
 - **AND** 无法形成安全 placement 时 MUST fail closed，不得 panic、越界或先入队后纠正
 
+#### Scenario: secondary scheduler 尚未初始化时普通 task 入队
+
+- **WHEN** configured hart 已知但只有当前 hart 的 run queue 完成初始化
+- **THEN** 普通 spawn MUST 只从已经发布为 schedulable 的 run queue 中选择首次入队目标
+- **AND** task 的默认 full affinity MUST 保留，使后续 block/wake 可在新发布的 schedulable hart 上自然选择
+- **AND** 显式 affinity 若只包含未初始化 hart MUST fail closed，不得解引用未初始化 run queue
+
 ### Requirement: kernel critical-section 在 SMP 下提供全局互斥
 
 供 `AtomicWaker` 等共享异步状态使用的 critical-section MUST 在所有 online hart 之间互斥，并提供至少 Acquire/Release 语义。进入时 MUST 保存并关闭本 hart IRQ；退出时 MUST 只恢复与该入口匹配的 IRQ 状态。同 hart 嵌套不得自锁，非 owner 或 depth 异常不得释放他人所有权。

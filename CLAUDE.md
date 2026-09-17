@@ -8,21 +8,19 @@
 | 当前项目描述 | `.claude/docs/SNAPSHOT.md` | `openspec-docs-maintainer` |
 | Milestone roadmap | `.claude/docs/tasks.md` | `openspec-milestone-planner` |
 | 全局任务和状态 | `.claude/docs/tasks.md` | `openspec-docs-maintainer` |
-| Cycle 模板 | `.claude/docs/templates/change-cycle.md` | `openspec-init` |
 | 项目模型 | `openspec/specs/project-model/spec.md` | `openspec-docs-maintainer` |
-| 决策 | `openspec/specs/decisions/spec.md` | `openspec-docs-maintainer` |
-| 知识 | `openspec/specs/knowledge/spec.md` | `openspec-docs-maintainer` |
 | 参考 | `openspec/specs/references/spec.md` | `openspec-docs-maintainer` |
 | 改进 | `openspec/specs/improvements/spec.md` | `openspec-docs-maintainer` |
+| 行为规格 | `openspec/specs/<domain>/spec.md` | `openspec-docs-maintainer` 收尾合并 |
 | 活跃变更 | `openspec/changes/` | OpenSpec、plan、act |
 | Change Evidence | `openspec/changes/<change>/evidence/` | `openspec-act` |
 | 分析文档 | `.claude/analysis/` | `openspec-explorer` |
 | Runbook | `.claude/runbooks/` | `openspec-experience-recorder` |
-| Incident | `.claude/incidents/` | `openspec-experience-recorder` |
+| Issue（缺陷台账） | `.claude/issues/` | `openspec-experience-recorder` |
 
 ## 读取顺序
 
-- 新会话：assistant 读取 CLAUDE → SNAPSHOT → tasks → active changes，并按问题补充相关 M/D/K/R/I 和持久化产物。
+- 新会话：assistant 读取 CLAUDE → SNAPSHOT → tasks → active changes，并按问题补充相关 M/R/I 和持久化产物。
 - 当前会话中来源明确、细节仍可用且读取后未变化的信息直接复用；Skill 切换本身不触发重复读取。
 - 后续 Skill 只补读当前任务缺失的信息和实际操作对象。只有概括而缺少所需细节、来源可能变化或需要新鲜运行证据时，才重新读取对应权威来源。
 - Assistant 只恢复 OpenSpec 体系文档上下文，不替代 Explorer 的代码调查、Plan 的实现调查或各 Skill 对实际操作对象的检查。
@@ -31,7 +29,7 @@
 - 实施：当前 Iteration 的最新 Cycle → 目标代码和测试 → 按需 Evidence → act；不回读 Assistant 或 Explorer 来重建计划基线。
 - 实现 Review：当前 Cycle → 实际代码、Act Response 和要求的 Evidence → plan。
 - 操作任务：相关 Runbook。
-- 故障复盘：Incident → knowledge → decisions/model → improvements/change。
+- 缺陷查询与复盘：issues → analysis → project-model → specs → improvements/change。
 - 查询：assistant。
 - 路线规划：milestone-planner。
 - 日常文档写入：docs-maintainer。
@@ -42,8 +40,8 @@
 - `openspec-milestone-planner`：规划 `MSxx` 路线，平衡工作量、验证边界和诊断边界；不创建 change。
 - `openspec-plan`：需求、BDD、实现调查、逻辑 Iteration 规划、Cycle 创建和实施 Review。
 - `openspec-act`：TDD、实施、任务自检、全量 diff Review、验证、按需 Evidence、经验候选和 Act Response。
-- `openspec-experience-recorder`：根据已发生且有证据的过程创建、更新或恢复 Runbook、Incident。
-- `openspec-docs-maintainer`：显式维护状态、M/D/K/R/I，同步指定 change 结果，收尾最终 Review Result 为 `accepted` 的 change，并处理限定 R 登记。
+- `openspec-experience-recorder`：根据已发生且有证据的过程创建、更新或恢复 Runbook、Issue。
+- `openspec-docs-maintainer`：显式维护状态、M/R/I，收尾时合并行为规格，同步指定 change 结果，收尾最终 Review Result 为 `accepted` 的 change，并处理限定 R 登记。
 - `openspec-explorer`：宏观或微观探索；输出即时回答或 `.claude/analysis/`。
 - `openspec-compressor`：原地压缩，不改变状态。
 - `openspec-archivist`：清理无法满足正常收尾条件的 change，并处理其他生命周期清理和 carrier 归档。
@@ -57,8 +55,8 @@
 - Plan Review 后终止，不自动调用 Act 或 Maintainer。
 - Explorer 即时回答后终止，不调用 Maintainer。
 - Explorer 生成分析文档后，可自动调用 Maintainer 登记对应 R 引用。
-- Recorder 生成、更新或恢复 Runbook、Incident 后，可自动调用 Maintainer 创建或更新对应 R。
-- 上述自动授权只覆盖对应 R，不覆盖 M/D/K/I、tasks 或 change。
+- Recorder 生成、更新或恢复 Runbook、Issue 后，可自动调用 Maintainer 创建或更新对应 R。
+- 上述自动授权只覆盖对应 R，不覆盖 M、I、tasks 或 change。
 - Maintainer 由用户直接调用时刷新 SNAPSHOT；Explorer、Recorder 的限定 R 登记不刷新 SNAPSHOT。
 - Maintainer 直接调用时除 SNAPSHOT 外只修改用户点名内容；限定 R 登记只修改 references。
 - Act 完成不构成 Recorder 授权；只有用户单独请求或预先明确授权串联时才执行 Recorder。
@@ -88,43 +86,33 @@
 - 其他文档只引用 SNAPSHOT，不复制当前项目描述。
 - 项目路线、稳定基线和阶段边界写 tasks，编号 `MSxx`。
 - 已承诺工作写 tasks 或 OpenSpec change。
-- 当前跨模块约束写 project-model，编号 `Mxx`。
-- 有替代方案的长期选择写 decisions，编号 `Dxx`。
-- 已验证、非显然且可复用的结论写 knowledge，编号 `Kxx`。
+- 当前开发约束写 project-model，编号 `Mxx`。
+- 长期选择及其理由写 change 的 `design.md`，随 change 归档。
+- 系统当前行为写 specs 语料库；maintainer 在 change 收尾时合并增量规格。
 - 指针和检索元数据写 references，编号 `Rxx`。
-- 有证据但未承诺实施的问题写 improvements，编号 `Ixx`。
+- 用户提供且未承诺的方向写 improvements，编号 `Ixx`。
 - 可复用的构建、测试和其他命令行操作流程写入 Runbook。
 - 已验证且可重复或高风险的操作由 Recorder 写入 Runbook，并登记 R。
-- 已发生的重要故障由 Recorder 写入 Incident，并登记 R。
+- 实施或探索中发现的实质缺陷由 Recorder 登记为 Issue，并登记 R。
+- 缺陷状态与处置的权威在 issues/，调查正文留在 analysis 和 change 产物，不复制。
 - 详细调查、实验和评估写 analysis，并登记 R。
-- Cycle 的持久化日志和数据按 Iteration/Cycle 层级写入 change 内 Evidence，不登记 R。
+- Cycle 的持久化日志和数据按 Iteration/Cycle 层级写入 change 内 Evidence。
 
 一项信息只有一个权威位置。其他文档使用编号或路径引用，不复制正文。
 
-Analysis、Iteration、Cycle、Act Response、Evidence 和 Incident 可以保留采集时的 revision、分支、环境和命令。这些字段属于历史现场，不是当前项目描述。
-
-## 旧体系迁移
-
-- 升级必须沿文档地图、引用、归档指引和历史 carrier 发现来源，读取全文，按已有编号、可独立路由的同级标题或短文档整体迁移。
-- 重复和过时信息仍要建立来源映射，并保留独有信息、状态和时间边界。
-- 已归档 legacy carrier 保持不可变，但其中的信息也要迁移和验证。
-- CLAUDE 和 SNAPSHOT 按新体系重建，不进入迁移清单或 carrier。
-- 覆盖率达到 100%，且 `unmapped = 0`、`skipped = 0` 后才能归档旧文档。
-- 迁移期间旧来源保持只读，不生成内容哈希。migration carrier 保存语义条目覆盖清单、编号映射、验证摘要和每份旧文档的一份完整原文，不保存核对过程日志。
-- 旧体系文档只允许完整 Archive，不允许 Delete 或 Compress-Archive。
+Analysis、Iteration、Cycle、Act Response、Evidence 和 Issue 可以保留采集时的 revision、分支、环境和命令。这些字段属于历史现场，不是当前项目描述。
 
 ## 记录边界
 
-- Model 只保存当前有效约束，不保存选择历史。
-- Decision 被替代后保留，并标记 `superseded`。
-- Knowledge 不保存单纯路径、API 签名、链接或未验证猜测。
+- Model 只保存当前开发约束，不保存选择历史和行为描述。
+- 语料库只保存验收过的行为；计划外的已验证结论沉淀在 analysis，可表达为行为要求的事实随下一个 change 进入语料库。
 - Reference 不复制目标正文。
-- Improvement 只保存未承诺工作；批准后创建 change 并标记 `promoted`。
+- Improvement 只保存用户提供的未承诺方向；批准后纳入 change 或 milestone，标记 `promoted`。
 - Milestone Planner 创建和调整 `planned`、`ready` 的 `MSxx`；Maintainer 只同步运行状态和 change 引用。
 - Tasks 不保存未批准想法。
-- 普通测试失败不创建 Incident。
+- 普通测试失败、预期 RED 和 Minor finding 不创建 Issue；Issue 准入为实质缺陷（› Plan 调查）。
 - 一次性命令不创建 Runbook。
-- Runbook 和 Incident 不由 Compressor 改写。
+- Runbook 和 Issue 不由 Compressor 改写。
 - 普通验证结果写 Act Response；没有持久化要求时不创建 Evidence 占位目录。
 
 ## 行为约束
@@ -144,6 +132,7 @@ Analysis、Iteration、Cycle、Act Response、Evidence 和 Incident 可以保留
 - 验证只证明目标行为。环境、命令、版本和 revision 可以定位现场，但不得成为握手字段、匹配条件、拒绝条件或 Acceptance 的替代证据。
 - 禁止为构建、测试、Qualification、Evidence 或运行归属新增 Hash/指纹、revision pin、run-id、session/execution ID、peer/host pin、source/index/worktree freeze、artifact manifest、日志 Hash 链、`TIME_ORDER` 时间证明及其 capture、audit、qualification 工具和专用测试。不得叠加多个身份机制证明同一次运行，也不得为证据工具自身造成的变化增加排除路径或二级验证。验证辅助代码一旦需要独立协议、CLI、fixture、负向测试或审计器，即按身份型证据工程处理。
 - 发现身份型证据工程时，删除机制及其专用协议字段、CLI、构建宏、fixture、测试和工具，再运行目标行为验证；不得通过补测试或补审计链保留它。产品 requirement 明确要求的认证、完整性校验或多会话协议属于目标行为，不适用本条。
+- 跨 Skill 生效的规则只在本文件保留一份正文，其他位置按名引用。
 - 对已确认需要实施的工作，在同样满足 Acceptance 的方案中，依次优先复用项目已有实现、使用语言或平台原生能力、使用已有依赖，最后才新增最小必要代码或依赖；不为尚未发生的需求扩大当前实现。
 - 证据足以支持当前结论后停止搜索、测试和 Review。可选改进仅在有助于用户决策时报告，不纳入当前实现。
 
@@ -187,7 +176,8 @@ Plan 在制定任务前读取实际代码并记录：
 
 - 入口、目标符号、调用者和被调用者。
 - 数据流、状态变化、错误和并发边界。
-- 现有测试、验证命令和基线结果。
+- 现有测试、验证命令和基线结果；Explorer 或前序 Iteration 已实际运行且覆盖范围未变化的结果直接引用，只在缺少可采信结论时运行基线验证。
+- 相关域行为可引用 `openspec/specs/` 语料库；语料库与实际代码矛盾时记入未知项。
 - 当前行为、目标行为和影响范围。
 
 影响行为、接口或错误语义、状态所有权、架构、范围、测试策略或 Acceptance 的问题属于实质问题；局部命名、辅助函数拆分、等价控制流、可直接定位的路径变化和非阻塞 Minor finding 不属于实质问题。Plan 通过 Gate 2 阻塞实质未知项，非实质选择可留给 Act。
@@ -215,7 +205,7 @@ Plan 在制定任务前读取实际代码并记录：
 - Gate 2：调查、设计、任务分轮、追踪和当前轮验证均达到执行就绪；非实质未知项不阻塞。
 - Gate 3：每个任务在修改前有测试见证。
 - Gate 4：每个任务先 spec review，后 code review。
-- Gate 5：完成声明有新鲜证据。
+- Gate 5：完成声明有新鲜证据或可采信的未失效结论。
 - Gate 6：阻塞即停；三次失败后反思。
 
 Gate BLOCK 必须记录原因。用户显式豁免必须保留原话和风险。
@@ -224,7 +214,7 @@ Gate BLOCK 必须记录原因。用户显式豁免必须保留原话和风险。
 
 - 每个 Phase 和可验证 Step 有状态。
 - 任务列表只保存当前已授权且可执行的工作；完整状态以 OpenSpec 产物为准。
-- 非迁移步骤的跳过项标记 `SKIPPED: <reason>`；旧体系语义条目不得跳过。
+- 跳过项标记 `SKIPPED: <reason>`。
 - 只有验证通过后才能标记完成。
 - 最终报告前检查全部任务状态。
 
@@ -249,7 +239,7 @@ agent 可执行的测试和 Review 不形成边界。验证失败时保留当前
 - Rework Cycle 使用 `001-rework.md` 等本地编号完成既有 Acceptance，不修改 Iteration Map；Replan Cycle 使用同一目录的后继编号执行修订后的计划。两者都不占用全局 Iteration 编号。
 - Plan 只写 Cycle 的 `Plan Context` 和 `Plan Review`。
 - Plan Context 包含所属 Iteration、Cycle 类型、Current-State Evidence、行为变化、变更面、任务或 repair item 契约和停止条件；状态在创建时为 `draft`，Gate 2 通过或明确豁免且计划获批后才改为 `ready`。
-- Plan Context 必须自包含 Act 所需的实现事实和契约，不以 Assistant、Explorer、Analysis 或前序 Cycle 的引用代替必要正文。
+- Plan Context 必须自包含 Act 所需的实现事实和契约，不以 Assistant、Explorer、Analysis 或前序 Cycle 的引用代替必要正文；引用可以保留证据来源，但 Act 不得被要求沿引用链回读。
 - Task Contract 是 Act 的任务级执行依据；背景和调查证据不得给出与契约冲突的重复指令。
 - Plan 把 Persisted Evidence 明确设为 `none` 或 `required`；`required` 项映射到 Gate 和通过条件。
 - Act 只写当前 Cycle 的 `Act Response`。
@@ -258,12 +248,13 @@ agent 可执行的测试和 Review 不形成边界。验证失败时保留当前
 - Act 可处理非实质局部差异并在 Response 记录；实质问题返回 Plan。
 - Act 修复当前 Cycle 计划范围内的问题；新设计或范围问题返回 Plan。
 - Act Response 记录 Self-Review、已修复发现和遗留 Minor 问题。
-- Act Response 记录有证据的 Runbook、Incident 候选；没有则写 `None`。
+- Act Response 记录有证据的 Runbook、Issue 候选；没有则写 `None`。
+- 当前 change 范围外的实质缺陷，Plan 在 Plan Review 或计划交付中、Act 在 Act Response 中作为 Issue 候选报告，只报告不落账；Issue 的建立、关闭与重开由 Recorder 按用户指令执行。
 - Act Response 状态允许 `pending → reported`、`pending → blocked`、用户解决阻塞后的 `blocked → pending`，以及 Plan 要求当前 Cycle 修复时的 `reported → pending`。
 - 计划偏差或 `required` Evidence 不再满足白名单、必要性、预算或可采集性时，Act 写 Blocker Handoff，将 Response 改为 `blocked`，并按需保存 `act-added / BLOCKED` Evidence。
 - 用户解决阻塞并要求继续时，Act 追加 Blocker Resolution，保留原 Blocker Handoff，再恢复当前 Cycle。
 - Review 保持 `pending` 且没有后继 Cycle 时，Plan 和 Act 可分别覆盖自己的区域为最新完整状态；进入终态或创建后继 Cycle 后，Cycle 冻结。Plan Context 始终不可改写。
-- Act 只在用户明确要求、结果无法低成本复现、一次性环境即将消失、Incident/Blocker 需要保留现场，或摘要会丢失决定性结构时创建 `evidence/<iteration>/<cycle>/`。
+- Act 只在用户明确要求、结果无法低成本复现、一次性环境即将消失、Issue/Blocker 需要保留现场，或摘要会丢失决定性结构时创建 `evidence/<iteration>/<cycle>/`。
 - Evidence 目录与 Iteration/Cycle 层级一致，随 change 归档，不登记 R。
 - Act 不得创建下一 Cycle 或下一 Iteration。
 - Plan Review 必须检查代码和证据，不以 Act Self-Review 代替独立检查。
@@ -272,6 +263,7 @@ agent 可执行的测试和 Review 不形成边界。验证失败时保留当前
 - Review Result 的终态为 `accepted | rework-required | replan-required`；Plan 写完 Review 和后继产物后最后更新。`rework-required` 不修改 Map；`replan-required` 调整计划并创建同一 Iteration 的 replan Cycle。
 - 连续两个 rework Cycle 未缩小同一 Acceptance gap 时重新检查 Plan、设计和需求假设；同一问题三次失败后不得创建第四次同类 Cycle。
 - 当前 Iteration 只有在 Review Result 为 `accepted` 后才能完成并展开 Map 中的下一 Iteration。
+- 展开后继 Iteration 时，Current Baseline 优先引用前一 Iteration 最终 Act Response 的改动、验证结论和 accepted Review，只补查本次需求新涉及的代码表面。
 
 ## 验证
 
@@ -284,13 +276,31 @@ agent 可执行的测试和 Review 不形成边界。验证失败时保留当前
 
 Gate 必须有新鲜验证结果，但不要求原始输出文件。验证按影响范围递增：直接目标测试 → 受影响边界 → 必要的集成或全量 Gate；现有结果足以判断 Acceptance 后停止。
 
+验证结论的新鲜指产生时真实运行过且覆盖范围自产生后未变化，不要求本次会话重新运行。覆盖范围未变化的结论可以被后续角色和时间点采信：
+
+- 采信方做一次只读基线检查（`git status`、`git diff`），确认覆盖范围内的材料与结论产生时一致。
+- 在自己的 Review 或 Response 中注明来源和结论，不复制长输出；采信不创建 Evidence。
+- 采信错误结论的责任跟随结论产生方，如同 Act 不复核 ready 的 Plan Context。
+
+出现以下情况时重跑，不采信：
+
+- 结论与代码、diff 或其他证据矛盾，或输出可疑。
+- 验证本身不确定：已知 flaky、时序、性能或并发竞争类。
+- 覆盖范围无法映射到当前要判断的 Acceptance。
+- 用户显式要求独立复现。
+- 采信方即将修改覆盖范围内的代码。修改前的测试见证观察当前基线；基线未变化时，既有结论就是当前基线的合法观察，恢复阻塞和 rework 场景按此采信。
+
+基线检查用 git 现状判断覆盖范围是否变化，属于定位现场，不是身份型证据工程；Acceptance 仍由原始行为输出支持。
+
 命令顺序由当前工作流状态和退出结果表达，时间戳只能辅助诊断。Hash、revision、run-id、peer、manifest 或时间顺序一致均不能使 Gate 通过；没有目标状态、输出、错误结果或退出码等行为证据时，验证结论为失败。
 
 Persisted Evidence 默认 `none`。设为 `required` 前必须说明它支持哪个 Acceptance、为什么 Act Response 不够、为什么无法低成本重跑，以及缺少它会阻止哪个决定；任一项无法回答时保持 `none`。
 
-每个 Cycle 的 Evidence 目录最多 5 个文件（含 README），整个 change 最多 20 个 Evidence 文件；单个文本文件最多 500 行且不超过 256 KiB。禁止保存完整日志目录、源码副本或完整测试套件输出，禁止通过增加 Cycle、拆分、压缩或改格式绕过限制。确有必要超出时，收集前取得用户明确批准；超限本身不阻塞实现或 Acceptance。
+每个 Cycle 的 Evidence 目录最多 5 个文件（含 README），整个 change 最多 20 个 Evidence 文件；单个文本文件最多 500 行且不超过 256 KiB。禁止保存完整日志目录、源码副本或完整测试套件输出，禁止通过增加 Cycle、拆分、压缩、编码或改格式绕过限制。确有必要超出时，收集前取得用户明确批准；超限本身不阻塞实现或 Acceptance。
 
 禁止使用“应该、大概、基本完成”替代证据。
+
+change 结构自检覆盖：tasks 状态与实际完成一致，specs、design 与已实现行为一致，Iteration 与 Cycle 文件齐全，`Review Result` 与流程状态一致。
 
 ## 三次失败
 

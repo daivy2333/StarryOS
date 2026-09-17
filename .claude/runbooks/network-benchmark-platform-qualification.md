@@ -8,6 +8,8 @@
 - Runtime source: [EV-005-07](../../openspec/changes/archive/2026-08-06-ms16-qemu-polling-network-performance-baseline/evidence/005-runtime-readiness-closure-and-manual-handoff/qemu-usernet-smoke-attempt-1.md)
 - Change source: [iteration 005](../../openspec/changes/archive/2026-08-06-ms16-qemu-polling-network-performance-baseline/iterations/005-runtime-readiness-closure-and-manual-handoff.md)
 
+> ⚠️ STALE [2026-09-17] — `run-id`、artifact/source hash、manifest/checker 资格和身份握手与当前规则冲突；在行为规格、测试程序和采集工具完成独立清理前，不得用本流程生成新的资格结论。
+
 ## 适用范围
 
 本 Runbook 判断一个网卡环境和驱动实现能否运行统一测试。QEMU、真板属于环境；polling、async 属于被比较的 driver treatment。协议、方向、payload、flow 和指标才是测试项目。

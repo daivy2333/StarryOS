@@ -1,11 +1,11 @@
 ## 1. 共享 SMP 同步与调度基础
 
-- [ ] 1.1 在 `kernel/src/critical_section_policy.rs`、`kernel/src/lib.rs` 和 MS04/MS08 host harness 中将 local-IRQ-only policy 改为“本地 IRQ restore + 全局 Acquire/Release 锁 + per-hart 嵌套深度”；以双线程互斥、同 hart 嵌套、ISR entry、非 owner/underflow fail-closed 和既有 harness 验证，禁止在临界区内阻塞、yield 或取得驱动锁。
+- [ ] 1.1 在 `kernel/src/critical_section_policy.rs`、`kernel/src/lib.rs` 和 MS04/MS08 host harness 中将 local-IRQ-only policy 改为“本地 IRQ restore + 全局 Acquire/Release 锁 + per-hart 嵌套深度”；以双线程互斥、同 hart 嵌套、ISR entry、非 owner、underflow、overflow fail-closed 和既有 harness 验证，修正 release witness 的发布顺序，禁止在临界区内阻塞、yield 或取得驱动锁。
 - [ ] 1.2 从锁定的 `axtask 0.3.0-preview.2` 建立 `crates/axtask` 工作区副本，在 root 和 standalone `crates/axnet` manifest 中 patch 到同一副本；以 metadata、lock diff、license/version 和 UART/axnet 回归验证，禁止修改 registry 或 vendor 第二个 crate。
-- [ ] 1.3 在本地 `axtask` 中增加入队前 affinity spawn 和任意 task 的安全 mask 更新；以 1/2/3/4/8/16、稀疏、空、越界、offline 和“失败不改变旧 mask”测试证明 affinity 在 `select_run_queue` 前提交，保持旧 spawn API 的 full-online-mask 默认行为。
+- [ ] 1.3 在本地 `axtask` 中增加 Acquire/Release 发布的 schedulable run-queue 集合、只从已发布集合选择目标的普通 spawn，以及入队前 affinity spawn 和任意 task 的安全 mask 更新；以 configured=16/仅 primary schedulable、1/2/3/4/8/16、稀疏、空、越界、offline、未初始化和“失败不改变旧 mask”测试证明不会解引用未初始化 run queue，同时保持旧 spawn API 的 full-mask affinity。
 - [ ] 1.4 在本地 `axtask` 增加默认关闭的 `ipi` feature、唯一 S_SOFT handler 和 remote-ready IPI；以 mock tests 证明只有成功 `Blocked → Ready` 的 remote enqueue 发送一次 IPI，本地 wake 只提交 pending，重复 wake 不发送，handler 不直接切换 task。
 - [ ] 1.5 在 kernel `smp` feature 传播 `axtask/ipi`，并以 feature tree/source guard 确认不同时启用 `axruntime/ipi`/`axipi`；注册冲突、未初始化 current task 和无单目标 IPI 均是停止条件。
-- [ ] 1.6 新增 RISC-V QEMU config overlay，将 PLIC MMIO range 从 `0x0c00_0000/0x21_0000` 修正为 `0x0c00_0000/0x60_0000`，保留其他 MMIO ranges 和用户 `EXTRA_CONFIG` 最终优先级；以生成配置、非 QEMU 不变和 `SMP=16` 早期启动越过 PLIC/scheduler init 验证。
+- [ ] 1.6 为 RISC-V QEMU 增加最终配置写入，将 PLIC MMIO range 从 `0x0c00_0000/0x21_0000` 修正为 `0x0c00_0000/0x60_0000`，保留其他 MMIO ranges；`EXTRA_CONFIG` 保持非重复项合并能力，但不得被描述为可覆盖已有 `devices.mmio-ranges`。以生成配置、重复 key 拒绝、非 QEMU 不变和 `SMP=16` 早期启动越过 PLIC/scheduler init 验证。
 - [ ] 1.7 运行 foundation 集成 Gate：critical-section/axtask/config focused tests、`uart_16550 --features async`、axnet ordinary/qemu-diagnostics、`make host-test` 可执行部分、`make build SMP=16` 和有界 `make justrun SMP=16 NET=n`；任一非环境失败停止，不得进入驱动 placement。
 
 ## 2. UART 固定 placement、唯一性与观测
@@ -57,7 +57,7 @@
 
 - Tasks: 1.1–1.7
 - Depends on: None
-- Stable baseline: kernel critical-section 跨 hart 安全；workspace `axtask` 支持入队前 affinity 和 remote-ready IPI；UART/网络尚不改变 placement。
+- Stable baseline: kernel critical-section 跨 hart 安全；workspace `axtask` 只选择已发布的 schedulable run queue，并支持入队前 affinity 和 remote-ready IPI；UART/网络尚不改变 placement。
 - Verification boundary: focused 互斥/affinity/IPI/config tests、UART/axnet 回归、`SMP=16` build 及早期启动通过。
 - Diagnostic boundary: critical-section、task 构造/run queue、S_SOFT/IPI、feature 传播或 PLIC 映射。
 - Non-goals: 驱动 placement、diagnostic ABI、迁移和数据面 runtime。

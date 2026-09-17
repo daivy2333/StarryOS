@@ -5,6 +5,8 @@
 - Environment: QEMU 7.0.0；RISC-V `virt`；1 GiB；单 hart；单 VirtIO-MMIO NIC；user-net；`LOG=warn`；Rust nightly-2026-02-25
 - Source: `ms06-application-visible-async-network-stack` Iteration 008 / Cycle `001-replan` Act Response（`reported`）+ `evidence/008-single-hart-qemu-acceptance/001-replan/`；2026-09-02 回归来源 MS07 Iteration 007 Cycle 006 `evidence/007-single-hart-qemu-qualification/006-rework/ms06-qemu-serial.log`
 
+> ⚠️ STALE [2026-09-17] — size/mtime、冻结构建产物和 R44 绝对手工政策不再是允许的资格条件；12-case 行为判据仍可复用，身份步骤须由 Recorder 移除。
+
 ## 适用范围
 
 在 single-hart QEMU VirtIO-MMIO 上手工验收 MS06 应用可见异步网络栈：MS06 12-case readiness

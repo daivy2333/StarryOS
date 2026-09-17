@@ -5,6 +5,8 @@
 - Environment: 任意 QEMU `-nographic` 手工验证（RISC-V virt；单 hart；user-net）；宿主 Linux shell
 - Source: `ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/004-rework/`（`script`/`tee` 实跑记录）；R44 `qemu-network-testing.md`
 
+> ⚠️ STALE [2026-09-17] — 串口和 host 输出采集方式仍可使用，但可选 hash/provenance 和 R44 的绝对手工政策已经过期；修订前不得把这些字段作为运行归属或 Acceptance 条件。
+
 ## 适用范围
 
 任何需要为 OpenSpec change 采集 QEMU 手工运行证据的操作：

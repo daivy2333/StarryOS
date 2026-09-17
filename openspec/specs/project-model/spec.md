@@ -52,16 +52,7 @@ OS abstraction layer MUST 只保留驱动代码实际调用的 trait。当前为
 - **WHEN** `cargo build` 报告 OS abstraction 类型的 dead_code warning
 - **THEN** 未使用的 trait MUST 从 OS abstraction 层删除，对应的 adapter impl SHALL 删除
 
-### Requirement: M32 — lint 与测试 Gate 分层
-
-后续 clippy/test 清理 proposal MUST 按 artifact、feature、target 和平台配置分层。可复用 crate 用 host check/test/clippy；kernel 用目标架构 + feature compile gate；IRQ/TTY/rootfs 行为用 QEMU/真板 gate。
-
-**Legacy**: ADR-059 (A059), 2026-07-13 | **状态**: 候选
-
-#### Scenario: 定义 clippy 和测试 gate
-
-- **WHEN** 后续 change 清理 StarryOS 或 `uart_16550` 的 warning、clippy 和 tests
-- **THEN** MUST 为可复用 crate、kernel target build 和系统 runtime 定义分离的 gate
+<!-- arc: ARC-202609171804 --> M32 已归档 (2026-09-17) → ../../changes/archive/2026-09-17-ARC-202609171804/proposal.md
 
 <!-- arc: cleanup-uart-documentation-system --> M33 (io_uring UART mapping) archived 2026-07-25.
 

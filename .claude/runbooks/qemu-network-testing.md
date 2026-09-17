@@ -3,6 +3,8 @@
 > Status: active | Related: K31, K32, R55, R48, `qemu-evidence-capture.md` | Last updated: 2026-08-27
 > Verified: 2026-07-29 MS01 manual QEMU 10/10 PASS; 2026-08-09 build exit/artifact classification checked; 2026-08-17 offline-injection fallback path (R55/R48) added
 
+> ⚠️ STALE [2026-09-17] — “所有 QEMU 测试一律手工”的绝对政策与已批准的 MS08 serial harness/guest probe 路线冲突；现有手工流程仍可执行，但自动化边界须由 Recorder 按当前 change 修订。
+
 ## Purpose
 
 在 QEMU 中运行 StarryOS 并对其网络栈进行手动功能验证的标准流程。

@@ -50,11 +50,13 @@
 
 ### D0：工作区 QEMU 配置覆盖完整 PLIC MMIO 窗口
 
-**Decision**：为 `riscv64-qemu-virt` 增加工作区自有的配置 overlay，并由构建入口在该平台合并；overlay只把平台已声明的 PLIC MMIO range从 `0x0c00_0000/0x21_0000` 修正为 QEMU DT 与上游配置注释均给出的 `0x0c00_0000/0x60_0000`，其余 MMIO ranges保持相同。用户显式 `EXTRA_CONFIG` 仍在该 overlay之后合并。
+**Decision**：为 `riscv64-qemu-virt` 增加工作区自有的最终配置写入，只把平台已声明的 PLIC MMIO range 从 `0x0c00_0000/0x21_0000` 修正为 QEMU DT 与上游配置注释均给出的 `0x0c00_0000/0x60_0000`，其余 MMIO ranges 保持相同。`axconfig-gen 0.2.1` 会先合并全部 specification，再统一应用 `-w`；specification 遇到重复 key 会报错。因此 `EXTRA_CONFIG` 继续用于非重复配置项，不能覆盖 `devices.mmio-ranges`，PLIC 平台事实由最后的 `-w` 修正。
 
 **Reason**：PLIC supervisor context地址随 hart ID增长。16-hart探针由 boot hart 11 执行 `init_percpu` 时访问超出 `0x21_0000` 映射并触发早期 page fault；page-fault handler随后因 scheduler尚未初始化而以 `current task is uninitialized` 掩盖原始故障。缩回8 hart只隐藏平台映射缺口。
 
 **Impact**：`make build/run SMP=16` 无需修改 Cargo registry即可访问全部16个QEMU hart的PLIC context；overlay只适用于默认RISC-V QEMU平台，不改变D1/VF2或未来K3配置。早期启动Gate必须证明不再发生该page fault及其派生panic。
+
+**Compatibility correction**：Cycle `001-replan` 曾要求 `EXTRA_CONFIG` 在 PLIC 修正之后取得最终优先级。实际工具不支持 specification 覆盖已有 key；现实现反而由最终 `-w` 覆盖 `EXTRA_CONFIG`。本 change 不新增配置预处理器或第二套 override 协议。该计划修订在 Cycle `002-replan` 获得用户批准前不进入执行就绪状态。
 
 **Alternatives**：
 
@@ -64,9 +66,9 @@
 
 ### D1：工作区 vendor `axtask`，不在驱动层模拟远端调度
 
-**Decision**：从锁定的 `axtask 0.3.0-preview.2` 建立 `crates/axtask` 工作区副本，并在根 manifest 与独立的 `crates/axnet` manifest 中使用 `[patch.crates-io]`。扩展仅包括入队前 affinity spawn、安全 affinity 更新、remote ready queue IPI 和必要 telemetry/tests。
+**Decision**：从锁定的 `axtask 0.3.0-preview.2` 建立 `crates/axtask` 工作区副本，并在根 manifest 与独立的 `crates/axnet` manifest 中使用 `[patch.crates-io]`。扩展包括 run queue readiness 发布、入队前 affinity spawn、安全 affinity 更新、remote ready queue IPI 和必要 telemetry/tests。primary/secondary scheduler 只在对应 `RUN_QUEUES[cpu]` 写入完成后以 Release 发布 schedulable bit；选择 run queue 时以 Acquire 读取该集合，并使用 task affinity 与 schedulable 集合的交集。普通 spawn 保留配置的 full mask，但首次及后续选择不得解引用尚未发布的 run queue；显式 affinity spawn/update 则拒绝任何未 schedulable bit，失败不改变旧状态。
 
-**Reason**：task 必须在选择 run queue 前带有最终 affinity；UART 或网络在 spawn 后纠正会留下 task 已进入未初始化或错误 run queue 的窗口。远端 ready task是否触发目标 CPU 调度也是 scheduler 责任，不能由每个 waker caller重复实现。
+**Reason**：task 必须在选择 run queue 前带有最终 affinity；UART 或网络在 spawn 后纠正会留下 task 已进入未初始化或错误 run queue 的窗口。`axhal::cpu_num()` 是 configured count，不代表 secondary run queue 已初始化；仅用它校验 mask 会让早期普通 spawn 解引用 `MaybeUninit`。远端 ready task是否触发目标 CPU 调度也是 scheduler 责任，不能由每个 waker caller重复实现。
 
 **Impact**：所有使用 `axtask` 的 root 构建会采用工作区副本；独立 axnet tests 也必须指向同一副本。vendor 基线必须保持上游版本、license、现有 features 和 API，新增 feature 默认关闭。
 
@@ -75,6 +77,8 @@
 - spawn 后调用 `set_current_affinity`：拒绝，task 已经入队并可能运行。
 - 只保存 `AxTaskRef` 后调用 `set_cpumask`：拒绝，不能关闭首次入队竞态。
 - 在每个驱动事件后直接 `send_ipi`：拒绝，会把 run queue选择和 remote-ready 判定复制到驱动层。
+- 仅把早期 network runner 固定到 primary：拒绝，这会用 driver placement 掩盖 scheduler 对未初始化 run queue 的通用错误。
+- 把 configured CPU count 当作 schedulable 集合：拒绝，secondary scheduler 初始化发生在 `cpu_num()` 已返回最终数量之后。
 - 原地修改 Cargo registry：项目规则禁止。
 
 ### D2：`axtask/ipi` 直接承载 reschedule IPI

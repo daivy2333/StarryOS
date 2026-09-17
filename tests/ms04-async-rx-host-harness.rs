@@ -21,23 +21,45 @@ mod critical_section_policy;
 
 use core::cell::Cell;
 
-use critical_section_policy::{IrqOps, acquire, release};
+use std::sync::Arc;
+use std::thread;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as StdOrdering};
 
-/// Fake IRQ backend: simulates the global IRQ enable state and records
-/// disable/enable call counts.
+use critical_section_policy::{
+    IrqOps, MAX_CPU_NUM, checked_increment_depth, acquire, release,
+};
+
+/// Fake IRQ backend: simulates this hart's IRQ enable state and records
+/// disable/enable call counts. Each instance represents one hart (identified
+/// by `cpu_id`); the policy's static `NEST_DEPTH`/`GLOBAL_LOCK` are shared
+/// across instances/threads, so distinct `cpu_id`s model distinct harts.
 #[derive(Default)]
 struct FakeIrqOps {
     irqs_enabled: Cell<bool>,
     disable_calls: Cell<u32>,
     enable_calls: Cell<u32>,
+    cpu_id: usize,
 }
 
 impl FakeIrqOps {
     fn new(irqs_enabled: bool) -> Self {
         Self {
             irqs_enabled: Cell::new(irqs_enabled),
+            cpu_id: 0,
             ..Self::default()
         }
+    }
+
+    fn with_cpu(cpu_id: usize, irqs_enabled: bool) -> Self {
+        Self {
+            irqs_enabled: Cell::new(irqs_enabled),
+            cpu_id,
+            ..Self::default()
+        }
+    }
+
+    fn cpu_id(&self) -> usize {
+        self.cpu_id
     }
 
     fn enable_calls(&self) -> u32 {
@@ -63,11 +85,15 @@ impl IrqOps for FakeIrqOps {
         self.irqs_enabled.set(true);
         self.enable_calls.set(self.enable_calls.get() + 1);
     }
+
+    fn current_cpu_id(&self) -> usize {
+        self.cpu_id
+    }
 }
 
 #[test]
 fn enabled_acquire_disables_and_release_reenables_once() {
-    let ops = FakeIrqOps::new(true);
+    let ops = FakeIrqOps::with_cpu(1,true);
     let was_enabled = acquire(&ops);
     assert!(was_enabled);
     assert!(!ops.irqs_enabled.get());
@@ -79,7 +105,7 @@ fn enabled_acquire_disables_and_release_reenables_once() {
 
 #[test]
 fn isr_entry_acquire_returns_false_and_release_never_enables() {
-    let ops = FakeIrqOps::new(false);
+    let ops = FakeIrqOps::with_cpu(2,false);
     let was_enabled = acquire(&ops);
     assert!(!was_enabled);
     assert!(!ops.irqs_enabled.get());
@@ -91,7 +117,7 @@ fn isr_entry_acquire_returns_false_and_release_never_enables() {
 
 #[test]
 fn nested_acquire_only_outermost_release_reenables() {
-    let ops = FakeIrqOps::new(true);
+    let ops = FakeIrqOps::with_cpu(3,true);
     let outer = acquire(&ops);
     assert!(outer);
     let inner = acquire(&ops);
@@ -108,7 +134,7 @@ fn nested_acquire_only_outermost_release_reenables() {
 
 #[test]
 fn nested_isr_context_never_enables() {
-    let ops = FakeIrqOps::new(false);
+    let ops = FakeIrqOps::with_cpu(4,false);
     let outer = acquire(&ops);
     assert!(!outer);
     let inner = acquire(&ops);
@@ -122,7 +148,7 @@ fn nested_isr_context_never_enables() {
 
 #[test]
 fn release_false_never_enables_irqs() {
-    let ops = FakeIrqOps::new(true);
+    let ops = FakeIrqOps::with_cpu(5,true);
     let was_enabled = acquire(&ops);
     release(&ops, !was_enabled);
     assert!(!ops.irqs_enabled.get());
@@ -131,12 +157,165 @@ fn release_false_never_enables_irqs() {
 
 #[test]
 fn acquire_always_disables_irqs() {
-    let ops = FakeIrqOps::new(true);
-    acquire(&ops);
+    let ops = FakeIrqOps::with_cpu(6, true);
+    let outer = acquire(&ops);
     acquire(&ops);
     assert!(!ops.irqs_enabled.get());
     assert_eq!(ops.disable_calls(), 2);
     assert_eq!(ops.enable_calls(), 0);
+    // Balance releases so the shared global lock is not leaked to later tests.
+    release(&ops, false);
+    release(&ops, outer);
+}
+
+/// Two harts (distinct cpu ids) must never simultaneously hold the critical
+/// section across threads: the per-hart depth gates through the shared global
+/// owner lock, so the observed maximum concurrency over many iterations is 1.
+#[test]
+fn cross_hart_mutual_exclusion_single_concurrent_owner() {
+    const ITERS: usize = 2000;
+    let inside = Arc::new(AtomicUsize::new(0));
+    let max_concurrent = Arc::new(AtomicUsize::new(0));
+    let failed = Arc::new(AtomicU32::new(0));
+
+    let mut handles = Vec::new();
+    for cpu in [10usize, 11] {
+        let inside = Arc::clone(&inside);
+        let max = Arc::clone(&max_concurrent);
+        let failed = Arc::clone(&failed);
+        handles.push(thread::spawn(move || {
+            let ops = FakeIrqOps::with_cpu(cpu, true);
+            for _ in 0..ITERS {
+                let was_enabled = acquire(&ops);
+                debug_assert!(was_enabled);
+                let cur = inside.fetch_add(1, StdOrdering::SeqCst) + 1;
+                max.fetch_max(cur, StdOrdering::SeqCst);
+                if cur > 1 {
+                    failed.fetch_add(1, StdOrdering::SeqCst);
+                }
+                inside.fetch_sub(1, StdOrdering::SeqCst);
+                release(&ops, was_enabled);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(failed.load(StdOrdering::Relaxed), 0, "two harts in critical section");
+    assert!(max_concurrent.load(StdOrdering::SeqCst) <= 1);
+}
+
+/// cpu 1 (another hart) must remain blocked until cpu 0 releases the global
+/// owner lock. The occupant is published *inside* the critical section, so the
+/// causal claim (cpu 1 can only enter after cpu 0 cleared the section) has no
+/// post-unlock window in which a software flag could disagree with ownership.
+#[test]
+fn cross_hart_second_acquire_waits_for_first_release() {
+    use std::time::Duration;
+
+    let inside = Arc::new(AtomicUsize::new(0));
+
+    let t0 = {
+        let inside = Arc::clone(&inside);
+        thread::spawn(move || {
+            let ops = FakeIrqOps::with_cpu(0, true);
+            let was_enabled = acquire(&ops);
+            // Publish the occupant while still holding the lock.
+            inside.store(1, StdOrdering::SeqCst);
+            let nested = acquire(&ops);
+            assert!(!nested);
+            release(&ops, nested);
+            // Sleep while owning the section so cpu 1 is provably blocked.
+            thread::sleep(Duration::from_millis(20));
+            // Publish "released" *before* releasing ownership (still inside the
+            // lock), so there is no window where cpu 1 could enter while this
+            // flag still claims occupancy.
+            inside.store(0, StdOrdering::SeqCst);
+            release(&ops, was_enabled);
+        })
+    };
+
+    // Wait until cpu 0 provably owns the section before cpu 1 tries.
+    while inside.load(StdOrdering::SeqCst) != 1 {
+        thread::yield_now();
+    }
+
+    let t1 = {
+        let inside = Arc::clone(&inside);
+        thread::spawn(move || {
+            let ops = FakeIrqOps::with_cpu(1, true);
+            let was_enabled = acquire(&ops);
+            // Mutual exclusion guarantees cpu 0 already cleared the occupant
+            // (it set 0 before releasing the global lock that gates this entry).
+            assert_eq!(
+                inside.load(StdOrdering::SeqCst),
+                0,
+                "cpu 1 entered while cpu 0 still held the critical section"
+            );
+            inside.fetch_add(1, StdOrdering::SeqCst);
+            release(&ops, was_enabled);
+        })
+    };
+
+    t0.join().unwrap();
+    t1.join().unwrap();
+    assert_eq!(inside.load(StdOrdering::SeqCst), 1, "cpu 0 released exactly once");
+}
+
+/// The nesting-depth transition must reject exactly at the real `u32` ceiling,
+/// not at any artificial non-production bound. `checked_increment_depth` is the
+/// pure seam `acquire` hydrates through `fetch_update`; exercising it directly
+/// at the width boundary witnesses the overflow fail-closed transition without
+/// driving any live counter to `u32::MAX`.
+#[test]
+fn checked_increment_depth_fails_closed_at_u32_overflow() {
+    assert_eq!(checked_increment_depth(0), Some(1));
+    assert_eq!(checked_increment_depth(u32::MAX - 1), Some(u32::MAX));
+    // One past the `u32` width: `None` means the transition is rejected, so
+    // `acquire`'s `fetch_update` leaves the counter untouched.
+    assert_eq!(checked_increment_depth(u32::MAX), None);
+}
+
+/// The exact atomic mutation `acquire` performs must not store on overflow:
+/// `fetch_update` with the seam returns `Err(prev)` and leaves the counter (and
+/// therefore the global owner and the already-disabled IRQ state) unchanged.
+/// This is the reachable equivalent of the fail-closed abort the old depth-cap
+/// test drove only at an artificial 64-level bound.
+#[test]
+fn fetch_update_with_seam_preserves_counter_on_overflow() {
+    let depth = std::sync::atomic::AtomicU32::new(u32::MAX);
+    let result = depth.fetch_update(
+        StdOrdering::AcqRel,
+        StdOrdering::Acquire,
+        checked_increment_depth,
+    );
+    assert_eq!(
+        result,
+        Err(u32::MAX),
+        "overflowing nesting must be rejected, not wrapped"
+    );
+    assert_eq!(
+        depth.load(StdOrdering::Acquire),
+        u32::MAX,
+        "counter untouched on overflow"
+    );
+}
+
+/// Releasing a depth of zero (no matching acquire on this hart) must fail
+/// closed with a panic rather than corrupting another hart's ownership.
+#[test]
+#[should_panic(expected = "depth underflow")]
+fn release_without_acquire_fails_closed() {
+    let ops = FakeIrqOps::with_cpu(12, true);
+    release(&ops, true);
+}
+
+/// A hart id at or above MAX_CPU_NUM must fail closed, never index UB.
+#[test]
+#[should_panic(expected = "exceeds MAX_CPU_NUM")]
+fn out_of_range_cpu_id_fails_closed() {
+    let ops = FakeIrqOps::with_cpu(MAX_CPU_NUM, true);
+    let _ = acquire(&ops);
 }
 
 const LEGACY_DIRECT_CALL_IMPL: &str = r#"
@@ -549,4 +728,117 @@ static int run_nudge() { return fail_mode() + finish_mode(); }
 static int run_burst() { return fail_mode() + finish_mode(); }
 "#;
     assert!(probe_terminal_guard::check(MUTATED).is_err());
+}
+
+/// The scheduler must be the single owner of the reschedule S_SOFT handler.
+///
+/// `starry-kernel/smp` must enable `axtask/ipi` (our vendor extension that owns
+/// the software-interrupt and sends the remote-reschedule IPI) and must never
+/// simultaneously enable `axruntime/ipi`/`axipi`, which would register the same
+/// S_SOFT slot for an unrelated IPC dispatcher.
+#[test]
+fn ipi_owner_is_single_and_only_from_kernel_smp() {
+    const KERNEL: &str = include_str!("../kernel/Cargo.toml");
+
+    // kernel `smp` propagates `axtask/ipi`.
+    let smp_list = KERNEL
+        .split("smp = [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .expect("kernel smp feature list");
+    assert!(
+        smp_list.contains("axtask/ipi"),
+        "kernel smp must enable axtask/ipi (the sole S_SOFT reschedule owner)"
+    );
+
+    // The kernel must never enable the competing `axruntime/ipi` / `axipi`
+    // features anywhere (SMP or otherwise).
+    assert!(
+        !KERNEL.contains("axruntime/ipi"),
+        "kernel must not enable axruntime/ipi (competing S_SOFT owner)"
+    );
+    assert!(
+        !KERNEL.contains("axipi"),
+        "kernel must not enable axipi (competing S_SOFT owner)"
+    );
+}
+
+/// The QEMU config overlay must correct only the PLIC MMIO window to the full
+/// `0x0c00_0000 / 0x60_0000` declared by the device tree, and only on the
+/// default RISC-V QEMU platform. Non-QEMU platforms must not receive the arg.
+#[test]
+fn qemu_plic_overlay_only_fixes_plic_window() {
+    const CONFIG_MK: &str = include_str!("../make/config.mk");
+    const OVERLAY_VAL: &str = "0x0c00_0000, 0x60_0000";
+
+    // The override is applied via the final `-w` write arg (last-applied, so it
+    // corrects the platform fact after any EXTRA_CONFIG merge) and only when the
+    // platform is the default RISC-V QEMU virt board.
+    assert!(
+        CONFIG_MK.contains("QEMU_OVERLAY_ARG"),
+        "config.mk must define the QEMU overlay write arg"
+    );
+    assert!(
+        CONFIG_MK.contains("riscv64-qemu-virt"),
+        "config.mk must gate the overlay on the riscv64-qemu-virt platform"
+    );
+    assert!(
+        CONFIG_MK.contains(OVERLAY_VAL),
+        "config.mk QEMU overlay must use the full PLIC window 0x60_0000"
+    );
+
+    // Non-QEMU platforms must not receive the arg at all (empty for non-QEMU).
+    let branch = CONFIG_MK
+        .split("ifeq ($(strip $(PLAT_NAME)), riscv64-qemu-virt)")
+        .nth(1)
+        .and_then(|s| s.split("endif").next())
+        .expect("qemu-gated overlay branch");
+    assert!(
+        branch.contains("QEMU_OVERLAY_ARG :="),
+        "overlay arg must be assigned only inside the QEMU platform guard"
+    );
+}
+
+/// `axconfig-gen 0.2.1` merges every specification file first and rejects a
+/// duplicate key, then applies all `-w`. So `EXTRA_CONFIG` must not be
+/// documented as able to override an existing `devices.mmio-ranges`: a second
+/// spec defining that key is a deterministic merge-time `Duplicate key` error,
+/// independent of CLI argument order. This guard proves that rejection with a
+/// minimal fixture rather than re-reading the generator source.
+#[test]
+fn config_extra_duplicate_mmio_key_is_rejected() {
+    use std::process::Command;
+
+    let dir = std::env::temp_dir().join(format!("ms08-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = dir.join("base.toml");
+    let extra = dir.join("extra.toml");
+    let out = dir.join("out.toml");
+    let _ = std::fs::remove_file(&out);
+
+    std::fs::write(&base, "devices.mmio-ranges = [[0x0c00_0000, 0x21_0000]]\n").unwrap();
+    std::fs::write(&extra, "devices.mmio-ranges = [[0x3000_0000, 0x1000]]\n").unwrap();
+
+    let out_res = Command::new("axconfig-gen")
+        .arg(&base)
+        .arg(&extra)
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .expect("axconfig-gen must be on PATH");
+
+    let stderr = String::from_utf8_lossy(&out_res.stderr);
+    assert!(
+        !out_res.status.success(),
+        "a duplicate devices.mmio-ranges spec must be rejected, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Duplicate key"),
+        "rejection must be the merge-stage duplicate-key error, got: {stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "a rejected duplicate-key merge must not produce an output config"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

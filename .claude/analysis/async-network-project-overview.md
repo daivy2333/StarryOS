@@ -9,6 +9,8 @@
 > Local ArceOS: `68bda6dbb7655f383fde01ff60b50b8a02694ce3`
 > See also: [实施探索](starryos-network-development-strategy.md)、[任务状态](../docs/tasks.md)
 
+> ⚠️ STALE [2026-09-17] — 分支、活跃 change 和“下一步为 MS04”的状态描述已过期；架构背景仍可参考，当前状态以 SNAPSHOT、tasks 和 `openspec list` 为准。
+
 本文是网络开发的跨 session 入口。当前状态以 tasks 为准，规范约束以 M/D/K 为准，代码证据和推导保留在专题分析中。
 
 ## 新 session 读取顺序

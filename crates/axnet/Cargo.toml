@@ -159,6 +159,9 @@ features = ["test-seeds"]
 
 # This crate is excluded from the root workspace, so the root patch table does
 # not apply here; redirect axdriver_net to the same workspace-local copy the
-# root build uses (queue-control contract lives only there).
+# root build uses (queue-control contract lives only there). axtask is likewise
+# redirected to the same workspace-local copy so both build faces share the
+# affinity/IPI scheduler seam.
 [patch.crates-io]
 axdriver_net = { path = "../axdriver_net" }
+axtask = { path = "../axtask" }

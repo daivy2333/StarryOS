@@ -966,8 +966,6 @@ dependencies = [
 [[package]]
 name = "axtask"
 version = "0.3.0-preview.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc45120776afddf28b19bb7aba87e379c5779cf28a8f7884943a4821caeec774"
 dependencies = [
  "axconfig",
  "axerrno 0.2.2",

@@ -7,6 +7,8 @@
   `evidence/009-final-sandbox-rerun-and-qemu-runtime/`；2026-09-02 回归来源 MS07 Iteration 007
   Cycle 006 `evidence/007-single-hart-qemu-qualification/006-rework/ms04-qemu-serial.log`
 
+> ⚠️ STALE [2026-09-17] — size/mtime、exact-binary 和可选 SHA-256 provenance 不再属于允许的 Gate；行为用例仍可复用，采集步骤须移除这些身份条件后再作为当前 Runbook 使用。
+
 ## 适用范围
 
 本 Runbook 验证 MS04 的核心异步 RX 路径：唯一 queue task、IRQ/软件唤醒、空闲无忙轮询、

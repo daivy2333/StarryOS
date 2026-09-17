@@ -1,10 +1,12 @@
 # SNAPSHOT.md — 当前项目描述
 
-> Sync status: current
+> Sync status: stale
 > Updated: 2026-09-16
 > Revision: `04fc3ce5101ebf6a2e30b91e7fc6512c2a17f8a3`
 > Branch: `k3`
 > Worktree: clean
+
+> ⚠️ STALE [2026-09-17] — 当前分支、revision、工作树、目标板和活跃 change 描述已与仓库现场不一致；由 `openspec-docs-maintainer` 刷新前，不得把本文件作为当前状态依据。
 
 ## 项目身份
 

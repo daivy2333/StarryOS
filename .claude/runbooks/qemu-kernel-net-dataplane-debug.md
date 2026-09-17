@@ -5,6 +5,8 @@
 - Environment: WSL2 x86_64；QEMU 7.0.0；RISC-V `virt`；1 GiB；单 hart；单 VirtIO-MMIO NIC；user-net；Rust nightly-2026-02-25；offline Cargo
 - Source: `ms05-qemu-bounded-bidirectional-device-data-plane` Iteration 011 Cycle 000（blocked，Diagnostic Addendum）；证据在 `openspec/changes/ms05-qemu-bounded-bidirectional-device-data-plane/evidence/011-independent-manual-qemu-runtime-and-closeout/000-initial/`
 
+> ⚠️ STALE [2026-09-17] — Source/Evidence 已移入 MS05 archive，冻结镜像和 SHA-256 恢复判据也违反当前规则；分层诊断与 pcap 方法仍有价值，路径和身份步骤由 Recorder 修订前不得原样执行。
+
 ## 适用范围
 
 当 QEMU 中内核网络行为异常（guest 工具可用但下载/连接挂起、无流量、IRQ 不触发、waker 不醒）且 host 测试全 PASS、需要区分"驱动注册层 / TX 数据面 / IRQ→wake→reap 链路 / slot 交付 / smoltcp 消费 / socket 唤醒"哪一层断时使用。

@@ -5,6 +5,8 @@
 - Environment: Linux x86_64 开发机；Rust `nightly-2026-02-25`；host 单元测试经 `cargo test`（`RUSTFLAGS="-C linker=/tmp/opencode/cc-nopie.sh"` 非 PIE wrapper）；本地 vendored smoltcp（0.13.1 基础）+ hashbrown 0.16.1；分支 `net-k3`，HEAD `1ea51427d8692f5a12b87a0403b940e73d43fed3` 加未暂存 Cycle 实现
 - Source: `openspec/changes/ms06-application-visible-async-network-stack/iterations/004-terminal-readiness-and-qemu-acceptance/001-replan.md` 的 Act Response（reported）及其验证过程
 
+> ⚠️ STALE [2026-09-17] — 本台账仍为 `open`，但当前 axnet 代码已多处声明消除了 R57 的全局 fixture 前提；须由 `openspec-experience-recorder` 复核关闭证据、迁移到 `.claude/issues/` 或更新未解决边界。
+
 ## 影响
 
 - 无产品、数据或硬件影响；未进入 QEMU runtime 或交付物。
