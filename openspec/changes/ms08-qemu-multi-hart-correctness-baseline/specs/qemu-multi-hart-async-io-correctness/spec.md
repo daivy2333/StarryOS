@@ -33,6 +33,28 @@
 - **AND** task 的默认 full affinity MUST 保留，使后续 block/wake 可在新发布的 schedulable hart 上自然选择
 - **AND** 显式 affinity 若只包含未初始化 hart MUST fail closed，不得解引用未初始化 run queue
 
+### Requirement: CPU mask 索引访问在 release 构建中也必须 fail closed
+
+工作区公开的 `axtask::AxCpuMask` MUST 在访问 registry mask 前无条件校验索引。越界读取 MUST 返回“不在集合”；越界写入 MUST 返回明确错误并保持全部合法 bit 不变。该行为 MUST 不依赖 debug assertion，且原始 registry mask MUST NOT 从公开 API 泄漏给 scheduler、kernel、driver 或 syscall 调用方。
+
+#### Scenario: 容量边界读取
+
+- **WHEN** debug 或 release 构建读取索引 `MAX_CPU_NUM` 或 `usize::MAX`
+- **THEN** 结果 MUST 表示该 CPU 不在 mask 中
+- **AND** 不得 panic、读取垃圾 bit 或改变 mask
+
+#### Scenario: 容量边界写入
+
+- **WHEN** debug 或 release 构建写入索引 `MAX_CPU_NUM` 或 `usize::MAX`
+- **THEN** 操作 MUST 返回明确错误
+- **AND** mask 的合法 bit、位数、迭代结果和原始字节 MUST 保持不变
+
+#### Scenario: 合法 mask 兼容性
+
+- **WHEN** scheduler、placement、syscall 或迁移 control 对合法索引执行构造、读取、写入、集合运算或迭代
+- **THEN** 结果 MUST 与现有 `AxCpuMask` 合法输入语义一致
+- **AND** affinity validation、run-queue selection 和 remote wake MUST 不回归
+
 ### Requirement: kernel critical-section 在 SMP 下提供全局互斥
 
 供 `AtomicWaker` 等共享异步状态使用的 critical-section MUST 在所有 online hart 之间互斥，并提供至少 Acquire/Release 语义。进入时 MUST 保存并关闭本 hart IRQ；退出时 MUST 只恢复与该入口匹配的 IRQ 状态。同 hart 嵌套不得自锁，非 owner 或 depth 异常不得释放他人所有权。

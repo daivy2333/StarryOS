@@ -7,7 +7,7 @@ use alloc::{
 
 use kernel_guard::NoPreemptIrqSave;
 
-pub(crate) use crate::run_queue::{current_run_queue, select_run_queue};
+pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
 #[doc(cfg(all(feature = "multitask", feature = "task-ext")))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
@@ -26,8 +26,24 @@ pub type AxTaskRef = Arc<AxTask>;
 /// The weak reference type of a task.
 pub type WeakAxTaskRef = Weak<AxTask>;
 
-/// The wrapper type for [`cpumask::CpuMask`] with SMP configuration.
-pub type AxCpuMask = cpumask::CpuMask<{ axconfig::plat::MAX_CPU_NUM }>;
+/// The bounded workspace CPU mask with unconditional capacity safety.
+pub use crate::cpumask::{AX_CPU_MASK_CAPACITY, AxCpuMask, AxCpuMaskError};
+
+/// Count of affinity placement attempts rejected as invalid (empty, out-of-range
+/// or not-yet-schedulable), Relaxed telemetry for placement snapshots. Pure
+/// observation; never drives a scheduling decision.
+static INVALID_AFFINITY_REJECTS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Read-only count of invalid-affinity rejections (see the counter above).
+pub fn affinity_reject_count() -> usize {
+    INVALID_AFFINITY_REJECTS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Records an invalid-affinity rejection in the telemetry counter.
+pub(crate) fn note_affinity_reject() {
+    INVALID_AFFINITY_REJECTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "sched-rr")] {
@@ -106,12 +122,30 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
         let cpu_num = axhal::cpu_num();
         let mut cpumask = AxCpuMask::new();
         for cpu_id in 0..cpu_num {
-            cpumask.set(cpu_id, true);
+            // Invariant: the platform reports no more CPUs than the configured
+            // mask capacity (both come from the same platform config), so the
+            // bounded loop index is always a legal bit.
+            cpumask
+                .set(cpu_id, true)
+                .expect("axhal::cpu_num() <= AX_CPU_MASK_CAPACITY by platform config");
         }
         cpumask
     });
 
     *CPU_MASK_FULL
+}
+
+/// Returns the set of CPUs whose run queue has been written and published as
+/// schedulable, read with an Acquire that orders the observation before any
+/// future dereference of a chosen slot.
+///
+/// This is the read-only readiness snapshot a placement policy consumes when
+/// choosing background-task affinity (design D4). It is distinct from
+/// [`cpu_mask_full`] / `axhal::cpu_num()`: a bit here is only set after
+/// `RUN_QUEUES[cpu]` is written, so a policy may place a task on exactly the
+/// set of harts whose run queues are ready without inventing topology.
+pub fn schedulable_cpu_mask() -> AxCpuMask {
+    crate::run_queue::schedulable()
 }
 
 /// Initializes the task scheduler for secondary CPUs.
@@ -163,6 +197,16 @@ pub fn validate_affinity(cpumask: AxCpuMask, cpu_num: usize) -> bool {
 /// which checks a configured count, this rejects CPUs whose run queues are
 /// configured but not yet initialized. Used for explicit affinity spawn/update so
 /// an uninitialized queue can never be targeted.
+pub fn validate_schedulable_affinity(cpumask: AxCpuMask) -> bool {
+    validate_schedulable(cpumask)
+}
+
+/// Returns `true` only when `cpumask` is non-empty and every set bit names a run
+/// queue that has been *published* as schedulable (i.e. its slot is written and
+/// its readiness bit is visible with an Acquire load). Unlike [`validate_affinity`],
+/// which checks a configured count, this rejects CPUs whose run queues are
+/// configured but not yet initialized. Used for explicit affinity spawn/update so
+/// an uninitialized queue can never be targeted.
 pub(crate) fn validate_schedulable(cpumask: AxCpuMask) -> bool {
     if cpumask.is_empty() {
         return false;
@@ -194,6 +238,7 @@ pub(crate) fn validate_schedulable(cpumask: AxCpuMask) -> bool {
 /// falls back to a wrong first enqueue.
 pub fn spawn_task_with_affinity(task: TaskInner, cpumask: AxCpuMask) -> Option<AxTaskRef> {
     if !validate_schedulable(cpumask) {
+        note_affinity_reject();
         return None;
     }
     // Commit affinity before the first run-queue selection.

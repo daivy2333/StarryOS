@@ -88,7 +88,10 @@ pub(crate) fn schedulable() -> AxCpuMask {
     let mut mask = AxCpuMask::new();
     for i in 0..axconfig::plat::MAX_CPU_NUM {
         if bits & (1usize << i) != 0 {
-            mask.set(i, true);
+            // Invariant: the loop is bounded by the mask capacity, so the
+            // index is always a legal bit.
+            mask.set(i, true)
+                .expect("loop bound equals the mask capacity");
         }
     }
     mask
@@ -123,6 +126,67 @@ pub(crate) fn select_schedulable_cpu(
         }
     }
     None
+}
+
+/// Pure wake-target selection for a blocked task's resume (distinct from the
+/// plain-spawn round-robin in [`select_schedulable_cpu`]). It prefers the
+/// *current* hart when that hart is both in the task's affinity and published
+/// schedulable, so a full-mask background task woken on its own hart stays local
+/// (no remote IPI, no migration); otherwise it picks a deterministic legal
+/// target from `task ∩ schedulable` (a singleton-affinity copier woken from a
+/// remote hart is delivered to its one allowed hart, producing exactly one
+/// remote-ready IPI). An empty intersection returns `None` (fail closed: never
+/// select an uninitialized run queue). The current hart that is not itself in
+/// the intersection is never returned.
+///
+/// Kept pure and free of `smp`/I/O so it is directly host-testable without a
+/// platform.
+#[inline]
+pub(crate) fn select_wake_cpu(
+    task: AxCpuMask,
+    schedulable: AxCpuMask,
+    current: usize,
+) -> Option<usize> {
+    let intersect = task & schedulable;
+    if intersect.is_empty() {
+        return None;
+    }
+    if current < axconfig::plat::MAX_CPU_NUM && intersect.get(current) {
+        return Some(current);
+    }
+    // Deterministic fallback from the (non-empty) intersection: its lowest bit.
+    intersect.first_index()
+}
+
+/// Selects the run queue the waker should deliver a `block_on`-parked task to.
+///
+/// Unlike [`select_run_queue`] (load-balanced round-robin for ordinary spawns),
+/// this is wake-local: it prefers the current hart and only reaches a remote
+/// queue for a pinned task whose affinity excludes the waking hart. The caller
+/// must then perform a real `Blocked -> Ready` transition (which issues the
+/// remote-ready IPI on a remote enqueue).
+#[inline]
+pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<'static, G> {
+    let irq_state = G::acquire();
+    #[cfg(not(feature = "smp"))]
+    {
+        let _ = task;
+        AxRunQueueRef {
+            inner: unsafe { RUN_QUEUE.current_ref_mut_raw() },
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+    #[cfg(feature = "smp")]
+    {
+        let index = select_wake_cpu(task.cpumask(), schedulable(), this_cpu_id())
+            .unwrap_or_else(|| panic!("wake: no schedulable CPU in task affinity"));
+        AxRunQueueRef {
+            inner: get_run_queue(index),
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
 }
 
 /// Returns a reference to the current run queue in [`CurrentRunQueueRef`].

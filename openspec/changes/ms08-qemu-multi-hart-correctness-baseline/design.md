@@ -191,6 +191,21 @@
 - 同时要求 SMP=2/4/8/16 runtime：拒绝，用户已批准只使用目标规模 `SMP=16` 作为正式多 hart runtime，host/model承担小拓扑边界。
 - 用历史 UART 或 MS07 Evidence 替代：拒绝，其范围明确为单 hart。
 
+### D10：工作区安全 mask 封装隔离 registry 的 debug-only 边界检查
+
+**Decision**：将 `axtask::AxCpuMask` 从 `cpumask::CpuMask<MAX_CPU_NUM>` 的公开类型别名改为工作区自有新类型。`cpumask 0.1.0` 只作为该新类型的私有存储实现。新类型保留 scheduler、kernel 和 axnet 已使用的构造、集合运算、复制、比较和迭代能力，但所有带索引的访问由工作区代码先执行无条件容量检查：越界读取返回“不在集合”，越界写入返回错误且不修改任何 bit；checked 构造同样拒绝越界。不得公开可绕过检查的原始引用或转换。
+
+**Reason**：`cpumask 0.1.0::CpuMask::get/set` 仅使用 `debug_assert(index < SIZE)`。此前 placement 的独立硬编码容量使 release 构建查询 `CpuMask<16>` 的 16..63 位，并把不存在的 hart 16 当作 schedulable。只修复该循环不能阻止未来 scheduler、syscall 或迁移 control 再次把错误索引传给同一 API；本地新类型把边界不变量放到所有调用方共享的 `axtask` 边界。
+
+**Impact**：现有 `AxCpuMask` 调用面迁移到工作区封装；合法索引、位运算、迭代和调度语义不变。越界行为从 registry 的 release 未定义/垃圾结果变为可测试的 fail-closed 结果。debug 与 release focused tests必须覆盖容量边界、`usize::MAX` 和失败写入不变性。
+
+**Alternatives**：
+
+- 继续依赖每个循环都使用 `MAX_CPU_NUM`：拒绝，无法约束新的直接 `get/set` 调用。
+- 在 Cargo registry 源码中把 `debug_assert` 改成 `assert`：拒绝，registry 不属于仓库可维护源码，且项目已有合适的 `axtask` 适配边界。
+- vendor/fork `cpumask`：拒绝，当前需求只需要隔离其不安全边界；复制整个 crate 扩大维护面。
+- 越界写入静默 no-op：拒绝，调用方无法区分合法位原值为 false 与写入被拒绝；写 API 必须返回明确错误。
+
 ## Risks / Trade-offs
 
 - **[vendor `axtask` 扩大维护面]** → 保持版本和上游文件结构，patch仅含 affinity/IPI/telemetry；邻接 root、axnet standalone和 target build均回归，禁止顺带清理。
@@ -210,6 +225,6 @@
 1. 建立并验证 SMP-safe critical-section、patched `axtask` 和 QEMU PLIC 映射，但不改变驱动 placement。
 2. 先将 UART copier 启动移到 secondary-ready adapter，建立固定 placement、snapshot 和 UART-only runtime Gate。
 3. 再将网络 owner/runner 移到同一 placement 基线，建立 V5 和 network-only runtime Gate。
-4. 增加两类后台任务的 migration control 和 ordering witnesses，保持默认固定布局。
+4. 先用工作区 `AxCpuMask` 安全封装消除 release 越界风险，再增加两类后台任务的 migration control 和 ordering witnesses，保持默认固定布局。
 5. 增加 MS08 guest/host protocol 与 validator，执行 `SMP=16` UART、network、combined、migration 和 recovery 资格。
 6. 基础原语未通过时回退 root/axnet 的 `axtask` patch 和 kernel `smp` feature 传播；某一驱动集成未通过时恢复其旧启动入口，但不得声明 SMP 资格。early console、UART 公开契约、MS07 单 hart 行为和 network V1–V4 ABI 始终保留。

@@ -244,6 +244,7 @@ impl TaskInner {
             *self.cpumask.lock() = cpumask;
             true
         } else {
+            crate::api::note_affinity_reject();
             false
         }
     }

@@ -17,6 +17,7 @@ use core::{
 
 use axdriver::prelude::{DevError, DevResult};
 use axdriver_net::NetQueueDirection;
+use axtask::{AxCpuMask, AxTaskRef};
 use embassy_sync::waitqueue::AtomicWaker;
 
 #[cfg(not(test))]
@@ -628,6 +629,9 @@ pub(crate) struct RxTelemetry {
     /// fault identity (stage, local cause, queue epoch, owner summary),
     /// committed under the Service guard and read race-free by [`read_identity`].
     pub coherent_fault: CoherentFaultSheet,
+    /// Task 3.3: actual hart the resident queue owner's poll executes on,
+    /// recorded at every poll entry (never inferred from affinity).
+    pub(crate) hart: crate::hart_counter::HartCounter,
 }
 
 impl RxTelemetry {
@@ -665,6 +669,7 @@ impl RxTelemetry {
             recover_quarantined: AtomicU64::new(0),
             recover_origin_stage: AtomicU64::new(0),
             coherent_fault: CoherentFaultSheet::new(),
+            hart: crate::hart_counter::HartCounter::new(),
         }
     }
 
@@ -789,6 +794,13 @@ fn rx_snapshot_impl(lifecycle: &RxLifecycle, telemetry: &RxTelemetry) -> RxSnaps
 /// Read-only RX snapshot for the kernel ioctl. Never takes the Service lock.
 pub fn rx_snapshot() -> RxSnapshot {
     rx_snapshot_impl(&RX_LIFECYCLE, &RX_TELEMETRY)
+}
+
+/// Task 3.3: coherent `(last, mask, events)` tuple of the actual hart the
+/// owner polled on. Empty until the owner first polls; never an affinity
+/// inference.
+pub fn owner_hart_tuple() -> (usize, u64, u64) {
+    RX_TELEMETRY.hart.read()
 }
 
 /// MS05 V3 snapshot: the MS04 `RxSnapshot` fields plus the slot/ticket/flush
@@ -1351,6 +1363,8 @@ pub(crate) struct RxRxFuture {
     /// retained on `Again` so the next bounded poll retries.
     initial_link_pending: bool,
     telemetry: &'static RxTelemetry,
+    /// Task 3.3: hart source for recording the owner's actual poll hart.
+    hart_source: crate::hart_counter::HartSource,
     /// Task 3.1: publication target for terminal queue faults. Production
     /// points at the global socket registry; tests inject a local wrapper.
     fault_sink: &'static SocketSetWrapper<'static>,
@@ -2806,6 +2820,8 @@ impl Future for RxRxFuture {
         // Copy access handle, or an owned `Pin<Box<..>>` timer that is Unpin.
         let this = self.get_mut();
         this.telemetry.task_poll.fetch_add(1, Ordering::Relaxed);
+        // Task 3.3: record the actual hart this poll runs on (never affinity).
+        this.telemetry.hart.record(this.hart_source.current());
         // RW-1: an elapsed lease deadline clears itself and self-wakes so the
         // round below runs and `diag_hold_tick` auto-releases the expired
         // hold. The wake is observable by a counting waker in host tests.
@@ -2848,6 +2864,7 @@ fn spawn_rx_task() {
                 stack_progress_pending: false,
                 initial_link_pending: false,
                 telemetry: &RX_TELEMETRY,
+                hart_source: crate::hart_counter::HartSource::System,
                 fault_sink: &crate::SOCKET_SET,
                 #[cfg(feature = "qemu-diagnostics")]
                 lease_deadline: None,
@@ -2869,11 +2886,51 @@ fn spawn_rx_task() {
     );
 }
 
+#[cfg(not(test))]
+fn spawn_rx_task_affinity(mask: AxCpuMask) -> Option<AxTaskRef> {
+    axtask::spawn_with_name_affinity(
+        || {
+            axtask::future::block_on(RxRxFuture {
+                service: ServiceAccess::Global,
+                lifecycle: &RX_LIFECYCLE,
+                notify: &QUEUE_EVENT,
+                stack_notify: &STACK_EVENT,
+                stack_progress_pending: false,
+                initial_link_pending: false,
+                telemetry: &RX_TELEMETRY,
+                hart_source: crate::hart_counter::HartSource::System,
+                fault_sink: &crate::SOCKET_SET,
+                #[cfg(feature = "qemu-diagnostics")]
+                lease_deadline: None,
+                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                diag_test_clock: None,
+                #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+                lease_timer: None,
+                recovery: None,
+                recovery_deadline: None,
+                recovery_progress_wake: None,
+                #[cfg(not(test))]
+                recovery_timer: None,
+                data_deadlines: DataStageDeadlines::new(),
+                #[cfg(not(test))]
+                data_stage_timer: None,
+            })
+        },
+        RX_TASK_NAME.to_owned(),
+        mask,
+    )
+}
+
 /// Test-mode binding so the production [`start_rx_task`] wrapper still
 /// compiles. Tests never call it: they exercise [`start_with`] with a local
 /// lifecycle and counting closure, so the global is never advanced.
 #[cfg(test)]
 fn spawn_rx_task() {}
+
+#[cfg(test)]
+fn spawn_rx_task_affinity(_mask: AxCpuMask) -> Option<AxTaskRef> {
+    None
+}
 
 /// Core start decision: CAS the given lifecycle `Polling -> Spawned`, then
 /// run the spawn action exactly once.
@@ -2894,6 +2951,53 @@ fn start_with(lifecycle: &RxLifecycle, spawn: impl FnOnce()) -> Result<(), Start
 /// registered, so no task can suppress notifications without a wake source.
 pub fn start_rx_task() -> Result<(), StartError> {
     start_with(&RX_LIFECYCLE, spawn_rx_task)
+}
+
+/// Activates the async RX path pinned to `mask`, with the affinity committed
+/// before the first enqueue (design D4/D5), and returns the task handle so the
+/// owning kernel adapter can store it for V5 observation and later migration.
+///
+/// Failure is atomic (Task 3.2 replan): an invalid or not-yet-published mask, or
+/// a rejected spawn, leaves the once-only lifecycle retryable and creates no
+/// task. `mask` must name only published-schedulable harts (the kernel derives
+/// it from `axtask::schedulable_cpu_mask`).
+pub fn start_rx_task_affinity(mask: AxCpuMask) -> Result<AxTaskRef, StartError> {
+    start_affinity_with(&RX_LIFECYCLE, mask, |mask| spawn_rx_task_affinity(mask))
+}
+
+/// Failure-atomic affinity start core (Task 3.2 replan): validates the mask
+/// against the *published schedulable* set before the once-only lifecycle CAS;
+/// spawns exactly one task on success; on invalid affinity or a rejected spawn
+/// rolls the lifecycle back so the next start can retry, never permitting a
+/// duplicate enqueue.
+fn start_affinity_with(
+    lifecycle: &RxLifecycle,
+    mask: AxCpuMask,
+    spawn: impl FnOnce(AxCpuMask) -> Option<AxTaskRef>,
+) -> Result<AxTaskRef, StartError> {
+    start_affinity_with_checked(lifecycle, |m| axtask::validate_schedulable_affinity(m), mask, spawn)
+}
+
+/// Testable core with an injected validation predicate and handle, so a host
+/// model can drive invalid-affinity and spawn-failure atomicity without a real
+/// `AxTaskRef` or a schedulable set.
+fn start_affinity_with_checked<H>(
+    lifecycle: &RxLifecycle,
+    valid: impl FnOnce(AxCpuMask) -> bool,
+    mask: AxCpuMask,
+    spawn: impl FnOnce(AxCpuMask) -> Option<H>,
+) -> Result<H, StartError> {
+    if !valid(mask) {
+        return Err(StartError::InvalidAffinity);
+    }
+    lifecycle.start()?;
+    match spawn(mask) {
+        Some(handle) => Ok(handle),
+        None => {
+            let _ = lifecycle.rollback_start();
+            Err(StartError::InvalidAffinity)
+        }
+    }
 }
 
 /// Outcome of the Service-guard full-space recheck.
@@ -2985,6 +3089,7 @@ impl RxTaskLifecycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartError {
     AlreadyStarted(RxTaskLifecycle),
+    InvalidAffinity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3026,6 +3131,16 @@ impl RxLifecycle {
             RxTaskLifecycle::Unavailable
         };
         self.transition(RxTaskLifecycle::Spawned, next)
+    }
+
+    /// Rolls a failed pre-enqueue start back to `Polling` (Task 3.2 replan).
+    ///
+    /// Only the CAS winner of [`start`](Self::start) may call this, immediately
+    /// after its affinity spawn returned `None` (no task was created). Restoring
+    /// `Spawned -> Polling` keeps the once-only lifecycle retryable without ever
+    /// permitting a duplicate enqueue.
+    pub(crate) fn rollback_start(&self) -> Result<(), TransitionError> {
+        self.transition(RxTaskLifecycle::Spawned, RxTaskLifecycle::Polling)
     }
 
     /// `Active -> Faulted`. Never restores the polling owner.
@@ -3132,7 +3247,8 @@ mod tests {
         RECLAIM_BUDGET, RX_BUDGET, RX_LIFECYCLE, RX_TELEMETRY, RecoveryFaultIdentity,
         RecoveryState, RxLifecycle, RxRxFuture, RxTaskLifecycle, RxTelemetry, SERIAL,
         SUBMIT_BUDGET, ServiceAccess, SpaceDecision, StartError, TransitionError, WaitDecision,
-        fault_cause, recover_stage, rx_error_code, rx_error_stage, software_nudge_impl, start_with,
+        fault_cause, recover_stage, rx_error_code, rx_error_stage, software_nudge_impl,
+        start_affinity_with_checked, start_with,
     };
     #[cfg(feature = "qemu-diagnostics")]
     use super::{RECOVERY_RESET_REQUEST, RecoveryRequestState, with_recovery_request_transition};
@@ -3282,6 +3398,30 @@ mod tests {
         event.register_queue(&counting_waker(queue_count.clone()));
         event.publish_event();
         assert_eq!(event.generation(), 0);
+        assert_eq!(queue_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn queue_event_wait_decision_retries_across_wrap_boundary() {
+        // Task 4.4: the owner wait protocol rechecks the shared generation
+        // after registering its waker; that comparison must stay correct when
+        // the generation wraps u64::MAX -> 0, or a post-wrap publication would
+        // look unchanged and the parked owner would sleep through it.
+        let event = super::QueueEvent::with_generation(u64::MAX);
+        let queue_count = Arc::new(AtomicUsize::new(0));
+        event.register_queue(&counting_waker(queue_count.clone()));
+
+        let decision = event.wait_decision(&counting_waker(queue_count.clone()), || {
+            // 注册 waiter 期间发生一次发布：generation MAX -> 0。
+            event.publish_config();
+            Ok(super::ArmObservation::Quiescent)
+        });
+
+        assert_eq!(event.generation(), 0);
+        assert!(
+            matches!(decision, super::WaitDecision::Retry),
+            "wait_decision must retry across the u64 wrap boundary, got {decision:?}"
+        );
         assert_eq!(queue_count.load(Ordering::Relaxed), 1);
     }
 
@@ -5287,6 +5427,19 @@ mod tests {
         service_mutex: &'static spin::Mutex<Service>,
         notify: &'static QueueEvent,
     ) -> (&'static RxLifecycle, RxRxFuture) {
+        let (lifecycle, fut, _) = leaked_future_with_hart(service_mutex, notify, None);
+        (lifecycle, fut)
+    }
+
+    /// Host-test seam: bind a fixed hart (or `None` to use the system source) so
+    /// a fixture records a deterministic execution hart. Production uses the
+    /// system percpu id. Returns the leaked telemetry so a witness can assert
+    /// the recorded `(last, mask, events)` tuple directly.
+    fn leaked_future_with_hart(
+        service_mutex: &'static spin::Mutex<Service>,
+        notify: &'static QueueEvent,
+        hart: Option<usize>,
+    ) -> (&'static RxLifecycle, RxRxFuture, &'static RxTelemetry) {
         let lifecycle: &'static RxLifecycle = Box::leak(Box::new(RxLifecycle::new()));
         lifecycle.start().unwrap();
         let telemetry: &'static RxTelemetry = Box::leak(Box::new(RxTelemetry::new()));
@@ -5298,6 +5451,10 @@ mod tests {
             stack_progress_pending: false,
             initial_link_pending: false,
             telemetry,
+            hart_source: hart.map_or(
+                crate::hart_counter::HartSource::System,
+                crate::hart_counter::HartSource::Injected,
+            ),
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
@@ -5312,7 +5469,7 @@ mod tests {
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
-        (lifecycle, fut)
+        (lifecycle, fut, telemetry)
     }
 
     fn leaked_future_with_stack(
@@ -5331,6 +5488,7 @@ mod tests {
             stack_progress_pending: false,
             initial_link_pending: false,
             telemetry,
+            hart_source: crate::hart_counter::HartSource::System,
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
@@ -5471,6 +5629,42 @@ mod tests {
     }
 
     #[test]
+    fn affinity_start_invalid_or_failed_spawn_leaves_lifecycle_retryable() {
+        // Task 3.2 replan: invalid affinity or a rejected spawn must not consume
+        // the once-only owner lifecycle; a later valid start commits exactly once.
+        let lifecycle = RxLifecycle::new();
+        let mut mask = axtask::AxCpuMask::new();
+        mask.set(0, true).expect("index 0 is below mask capacity");
+
+        // Invalid affinity: return InvalidAffinity, never advance, never spawn.
+        assert_eq!(
+            start_affinity_with_checked(&lifecycle, |_| false, mask, |_| Some(1u64)),
+            Err(StartError::InvalidAffinity)
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Polling);
+
+        // Failed spawn: roll back so a retry can succeed.
+        assert_eq!(
+            start_affinity_with_checked(&lifecycle, |_| true, mask, |_| None::<u64>),
+            Err(StartError::InvalidAffinity)
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Polling);
+
+        // Success commits once.
+        assert_eq!(
+            start_affinity_with_checked(&lifecycle, |_| true, mask, |_| Some(2u64)),
+            Ok(2)
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
+        // A later start is rejected; no second task.
+        assert!(matches!(
+            start_affinity_with_checked(&lifecycle, |_| true, mask, |_| Some(3u64)),
+            Err(StartError::AlreadyStarted(_))
+        ));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Spawned);
+    }
+
+    #[test]
     fn future_missing_service_publishes_unavailable() {
         // `ServiceAccess::Global` resolves the never-initialized `SERVICE`
         // once in host tests: the first poll must not panic and must exit
@@ -5487,6 +5681,7 @@ mod tests {
             stack_progress_pending: false,
             initial_link_pending: false,
             telemetry,
+            hart_source: crate::hart_counter::HartSource::System,
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
@@ -5536,6 +5731,28 @@ mod tests {
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Unavailable);
         assert_eq!(recv_calls.load(Ordering::Relaxed), 0);
         assert!(mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn real_owner_poll_records_actual_execution_hart_tuple() {
+        // Task 3.3 / Plan Review finding 4: the owner future must record the hart
+        // its real poll runs on into a coherent (last, mask, events) tuple —
+        // never derive it from affinity. A missing-target first poll returns
+        // Ready, but the poll-entry record must still have observed the injected
+        // execution hart and be readable as a self-consistent tuple.
+        let service = Service::new(Router::new(), None);
+        let mutex: &'static spin::Mutex<Service> = Box::leak(Box::new(spin::Mutex::new(service)));
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (_lifecycle, mut fut, telemetry) = leaked_future_with_hart(mutex, notify, Some(12));
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Ready(())));
+        let (last, mask, events) = telemetry.hart.read();
+        assert_eq!(
+            last, 12,
+            "recorded hart must equal the actual poll hart (injected fixture)"
+        );
+        assert_ne!(mask & (1u64 << 12), 0, "mask must include the recorded hart");
+        assert_eq!(events, 1, "exactly one poll must have been recorded");
     }
 
     #[test]
@@ -5755,19 +5972,20 @@ mod tests {
             lifecycle,
             notify: queue_notify,
             stack_notify,
-            stack_progress_pending: false,
-            initial_link_pending: false,
-            telemetry: Box::leak(Box::new(RxTelemetry::new())),
-            fault_sink: &crate::SOCKET_SET,
-            #[cfg(feature = "qemu-diagnostics")]
-            lease_deadline: None,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
-            diag_test_clock: None,
-            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
-            lease_timer: None,
-            recovery: None,
-            recovery_deadline: None,
-            recovery_progress_wake: None,
+stack_progress_pending: false,
+                initial_link_pending: false,
+                telemetry: &RX_TELEMETRY,
+                hart_source: crate::hart_counter::HartSource::System,
+                fault_sink: &crate::SOCKET_SET,
+                #[cfg(feature = "qemu-diagnostics")]
+                lease_deadline: None,
+                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                diag_test_clock: None,
+                #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+                lease_timer: None,
+                recovery: None,
+                recovery_deadline: None,
+                recovery_progress_wake: None,
             #[cfg(test)]
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
@@ -6189,6 +6407,7 @@ mod tests {
             stack_progress_pending: false,
             initial_link_pending: false,
             telemetry,
+            hart_source: crate::hart_counter::HartSource::System,
             fault_sink: sink,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,
@@ -6260,6 +6479,7 @@ mod tests {
             stack_progress_pending: false,
             initial_link_pending: false,
             telemetry,
+            hart_source: crate::hart_counter::HartSource::System,
             fault_sink: &crate::SOCKET_SET,
             #[cfg(feature = "qemu-diagnostics")]
             lease_deadline: None,

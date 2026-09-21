@@ -42,8 +42,7 @@ static GLOBAL_LOCK: AtomicBool = AtomicBool::new(false);
 /// Per-hart nesting depth. 0 means this hart does not hold the critical
 /// section. Synchronized with AcqRel so the depth and the owner lock together
 /// gate the protected state.
-static NEST_DEPTH: [AtomicU32; MAX_CPU_NUM] =
-    [const { AtomicU32::new(0) }; MAX_CPU_NUM];
+static NEST_DEPTH: [AtomicU32; MAX_CPU_NUM] = [const { AtomicU32::new(0) }; MAX_CPU_NUM];
 
 /// IRQ primitives and current-hart identity the restore policy needs.
 pub trait IrqOps {
@@ -95,13 +94,11 @@ pub fn acquire<O: IrqOps + ?Sized>(ops: &O) -> bool {
     // and IRQs remain disabled on this hart. The transition is delegated to the
     // pure `checked_increment_depth` seam so its overflow boundary is directly
     // host-testable at the real width without driving a live counter to `MAX`.
-    let prev = depth_mut(cpu).fetch_update(
-        Ordering::AcqRel,
-        Ordering::Acquire,
-        checked_increment_depth,
-    ).unwrap_or_else(|depth| {
-        core::panic!("critical-section: nesting depth {depth} would overflow on cpu {cpu}")
-    });
+    let prev = depth_mut(cpu)
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, checked_increment_depth)
+        .unwrap_or_else(|depth| {
+            core::panic!("critical-section: nesting depth {depth} would overflow on cpu {cpu}")
+        });
     if prev == 0 {
         // This hart is entering the outermost level: acquire global ownership.
         while GLOBAL_LOCK
@@ -122,11 +119,10 @@ pub fn acquire<O: IrqOps + ?Sized>(ops: &O) -> bool {
 /// zero (an outer release without a matching acquire on this hart) fails closed.
 #[inline]
 pub fn release<O: IrqOps + ?Sized>(ops: &O, was_enabled: bool) {
-    let prev = depth_mut(ops.current_cpu_id()).fetch_update(
-        Ordering::AcqRel,
-        Ordering::Acquire,
-        |d| Some(d.checked_sub(1).expect("critical-section: depth underflow")),
-    );
+    let prev =
+        depth_mut(ops.current_cpu_id()).fetch_update(Ordering::AcqRel, Ordering::Acquire, |d| {
+            Some(d.checked_sub(1).expect("critical-section: depth underflow"))
+        });
     if let Ok(prev) = prev {
         if prev == 1 {
             // Leaving the outermost level: release global ownership.

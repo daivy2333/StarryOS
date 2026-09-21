@@ -12,22 +12,54 @@
 //! mockable seam so host tests can lock the "exactly once per successful remote
 //! wake, never for local wake, never on duplicate" contract without a real IPI.
 
+#[cfg(test)]
+use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use axhal::irq::{IPI_IRQ, IpiTarget, register, send_ipi};
-
-#[cfg(test)]
-use core::hint::spin_loop;
+use axhal::percpu::this_cpu_id;
 
 /// Telemetry counters. These observe causality only; they never participate in
 /// a synchronization decision, so a Relaxed ordering is sufficient.
 static IPI_SENT: AtomicUsize = AtomicUsize::new(0);
 static IPI_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
+/// Per-hart reschedule-IPI receive counts, indexed by hart id. Used by the
+/// timer-disabled witness to attribute the remote-ready IPI to the *target hart
+/// itself* (`after > before` on one hart) instead of a global total that mixes
+/// unrelated interrupting harts. Relaxed telemetry only; never a synchronization
+/// dependency. `MAX_CPU_NUM <= 64` is enforced at compile time in `run_queue.rs`.
+static IPI_RECEIVED_PER_HART: [AtomicUsize; axconfig::plat::MAX_CPU_NUM] =
+    [const { AtomicUsize::new(0) }; axconfig::plat::MAX_CPU_NUM];
+
 /// Single ownership flag for the S_SOFT handler slot. Prevents a second
 /// registration (e.g. a duplicate scheduler init or a competing runtime
 /// feature) from stealing the only S_SOFT slot.
 static IPI_REGISTERED: AtomicUsize = AtomicUsize::new(0);
+
+/// Read-only count of reschedule IPIs sent (Relaxed telemetry). Observes the
+/// remote-wake causality a placement snapshot reports; never participates in a
+/// synchronization decision.
+pub fn ipi_sent_count() -> usize {
+    IPI_SENT.load(Ordering::Relaxed)
+}
+
+/// Read-only count of reschedule IPI receives observed by the S_SOFT handler
+/// (Relaxed telemetry). Only present when the `ipi` feature is enabled.
+pub fn ipi_received_count() -> usize {
+    IPI_RECEIVED.load(Ordering::Relaxed)
+}
+
+/// Read-only count of reschedule IPI receives observed by the S_SOFT handler on
+/// a *specific hart* (Relaxed telemetry). `0` for an out-of-range hart. Lets a
+/// single-flight witness attribute the remote-ready IPI to its own target hart
+/// without a run/session identity.
+pub fn ipi_received_count_by_hart(cpu: usize) -> usize {
+    match IPI_RECEIVED_PER_HART.get(cpu) {
+        Some(c) => c.load(Ordering::Relaxed),
+        None => 0,
+    }
+}
 
 /// Returns `true` when a successful remote ready-transition must notify the
 /// target hart, i.e. the enqueue actually transitioned to `Ready`.
@@ -45,12 +77,7 @@ pub(crate) fn should_notify_remote(cpu_id: usize, this_cpu_id: usize, was_ready:
 pub(crate) fn send_reschedule_ipi(cpu_id: usize) {
     debug!("reschedule IPI -> cpu {cpu_id}");
     IPI_SENT.fetch_add(1, Ordering::Relaxed);
-    send_ipi(
-        IPI_IRQ,
-        IpiTarget::Other {
-            cpu_id,
-        },
-    );
+    send_ipi(IPI_IRQ, IpiTarget::Other { cpu_id });
 }
 
 /// The S_SOFT handler. Sets a preempt pending on the current (target-hart) task
@@ -58,6 +85,10 @@ pub(crate) fn send_reschedule_ipi(cpu_id: usize) {
 /// the woken task directly and never calls into a run queue.
 pub(crate) fn reschedule_ipi_handler() {
     IPI_RECEIVED.fetch_add(1, Ordering::Relaxed);
+    let cpu = this_cpu_id();
+    if let Some(c) = IPI_RECEIVED_PER_HART.get(cpu) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
     if let Some(curr) = crate::current_may_uninit() {
         #[cfg(feature = "preempt")]
         curr.set_preempt_pending(true);
@@ -158,6 +189,9 @@ mod tests {
         if should_notify_remote(1, 0, true) {
             send_reschedule_ipi(1);
         }
-        assert!(sent_count() > before, "a remote send must bump the sent counter");
+        assert!(
+            sent_count() > before,
+            "a remote send must bump the sent counter"
+        );
     }
 }

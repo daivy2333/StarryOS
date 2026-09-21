@@ -9,6 +9,7 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 - 以 `SMP=16` 作为正式 QEMU runtime 资格规模，对应 K3 AP 域静态的 8 × X100 + 8 × A100；启动时仍从实际 online/schedulable 集合计算 placement，不硬编码 hart ID。
 - 将 kernel critical-section 修正为“本地 IRQ restore + 全局 Acquire/Release 互斥 + per-hart 嵌套”，使 UART 和网络共享的 waker 在 SMP 下安全。
 - 在工作区自有的 `axtask 0.3.0-preview.2` 中增加入队前 affinity、安全 affinity 更新和 remote-ready IPI；驱动不各自模拟远端调度。
+- 以工作区自有的 `axtask::AxCpuMask` 安全封装隔离 `cpumask 0.1.0`：release 构建中的越界读取必须返回“不在集合”，越界写入必须返回错误且保持原 mask，不允许 registry crate 的 debug-only 边界检查泄漏到 scheduler、placement 或迁移控制。
 - 将 UART RX/TX copier 从 driver 内部立即普通 spawn 调整为由 kernel adapter 在 secondary-ready 后以入队前 affinity 各启动一次，并保存 task handle。
 - 保持 UART RX 和 TX 的 SPSC 身份：RX copier 是唯一 producer，TTY reader 是唯一 consumer；TTY writer 是逻辑唯一 producer，TX copier 是唯一 consumer。迁移只改变执行 hart，不创建第二 endpoint。
 - 对 UART 增加 QEMU-only placement 与进度观测，验证 IRQ→RX/TX copier、copier→TTY caller、write/readiness 和 `flush/tcdrain` 的跨 hart wake、Full→恢复和 quiet path。
@@ -53,6 +54,13 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 - **可观察结果**：单 hart 合法共置，多 hart 尽可能分离角色；迁移后逻辑任务和 SPSC/queue 所有权不变。
 - **失败边界**：空、越界、offline 或未初始化 mask 必须 fail closed 并保留旧 placement；不支持 CPU hotplug。
 
+#### Edge Case：CPU mask 越界访问
+
+- **前置状态**：调用方持有 `axtask::AxCpuMask`，并提供等于容量或 `usize::MAX` 的索引。
+- **触发动作**：在 debug 或 release 构建中读取或写入该索引。
+- **可观察结果**：读取返回“不在集合”；写入返回明确错误且 mask 字节、位数和已设置 bit 不变。
+- **失败边界**：不得依赖 `debug_assert`、读取垃圾 bit、改变合法 bit、panic/UB，或让调用方绕过工作区安全封装直接访问 registry mask。
+
 #### Compatibility：单 hart、early console 和真板边界
 
 - **前置状态**：使用单 hart QEMU、D1 特性或 early boot/panic 输出。
@@ -74,6 +82,7 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 
 - 影响 kernel critical-section、SMP scheduler/remote wake、QEMU PLIC 映射、UART copier 启动 adapter、网络后台任务启动、QEMU diagnostics、guest probes 和 validator。
 - 需要工作区自有的 `axtask` 副本；不修改 Cargo registry，不顺带 vendor 其他 ArceOS crates。
+- `cpumask 0.1.0` 继续作为 `axtask` 的私有实现依赖；不 fork、不 patch registry，也不再作为公开 `AxCpuMask` 类型泄漏给调用方。
 - 不改变 UART 公开 TTY 语义、网络 socket API、VirtIO descriptor ownership、packet-slot 容量或 MS07 epoch/reset 语义。
 - 不包含 CPU hotplug、IRQ 动态负载均衡、multiqueue/RSS、多 NIC、PCI/DWMAC、D1/K3 真板资格或性能优化。
 
@@ -81,4 +90,5 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 
 - 2026-09-16：用户批准动态 online/schedulable placement，并在读取 K3 静态资料后批准将正式 QEMU runtime 从 `SMP=8` 修订为 `SMP=16`。
 - 2026-09-16：用户明确要求将既有异步 UART 与网卡一起纳入多核适配，并以“同意开始重写计划”批准本次范围重规划。
+- 2026-09-20：用户明确要求将 `cpumask 0.1` 越界访问风险纳入当前 Cycle 并一并解决，批准 Iteration 003 的范围和验证契约重规划。
 - 未豁免 Gate，也未将 QEMU 结果外推为 D1/K3 真板资格。

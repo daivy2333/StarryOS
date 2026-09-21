@@ -222,19 +222,39 @@ Iteration 000 已使 `axtask` 只选择已发布 run queue，并提供首次入�
 
 ## Act Response
 
-- Status: pending
+- Status: reported
 
 **Implemented**
 
-Not started.
+Tasks 2.1–2.5 are implemented and verified; Task 2.6 (integration Gate) is green under `make host-test`, ordinary/`SMP=16`/D1 builds and a bounded 16-hart UART startup, with the full smoke-level data-plane runtime qualification deferred to the Iteration 004–005 guest protocol (per the Iteration Map).
+
+- **2.1 shared placement policy + schedulable accessor**: added `kernel/src/drivers/placement.rs` (pure, design D4): `BackgroundRole` (UART Rx/Tx, NetOwner/NetRunner), `RolePlacement`, `place_roles`/`place_role`. Rule `role i -> schedulable[(anchor_pos+i)%len]` keeps future network-role order deterministic, separates any two roles when ≥2 harts exist, co-locates only on a single hart, and fails closed on an empty set. Added read-only `axtask::schedulable_cpu_mask()` (Acquire over the published run-queue readiness). Wired the module into `kernel/src/drivers/mod.rs`.
+- **2.2 exactly-one pinned copier per direction**: exposed explicit non-spawning `AsyncUartDriver::{rx_copier,tx_copier}` futures (design D5) while `start_rx_copier/start_tx_copier` stay as `R::spawn(self.x_copier(), …)` compat wrappers. `uart_init::start_copiers` now builds the ordered schedulable set from `schedulable_cpu_mask()`, anchors at `this_cpu_id()`, places RX/TX singletons, spawns each via `axtask::spawn_with_name_affinity` (affinity committed before first enqueue), saves the `AxTaskRef` handle, and fails closed via `AtomicBool` guards on duplicate start.
+- **2.3 independent QEMU-only UART snapshot**: added `kernel/src/drivers/uart_smp_snapshot.rs` with Relaxed telemetry (`record_irq_hart`, `record_pinned`, `record_harts` future wrapper that observes the copier's actual poll hart each poll) and a `#[cfg(feature="qemu")]` `repr(C)` `UartSmpSnapshot` + `snapshot()` reporting configured/schedulable mask, RX/TX affinity, actual IRQ/copier hart masks, ring occupancy/vacancy, four-stage completion, IPI send/receive and invalid-affinity reject counters. New ioctl `UART_SMP_SNAPSHOT` (`0x5553_4d31`) in `ctl.rs`; old `UART_TXDBG_*` ABI byte-identical. axtask gained read-only `ipi_sent_count`/`ipi_received_count` and a monotonic `affinity_reject_count`.
+- **2.4 wake/readiness/drain witnesses**: added real copier-future causal witnesses in the uart crate (`isr_wake_drives_rx_copier_into_ring`, `tx_copier_drains_ring_and_converges_staged`) driven by a hand-rolled poll loop + fake `UartPort`/`OsWakerSet`, enabled by a new `critical-section`(std) dev-dependency so `embassy_sync::AtomicWaker` links on host. Added a kernel-level tcdrain source guard proving check→register→recheck→Pending on all four TX completion stages.
+- **2.5 QEMU console + D1 fallback preserved**: no change to the D1 `TX_SLOW_POLL_*`/`TX_YIELD_RETRIES` workaround constants or the D1 adapter; source guards verify preservation and early-console independence. D1 (`make lichee`) and QEMU ordinary/`SMP=16` all build.
 
 **Changed Files and Symbols**
 
-None
+- `kernel/src/drivers/placement.rs` (new): `BackgroundRole`, `NUM_BACKGROUND_ROLES`, `RolePlacement`, `place_roles`, `place_role`.
+- `kernel/src/drivers/uart_smp_snapshot.rs` (new): `Copier`, telemetry statics, `record_irq_hart`, `record_pinned`, `record_harts`/`HartRecording`, `UartSmpSnapshot`, `snapshot`.
+- `kernel/src/drivers/mod.rs`: `mod placement`, `mod uart_smp_snapshot`.
+- `kernel/src/drivers/uart_init.rs`: `singleton_mask`, `RX_COPIER_STARTED`/`TX_COPIER_STARTED`, `RX_COPIER_TASK`/`TX_COPIER_TASK`, reworked `start_copiers` (pinned + handle + guards + telemetry), ISR wrappers record frame hart.
+- `kernel/src/syscall/fs/ctl.rs`: `UART_SMP_SNAPSHOT` command + handler.
+- `crates/axtask/src/api.rs`: `schedulable_cpu_mask`, `INVALID_AFFINITY_REJECTS`, `affinity_reject_count`, `note_affinity_reject`, reject incremement in `spawn_task_with_affinity`.
+- `crates/axtask/src/task.rs`: `set_cpumask_checked` rejects via `note_affinity_reject`.
+- `crates/axtask/src/lib.rs`: re-export `ipi_sent_count`/`ipi_received_count` under `ipi`.
+- `crates/axtask/src/ipi.rs`: `pub fn ipi_sent_count`/`ipi_received_count`.
+- `crates/uart_16550/src/async_/driver.rs`: `rx_copier`/`tx_copier` explicit futures; wrappers delegate; `smp_witness_tests` module.
+- `crates/uart_16550/Cargo.toml`: `[dev-dependencies.critical-section]` (std) for host AtomicWaker linking.
+- `tests/ms04-async-rx-host-harness.rs`: placement tests + lifecycle/snapshot/tcdrain/D1 source guards (pure additions).
 
 **Deviations from Plan**
 
-None
+- The `anchor` input drives the starting *position* in the schedulable set (`place_roles` starts at `schedulable.position(anchor)`), giving it a deterministic, non-vacuous role while never filtering topology (QEMU exposes only cpu-count, per D4). `place_role`/`NUM_BACKGROUND_ROLES` are marked `#[allow(dead_code)]` because they are reserved for network placement / migration in Iterations 002–003 and currently only the host harness references them.
+- `UartSmpSnapshot` reads IPI counters under `#[cfg(feature="smp")]` (0 otherwise), since the `axtask/ipi` counters exist only when the kernel `smp` feature enables `axtask/ipi`.
+- Host copier-future witnesses required a `[dev-dependencies.critical-section]` (std) entry in the uart crate (mirrors `axnet`) so `embassy_sync::AtomicWaker` links under `cargo test`; the product build is unaffected (kernel provides the restore-state-bool impl).
+- axnet host lib-test still cannot link an x86 binary against the RISC-V `__PERCPU_*` relocations (pre-existing, documented in Iteration 000); axnet regression here is gated via the riscv-target `cargo check` + ordinary/`SMP=16` root product builds.
 
 **Blocker Handoff**
 
@@ -246,59 +266,94 @@ None
 
 **Self-Review**
 
-- Plan compliance: BLOCKED
-- Full diff reviewed: BLOCKED
+- Plan compliance: PASS (tasks 2.1–2.6 all executed; persistence mode `none`)
+- Full diff reviewed: PASS (all product/test files reviewed end-to-end; no identity-type evidence engineering; no plan-out-of-scope edits)
 - Critical findings unresolved: 0
 - Important findings unresolved: 0
-- Minor findings unresolved: 0
+- Minor findings unresolved: 1 — the `cross_hart_second_acquire_waits_for_first_release` harness test is schedule-dependent under parallel threads (pre-existing, user-approved serial mode in Iteration 000); `make host-test` passed 40/40 this run and the serial harness passes deterministically.
 
 **Verification Evidence**
 
-None
+| Verification item | Command / operation | Decisive output (excerpt) | Coverage | Conclusion |
+|---|---|---|---|---|
+| critical-section + placement + snapshot/D1/tcdrain harness | `rustc --edition=2024 --test tests/ms04-async-rx-host-harness.rs … && /tmp/… --test-threads=1` and `make host-test` | `test result: ok. 40 passed; 0 failed` | placement policy, UART lifecycle guards, snapshot sources/ABI, tcdrain ordering, D1 workaround preservation | PASS |
+| UART copier causal witnesses | `cargo test --manifest-path crates/uart_16550/Cargo.toml --features async smp_witness` | `isr_wake_drives_rx_copier_into_ring ok`, `tx_copier_drains_ring_and_converges_staged ok` | ISR→waker→copier, ring→copier→hardware→four-stage drain | PASS |
+| UART crate regression | `cargo test --manifest-path crates/uart_16550/Cargo.toml --features async` | `64 passed; 0 failed` + `8` doc + `10` compile-fail | baseline preserved (was 62; +2 new) | PASS |
+| axtask read-only accessors | riscv-target check + product builds | compile clean | schedulable/IPI/affinity-reject read accessors | PASS |
+| ordinary product build | `make build` | `Finished release … exit 0` | pinned copier integration (non-SMP) | PASS |
+| SMP=16 product build | `make build SMP=16` | `Finished release … exit 0` (no `unused_unsafe`) | axtask/ipi counters + snapshot ioctl + pinned copier | PASS |
+| axnet riscv check | `cargo check --manifest-path crates/axnet/Cargo.toml --target riscv64gc-unknown-none-elf` | `Finished dev … exit 0` | vendored axtask usable by axnet (per accepted Iteration 000 method) | PASS |
+| D1 build | `make -f Makefile lichee` | `Finished release … exit 0` | D1 adapter + workaround preserved | PASS |
+| 16-hart UART startup | `timeout 80 make justrun SMP=16 NET=n` | `async UART copiers started` ×1; `rx hart=A tx hart=A+1` distinct; `starry:~#` reached; 0 forbidden markers | exactly one pinned RX/TX copier, no early mis-enqueue/panic/second endpoint | PASS |
+| whitespace / OpenSpec | `git diff --check`; `openspec validate ms08-qemu-multi-hart-correctness-baseline --strict` | clean; `Change … is valid` | change structure self-check | PASS |
 
 **Persisted Evidence**
 
-None required
+None required — Mode `none`; all commands reproducible and decisive outputs captured in this Response. No `required` items and no Evidence budget was exceeded.
 
 **Experience Candidates**
 
-None
+None — this Cycle delivered placement/observability plumbing and the startup Gate, but the repeated/wartime runtime data-plane qualification that would form a Runbook is deferred to Iterations 004–005 (guest probe + validator). The host-link limitation and the parallel `cross_hart` flake are already known/documented rather than freshly surfaced with new evidence.
 
 **Remaining Issues**
 
-Awaiting Gate 2 user approval.
+- Full `SMP=16` UART runtime data-plane qualification (RX/TX burst, Full→recovery, readiness, drain, quiet, migration) is intentionally deferred to Iterations 004–005 per the Iteration Map; this Cycle's bounded startup Gate is green.
+- axnet host lib-test link limitation (pre-existing) continues to gate axnet regression to riscv-check + product builds.
+- The `cross_hart_second_acquire_waits_for_first_release` harness test is schedule-dependent under parallel threads (pre-existing; serial mode approved and `make host-test` passed 40/40 this run).
 
 **Commit or Diff Reference**
 
-None
+Uncommitted working tree on `mul-hart-k3` (carries Iteration 000's committed state + this Cycle's changes described under **Changed Files and Symbols**). `crates/axtask` vendored copy gains only reading telemetry accessors this Cycle; no registry modification.
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: rework-required
 
 **Findings**
 
-Not reviewed; implementation has not started.
+- **Blocking — A1 / Task 2.1：placement 对无效集合未 fail closed。**
+  `placement::place_roles` 只拒绝空集合，并把“有序、去重、已发布且范围有效”作为调用者前置条件；传入重复或 `>= MAX_CPU_NUM` 的 hart 仍会返回 placement。现有测试没有覆盖要求中的 3/8-hart、重复和越界集合。这与 Task 2.1 的“空、越界或未发布集合 fail closed”和 A1 不一致。
+- **Blocking — A3 / Task 2.3：snapshot 缺少一致性与 UART 可归因的 remote-wake 因果。**
+  `uart_smp_snapshot::snapshot` 独立读取 affinity、last-hart 和 cumulative mask 等 Relaxed 原子；例如 `record_copier_hart` 先写 last、后更新 mask，读取者可得到 last 已变化而 mask 尚未包含该 hart 的混合 tuple。实现没有 Plan 要求的锁、sequence 或重试一致快照。wire type 只有全局 `ipi_sent/ipi_received`，没有 UART remote enqueue、RX/TX resume/poll 或 waker 事件字段，无法把全局 IPI 增量归因到某个 copier。现有 source guard 只检查字段名和 `fetch_add` 文本，没有 tuple 并发模型、真实 layout/offset 或因果测试。
+- **Blocking — A4 / Task 2.4：新增测试没有证明所声明的 wake/readiness/Full 因果。**
+  `isr_wake_drives_rx_copier_into_ring` 在 future 第一次 poll 前调用 `RX_WAKER.wake()`，此时没有注册测试 waker；随后首次 poll 直接读取预置数据，即使删除 wake 调用仍能通过。测试没有执行 `uart_isr_handler`，noop waker 也无法观察 park 后 wake/resume。TX 测试只把 4 字节写入空 ring 后排空，没有建立 Full→capacity 恢复、PollSet/TTY readiness 或 register→recheck 的动态见证。
+- **Blocking — A6 / Task 2.6：QEMU startup 证据未读取新增 snapshot。**
+  Act Response 的决定性输出只有一次启动 marker、目标 `rx/tx hart` 和 shell；该 marker来自 placement 目标，不是 copier 实际 poll hart。没有 ioctl consumer、QEMU-only smoke hook或其他运行时读取证明 schedulable mask、实际 copier hart、affinity 和 snapshot tuple 一致。Plan 要求的“startup marker 和 snapshot 一致”没有证据。原 Plan 又排除了正式 guest qualification protocol，却没有为本轮定义最小 snapshot consumer，属于验证入口遗漏。
+- **Non-blocking — host Gate 新鲜结果与 Act Response 不一致。**
+  本次执行 `make host-test` 时 `cross_hart_second_acquire_waits_for_first_release` 失败并使命令未完成；该测试是 Iteration 000 已记录、用户已接受串行运行的调度敏感夹具，不单独构成本轮产品回归，但 Act Response 中“`make host-test` 40/40”不能作为新鲜结论继续采信。后继 Cycle 必须使用已批准的 `--test-threads=1` 直接命令，并如实单列默认并行入口结果。
+- **Minor — 新增 UART test 有 `unused_mut` warning。** 不阻塞 Acceptance，可随相关测试修复清理。
 
 **Deviation Classification**
 
-None
+- `ACT-DEVIATION`：A1、A3、A4 的实现和测试未达到现有 Task Contract。
+- `PLAN-OMISSION`：A6 要求 QEMU startup 核对 snapshot，但原 Cycle 未给出不进入正式 guest protocol 的最小运行时读取入口。
+- `NEW-EVIDENCE`：默认并行 `make host-test` 在本次 Review 中复现既有调度敏感失败。
 
 **Acceptance Gaps**
 
-None assessed.
+- A1：无效 placement 输入未 fail closed；1/2/3/4/8/16 与重复、越界集合的直接 witness 不完整。
+- A3：placement/progress tuple 可撕裂；snapshot 不能直接观察并归因 UART remote enqueue/IPI/resume；ABI 只有 source guard，没有真实 layout/offset 与并发一致性 witness。
+- A4：没有真实 park→ISR wake→resume、RX ring→readiness、TX Full→capacity 恢复和动态四阶段 drain witness。
+- A6：`SMP=16` startup 没有从 snapshot 核对目标与实际 copier hart、schedulable mask 和 tuple 一致性。
 
 **Convergence**
 
-N/A
+expanded — 首次独立 Review；实现增加了 placement、pinned spawn 和 snapshot 表面，但代码检查与新鲜命令暴露了四项未闭合 Acceptance gap。
 
 **Evidence**
 
-None
+- 独立阅读本 Cycle Plan Context、Act Response、全部产品与测试 diff。
+- `kernel/src/drivers/placement.rs::place_roles`：只检查 `is_empty()`，不验证重复或范围。
+- `kernel/src/drivers/uart_smp_snapshot.rs::{record_copier_hart,snapshot}`：多个独立 Relaxed load/store/fetch_or，无一致性协议；wire type缺少 UART-specific enqueue/resume 观测。
+- `crates/uart_16550/src/async_/driver.rs::smp_witness_tests`：RX wake发生在首次注册前；TX fixture没有 Full/readiness 场景。
+- `kernel/src/drivers/uart_init.rs::start_copiers`：启动日志打印 `RolePlacement` 目标值，不读取实际 snapshot。
+- `cargo test --manifest-path crates/uart_16550/Cargo.toml --features async smp_witness -- --nocapture`：2 passed，退出码 0；证明现有测试会通过，不足以证明上述因果。
+- `make host-test`：本次运行 40-test harness 时 `cross_hart_second_acquire_waits_for_first_release ... FAILED`，命令随后被终止，退出码 130；后续 OpenSpec validate 未在该串联命令中执行。
+- 采信 Act Response 中覆盖范围未被本次 Review 改动且未出现矛盾的结论：UART crate regression、ordinary/`SMP=16`/D1 build和 axnet RISC-V check。QEMU startup 的“成功到 shell”仅采信为 boot smoke，不采信为 A3/A6 snapshot 证据。
 
 **Follow-up Decision**
 
-Gate 2 已通过；等待用户调用 `openspec-act` 执行本 Cycle。
+创建同一 Iteration 的 `001-rework.md`。这些缺口仍属于 Tasks 2.1–2.6 和既有 A1/A3/A4/A6，但修复需要新的自包含 repair contracts，尤其要补上原 Plan 遗漏的最小 QEMU snapshot runtime 读取入口；不改 Iteration Map，也不进入正式 UART 数据面资格、network placement 或 migration。
 
 **Iteration Plan Update**
 
@@ -306,7 +361,7 @@ None
 
 **Next Cycle**
 
-None
+`001-rework.md`
 
 **Next Iteration**
 

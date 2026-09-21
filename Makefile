@@ -22,6 +22,16 @@ ifeq ($(MEMTRACK), y)
 	APP_FEATURES += starry-kernel/memtrack
 endif
 
+# Enable the root crate `smp` feature for SMP boots. `make/features.mk` only adds
+# `axfeat/smp` to `LIB_FEAT` on `SMP>1`; the root `smp` feature is what propagates
+# `starry-kernel/smp -> axtask/ipi` (the single remote-ready-IPI owner). Without it
+# the standard `make ... SMP=16` build has no real IPI telemetry and the UART
+# remote-wake causality cannot be observed (OpenSpec MS08 Iteration 001 / 2.3-R3).
+# Single-hart boots do not enable it, and `axruntime/ipi`/`axipi` stay off.
+ifeq ($(shell test $(SMP) -gt 1; echo $$?),0)
+	APP_FEATURES += smp
+endif
+
 default: build
 
 ROOTFS_URL = https://github.com/Starry-OS/rootfs/releases/download/20260214

@@ -50,6 +50,7 @@ static TELEMETRY: IrqTelemetry = IrqTelemetry::new();
 /// entering disabled and returning enabled increments the restore-violation
 /// counter.  No Service/queue/descriptor/smoltcp operation happens here.
 fn net_irq_handler() {
+    crate::drivers::net_placement::record_irq_hart();
     let desc = platform::descriptor();
     let cfg = match &desc.virtio_net {
         Some(cfg) => cfg,
@@ -112,28 +113,81 @@ fn net_irq_handler() {
 
 // ── Initialization ─────────────────────────────────────────────────────
 
+/// Builds a singleton [`axtask::AxCpuMask`] for the given hart.
+///
+/// The hart comes from the published schedulable set / pure placement policy,
+/// which only contains ids below the mask capacity; the expect documents that
+/// invariant at the fail-closed boundary.
+fn singleton_mask(hart: usize) -> axtask::AxCpuMask {
+    let mut mask = axtask::AxCpuMask::new();
+    mask.set(hart, true)
+        .expect("placement hart < mask capacity by schedulable-set invariant");
+    mask
+}
+
 /// Initialize the VirtIO-net IRQ diagnostic control plane.
 ///
 /// # What it does
 ///
 /// 1. Reads the optional MMIO net fact from the platform descriptor.
 /// 2. Validates VirtIO magic, version and device ID at that address.
-/// 3. Registers an IRQ handler that classifies cause, ACKs known bits and
+/// 3. Computes the network role placement over the published schedulable set
+///    (design D4): the runner hart first, then the owner hart.
+/// 4. Starts exactly one pinned runner after the Service is installed
+///    (secondary-ready), saving its handle.
+/// 5. Registers an IRQ handler that classifies cause, ACKs known bits and
 ///    publishes used-ring RX events.
-/// 4. Starts the unique async RX task only after successful registration.
-///    MS02 polling fallback stays active until the task activates.
+/// 6. Only after successful registration, starts exactly one pinned owner and
+///    saves its handle. Registration failure keeps the bounded polling owner
+///    and never starts an async owner (register-before-start).
 ///
 /// # Safety
 ///
 /// The caller must ensure the platform MMIO region is identity-mapped
 /// (QEMU satisfies this via `axruntime`).
 pub fn init_virtio_net_irq_diag() {
+    // Task 3.1/3.2: derive the role placement once from the published
+    // schedulable set and the current registration hart. Invalid/empty input
+    // fails closed before any network task starts.
+    let Some(pl) = crate::drivers::net_placement::place() else {
+        ax_println!("[NET IRQ] no schedulable hart for network placement; aborting");
+        return;
+    };
+
+    // Start exactly one pinned stack runner FIRST (Service is already installed
+    // by `axnet::init_network`). A missing runner is a hard stop: the owner must
+    // never start without one, and the runner is what drives Service/loopback /
+    // polling-mode stack progress. Failure to place the runner aborts the whole
+    // init (no async owner), leaving the polling fallback active.
+    let runner_mask = singleton_mask(pl.net_runner);
+    match axnet::start_stack_runner_affinity(runner_mask) {
+        Ok(task) => {
+            // Task 3.2 replan fix: only record the pinned runner hart AFTER the
+            // affinity spawn actually committed. A rejected spawn (invalid /
+            // unpublished mask) rolls the lifecycle back, so it must leave
+            // RUNNER_PINNED as UNKNOWN_HART — never a pinned value for a runner
+            // that was not enqueued (V5 would otherwise report a fake role).
+            crate::drivers::net_placement::record_runner_pinned(pl.net_runner);
+            crate::drivers::net_placement::set_runner_task(task);
+        }
+        Err(err) => {
+            ax_println!(
+                "[NET IRQ] start_stack_runner_affinity: {err:?}; aborting (no runner, no async owner)"
+            );
+            return;
+        }
+    }
+
+    // Device-descriptor / MMIO validation. These fail the async-owner path but
+    // MUST NOT tear down the already-started pinned runner: Service/loopback and
+    // the polling fallback still need it, exactly as the old `init_network` path
+    // always provided a runner.
     let desc = platform::descriptor();
     let cfg = match &desc.virtio_net {
         Some(cfg) => cfg,
         None => {
             ax_println!(
-                "[NET IRQ] No VirtIO-MMIO net in platform descriptor; skipping IRQ diagnostic"
+                "[NET IRQ] No VirtIO-MMIO net in platform descriptor; keeping pinned runner, no async owner"
             );
             return;
         }
@@ -155,18 +209,21 @@ pub fn init_virtio_net_irq_diag() {
 
     if magic != 0x74726976 {
         ax_println!(
-            "[NET IRQ] VirtIO magic mismatch: expected 0x74726976, got 0x{:08x}",
+            "[NET IRQ] VirtIO magic mismatch: expected 0x74726976, got 0x{:08x} (keeping pinned runner, no async owner)",
             magic
         );
         return;
     }
     if version < 1 {
-        ax_println!("[NET IRQ] VirtIO version too old: {}", version);
+        ax_println!(
+            "[NET IRQ] VirtIO version too old: {} (keeping pinned runner, no async owner)",
+            version
+        );
         return;
     }
     if device_id != 1 {
         ax_println!(
-            "[NET IRQ] Not a network device (device_id={}, expected 1)",
+            "[NET IRQ] Not a network device (device_id={}, expected 1) (keeping pinned runner, no async owner)",
             device_id
         );
         return;
@@ -180,8 +237,9 @@ pub fn init_virtio_net_irq_diag() {
         cfg.base_paddr
     );
 
-    // Register IRQ handler.  On failure the polling fallback stays active
-    // and no async task is started (register-before-start).
+    // Register IRQ handler.  On failure the polling fallback stays active; the
+    // pinned runner is still needed for polling-mode stack progress, so we
+    // return WITHOUT starting an async owner (register-before-start).
     if !axhal::irq::register(cfg.irq, net_irq_handler) {
         ax_println!(
             "[NET IRQ] Failed to register IRQ {} handler; polling fallback remains active",
@@ -191,15 +249,27 @@ pub fn init_virtio_net_irq_diag() {
     }
 
     ax_println!(
-        "[NET IRQ] IRQ {} handler registered; starting async RX queue task",
+        "[NET IRQ] IRQ {} handler registered; starting pinned async RX queue owner",
         cfg.irq
     );
 
-    // Registration succeeded: start the unique RX task exactly once.  A
-    // repeated start only records a bounded diagnostic and never spawns a
-    // second task.
-    if let Err(err) = axnet::start_rx_task() {
-        ax_println!("[NET IRQ] start_rx_task: {err:?} (bounded diagnostic, no second task)");
+    // Registration succeeded: start the unique pinned owner exactly once and
+    // save its handle.  A rejected start only records a bounded diagnostic and
+    // never creates a second owner.
+    let owner_mask = singleton_mask(pl.net_owner);
+    match axnet::start_rx_task_affinity(owner_mask) {
+        Ok(task) => {
+            // Task 3.2 replan fix: record the pinned owner hart only after the
+            // affinity spawn committed, so a rejected start leaves OWNER_PINNED
+            // unset rather than reporting a never-enqueued owner.
+            crate::drivers::net_placement::record_owner_pinned(pl.net_owner);
+            crate::drivers::net_placement::set_owner_task(task);
+        }
+        Err(err) => {
+            ax_println!(
+                "[NET IRQ] start_rx_task_affinity: {err:?} (bounded diagnostic, no second owner)"
+            );
+        }
     }
 }
 
@@ -368,6 +438,84 @@ pub fn irq_snapshot_v3() -> virtio_net_irq_logic::IrqSnapshotV3 {
     s.drop_unsupported_address = v3.drop_unsupported_address;
     s.drop_frame_too_large = v3.drop_frame_too_large;
     s
+}
+
+/// QEMU-only append-only network placement/wake snapshot.  V5's first bytes are
+/// exactly V4; the appended fields report network role placement, actual IRQ
+/// hart, IPI/wake causality and invalid-affinity rejects without changing V1–V4.
+#[cfg(feature = "qemu")]
+pub fn irq_snapshot_v5() -> virtio_net_irq_logic::IrqSnapshotV5 {
+    let v4 = irq_snapshot_v4();
+    let place = crate::drivers::net_placement::snapshot();
+    let sched = axtask::schedulable_cpu_mask();
+    let owner_affinity = place.owner_affinity as u64;
+    let runner_affinity = place.runner_affinity as u64;
+    let witness = crate::drivers::net_wake_witness::snapshot();
+    let (witness_target_ipi_before, witness_target_ipi_after) =
+        crate::drivers::net_wake_witness::ipi_causality();
+    // Task 4.3: controlled-migration state (phase/from/to packed u64) for each
+    // existing role; 0 = never migrated (phase None, AUTO harts).
+    let migration_owner_state = crate::drivers::uart_migration_logic::pack_migration_view(
+        &crate::drivers::net_placement::migration_view(
+            crate::drivers::net_placement::NetRole::Owner,
+        ),
+    );
+    let migration_runner_state = crate::drivers::uart_migration_logic::pack_migration_view(
+        &crate::drivers::net_placement::migration_view(
+            crate::drivers::net_placement::NetRole::Runner,
+        ),
+    );
+    virtio_net_irq_logic::IrqSnapshotV5 {
+        v4,
+        configured_harts: axhal::cpu_num() as u64,
+        schedulable_mask: mask_to_u64(&sched),
+        owner_affinity,
+        runner_affinity,
+        irq_last_hart: place.irq_last_hart as u64,
+        irq_hart_mask: place.irq_hart_mask,
+        irq_events: place.irq_events,
+        // Task 3.3: owner/runner harts are DIRECT observations recorded at the
+        // real poll sites, distinct from the configured affinity fields above.
+        owner_last_hart: place.owner_last_hart as u64,
+        owner_hart_mask: place.owner_hart_mask,
+        owner_events: place.owner_events,
+        runner_last_hart: place.runner_last_hart as u64,
+        runner_hart_mask: place.runner_hart_mask,
+        runner_events: place.runner_events,
+        ipi_sent: place.ipi_sent,
+        ipi_received: place.ipi_received,
+        affinity_rejects: place.affinity_rejects,
+        // Task 4.3: controlled-migration state for each existing role.
+        migration_owner_state,
+        migration_runner_state,
+        witness_phase: witness.phase as u64,
+        witness_completed: witness.completed,
+        witness_failed: witness.failed,
+        witness_timer_restored: witness.timer_restored,
+        witness_start_rejects: witness.start_rejects,
+        witness_missing_restore: witness.missing_restore,
+        witness_duplicate_terminal: witness.duplicate_terminal,
+        // Task 3.3/3.4: per-run attribution and IPI causality — the accepted run's
+        // target/trigger harts survive terminal, and the trigger-baseline vs.
+        // resume-received IPI counts attribute the wake to a real remote enqueue.
+        witness_trigger_rejects: witness.trigger_rejects,
+        witness_illegal_transitions: witness.illegal_transitions,
+        witness_last_target_hart: witness.last_target_hart as u64,
+        witness_last_trigger_hart: witness.last_trigger_hart as u64,
+        witness_target_ipi_before,
+        witness_target_ipi_after,
+    }
+}
+
+#[cfg(feature = "qemu")]
+fn mask_to_u64(mask: &axtask::AxCpuMask) -> u64 {
+    let mut out = 0u64;
+    for i in 0..axconfig::plat::MAX_CPU_NUM {
+        if mask.get(i) {
+            out |= 1u64 << i;
+        }
+    }
+    out
 }
 
 /// QEMU-only append-only recovery snapshot.  V1–V3 remain separate ioctl

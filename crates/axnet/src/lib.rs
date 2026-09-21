@@ -24,6 +24,7 @@ mod device;
 mod diag;
 mod flush;
 mod general;
+mod hart_counter;
 mod listen_table;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
@@ -65,11 +66,15 @@ use self::{
 };
 pub use self::{
     async_rx::{
-        RX_TASK_NAME, RxSnapshot, RxSnapshotV3, publish_config_event, publish_queue_event,
-        publish_rx_event, rx_snapshot, rx_snapshot_v3, software_nudge, start_rx_task,
+        RX_TASK_NAME, RxSnapshot, RxSnapshotV3, owner_hart_tuple, publish_config_event,
+        publish_queue_event, publish_rx_event, rx_snapshot, rx_snapshot_v3, software_nudge,
+        start_rx_task, start_rx_task_affinity,
     },
     socket::*,
-    stack_runner::{StackSnapshot, stack_snapshot},
+    stack_runner::{
+        StackSnapshot, runner_hart_tuple, runner_software_nudge, stack_snapshot,
+        start_stack_runner_affinity,
+    },
 };
 
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
@@ -140,9 +145,10 @@ pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
         }
     });
     SERVICE.call_once(|| Mutex::new(service));
-    if let Err(err) = stack_runner::start_stack_runner() {
-        warn!("stack runner already started: {err:?}");
-    }
+    // Design D5: installation is spawn-free. The owning kernel adapter starts
+    // exactly one pinned stack runner and one pinned queue owner only after the
+    // secondary schedulers are published (secondary-ready), so no background
+    // network task enters a run queue before it is schedulable.
 }
 
 /// Init vsock subsystem by vsock devices.

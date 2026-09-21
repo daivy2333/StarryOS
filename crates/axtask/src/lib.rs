@@ -42,10 +42,14 @@ cfg_if::cfg_if! {
         mod run_queue;
         mod task;
         mod api;
+        mod cpumask;
         mod wait_queue;
 
         #[cfg(feature = "ipi")]
         mod ipi;
+
+        #[cfg(feature = "ipi")]
+        pub use self::ipi::{ipi_received_count, ipi_received_count_by_hart, ipi_sent_count};
 
         #[cfg(feature = "irq")]
         mod timers;

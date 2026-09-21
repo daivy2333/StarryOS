@@ -117,7 +117,9 @@ pub fn sys_sched_setaffinity(
 
     for i in 0..(size * 8).min(axhal::cpu_num()) {
         if user_mask[i / 8] & (1 << (i % 8)) != 0 {
-            cpu_mask.set(i, true);
+            // Dynamic user input: an index at or above the mask capacity must
+            // fail closed instead of being silently dropped or aliased.
+            cpu_mask.set(i, true).map_err(|_| AxError::InvalidInput)?;
         }
     }
 

@@ -12,7 +12,7 @@ use axerrno::AxError;
 use kernel_guard::NoPreemptIrqSave;
 use kspin::SpinNoIrq;
 
-use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_run_queue};
+use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue};
 
 mod poll;
 pub use poll::*;
@@ -41,9 +41,16 @@ impl Wake for AxWaker {
 
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(task) = self.task.upgrade() {
-            let mut rq = select_run_queue::<NoPreemptIrqSave>(&task);
+            // Wake-target selection is local-preferred and separate from the
+            // plain-spawn round-robin: a full-mask task woken on its own hart
+            // stays local (no remote IPI), while a pinned task woken from a
+            // remote hart is delivered to its allowed hart. The `resched=true`
+            // requests a real `Blocked -> Ready` transition, so exactly one
+            // remote-ready IPI is sent for a genuine remote enqueue. See
+            // `run_queue::select_wake_run_queue` / `unblock_task`.
+            let mut rq = select_wake_run_queue::<NoPreemptIrqSave>(&task);
             *self.woke.lock() = true;
-            rq.unblock_task(task, false);
+            rq.unblock_task(task, true);
         }
     }
 }

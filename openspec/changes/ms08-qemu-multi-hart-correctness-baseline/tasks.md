@@ -24,13 +24,15 @@
 - [ ] 3.3 以 V4 为字节级前缀增加 QEMU-only V5，追加 configured/online mask、owner/runner affinity、实际 IRQ/task hart、remote enqueue/IPI/resume、迁移和无效 affinity 字段；V1–V4 command/布局/语义不变。
 - [ ] 3.4 增加 single-flight timer-disabled remote-wake witness：目标 task 关闭本 hart timer 后 park，另一 hart wake，完成/取消/超时路径都恢复 timer；以状态机 host tests 和 target build 验证。
 - [ ] 3.5 运行 network placement Gate：policy/ABI/witness、MS03/MS04/MS07 harness、两套 axnet tests、ordinary/`SMP=16` build；任一第二 owner、早期 spawn、旧 ABI 破坏或 timer 未恢复必须停止。
+- [ ] 3.6 修复 UART TX copier 在 `register_waker` 到真实 `Poll::Pending` 之间的 lost-wakeup：注册 ring waker 后重查 ring，发现新数据时 self-wake/retry；空发射器停放路径保留 THRE 兜底。以真实 copier future 的确定性交错测试和重复 `SMP=16` startup 证明 publication 不再卡在 ring、remote-ready IPI 或本地重试最终产生进度，同时保持 SPSC、四阶段 drain、early console 与 D1 workaround。
 
 ## 4. 受控迁移与 ordering 闭合
 
-- [ ] 4.1 在 QEMU-only control 中将既有 UART RX/TX copier 的 mask 从 singleton 扩展到两个有效 hart，通过自然 block/wake 观察迁移；验证 task identity、SPSC endpoint、ring index 和 staged state 不变，然后恢复固定 mask。
-- [ ] 4.2 以同样方式迁移 network owner/runner；验证 owner lifecycle、descriptor/slot/ticket 账本、runner generation 和 readiness 不变，旧 hart 无第二实例。
-- [ ] 4.3 审计 UART completion/IER cache/placement 与 network cause/lifecycle/fault/ticket/epoch/readiness 共享状态；将 telemetry 保持 Relaxed，publish/observe 使用 Release/Acquire，同步 RMW 使用 AcqRel，复合 tuple 使用锁或一致快照。对 QEMU `ArceOsUartPort::ier_cache` 必须以测试证明现有 UART `SpinNoIrq` 将 cache RMW 与 MMIO write 置于同一串行化边界；只在 witness 暴露 lost update 时修正。D1 adapter 的 local-IRQ-only RMW 不取得 SMP 资格，也不在本 QEMU change 中扩大修改。
-- [ ] 4.4 运行 migration/ordering Gate：无效 mask fail-closed、register/publish、generation wrap、terminal-before-wake、snapshot 一致性和 100 轮迁移 stress；任一丢 wake、第二角色、复合状态撕裂或 IER lost update 必须停止。
+- [ ] 4.1 在工作区 `axtask` 以仓库自有 `AxCpuMask` 新类型封装私有的 `cpumask 0.1.0`，覆盖现有构造、集合运算、迭代和索引调用面；越界读取在 debug/release 均返回“不在集合”，越界写入返回错误且不修改 mask，原始 registry 类型不得从公开 API 泄漏。以容量边界、`usize::MAX`、写失败不变性和 release-mode focused tests 验证；不 fork/patch Cargo registry。
+- [ ] 4.2 在 QEMU-only control 中将既有 UART RX/TX copier 的 mask 从 singleton 扩展到两个有效 hart，通过自然 block/wake 观察迁移；验证 task identity、SPSC endpoint、ring index 和 staged state 不变，然后恢复固定 mask。
+- [ ] 4.3 以同样方式迁移 network owner/runner；验证 owner lifecycle、descriptor/slot/ticket 账本、runner generation 和 readiness 不变，旧 hart 无第二实例。
+- [ ] 4.4 审计 UART completion/IER cache/placement 与 network cause/lifecycle/fault/ticket/epoch/readiness 共享状态；将 telemetry 保持 Relaxed，publish/observe 使用 Release/Acquire，同步 RMW 使用 AcqRel，复合 tuple 使用锁或一致快照。对 QEMU `ArceOsUartPort::ier_cache` 必须以测试证明现有 UART `SpinNoIrq` 将 cache RMW 与 MMIO write 置于同一串行化边界；只在 witness 暴露 lost update 时修正。D1 adapter 的 local-IRQ-only RMW 不取得 SMP 资格，也不在本 QEMU change 中扩大修改。
+- [ ] 4.5 运行 mask-safety/migration/ordering Gate：`AxCpuMask` debug/release 越界行为、无效 affinity fail-closed、register/publish、generation wrap、terminal-before-wake、snapshot 一致性和 100 轮迁移 stress 全绿；任一原始 mask API 泄漏、垃圾 bit、非法写入、丢 wake、第二角色、复合状态撕裂或 IER lost update 必须停止。
 
 ## 5. MS08 guest/host 协议与自动判定
 
@@ -73,20 +75,20 @@
 
 ### Iteration 002: Deterministic network placement and observability
 
-- Tasks: 3.1–3.5
+- Tasks: 3.1–3.6
 - Depends on: Iteration 001
-- Stable baseline: network owner/runner 在 secondary-ready 后固定，V5 和 timer-disabled wake witness 可用。
-- Verification boundary: placement/startup/fallback、V5 ABI、witness 和 `SMP=16` build 通过。
-- Diagnostic boundary: network placement、启动顺序、IRQ 注册、V5 或 timer 恢复。
-- Non-goals: migration、guest protocol 和 runtime 资格。
+- Stable baseline: network owner/runner 在 secondary-ready 后固定，V5 和 timer-disabled wake witness 可用；UART TX copier 的 park/register 交错不再丢失 producer wake。
+- Verification boundary: placement/startup/fallback、V5 ABI、witness、UART park 交错和重复 `SMP=16` startup 通过。
+- Diagnostic boundary: network placement、启动顺序、IRQ 注册、V5、timer 恢复或 UART TX register/recheck/THRE 停放协议。
+- Non-goals: migration、guest protocol、完整 runtime 资格，以及 UART park 修复之外的 UART 行为扩张。
 
 ### Iteration 003: Controlled migration and ordering closure
 
-- Tasks: 4.1–4.4
+- Tasks: 4.1–4.5
 - Depends on: Iteration 002
-- Stable baseline: UART copier 和 network owner/runner 可通过扩展 mask 自然迁移，默认仍为固定 placement，共享状态 ordering 闭合。
-- Verification boundary: 无效 mask、逻辑身份、IER/cache、publication 和 snapshot stress 全绿。
-- Diagnostic boundary: affinity 更新、wake 后入队、SPSC/owner identity、内存序或快照。
+- Stable baseline: `AxCpuMask` 的边界行为在 debug/release 均 fail closed；UART copier 和 network owner/runner 可通过扩展 mask 自然迁移，默认仍为固定 placement，共享状态 ordering 闭合。
+- Verification boundary: mask 容量边界与 release 越界、无效 affinity、逻辑身份、IER/cache、publication 和 snapshot stress 全绿。
+- Diagnostic boundary: 本地 mask 封装、affinity 更新、wake 后入队、SPSC/owner identity、内存序或快照。
 - Non-goals: guest/host protocol 和 QEMU runtime 资格。
 
 ### Iteration 004: MS08 UART and network qualification protocols
@@ -119,7 +121,7 @@
 ## Balance Audit
 
 - Iteration 000 只交付全局原语和 16-hart 启动前提；UART 与网络都依赖该基线，拆开后无法独立支撑驱动实施。
-- Iteration 001 与 002 分开 UART 和 network 的所有权/观测故障域，防止 console 失效被误判为 network 失败，也防止 network 流量成功掩盖 UART 竞态。
+- Iteration 001 与 002 原则上分开 UART 和 network 的所有权/观测故障域。Iteration 002 只额外接纳 Task 3.6：该已取证 UART park 竞态直接使本 Iteration 的重复 `SMP=16` startup Gate 不确定，用户已明确授权在当前 Iteration 修复；不因此重开其他 UART 范围。
 - Iteration 003 合并两类任务的 migration 与 ordering，因为它们共同验证同一 scheduler/critical-section 基线，但测试仍分别维护 SPSC 和 queue-owner 不变量。
 - Iteration 004 只稳定测试协议；Iteration 005 才消费协议并分驱动资格，两者的失败边界分别是测试工具和产品 runtime。
 - Iteration 006 只在两个驱动独立通过后运行组合与 recovery，避免在综合压力中首次诊断单驱动问题。

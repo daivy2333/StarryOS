@@ -95,6 +95,19 @@ pub fn init(args: &[String], envs: &[String]) {
         // MS02 polling fallback active.
         crate::drivers::virtio_net_irq::init_virtio_net_irq_diag();
 
+        // QEMU+SMP bounded network placement smoke (Task 3.5): after
+        // secondary-ready the pinned owner/runner roles have (or fail to) poll
+        // on distinct schedulable harts. QEMU-only; no data-plane claim.
+        #[cfg(feature = "qemu")]
+        crate::drivers::net_placement::snapshot_boot_smoke();
+
+        // QEMU+SMP bounded network role migration smoke (Task 4.3): widen and
+        // restore the pinned owner/runner through the safe mask wrapper with
+        // direct poll observations on both allowed harts. QEMU-only; no
+        // data-plane claim.
+        #[cfg(feature = "qemu")]
+        crate::drivers::net_placement::migration_boot_smoke();
+
         // Run kernel-side benchmark (ring buffer throughput/latency, memory, NAPI, IRQ)
         crate::drivers::bench::run_startup_benchmark();
 
@@ -103,6 +116,18 @@ pub fn init(args: &[String], envs: &[String]) {
         // SAFETY: This boot path runs once, after the startup benchmark, and
         // the mutually exclusive D1 path cannot start the same driver tasks.
         unsafe { uart_init::start_copiers() };
+
+        // QEMU+SMP bounded startup smoke: wait until both copiers polled, then
+        // read and validate the UART SMP snapshot (Task 2.6). QEMU-only; no data
+        // plane, no guest protocol.
+        #[cfg(feature = "qemu")]
+        crate::drivers::uart_smp_snapshot::snapshot_boot_smoke();
+
+        // QEMU+SMP bounded controlled-migration smoke (Task 4.2): widen and
+        // restore each copier through the safe mask wrapper, observing direct
+        // polls on both allowed harts. QEMU-only; no data-plane claim.
+        #[cfg(feature = "qemu")]
+        crate::drivers::uart_smp_snapshot::migration_boot_smoke();
 
         pseudofs::mount_all().expect("Failed to mount pseudofs");
         spawn_alarm_task();
