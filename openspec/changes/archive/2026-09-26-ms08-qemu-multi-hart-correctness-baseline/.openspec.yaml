@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-16
+goal: 在 QEMU 多 hart 环境中建立动态 placement、SMP-safe 同步、事件驱动跨 hart wake，
+  并分别证明异步 UART 与 VirtIO-MMIO 网络的所有权、背压、完成和恢复语义。

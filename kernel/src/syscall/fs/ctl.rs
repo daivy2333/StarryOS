@@ -27,11 +27,17 @@ use crate::{
 
 const UART_TXDBG_SNAPSHOT: u32 = 0x5458_4431;
 const UART_TXDBG_RESET: u32 = 0x5458_4432;
+#[cfg(feature = "qemu")]
+const UART_SMP_SNAPSHOT: u32 = 0x5553_4d31;
+const UART_SMP_MIGRATE: u32 = 0x5553_4d32;
 const NET_IRQ_SNAPSHOT_V1: u32 = 0x4e49_4431;
 const NET_IRQ_SNAPSHOT_V2: u32 = 0x4e49_4432;
 const NET_IRQ_SNAPSHOT_V3: u32 = 0x4e49_4433;
 #[cfg(feature = "qemu")]
 const NET_IRQ_SNAPSHOT_V4: u32 = 0x4e49_4434;
+#[cfg(feature = "qemu")]
+const NET_IRQ_SNAPSHOT_V5: u32 = 0x4e49_4435;
+const NET_IRQ_MIGRATE: u32 = 0x4e49_4436;
 const NET_RX_SOFTWARE_NUDGE: u32 = 0x4e49_4e31;
 #[cfg(feature = "qemu")]
 const NET_DIAGNOSTIC_CONTROL: u32 = 0x4e49_4331;
@@ -39,6 +45,8 @@ const NET_DIAGNOSTIC_CONTROL: u32 = 0x4e49_4331;
 const NET_FLUSH: u32 = 0x4e49_4631;
 #[cfg(feature = "qemu")]
 const NET_RECOVERY_RESET_REQUEST: u32 = 0x4e49_5231;
+#[cfg(feature = "qemu")]
+const NET_WAKE_WITNESS_CONTROL: u32 = 0x4e49_5731;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -110,6 +118,39 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         (arg as *mut UartTxDebugSnapshot).vm_write(snapshot)?;
         return Ok(0);
     }
+    #[cfg(feature = "qemu")]
+    if cmd == UART_SMP_SNAPSHOT {
+        let snapshot = crate::drivers::uart_smp_snapshot::snapshot();
+        // Fully-defined wire frame: a `[u8; WIRE_SIZE]` with every byte defined by
+        // a field or an explicitly-zeroed reserved byte. Copying the *struct*
+        // object would memcpy implicit `#[repr(C)]` padding into guest memory
+        // (undefined bytes); copying the serialized array never does.
+        let wire = snapshot.wire_bytes();
+        (arg as *mut [u8; crate::drivers::uart_snapshot_types::UartSmpSnapshot::WIRE_SIZE])
+            .vm_write(wire)?;
+        return Ok(0);
+    }
+    #[cfg(feature = "qemu")]
+    if cmd == UART_SMP_MIGRATE {
+        // Task 4.2 controlled copier migration. arg packing: low 32 bits =
+        // direction (0 = RX, 1 = TX); high 32 bits = explicit second hart,
+        // where u32::MAX selects automatically from the published schedulable
+        // set. Any rejection fails closed and preserves the previous mask.
+        let dir = match arg as u32 {
+            0 => crate::drivers::uart_smp_snapshot::Copier::Rx,
+            1 => crate::drivers::uart_smp_snapshot::Copier::Tx,
+            _ => return Err(AxError::InvalidInput),
+        };
+        let hi = (arg >> 32) as u32;
+        let explicit = if hi == u32::MAX {
+            usize::MAX // AUTO_HART
+        } else {
+            hi as usize
+        };
+        crate::drivers::uart_smp_snapshot::migrate_copier(dir, explicit)
+            .map_err(|_| AxError::InvalidInput)?;
+        return Ok(0);
+    }
     #[cfg(not(feature = "lichee-d1"))]
     if cmd == NET_IRQ_SNAPSHOT_V1 {
         let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v1();
@@ -132,6 +173,29 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     if cmd == NET_IRQ_SNAPSHOT_V4 {
         let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v4();
         (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV4).vm_write(snapshot)?;
+        return Ok(0);
+    }
+    #[cfg(feature = "qemu")]
+    if cmd == NET_IRQ_SNAPSHOT_V5 {
+        let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v5();
+        (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV5).vm_write(snapshot)?;
+        return Ok(0);
+    }
+    #[cfg(feature = "qemu")]
+    if cmd == NET_IRQ_MIGRATE {
+        // Task 4.3 controlled network role migration. arg packing: low 32 bits
+        // = role (0 = owner, 1 = runner); high 32 bits = explicit second hart,
+        // where u32::MAX selects automatically from the published schedulable
+        // set. Any rejection fails closed and preserves the previous mask.
+        let role = match arg as u32 {
+            0 => crate::drivers::net_placement::NetRole::Owner,
+            1 => crate::drivers::net_placement::NetRole::Runner,
+            _ => return Err(AxError::InvalidInput),
+        };
+        let hi = (arg >> 32) as u32;
+        let explicit = if hi == u32::MAX { usize::MAX } else { hi as usize };
+        crate::drivers::net_placement::migrate_role(role, explicit)
+            .map_err(|_| AxError::InvalidInput)?;
         return Ok(0);
     }
     #[cfg(not(feature = "lichee-d1"))]
@@ -159,6 +223,17 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             axdriver::prelude::DevError::ResourceBusy => AxError::WouldBlock,
             _ => AxError::Io,
         })?;
+        return Ok(0);
+    }
+    // QEMU-only timer-disabled remote-wake witness (Task 3.4): `arg` first u64
+    // is the op (1 = start with target hart in second u64, 2 = trigger). Full
+    // runtime qualification is deferred to Iteration 005; this wiring keeps the
+    // control reachable and its host state-machine contract closed by model tests.
+    #[cfg(feature = "qemu")]
+    if cmd == NET_WAKE_WITNESS_CONTROL {
+        let payload = (arg as *const [u64; 2]).vm_read()?;
+        crate::drivers::net_wake_witness::control(payload[0], payload[1])
+            .map_err(|_| AxError::InvalidInput)?;
         return Ok(0);
     }
     // QEMU-only C4 flush: wait for all driver buffers at or before the

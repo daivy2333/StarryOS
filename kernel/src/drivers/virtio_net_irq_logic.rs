@@ -450,6 +450,80 @@ pub struct IrqSnapshotV3 {
     pub drop_frame_too_large: u64,
 }
 
+/// QEMU-only MS08 network placement/wake snapshot. `v4` is an immutable
+/// byte-for-byte prefix (and therefore also a V1–V2 prefix by construction).
+/// The appended fields are all `u64` and every byte is defined by a field
+/// (reserved migration fields are written zero), so copying the struct object
+/// never leaks implicit `#[repr(C)]` padding. QEMU-only observability; never
+/// drives scheduling.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrqSnapshotV5 {
+    pub v4: IrqSnapshotV4,
+    /// Configured CPU/hart count (`axhal::cpu_num()`).
+    pub configured_harts: u64,
+    /// Published schedulable hart mask (bit i = hart i schedulable).
+    pub schedulable_mask: u64,
+    /// Pinned network owner singleton hart.
+    pub owner_affinity: u64,
+    /// Pinned network runner singleton hart.
+    pub runner_affinity: u64,
+    /// Network ISR actual last-hart (`UNKNOWN_HART` before any IRQ).
+    pub irq_last_hart: u64,
+    /// Network ISR cumulative hart mask.
+    pub irq_hart_mask: u64,
+    /// Network ISR invocation count.
+    pub irq_events: u64,
+    /// Network owner actual last-hart (== pinned singleton in fixed placement).
+    pub owner_last_hart: u64,
+    /// Network owner actual hart mask (singleton in fixed placement).
+    pub owner_hart_mask: u64,
+    /// Network owner poll/event count (`axnet` task_poll).
+    pub owner_events: u64,
+    /// Network runner actual last-hart (== pinned singleton in fixed placement).
+    pub runner_last_hart: u64,
+    /// Network runner actual hart mask (singleton in fixed placement).
+    pub runner_hart_mask: u64,
+    /// Network runner poll/event count (`axnet` stack_snapshot task_poll).
+    pub runner_events: u64,
+    /// Remote-ready IPI send count (axtask).
+    pub ipi_sent: u64,
+    /// Remote-ready IPI receive count (axtask).
+    pub ipi_received: u64,
+    /// Invalid-affinity placement rejections (axtask).
+    pub affinity_rejects: u64,
+    /// Reserved owner migration state (Iteration 003 fills; this Iteration 0).
+    pub migration_owner_state: u64,
+    /// Reserved runner migration state (Iteration 003 fills; this Iteration 0).
+    pub migration_runner_state: u64,
+    /// Timer-disabled witness phase (0 Idle .. 5 Failed; Task 3.4).
+    pub witness_phase: u64,
+    /// Timer-disabled witness completed-run count (Task 3.4).
+    pub witness_completed: u64,
+    /// Timer-disabled witness failed-run count (Task 3.4).
+    pub witness_failed: u64,
+    /// Timer-disabled witness timer-restoration acknowledgements (Task 3.4).
+    pub witness_timer_restored: u64,
+    /// Timer-disabled witness rejected-concurrent-start count (Task 3.4).
+    pub witness_start_rejects: u64,
+    /// Timer-disabled witness terminal-without-restore count (must be 0; Task 3.4).
+    pub witness_missing_restore: u64,
+    /// Timer-disabled witness duplicate-terminal publication count (Task 3.4).
+    pub witness_duplicate_terminal: u64,
+    /// Timer-disabled witness rejected (non-remote / not-Armed) trigger count (Task 3.4).
+    pub witness_trigger_rejects: u64,
+    /// Timer-disabled witness illegal-phase transition count (Task 3.4).
+    pub witness_illegal_transitions: u64,
+    /// Timer-disabled witness accepted run's target hart, preserved through terminal (Task 3.3/3.4).
+    pub witness_last_target_hart: u64,
+    /// Timer-disabled witness accepted run's remote trigger hart, preserved through terminal (Task 3.3/3.4).
+    pub witness_last_trigger_hart: u64,
+    /// Timer-disabled witness target hart's reschedule-IPI receive count at park/arm (Task 3.3/3.4).
+    pub witness_target_ipi_before: u64,
+    /// Timer-disabled witness target hart's reschedule-IPI receive count at resume (Task 3.3/3.4).
+    pub witness_target_ipi_after: u64,
+}
+
 /// QEMU-only MS07 recovery snapshot. `v3` is an immutable byte-for-byte
 /// prefix. The appended current and historical-fault tuples are independently
 /// coherent and explicitly valid; consumers must not treat them as one instant.

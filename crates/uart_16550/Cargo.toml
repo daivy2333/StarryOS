@@ -31,6 +31,13 @@ embedded-io = { version = "0.7", optional = true, default-features = false }
 [dev-dependencies]
 assert2 = { version = "0.4.0", default-features = false }
 
+# Host tests need a critical-section implementation for `embassy-sync`'s
+# AtomicWaker when the copier futures are driven directly; the product build
+# relies on the kernel's restore-state-bool impl.
+[dev-dependencies.critical-section]
+version = "1.2"
+features = ["std"]
+
 [features]
 default = []
 embedded-io = ["dep:embedded-io"]

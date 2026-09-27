@@ -82,6 +82,10 @@ mod critical_impl {
         fn enable_irqs(&self) {
             enable_irqs();
         }
+
+        fn current_cpu_id(&self) -> usize {
+            axhal::percpu::this_cpu_id()
+        }
     }
 
     struct KernelCriticalSection;

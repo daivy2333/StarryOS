@@ -336,6 +336,10 @@ impl<'a> SocketSetWrapper<'a> {
             .filter(|registration| registration.epoch == epoch)
             .map(|registration| registration.bridge.clone())
             .collect::<Vec<_>>();
+        // QEMU-only layered link diagnostics (Cycle 002): one line per
+        // terminal fan-out, before any waker runs.
+        #[cfg(feature = "qemu-diagnostics")]
+        warn!("[NET-WAKE] epoch={} bridges={}", epoch, bridges.len());
         for bridge in bridges {
             bridge.wake_for_global_publication();
         }
@@ -345,13 +349,24 @@ impl<'a> SocketSetWrapper<'a> {
     /// attached to its old registrations and is never cleared.
     pub(crate) fn open_next_socket_epoch(&self) -> Result<u64, AxError> {
         let mut state = self.epoch_state.lock();
+        // QEMU-only layered link diagnostics (Cycle 002): one line per epoch
+        // open / rejection (both are rare, transition-scoped events).
+        #[cfg(feature = "qemu-diagnostics")]
+        let before = state.current;
         if state.open || state.current == u64::MAX {
+            #[cfg(feature = "qemu-diagnostics")]
+            warn!(
+                "[NET-EPOCH] open_next REJECT cur={} open={}",
+                state.current, state.open
+            );
             return Err(AxError::BadState);
         }
         state.current += 1;
         state.open = true;
         state.terminal = readiness::TERMINAL_NONE;
         state.network_terminal = readiness::TERMINAL_NONE;
+        #[cfg(feature = "qemu-diagnostics")]
+        warn!("[NET-EPOCH] open_next {} -> {}", before, state.current);
         Ok(state.current)
     }
 

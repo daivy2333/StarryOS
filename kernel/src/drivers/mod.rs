@@ -12,12 +12,21 @@
 pub mod bench;
 #[cfg(feature = "lichee-d1-async-uart")]
 pub mod d1_uart;
+pub(crate) mod hart_counter;
+pub(crate) mod net_placement;
+#[cfg(feature = "qemu")]
+pub mod net_wake_witness;
+pub(crate) mod net_wake_witness_logic;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub mod ntty_async;
 pub mod os_arceos;
+pub mod placement;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 mod serialized_writer;
+pub(crate) mod uart_migration_logic;
 pub mod uart_init;
+pub mod uart_smp_snapshot;
+pub(crate) mod uart_snapshot_types;
 #[cfg(not(feature = "lichee-d1"))]
 pub mod virtio_net_irq;
 #[cfg(not(feature = "lichee-d1"))]

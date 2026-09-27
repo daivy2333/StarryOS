@@ -18,7 +18,7 @@ use alloc::sync::Arc;
 use core::task::Waker;
 use core::{
     ptr::{NonNull, addr_of_mut},
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use axlog::info;
@@ -52,7 +52,11 @@ use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 use crate::pseudofs::dev::tty::terminal::ldisc::TtyWriteReady;
 use crate::{
-    drivers::os_arceos::{ArceOsRuntime, ArceOsWakerSet},
+    drivers::{
+        os_arceos::{ArceOsRuntime, ArceOsWakerSet},
+        placement,
+        uart_smp_snapshot::{self, Copier},
+    },
     platform,
 };
 
@@ -241,8 +245,51 @@ static mut TX_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
 
 static DRIVER: Once<Arc<ArceOsDriver>> = Once::new();
 
+// ── Copier lifecycle (design D5) ─────────────────────────────────────
+// Each direction is started exactly once, with an affinity committed before
+// its first enqueue, and its task handle is saved for later migration/control.
+// Duplicate startup fails closed before a second copier instance can be created.
+
+static RX_COPIER_STARTED: AtomicBool = AtomicBool::new(false);
+static TX_COPIER_STARTED: AtomicBool = AtomicBool::new(false);
+lazy_static! {
+    static ref RX_COPIER_TASK: kspin::SpinNoIrq<Option<axtask::AxTaskRef>> =
+        kspin::SpinNoIrq::new(None);
+    static ref TX_COPIER_TASK: kspin::SpinNoIrq<Option<axtask::AxTaskRef>> =
+        kspin::SpinNoIrq::new(None);
+}
+
+/// Builds a singleton [`axtask::AxCpuMask`] for the given hart.
+///
+/// The hart comes from the published schedulable set / pure placement policy,
+/// which only contains ids below the mask capacity; the expect documents that
+/// invariant at the fail-closed boundary.
+fn singleton_mask(hart: usize) -> axtask::AxCpuMask {
+    let mut mask = axtask::AxCpuMask::new();
+    mask.set(hart, true)
+        .expect("placement hart < mask capacity by schedulable-set invariant");
+    mask
+}
+
+/// [`singleton_mask`] 的 `pub(crate)` 形式：供 QEMU-only 迁移控制为“唤醒刺激
+/// 任务”构造 singleton affinity。`hart` 必须来自已发布 schedulable 集合。
+pub(crate) fn singleton_mask_for(hart: usize) -> axtask::AxCpuMask {
+    singleton_mask(hart)
+}
+
 pub fn driver() -> Arc<ArceOsDriver> {
     DRIVER.get().expect("UART driver not initialized").clone()
+}
+
+/// Returns the saved handle of the started copier for `dir`, if it was started.
+///
+/// This is the *only* migration/control target source (Task 4.2 / D8): mask
+/// updates apply to the existing task and never create or restart a role.
+pub(crate) fn copier_task(dir: Copier) -> Option<axtask::AxTaskRef> {
+    match dir {
+        Copier::Rx => RX_COPIER_TASK.lock().clone(),
+        Copier::Tx => TX_COPIER_TASK.lock().clone(),
+    }
 }
 
 fn driver_ref() -> &'static ArceOsDriver {
@@ -253,6 +300,7 @@ fn driver_ref() -> &'static ArceOsDriver {
 
 #[cfg(not(feature = "lichee-d1-async-uart"))]
 fn uart_isr_wrapper(_irq: usize) {
+    uart_smp_snapshot::record_irq_hart();
     let base = NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap();
     uart_16550::async_::isr::uart_isr_handler(
         _irq,
@@ -273,6 +321,7 @@ fn qemu_uart_irq_handler() {
 
 #[cfg(feature = "lichee-d1-async-uart")]
 fn uart_isr_wrapper(_irq: usize) {
+    uart_smp_snapshot::record_irq_hart();
     d1_uart_isr_handler(
         _irq,
         &D1_UART_PORT,
@@ -395,21 +444,85 @@ pub fn init_uart_hardware() {
     ax_println!("[UART INIT] async UART hardware initialized (copiers not started yet)");
 }
 
-/// Start RX and TX copier tasks. Must be called after startup benchmarks
-/// complete to avoid SPSC producer conflicts on the ring buffers.
+/// Start exactly one pinned RX and one pinned TX copier task.
+///
+/// Runs only after `start_secondary_cpus` (secondary schedulers ready) and
+/// after the startup benchmark. Each copier is spawned with a singleton
+/// affinity committed *before* its first enqueue (design D5):
+///
+/// - the target hart comes from [`placement::place_roles`] over the published
+///   schedulable set, so no uninitialized or offline run queue can be selected;
+/// - the returned handle is saved for later migration/control;
+/// - a duplicate start fails closed before a second copier instance is created.
 ///
 /// # Safety
 ///
-/// The caller must invoke this function exactly once after
-/// [`init_uart_hardware`] and after all direct ring benchmarks complete.
+/// Must be called exactly once per boot path after [`init_uart_hardware`] and
+/// after all direct ring benchmarks complete. The internal start guards reject
+/// accidental duplicate calls.
 pub unsafe fn start_copiers() {
-    // SAFETY: The caller guarantees one startup per direction and that the
-    // pre-copier benchmark no longer accesses either ring.
-    unsafe {
-        driver_ref().start_rx_copier();
-        driver_ref().start_tx_copier();
+    // Ordered, de-duplicated published-schedulable hart ids.
+    let sched = axtask::schedulable_cpu_mask();
+    let mut cpus = alloc::vec::Vec::new();
+    for id in 0..axconfig::plat::MAX_CPU_NUM {
+        if sched.get(id) {
+            cpus.push(id);
+        }
     }
-    ax_println!("[UART INIT] async UART copiers started");
+    let anchor = axhal::percpu::this_cpu_id();
+    let Some(pl) = placement::place_roles(&cpus, anchor) else {
+        panic!("[UART INIT] cannot place copiers: no published schedulable hart");
+    };
+
+    // Guards reject a second call; both closures are `move` and only touch the
+    // `&'static` driver, so every operation here is safe.
+    if RX_COPIER_STARTED.swap(true, Ordering::SeqCst) {
+            panic!("[UART INIT] RX copier already started (duplicate start)");
+        }
+        // Publish the pinned affinity *before* first enqueue so a reader cannot
+        // observe a copier that already polled without a known target hart.
+        uart_smp_snapshot::record_pinned(Copier::Rx, pl.uart_rx);
+        let mask = singleton_mask(pl.uart_rx);
+        let Some(task) = axtask::spawn_with_name_affinity(
+            move || {
+                axtask::future::block_on(uart_smp_snapshot::record_harts(
+                    Copier::Rx,
+                    driver_ref().rx_copier(),
+                ))
+            },
+            "uart-rx-copier".into(),
+            mask,
+        ) else {
+            RX_COPIER_STARTED.store(false, Ordering::SeqCst);
+            panic!("[UART INIT] RX copier: invalid affinity mask hart={}", pl.uart_rx);
+        };
+        *RX_COPIER_TASK.lock() = Some(task);
+
+        if TX_COPIER_STARTED.swap(true, Ordering::SeqCst) {
+            panic!("[UART INIT] TX copier already started (duplicate start)");
+        }
+        uart_smp_snapshot::record_pinned(Copier::Tx, pl.uart_tx);
+        let mask = singleton_mask(pl.uart_tx);
+        let Some(task) = axtask::spawn_with_name_affinity(
+            move || {
+                axtask::future::block_on(uart_smp_snapshot::record_harts(
+                    Copier::Tx,
+                    driver_ref().tx_copier(),
+                ))
+            },
+            "uart-tx-copier".into(),
+            mask,
+        ) else {
+            TX_COPIER_STARTED.store(false, Ordering::SeqCst);
+            panic!("[UART INIT] TX copier: invalid affinity mask hart={}", pl.uart_tx);
+        };
+        *TX_COPIER_TASK.lock() = Some(task);
+
+    ax_println!(
+        "[UART INIT] async UART copiers started (rx hart={} tx hart={})",
+        pl.uart_rx,
+        pl.uart_tx
+    );
 }
 
 // ── QEMU: 寄存器状态日志 ──────────────────────────────────────────────

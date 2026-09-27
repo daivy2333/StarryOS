@@ -30,7 +30,10 @@ qemu = [
     "axfeat/task-ext",
     "axruntime/net-ng",
 ]
-smp = ["axfeat/smp"]
+smp = [
+    "axfeat/smp",
+    "axtask/ipi",
+]
 vsock = ["axfeat/vsock"]
 
 [dependencies]

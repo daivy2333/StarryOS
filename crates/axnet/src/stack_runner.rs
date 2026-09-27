@@ -13,6 +13,7 @@ use core::{
 use axhal::time::TimeValue;
 #[cfg(not(test))]
 use axtask::future::sleep_until;
+use axtask::{AxCpuMask, AxTaskRef};
 use embassy_sync::waitqueue::AtomicWaker;
 use smoltcp::time::{Duration, Instant};
 
@@ -104,11 +105,22 @@ impl StackRunnerLifecycle {
             .map(|_| ())
             .map_err(|_| StartError::AlreadyStarted)
     }
+
+    /// Rolls a failed pre-enqueue start back to `Polling` (Task 3.2 replan).
+    ///
+    /// Only the CAS winner of [`start`](Self::start) may call this, immediately
+    /// after its spawn returned `None` (no task was created, so nothing is on a
+    /// run queue). Resetting `started` to `false` makes the once-only lifecycle
+    /// retryable without ever permitting a duplicate enqueue.
+    fn rollback_start(&self) {
+        self.started.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StartError {
+pub enum StartError {
     AlreadyStarted,
+    InvalidAffinity,
 }
 
 pub(crate) static STACK_RUNNER_LIFECYCLE: StackRunnerLifecycle = StackRunnerLifecycle::new();
@@ -239,6 +251,9 @@ pub(crate) struct StackTelemetry {
     /// T2.8-R1: exact head micro-repairs executed after processed ingress
     /// packets (cumulative; observation-only).
     listener_head_repairs: AtomicU64,
+    /// Task 3.3: actual hart the resident runner's `poll` executes on, recorded
+    /// at every poll entry (never inferred from chosen affinity).
+    pub(crate) hart: crate::hart_counter::HartCounter,
 }
 
 impl StackTelemetry {
@@ -260,6 +275,7 @@ impl StackTelemetry {
             deferred_reclaimed: AtomicU64::new(0),
             listener_checked: AtomicU64::new(0),
             listener_head_repairs: AtomicU64::new(0),
+            hart: crate::hart_counter::HartCounter::new(),
         }
     }
 }
@@ -324,9 +340,27 @@ pub fn stack_snapshot() -> StackSnapshot {
     stack_snapshot_impl(&STACK_RUNNER_LIFECYCLE, &STACK_EVENT, &STACK_TELEMETRY)
 }
 
+/// Task 3.3: coherent `(last, mask, events)` tuple of the actual hart the runner
+/// polled on. Empty until the runner first polls; never an affinity inference.
+pub fn runner_hart_tuple() -> (usize, u64, u64) {
+    STACK_TELEMETRY.hart.read()
+}
+
 /// Publishes stack work committed by a software socket operation.
 pub(crate) fn publish_software_work() {
     STACK_EVENT.publish_software();
+}
+
+/// Wake the resident stack runner without publishing a hardware event.
+///
+/// QEMU-only controlled-migration stimulus (Task 4.3 / MS08): the wake is
+/// issued by a task pinned to the second allowed hart so the resumed runner
+/// polls there, which the kernel-side hart counter observes directly.
+/// Spurious-safe: a parked runner re-polls and re-parks; a still-running
+/// runner may not have registered its waker yet, so the caller retries in a
+/// bounded loop rather than assuming delivery.
+pub fn runner_software_nudge() {
+    publish_software_work();
 }
 
 fn select_runner_deadline(
@@ -346,6 +380,7 @@ pub(crate) struct StackRunnerFuture {
     rx_lifecycle: &'static RxLifecycle,
     event: &'static StackEvent,
     clock: StackClock,
+    hart_source: crate::hart_counter::HartSource,
     telemetry: &'static StackTelemetry,
     timer_deadline: Option<Instant>,
     #[cfg(not(test))]
@@ -365,11 +400,20 @@ impl StackRunnerFuture {
             rx_lifecycle,
             event,
             clock,
+            hart_source: crate::hart_counter::HartSource::System,
             telemetry,
             timer_deadline: None,
             #[cfg(not(test))]
             timer: None,
         }
+    }
+
+    /// Host-test seam: bind a fixed hart so a fixture records a deterministic
+    /// execution hart. Production uses the system percpu id.
+    #[cfg(test)]
+    fn with_test_hart(mut self, hart: usize) -> Self {
+        self.hart_source = crate::hart_counter::HartSource::Injected(hart);
+        self
     }
 
     #[cfg(test)]
@@ -438,6 +482,8 @@ impl Future for StackRunnerFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
         this.telemetry.task_poll.fetch_add(1, Ordering::Relaxed);
+        // Task 3.3: record the actual hart this poll runs on (never affinity).
+        this.telemetry.hart.record(this.hart_source.current());
         let now = this.clock.now();
         this.poll_timer(cx, now);
 
@@ -535,6 +581,7 @@ impl Future for StackRunnerFuture {
 }
 
 #[cfg(not(test))]
+#[allow(dead_code)] // compatible ordinary spawn; the kernel uses the affinity seam
 fn spawn_stack_runner() {
     axtask::spawn_with_name(
         || {
@@ -550,11 +597,93 @@ fn spawn_stack_runner() {
     );
 }
 
+#[cfg(not(test))]
+fn spawn_stack_runner_affinity(mask: AxCpuMask) -> Option<AxTaskRef> {
+    axtask::spawn_with_name_affinity(
+        || {
+            axtask::future::block_on(StackRunnerFuture::new(
+                StackAccess::Global,
+                &RX_LIFECYCLE,
+                &STACK_EVENT,
+                StackClock::System,
+                &STACK_TELEMETRY,
+            ))
+        },
+        STACK_RUNNER_TASK_NAME.to_owned(),
+        mask,
+    )
+}
+
 #[cfg(test)]
+#[allow(dead_code)]
 fn spawn_stack_runner() {}
 
+#[cfg(test)]
+#[allow(dead_code)]
+fn spawn_stack_runner_affinity(_mask: AxCpuMask) -> Option<AxTaskRef> {
+    None
+}
+
+#[allow(dead_code)] // compatible ordinary start; the kernel uses the affinity seam
 pub(crate) fn start_stack_runner() -> Result<(), StartError> {
     start_with(&STACK_RUNNER_LIFECYCLE, spawn_stack_runner)
+}
+
+/// Failure-atomic affinity start core (Task 3.2 replan).
+///
+/// Unlike the plain [`start_with`], the affinity seam must not let a failed or
+/// invalid-published spawn consume the once-only lifecycle: a caller that only
+/// validated against the *configured* count could advance `started` and then have
+/// `spawn_stack_runner_affinity` reject a configured-but-unpublished bit, leaving
+/// the lifecycle poisoned and a later retry impossible. This core therefore:
+///
+/// 1. validates the mask against the *published schedulable* set before the CAS;
+/// 2. CASes `Polling -> Spawned` exactly once;
+/// 3. runs `spawn`, and only on `Some(task)` keeps the commit;
+/// 4. on `None` (spawn rejected without enqueuing) rolls the lifecycle back so
+///    the next start can retry, never permitting a duplicate enqueue.
+fn start_affinity_with(
+    lifecycle: &StackRunnerLifecycle,
+    mask: AxCpuMask,
+    spawn: impl FnOnce(AxCpuMask) -> Option<AxTaskRef>,
+) -> Result<AxTaskRef, StartError> {
+    start_affinity_with_checked(lifecycle, |m| {
+        axtask::validate_schedulable_affinity(m)
+    }, mask, spawn)
+}
+
+/// Testable core with an injected validation predicate and handle, so a host
+/// model can drive invalid-affinity and spawn-failure atomicity without a real
+/// `AxTaskRef` or a schedulable set.
+fn start_affinity_with_checked<H>(
+    lifecycle: &StackRunnerLifecycle,
+    valid: impl FnOnce(AxCpuMask) -> bool,
+    mask: AxCpuMask,
+    spawn: impl FnOnce(AxCpuMask) -> Option<H>,
+) -> Result<H, StartError> {
+    if !valid(mask) {
+        return Err(StartError::InvalidAffinity);
+    }
+    lifecycle.start()?;
+    match spawn(mask) {
+        Some(handle) => Ok(handle),
+        None => {
+            lifecycle.rollback_start();
+            Err(StartError::InvalidAffinity)
+        }
+    }
+}
+
+/// Starts exactly one stack runner pinned to `mask`, with the affinity committed
+/// before its first enqueue (design D4/D5). Returns the task handle so the
+/// owning kernel adapter can store it for V5 observation and later migration.
+///
+/// Failure is atomic: an invalid or not-yet-published mask, or a rejected spawn,
+/// leaves the once-only lifecycle retryable and creates no task.
+pub fn start_stack_runner_affinity(mask: AxCpuMask) -> Result<AxTaskRef, StartError> {
+    start_affinity_with(&STACK_RUNNER_LIFECYCLE, mask, |mask| {
+        spawn_stack_runner_affinity(mask)
+    })
 }
 
 #[cfg(test)]
@@ -582,7 +711,8 @@ mod tests {
     use super::{
         STACK_EVENT, STACK_RUNNER_LIFECYCLE, STACK_RUNNER_TASK_NAME, StackAccess, StackClock,
         StackEvent, StackRunnerFuture, StackRunnerLifecycle, StackTelemetry, StartError,
-        select_runner_deadline, stack_snapshot_impl, start_with,
+        runner_software_nudge, select_runner_deadline, stack_snapshot_impl,
+        start_affinity_with_checked, start_with,
     };
     use crate::{
         async_rx::{QueueEvent, RxLifecycle, RxTaskLifecycle},
@@ -909,6 +1039,50 @@ mod tests {
     }
 
     #[test]
+    fn runner_software_nudge_delegates_to_shared_publish_path_in_source() {
+        // Task 4.3: the QEMU-only migration stimulus must reach the resident
+        // runner through the shared STACK_EVENT seam (never a side channel).
+        // 行为见证由局部 StackEvent 测试（publish_software 唤醒已注册 waker）
+        // 覆盖；这里守卫公共入口的委托结构，避免触碰进程全局 STACK_EVENT
+        // （并行测试共享该全局态，直接调用会产生测试间污染）。
+        let src = include_str!("stack_runner.rs");
+        let body = {
+            let start = src.find("pub fn runner_software_nudge()").unwrap();
+            let rest = &src[start..];
+            let end = rest.find("\n}").unwrap();
+            &rest[..end]
+        };
+        assert!(
+            body.contains("publish_software_work()"),
+            "runner_software_nudge must delegate to the shared publish seam"
+        );
+        assert!(
+            !body.contains("STACK_EVENT"),
+            "runner_software_nudge must not touch the event directly"
+        );
+    }
+
+    #[test]
+    fn stack_event_wrap_boundary_still_changes_since() {
+        // Task 4.4: the Release-generation protocol must stay correct across
+        // the u64 wrap boundary — a waiter that observed `u64::MAX` must see
+        // the generation as changed after one more publication (wrapping to 0),
+        // and the waker must still fire.
+        let event = StackEvent::with_generation(u64::MAX);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        event.register(&counting_waker(wakes.clone()));
+
+        event.publish_software();
+
+        assert_eq!(event.generation(), 0);
+        assert!(
+            event.changed_since(u64::MAX),
+            "changed_since must hold across the u64 wrap boundary"
+        );
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn device_and_software_publication_do_not_touch_queue_generation() {
         let stack = StackEvent::new();
         let queue = QueueEvent::new();
@@ -977,6 +1151,86 @@ mod tests {
             .count();
         assert_eq!(winners, 1);
         assert_eq!(spawns.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn affinity_start_invalid_affinity_leaves_lifecycle_retryable() {
+        // Task 3.2 replan: an invalid / unpublished mask must return
+        // InvalidAffinity WITHOUT advancing the once-only lifecycle, so a later
+        // valid-affinity start can still succeed (the old validate_affinity path
+        // advanced `started` first and poisoned retries).
+        let lifecycle = StackRunnerLifecycle::new();
+        let mut mask = axtask::AxCpuMask::new();
+        mask.set(0, true).expect("index 0 is below mask capacity");
+
+        let spawn_called = Arc::new(AtomicUsize::new(0));
+        let called = spawn_called.clone();
+        let result = start_affinity_with_checked(
+            &lifecycle,
+            |_| false, // validation must fail (unpublished/invalid)
+            mask,
+            |_| {
+                called.fetch_add(1, Ordering::Relaxed);
+                Some(7u64)
+            },
+        );
+        assert_eq!(result, Err(StartError::InvalidAffinity));
+        assert!(!lifecycle.is_started(), "invalid affinity must not advance lifecycle");
+        assert_eq!(spawn_called.load(Ordering::Relaxed), 0, "no spawn on invalid affinity");
+
+        // Lifecycle is still retryable: a success now works and commits once.
+        let result = start_affinity_with_checked(&lifecycle, |_| true, mask, |_| Some(9u64));
+        assert_eq!(result, Ok(9));
+        assert!(lifecycle.is_started());
+    }
+
+    #[test]
+    fn affinity_start_failed_spawn_rolls_back_to_retryable() {
+        // Task 3.2 replan: if the affinity spawn itself returns None (a
+        // schedulable-aware spawn rejecting a bit that passed the configured
+        // count), the failed start must roll the lifecycle back so the next call
+        // can retry, never creating a duplicate task.
+        let lifecycle = StackRunnerLifecycle::new();
+        let mut mask = axtask::AxCpuMask::new();
+        mask.set(0, true).expect("index 0 is below mask capacity");
+
+        // First spawn fails (returns None).
+        assert_eq!(
+            start_affinity_with_checked(&lifecycle, |_| true, mask, |_| None::<u64>),
+            Err(StartError::InvalidAffinity)
+        );
+        assert!(!lifecycle.is_started(), "failed spawn must roll the lifecycle back");
+
+        // Retry succeeds and commits exactly once.
+        assert_eq!(
+            start_affinity_with_checked(&lifecycle, |_| true, mask, |_| Some(5u64)),
+            Ok(5)
+        );
+        // A later start is rejected (AlreadyStarted), never a second task.
+        assert_eq!(
+            start_affinity_with_checked(&lifecycle, |_| true, mask, |_| Some(6u64)),
+            Err(StartError::AlreadyStarted)
+        );
+    }
+
+    #[test]
+    fn real_poll_records_actual_execution_hart_tuple() {
+        // Task 3.3: the future must record the hart its real poll runs on into a
+        // coherent (last, mask, events) tuple — never derive it from affinity.
+        let (mut future, _, telemetry, _, _) = runner(RxTaskLifecycle::Active, 0, false);
+        let _ = telemetry;
+        // Re-run with a fixed execution hart injected.
+        let (mut fut, _, fut_telemetry, _, _) = runner(RxTaskLifecycle::Active, 0, false);
+        fut = fut.with_test_hart(9);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        assert_eq!(
+            poll_once(&mut fut, &counting_waker(wakes.clone())),
+            Poll::Pending
+        );
+        let (last, mask, events) = fut_telemetry.hart.read();
+        assert_eq!(last, 9, "recorded hart must equal the actual poll hart");
+        assert_ne!(mask & (1u64 << 9), 0, "mask must include the recorded hart");
+        assert_eq!(events, 1);
     }
 
     #[test]
@@ -1189,12 +1443,20 @@ mod tests {
     }
 
     #[test]
-    fn init_installs_service_before_starting_exactly_one_runner() {
+    fn init_installs_service_without_early_or_full_mask_runner_spawn() {
+        // Design D5 / Task 3.2: `init_network` installs the Service and
+        // registries but is spawn-free — no `start_stack_runner` / full-mask
+        // spawn runs before the secondary schedulers are ready. The owning
+        // kernel adapter starts exactly one pinned runner/owner afterwards via
+        // the affinity seam (`start_stack_runner_affinity` /
+        // `start_rx_task_affinity`), never an early ordinary spawn.
         let source = include_str!("lib.rs");
-        let install = source.find("SERVICE.call_once").unwrap();
-        let start = source.find("start_stack_runner()").unwrap();
-        assert!(install < start);
-        assert_eq!(source.matches("start_stack_runner()").count(), 1);
+        assert!(source.contains("SERVICE.call_once"));
+        assert_eq!(
+            source.matches("start_stack_runner(").count(),
+            0,
+            "init_network must be spawn-free"
+        );
         assert!(source.contains("while get_service().poll"));
     }
 

@@ -3,6 +3,7 @@ resolver = "2"
 members = ["kernel"]
 exclude = [
     "arceos",
+    "crates/axtask",
     "crates/axdriver_net",
     "crates/axdriver_virtio",
     "crates/axnet",
@@ -137,6 +138,7 @@ features = ["xuantie-c9xx"]
 platforms = ["riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
 
 [patch.crates-io]
+axtask = { path = "crates/axtask" }
 axnet-ng = { path = "crates/axnet" }
 axfs-ng = { path = "crates/axfs-ng" }
 axdriver_net = { path = "crates/axdriver_net" }
