@@ -1,0 +1,161 @@
+# Spec: references — 外部参考与依赖索引
+
+## Purpose
+
+汇总 StarryOS 当前使用的外部依赖、平台规范、异步生态参考和项目内部文档索引。历史 UART 参考只保留归档入口。每条 MUST 可被 `grep` 精确定位。
+
+## Requirements
+
+### Requirement: 核心 Rust 依赖与构建工具
+
+项目核心依赖版本 MUST 与本规范一致；新增 / 升级依赖 MUST 同步更新版本记录。
+
+| 依赖 | 版本 | 链接 | 备注 |
+|------|------|------|------|
+| `embassy-sync` | v0.6.2 | [crates.io](https://crates.io/crates/embassy-sync) | 已验证与 nightly-2026-02-25 兼容 ✅ |
+| `ringbuf` | 0.4.8 | [crates.io](https://crates.io/crates/ringbuf) | 无锁环形缓冲区 |
+| `axtask` | 0.3.0-preview.2 | 项目内部 crate | 异步任务调度器 |
+| `axpoll` | 0.1.2 | 项目内部 crate | 轮询/事件通知 |
+<!-- arc: cleanup-uart-documentation-system --> `uart_16550` dep entry archived 2026-07-25. Crate remains active at `crates/uart_16550/`.
+
+**构建工具链**：
+
+| 资源 | 位置 | 用途 |
+|------|------|------|
+| RISC-V musl 工具链 | `/opt/musl/riscv64-linux-musl-cross` | [setup-musl releases](https://github.com/arceos-org/setup-musl/releases/tag/prebuilt) 编译 lwext4_rust C 代码 ✅ |
+| rootfs 镜像 | `rootfs-riscv64.img.xz` | [GitHub releases](https://github.com/Starry-OS/rootfs/releases/download/20260214/rootfs-riscv64.img.xz) QEMU 磁盘镜像（1GB）✅ |
+
+**Rust 工具链**（来自 `rust-toolchain.toml`）：`nightly-2026-02-25`
+
+#### Scenario: 新增 Rust 依赖
+
+- **WHEN** 开发者要在 `Cargo.toml` 添加新依赖
+- **THEN** MUST 在本规范中登记：依赖名 / 版本 / 来源链接 / 用途说明 / 与工具链兼容性
+
+#### Scenario: 构建失败提示 musl 编译器找不到
+
+- **WHEN** `make build` 报 `riscv64-linux-musl-cc: command not found`
+- **THEN** MUST 按 `quality-gate-baseline` 的 ENV BLOCK 规则报告缺失前置条件，禁止修改项目代码绕过
+
+### Requirement: 硬件与平台规范
+
+调试或新增平台支持时 MUST 先查阅对应规范。
+
+| 规范 | 链接 | 用途 |
+|------|------|------|
+| [RISC-V PLIC Specification](https://github.com/riscv/riscv-plic-spec) | riscv 官方 | 中断控制器编程 |
+
+<!-- arc: cleanup-uart-documentation-system --> NS16550A UART and VirtIO Console hardware specs archived 2026-07-25 → archive carrier.
+
+#### Scenario: 调试串口寄存器行为
+
+- **WHEN** 开发者发现串口状态异常
+- **THEN** 优先查对应 datasheet；已归档的 NS16550A 规范可供参考
+
+### Requirement: Embassy 生态参考
+
+本项目仅使用 `embassy-sync::AtomicWaker` 子模块；扩展 Embassy 用法前 MUST 先评估是否冲突现有 `axtask` 调度器。
+
+| 资源 | 链接 | 用途 |
+|------|------|------|
+| [Embassy Book](https://embassy.dev/book/) | 官方 | 异步运行时文档 |
+| [embassy-sync AtomicWaker API](https://docs.embassy.dev/embassy-sync/git/default/struct.AtomicWaker.html) | 官方 | 中断安全唤醒（本项目核心依赖） |
+| [Embassy GitHub](https://github.com/embassy-rs/embassy) | 官方 | 源码与 release 说明 |
+| [embassy-executor v0.10.0](https://github.com/embassy-rs/embassy/releases) | 官方 | 执行器最新版（**不引入**，与 axtask 冲突） |
+| [probe-rs 调试工具](https://probe.rs/) | 官方 | Embassy 推荐的调试/烧录工具链 |
+| [defmt 日志框架](https://defmt.ferrous-systems.com/) | 官方 | Embassy 生态推荐的格式化日志 |
+
+#### Scenario: 评估引入 embassy-executor
+
+- **WHEN** 开发者想引入 embassy-executor 替换 axtask
+- **THEN** MUST 按 K09 拒绝第二套 executor；改用 `axtask::future + AtomicWaker` 模式
+
+### Requirement: Rust 异步与系统编程参考
+
+Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档而非第三方总结；新代码使用自引用结构时 MUST 谨慎评估 `Pin` / `Unpin`。
+
+| 资源 | 链接 | 用途 |
+|------|------|------|
+| [Rust Async Book](https://rust-lang.github.io/async-book/) | 官方 | async/await 原理 |
+| [Pin and Unpin](https://doc.rust-lang.org/std/pin/index.html) | 官方 | 自引用结构安全 |
+
+#### Scenario: 使用 Pin 或自引用结构
+
+- **WHEN** 开发者要使用 `Pin<&mut Self>` 或自引用结构
+- **THEN** MUST 查 Rust Async Book 与 Pin 文档，理解 `Unpin` 边界条件
+
+<!-- arc: cleanup-uart-documentation-system --> Linux serial/8250 driver references archived 2026-07-25.
+
+### Requirement: 上游 crate 源码位置（crates.io 不可修改）
+
+项目使用 axtask / axhal / axplat / axpoll 等上游 crate 作为不可修改的外部依赖；调试时 MUST 用本地 cargo registry 路径定位源码。
+
+| Crate | 路径 | 用途 |
+|-------|------|------|
+| `axtask-0.3.0-preview.2` | `~/.cargo/registry/.../axtask-0.3.0-preview.2/src/` | block_on + poll_io + register_irq_waker 实现 |
+| `axhal-0.3.0-preview.2` | `~/.cargo/registry/.../axhal-0.3.0-preview.2/src/` | register_irq_hook + irq_handler 分发 |
+| `axplat-riscv64-qemu-virt-0.3.1-pre.6` | `~/.cargo/registry/.../axplat-riscv64-qemu-virt-0.3.1-pre.6/src/` | PLIC + MmioSerialPort + axconfig.toml |
+| `axpoll` | `axpoll` crate | PollSet + IoEvents + Pollable trait |
+
+#### Scenario: 调试上游 crate 行为
+
+- **WHEN** 开发者想了解 axtask / axhal / axplat 内部行为（如 ISR 分发细节）
+- **THEN** MUST 用 `find ~/.cargo/registry -name "<crate>-<version>" -type d` 定位本地源码，**禁止**在项目内复制或 fork
+
+### Requirement: 项目内部分析与设计文档索引
+
+`.agents/analysis/` 的分析文档 MUST 在此登记。UART 阶段分析已归档（见下方已归档条目）。
+
+| 文档 | 主题 |
+|------|------|
+| <!-- R14 --> `.agents/analysis/arceos-true-board-validation.md` | ArceOS / VisionFive2 真板验证案例：启动链先可观测、平台事实来自真板日志、寄存器可访问性优先、bootloader 状态 dump/preserve、中断 claim/handler/status/EOI 分层；不代表当前目标板选择 |
+| <!-- R23 --> `.agents/analysis/async-network-project-overview.md` | StarryOS 网络开发总览：当前 VirtIO-MMIO 基线、目标数据流、依赖边界、QEMU→目标板验证阶梯、ArceOS 分级价值和专题来源 |
+| <!-- R24 --> `.agents/analysis/embassy-network-module-evaluation.md` | Embassy 网络模块评估：核对 12 个网络相关 crate/模块，归纳 8 类可用能力和 3 类近期采用候选，明确 executor/time 的本地适配边界 |
+| <!-- R25 --> `.agents/analysis/arceos-async-network-driver-analysis.md` | ArceOS 网卡工作可复用性：区分 QEMU 直接代码、transport-neutral 抽象审查和目标真板经验；DWMAC 仅在兼容控制器上进入移植候选 |
+| <!-- R26 --> `.agents/analysis/starryos-async-network-roadmap.md` | StarryOS 异步网卡架构路线：RX/TX ownership、IRQ budget、背压、completion、可观测性，以及 QEMU 基线后按目标板事实选择后端 |
+| <!-- R41 --> `.agents/analysis/starryos-network-development-strategy.md` | StarryOS 网络开发实施探索：当前 axnet/smoltcp/VirtIO-MMIO 调用链、异步 queue/stack 数据流、MS04 边界和目标板 B0-B7 条件化 Gate |
+| <!-- R42 --> `.agents/analysis/_archive/starryos-network-delivery-estimate.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 固定路线的人周假设；目标板路线不得沿用其数字 |
+| <!-- R43 --> `.agents/analysis/_archive/starryos-network-knowledge-gaps.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 分组；当前 Plan 读取 tasks、R23、R25 和 R41 |
+| <!-- R46 --> `.agents/analysis/starryos-device-specific-irq-waker-architecture.md` | StarryOS 设备专属 IRQ 与任务唤醒分析：UART 全局 hook 冲突、PLIC 设备 handler、设备私有 waker、MS03/MS04 分批边界和 Gate 2 未确认项 |
+| <!-- R47 --> `.agents/analysis/starryos-virtio-mmio-network-benchmark-baseline.md` | MS16 统一网卡基线设计：QEMU/TAP 轮询 B0、跨轮询/异步/真板 workload、C1-C6 完成语义、吞吐/延迟/指令/CPU/复制/IRQ 指标、Evidence Schema、BDD/Gate 和 MS04 A/B 比较资格 |
+| <!-- R53 --> `.agents/analysis/sdmmc-async-driver-external-reference.md` | xianxw/Final-NO-SDMMC 固定 commit 的异步 SDMMC 参考：W1C cause 保留、阶段化超时与终态验证、单请求 DMA fail-stop、同步/异步共用完成谓词，以及 MS07/MS10/MS11/MS13 的迁移边界；不扩张 MS05 |
+| <!-- R62 --> `.agents/analysis/k3-reference-repository-migration-assessment.md` | K3 参考仓库迁移评估：以真板操作与排障经验为首要复用资产，区分 RAM stage/bootm、持久烧录和工厂恢复；量化 Rt-Async-AMP/tgoskits 工作并分级判断 board/FIT、AIA、PXA UART、pinctrl、GMAC、DMA/PTE、存储和 AMP 的复用价值，给出 AP-only 到真板网络的迁移边界与 Gate |
+
+> ⚠️ STALE [2026-09-17] — R23 的项目状态已过期；R47 的 benchmark 身份、hash、manifest 和握手机制与当前规则冲突。两篇 Analysis 已就地标记，正文修订或替代前只复用未受警告影响的架构、workload 和指标内容。
+
+**已归档**：UART 阶段全部分析文档。完整归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`（48 文件，含 analysis、docs、meta-specs、runbooks、specs）、q17: `openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/`、旧 ARC: `openspec/changes/archive/2026-07-25-arc-202607251326/`。
+
+#### Scenario: 新生成 openspec-explorer 分析文档
+
+- **WHEN** `openspec-explorer` 生成新的项目分析文档（写入 `.agents/analysis/`）
+- **THEN** MUST 在本规范中注册：主题 / 路径 / 内容概要
+
+---
+
+## 子项目索引
+
+| 条目 | 路径 | 摘要 |
+|------|------|------|
+| <!-- R38 --> | `.agents/runbooks/incremental-merge.md` | 增量融合 Runbook — 多 commit 合入的依赖排序、逐步 apply、Gate 与退化处理 |
+| <!-- R39 --> | `.agents/runbooks/regression-gate.md` | 回归验证 Gate Runbook — Phase/change 收尾五层验证链；按产品命令、最终 exit、首个决定性失败层和产物区分 PASS、产品 FAIL、invalid witness 与 ENV BLOCK；包含只读 Cargo home 导致 `cargo-binutils` 探测假阴性及用户同命令复跑边界（2026-08-23 更新） |
+| <!-- R40 --> | `.agents/runbooks/board-bringup-ladder.md` | 真板 bring-up 阶梯 Runbook — 新板 L0-L7 逐层适配、每层单变量约束与 Gate |
+| <!-- R44 --> | `.agents/runbooks/qemu-network-testing.md` | QEMU 网络测试 Runbook — QEMU guest 操作保持手工执行；定义 sandbox `ENV-BLOCKED` 与产品失败的分类、iteration 末尾手工交接、HTTP 下载流程、证据要求、证据精简原则（2026-08-19：证据不收录过大/过多日志、不再强制记录 hash 值，以保证代码功能正确为准），以及「下载失败/网络挂起→直接挂载注入 payload」备用路径（debugfs 离线写入 + mount -o loop 直挂，绕过网络离线跑 probe/回归）；2026-08-27 启动 QEMU 段改为 Cycle级EV+`script -q -e -f` 完整串口录制、debugfs 措辞改为"保持原盘不变"、补充统一采集命令行模式指引（见 R58）。 |
+| <!-- R45 --> | `.agents/runbooks/ms02-virtio-mmio-evidence.md` | MS02 VirtIO-MMIO 证据采集 Runbook — axnet 策略测试 + agent 静态验证 + QEMU 手工验证（无 hostfwd / user-net TCP+UDP / TAP ARP+ICMP / 空闲 CPU / MS01 runtime）完整流程与失败处理；含证据精简原则交叉引用（2026-08-19，不再强制记录 hash）；2026-08-27 命令行更新为 EV+`script`/`tee` 采集（步骤 2.1 移除 sha256sum 改 `file` 判定），见 R58。 |
+| <!-- R48 --> | `.agents/runbooks/ms03-virtio-mmio-irq-evidence.md` | MS03 VirtIO-MMIO 可诊断中断基线证据采集 Runbook — 启动签名、guest C probe（5 modes）、MS02/MS01 回归、中断诊断排障（32-bit MMIO 寄存器、device_id 校验、port conflict）；2026-08-27 启动与回归 QEMU 段改为 Cycle级EV+`script -q -e -f` 完整串口录制、阶段 3 证据归档统一到 `$EV`，见 R58。 |
+| <!-- R49 --> | `.agents/runbooks/network-benchmark-platform-qualification.md` | 网卡基准资格扫描 Runbook — 环境/treatment/test 分轴、C1/C6 口径、user-net 已验证路径、TAP 手工命令、多流/payload/profile/pacing 矩阵、可观测性、Evidence 和基础设施缺口分类 |
+| <!-- R50 --> | `.agents/runbooks/git-stash-bisect.md` | Git Stash 二分排查 Runbook — 大改动构建失败时用 stash 分块隔离判定"改动是否引入失败"；含 cargo clean 防缓存污染、基线/二分/用户交叉验证、untracked 文件与恢复完整性与回滚 |
+| <!-- R51 --> | `.agents/runbooks/ms04-qemu-async-rx-core-evidence.md` | MS04 QEMU 异步 RX 核心证据采集 Runbook — 唯一 queue task、quiet/nudge、96 包有界 burst、descriptor 守恒、budget/yield、证据边界与失败处理；含证据精简原则交叉引用（2026-08-19，不再强制记录 hash）；2026-08-27 前置条件/步骤 1/验证/回滚改为 size/mtime，SHA-256 仅在明确要求 provenance 时可选，见 R58；2026-09-02 MS07 Cycle 006 兼容回归四 mode 全过（证据 `006-rework/ms04-qemu-serial.log`，串口按套件命名）。 |
+| <!-- R52 --> | `.agents/runbooks/virtio-real-adapter-test-fixture.md` | 真实 adapter 测试 fixture Runbook — 为 virtio-drivers 依赖 crate 编写驱动真实 `VirtIoNetDev` 的测试：本地 TestHal/fake Transport + used-ring 设备模拟、依赖 crate 中 `cfg(test)` seam 不可见时的访问器/seam 处理、post-accept invariant 与 QueueFull 的驱动边界 |
+| <!-- R55 --> | `.agents/runbooks/qemu-kernel-net-dataplane-debug.md` | QEMU 内核网络数据面分层诊断 Runbook — host 测试全 PASS 但 guest 网络挂起时的逐层归因（冻结/备份镜像、INFO 隔离日志、filter-dump pcap 客观层间证据、debugfs 离线注入 probe、snapshot rx/tx/irq 计数）；区分驱动注册 / TX / IRQ→wake→reap / slot 交付 / smoltcp 消费 / socket 唤醒，含 debug 日志噪声与 `ifconfig` 工具缺口误判处理 |
+| <!-- R56 --> | `.agents/runbooks/ms05-qemu-bidirectional-dataplane-evidence.md` | MS05 QEMU 有界双向数据面证据采集 Runbook — 六 mode（snapshot / tx-only / bidirectional / slot-full / descriptor-full / flush）完整手工命令行、host stimulus 拓扑（guest UDP client → host 15557，无需 hostfwd）、终态 `MS05 PASS mode=…` + exit 0 判据、slot/descriptor Full→recovery 与 flush 闭合见证、失败处理与证据精简原则交叉引用；适用 R44 手工政策；2026-09-02 MS07 Cycle 006 兼容回归六 mode 全过（证据 `006-rework/ms05-qemu-serial.log`） |
+| <!-- R63 --> | `.agents/runbooks/ms08-qemu-smp16-qualification.md` | MS08 QEMU SMP=16 资格运行与诊断 Runbook — 已验证的完整资格编排：probe 编译与 disk 副本 `debugfs` 注入、peer 先起、`script` 捕获 + `-object filter-dump` pcap + 显式 `-machine virt`（默认 spike 机器仅 8 CPU）、guest probe 关回显 + 显式退出码行、HMP 操作手严格按 READY 现发、`MS08_NET_HMP_DONE link=on` 输 guest 控制台、peer 结果并入 transcript 后 validator 判定；含 reset-io 恢复窗口观测模型（入口即终端、新 socket 生于已终结 epoch、新 epoch 流量证明完成）、warn 级分层诊断打印（`[NET-LINK-*]`/`[NET-ROUND]`/`[NET-MIG-STIM]`）与整机冻结时的 HMP 寄存器取证（全 hart 循环采样）；失败处理覆盖 B1 迁移竞态（STIM 分类）与 B2 link-up lost-wakeup 冻结签名（2026-09-26，来源 MS08 Iteration 005/002-rework Act Response `blocked`，runs D/E/F 手动运行） |
+| <!-- R57 --> | `.agents/issues/2026-08-26-parallel-global-socketset-test-race.md` | Incident：并行 axnet 单元测试共享进程级全局 SOCKET_SET/LISTEN_TABLE 间歇性失效 — smoltcp socket_set 陈旧句柄 panic、hashbrown 内部断言、偶发 SIGSEGV/SIGABRT；E2/D/E4 三组对照归因证明竞争先于 MS06 Iteration 004 Cycle 001-replan 的 diff；记录确定性验证口径（单线程 focused ×100、隔离重跑判定）并以根因机制 unconfirmed 收录（2026-08-26） |
+| <!-- R58 --> | `.agents/runbooks/qemu-evidence-capture.md` | QEMU/手工证据采集统一命令行模式 Runbook — Cycle级EV短变量 + `script -q -e -f`录制guest完整串口（boot签名、逐条输入、终态marker）+ `pipefail`保护的`tee`采集host日志；区分QEMU进程exit与guest workload marker，适用于含QEMU手工证据的OpenSpec change；按R44精简原则保留必要原始串口和决定性输出，hash仅在明确要求provenance时补充（2026-08-27，来源MS05 Iteration 011/004-rework实跑） |
+| <!-- R59 --> | `.agents/runbooks/ms06-qemu-application-visible-async-network-stack-evidence.md` | MS06 QEMU 应用可见异步网络栈验收 Runbook — 单 hart VirtIO-MMIO 手工验收：MS06 12-case readiness probe 先 12/12 + `MS06_HARNESS_EXIT: 0`（validator 对完整 raw 串口判定，含 ANSI/CSI 归一化与外来 workload 容忍），再同 session 跑 MS01 14/14、MS04 四 mode、MS05 六 mode 兼容回归；`make build` 冻结 + 直连 qemu 启动避免重建漂移；validator 移除 `--expect-revision`；适用 R44 手工政策与 R58 采集模式（2026-08-27 来源 MS06 Iteration 008/001-replan `reported`；2026-09-02 MS07 Cycle 006 兼容回归 12/12 + validator exit 0，证据 `006-rework/ms06-qemu-serial.log`） |
+| <!-- R60 --> | `.agents/runbooks/ms07-qemu-single-hart-recovery-evidence.md` | MS07 QEMU 单 hart 网络恢复测试与诊断 Runbook — 手工 QEMU 资格命令行流程（peer 15572 端口不 hostfwd、guest 经 10.0.2.2 直连 host UDP、zero-fd poll preflight、HMP `Ctrl-A c` off/on、validator 离线审计、006-rework 证据路径）与失败分层诊断（LOG=info + probe `DBG` 快照归因）；去掉 hash/revision/freeze 身份证据，现场以 raw serial + validator 判定为准（2026-08-31 修订，来源 MS07 Iteration 007/004-replan Act P8 完成 + zero-fd poll 修复；2026-09-02 006-rework 六 case + 四组回归全过，hmp_link_down 采集伪影按用户豁免，最新证据 `006-rework/`） |
+| <!-- R61 --> | 外部 K3 官方资料知识库 `/home/daivy/projects/serial/work/k3/`（入口 `docs/index.md`；来源台账 `docs/reference/source-coverage.md`；缺口台账 `docs/reference/known-gaps.md`；`git@github.com:daivy2333/k3.git`，branch `main`，2026-09-17 观察 revision `e6d0557`） | SpacemiT Key Stone K3 / CoM260 Kit 真板 bring-up 的上游事实与操作依据：已登记 76 个唯一来源（SpacemiT 官网为权威源，`docs-chip` / `docs-product` / `docs-buildroot` / `linux-6.18@k3-br-v1.0.y`、K3-Ubuntu-Images、DTS/驱动源码及 RISC-V 规范用于交叉验证），形成 platform、boot、interrupts、serial、DMA、network、AMP、storage、buses、peripherals 10 类共 25 篇主题文档；覆盖板级资源与 DTS、Buildroot SDK/OpenSBI/U-Boot/Linux 镜像产物和启动链、RAM boot/Fastboot/持久烧录/工厂恢复、早期 UART，以及 IRQ/mailbox、DMA/cache/PMA/address translation、GMAC/PHY、存储和外设适配。资料按 official fact、cross-validation、inference、unknown 分级，并保留 15 项 known gaps，避免把非目标板、第三方固定 revision 或静态 DTS 直接当成 CoM260 真板结论；StarryOS 真板工作应优先引用这些适配与烧录依据，再用实际板卡版本、串口日志和读回结果闭合未知项，不复制正文到本仓库。 |
+
+> ⚠️ STALE [2026-09-17] — R44、R49、R51、R55、R58、R59 的操作边界或身份型证据步骤已过期；R57 的 `open` 状态需要 Recorder 复核。对应正文均已就地标记，修订前不得原样执行警告涉及的步骤。
+
+<!-- arc: ARC-202609171804 --> R54 已归档 (2026-09-17) → ../../changes/archive/2026-09-17-ARC-202609171804/proposal.md
+<!-- arc: cleanup-uart-documentation-system --> 全部历史 R 条目已归档至 archive carrier（见上方已归档条目）。

@@ -19,7 +19,7 @@ MS02 VirtIO-MMIO 轮询网络基线（T02-T03）的完整证据采集路径：
 
 - 异步 RX/TX（MS04+）——需要 IRQ 注册，本路径只覆盖同步轮询
 - 真板（VF2）——参考 `board-bringup-ladder.md` (R40)
-- 自动 QEMU harness——按 `.claude/runbooks/qemu-network-testing.md` (R44) 硬性政策，QEMU 测试一律手工
+- 自动 QEMU harness——按 `.agents/runbooks/qemu-network-testing.md` (R44) 硬性政策，QEMU 测试一律手工
 
 ## 前置条件
 
@@ -63,7 +63,7 @@ git diff --check
 
 ### 阶段 2：QEMU 手工验证（用户能力边界）
 
-按 `.claude/runbooks/qemu-network-testing.md` (R44) 政策，QEMU 测试一律手工。需要 3 个终端。
+按 `.agents/runbooks/qemu-network-testing.md` (R44) 政策，QEMU 测试一律手工。需要 3 个终端。
 
 #### 步骤 2.1：编译 Guest Payload
 

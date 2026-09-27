@@ -1,9 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-08-29 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 任务状态最后同步: 2026-09-26 | 路线规划更新: 2026-08-14 | 分支: mul-hart-k3 | grep: `<!-- T{编号} -->`
 > 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS06 与 MS16 已归档。
-
-> ⚠️ STALE [2026-09-17] — T11/T12、MS08 和“活跃 Change”状态尚未同步当前 MS08 change；已完成基线的归档墓碑仍可使用，运行状态由 `openspec list` 和活跃 change 判断。
 
 ---
 
@@ -19,9 +17,9 @@
 | <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
 | <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ✅ 完成（MS06 Iteration 000 `001-rework` accepted；Tasks 1.1–1.5 全部闭合） |
 | <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ✅ 完成（MS06；最终 Cycle `001-replan` accepted，单 hart QEMU 手工验收全过；host/QEMU 进程证据完整性按用户明确授权豁免） |
-| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ✅ 完成（MS07；Iteration 000–007 全部 accepted；最终 Cycle 006 六 case + MS01/MS04/MS05/MS06 回归全过，change 待归档） |
-| <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ⏳ 等待 T11 |
-| <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待 T12 |
+| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ✅ 完成（MS07；Iteration 000–007 全部 accepted；最终 Cycle 006 六 case + MS01/MS04/MS05/MS06 回归全过；change 已归档于 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`） |
+| <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ✅ 完成（MS08；Iteration 000–005 共 18 个 Cycle 全部 accepted；最终 Cycle `005/003-rework` 的 `SMP=16` 六 case network-only 运行 exit 0。UART 专项、受控迁移稳定性、reset/link 交错与旧阶段回归按用户明确授权豁免） |
+| <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待目标硬件（T12 已完成） |
 | <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ⏳ 等待 T13 |
 | <!-- T15 --> T15 | 目标板 Clock/Reset/PHY | 依据 T13 的 bootloader handoff 决定保留或恢复 clock/reset；只建立链路 | preserved 状态有原值；PHY/link 或等效链路结果可重复 | T14 | ⏳ 等待 T14 |
 | <!-- T16 --> T16 | 目标板设备中断 delivery | 只接 MAC IRQ claim、handler、device status 和 EOI | IRQ claim 与设备 status 对齐；无中断风暴；CPU/hart 初始化可区分 | T15 | ⏳ 等待 T15 |
@@ -114,7 +112,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS08：QEMU 多 hart 正确性基线
 
-- Status: planned
+- Status: completed — 2026-09-26；最终 Review accepted。交付结论限于 `SMP=16` 固定 placement 的六 case 网络数据面（placement、timer-disabled-wake、tcp/udp-bidirectional、full-recovery、readiness-quiet）；UART 专项 runtime、受控迁移稳定性、reset/link 交错、组合压力和旧阶段逐项回归按用户明确授权豁免，不计入本结论。
 - Outcome: 异步网络在多 hart 下保持 queue ownership、跨 hart wake 和控制面同步正确。
 - Rationale: SMP 是独立于单 hart 功能与恢复语义的并发故障域。
 - Dependencies: MS07
@@ -125,7 +123,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 单 hart 结果不计通过，每项 ordering 按同步角色解释。
 - Diagnostic boundary: 失败限制在 CPU affinity、跨 hart 通知、共享控制面或内存序。
 - Split signals: 引入 multiqueue 或 RSS，产生新的 queue-to-hart 分配成果。
-- Related changes: None
+- Related changes: `ms08-qemu-multi-hart-correctness-baseline`（已归档于 `openspec/changes/archive/2026-09-26-ms08-qemu-multi-hart-correctness-baseline/`；Iteration 000–005 共 18 个 Cycle，最终 Cycle `005/003-rework` Review accepted；delta spec 9 条 requirement 已合并入 `openspec/specs/qemu-multi-hart-async-io-correctness/spec.md`）
 
 ### MS09：目标板事实与可观测链路基线
 
@@ -248,4 +246,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`ms07-qemu-single-hart-recovery-semantics`（QEMU 单 hart 恢复语义，覆盖 T11）已于 2026-09-02 正常完成并归档至 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`；Iteration 000–007 全部 accepted，最终 Cycle 六 case + MS01/MS04/MS05/MS06 回归通过。MS07 已收口，后续里程碑为 MS08（QEMU 多 hart 正确性，等待 T11 前置即已完成）。
+无活跃 change。`ms08-qemu-multi-hart-correctness-baseline`（QEMU 多 hart 正确性基线，覆盖 T12）已于 2026-09-26 正常完成并归档至 `openspec/changes/archive/2026-09-26-ms08-qemu-multi-hart-correctness-baseline/`；Iteration 000–005 共 18 个 Cycle 全部 accepted，Tasks 1.1–7.3 全部闭合（7.1–7.3 及 6.1 为用户明确豁免的 SKIPPED）。行为规格已合并为 `openspec/specs/qemu-multi-hart-async-io-correctness/`。后续里程碑为 MS09（目标板事实与可观测链路基线，等待 T12 前置即已完成，且需目标硬件可用）。
