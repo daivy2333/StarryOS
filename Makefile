@@ -155,6 +155,44 @@ host-test:
 		echo "FAIL: waiter-64 must arm through synchronous epoll"; exit 1; fi
 	@if ! grep -nA3 'static int run_waiter_65_reregister' tests/ms06_stack_readiness_probe.c | grep -q MS06_WAIT_EPOLL; then \
 		echo "FAIL: waiter-65 must arm through synchronous epoll"; exit 1; fi
+	# MS08 UART SMP qualification protocol (Iteration 004, tasks 5.1/5.3/5.4)
+	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms08_uart_smp_probe.c
+	cc -std=c11 -Wall -Wextra -Werror tests/ms08_uart_smp_probe_test.c -o /tmp/ms08-uart-probe-test
+	/tmp/ms08-uart-probe-test
+	python3 scripts/ms08-uart-serial.py --self-test
+	python3 scripts/ms08-uart-validate.py --self-test
+	cc -std=c11 -Wall -Wextra -Werror tests/ms08_uart_smp_probe.c -o /tmp/ms08-uart-probe
+	python3 scripts/ms08-uart-validate.py --print-cases > /tmp/ms08-uart-cases-validator.txt
+	/tmp/ms08-uart-probe --print-cases > /tmp/ms08-uart-cases-probe.txt
+	diff -u /tmp/ms08-uart-cases-validator.txt /tmp/ms08-uart-cases-probe.txt
+	python3 scripts/ms08-uart-validate.py --print-schema > /tmp/ms08-uart-schema-validator.txt
+	/tmp/ms08-uart-probe --print-schema > /tmp/ms08-uart-schema-probe.txt
+	diff -u /tmp/ms08-uart-schema-validator.txt /tmp/ms08-uart-schema-probe.txt
+	# MS08 network SMP qualification protocol (Iteration 004, tasks 5.2/5.3/5.4)
+	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms08_network_smp_probe.c
+	cc -std=c11 -Wall -Wextra -Werror tests/ms08_network_smp_probe_test.c -o /tmp/ms08-net-probe-test
+	/tmp/ms08-net-probe-test
+	python3 scripts/ms08-network-peer.py --self-test
+	python3 scripts/ms08-network-validate.py --self-test
+	cc -std=c11 -Wall -Wextra -Werror tests/ms08_network_smp_probe.c -o /tmp/ms08-net-probe
+	python3 scripts/ms08-network-validate.py --print-cases > /tmp/ms08-net-cases-validator.txt
+	/tmp/ms08-net-probe --print-cases > /tmp/ms08-net-cases-probe.txt
+	diff -u /tmp/ms08-net-cases-validator.txt /tmp/ms08-net-cases-probe.txt
+	python3 scripts/ms08-network-validate.py --print-schema > /tmp/ms08-net-schema-validator.txt
+	/tmp/ms08-net-probe --print-schema > /tmp/ms08-net-schema-probe.txt
+	diff -u /tmp/ms08-net-schema-validator.txt /tmp/ms08-net-schema-probe.txt
+	@if grep -nE '\bsubprocess\b|\bimport socket\b|qemu-system|os\.system|\bpty\b' scripts/ms08-uart-validate.py scripts/ms08-network-validate.py; then \
+		echo "FAIL: ms08 validators must stay pure output auditors"; exit 1; fi
+	@if grep -nE 'poll_interfaces|\busleep\b|\bnanosleep\b|[^_a-zA-Z]sleep\(' tests/ms08_uart_smp_probe.c tests/ms08_network_smp_probe.c; then \
+		echo "FAIL: ms08 probes must not sleep-poll or call internal axnet poll"; exit 1; fi
+	@if grep -nE 'qemu-system|\bsubprocess\b|os\.system|\bpty\b' scripts/ms08-uart-serial.py scripts/ms08-network-peer.py; then \
+		echo "FAIL: ms08 harness/peer must never launch QEMU or a shell"; exit 1; fi
+	@if grep -nE 'poll\(NULL' tests/ms08_uart_smp_probe.c tests/ms08_network_smp_probe.c; then \
+		echo "FAIL: ms08 probes must never sleep-poll on the empty set"; exit 1; fi
+	@if grep -n 'read_v5_stable' tests/ms08_network_smp_probe.c; then \
+		echo "FAIL: transient V5 sampling must be a single fail-closed read after an event, never a retry loop"; exit 1; fi
+	@if ! grep -nA10 'while (feed_rc == 1)' tests/ms08_network_smp_probe.c | grep -q 'ms08_net_stream_rx_audit'; then \
+		echo "FAIL: TCP roundtrip must audit the reassembly buffer before accepting the exchange"; exit 1; fi
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)
 network-benchmark-test:
@@ -235,6 +273,14 @@ tests/ms06_stack_readiness_probe: tests/ms06_stack_readiness_probe.c
 
 # MS07 recovery probe (RISC-V static — operator drives QEMU/HMP manually)
 tests/ms07_recovery_probe: tests/ms07_recovery_probe.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
+# MS08 UART SMP qualification probe (RISC-V static — operator drives QEMU/serial socket)
+tests/ms08_uart_smp_probe: tests/ms08_uart_smp_probe.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
+# MS08 network SMP qualification probe (RISC-V static — operator drives QEMU/HMP/peer)
+tests/ms08_network_smp_probe: tests/ms08_network_smp_probe.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
 # Aliases

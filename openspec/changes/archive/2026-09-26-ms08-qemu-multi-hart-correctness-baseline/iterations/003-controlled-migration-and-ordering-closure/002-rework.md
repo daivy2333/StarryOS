@@ -220,19 +220,47 @@ formal model-checking infrastructure, repeated startup tests, or Iteration 004.
 
 ## Act Response
 
-- Status: pending
+- Status: reported
 
 **Implemented**
 
-Pending.
+Repair 4.4-R1: replaced the incomplete custom seqlock in `MigrationSlot` with a
+dedicated short-lived Acquire/Release view lock (`ViewLock`/`ViewGuard`) that
+serializes only the six-field `MigrationAtomicView` copy in `load()` and
+`store()`. The `seq` counter and both fence-based publication steps are removed.
+Release is RAII-safe via `Drop`; `in_progress` remains the independent
+migration single-flight flag and is untouched by view access.
+
+Sequence: (1) rewrote the structural witness
+`migration_slot_has_no_unsafe_cell_sync` to reject any remaining
+`seq`/fence/`fetch_add` publication and require a distinct view lock with
+Acquire CAS acquisition and RAII Release, plus a body-level check that neither
+`load()` nor `store()` touches `in_progress`; observed RED against the then
+current seqlock source (`must not keep the incomplete seqlock (self.seq)`).
+(2) Implemented the view lock in `uart_migration_logic.rs`; observed GREEN.
 
 **Changed Files and Symbols**
 
-Pending.
+- `kernel/src/drivers/uart_migration_logic.rs`: new private `ViewLock` (Acquire
+  `compare_exchange` acquire loop) and `ViewGuard` (`Drop` → Release store);
+  `MigrationSlot` field `seq: AtomicUsize` replaced by `view_lock: ViewLock`;
+  `load()`/`store()` now route their six-field copy through the guard with
+  Relaxed field accesses; `MigrationSlot` doc updated. Public API, wire
+  packing, reject counters, single-flight semantics unchanged.
+- `tests/ms04-async-rx-host-harness.rs`: structural witness
+  `migration_slot_has_no_unsafe_cell_sync` updated per the contract; seeded
+  concurrent tuple witness `migration_slot_concurrent_load_is_always_coherent`
+  retained unchanged.
 
 **Deviations from Plan**
 
-None.
+None. One observation outside the repair scope: run 2 of the QEMU combined
+smoke failed `UART-SMP-SMOKE` check `ipi_received_causal` (ipi_sent=10 vs
+ipi_received=9 at snapshot — an IPI receipt-accounting lag in the smoke's
+timing window, counters live in `axtask` IPI accounting, unrelated to
+`MigrationSlot`). The user then ran the same bounded smoke manually with all
+four markers PASS (see Verification Evidence). Recorded as a Minor finding
+below; no source change made.
 
 **Blocker Handoff**
 
@@ -244,59 +272,116 @@ None.
 
 **Self-Review**
 
-- Plan compliance: pending
-- Full diff reviewed: pending
-- Critical findings unresolved: pending
-- Important findings unresolved: pending
-- Minor findings unresolved: pending
+- Plan compliance: PASS — only repair item 4.4-R1 implemented; all Preserve
+  items held (public methods, no_std, wire bytes, reject counters,
+  single-flight); all Forbidden items respected (no `in_progress` reuse —
+  witness-enforced; no lock held across wake/yield/MMIO/affinity work — the
+  critical section contains only six field copies; no `UnsafeCell`, no broad
+  driver lock, no blanket SeqCst, no sleep-polling, no contract changes).
+- Full diff reviewed: PASS — diff confined to the two contract files; no
+  plan-outside modifications; no new warnings (host compile reports the same
+  16 pre-existing warnings before and after).
+- Critical findings unresolved: 0
+- Important findings unresolved: 0
+- Minor findings unresolved: 1 — pre-existing `ipi_received_causal` timing
+  window in the UART-SMP smoke (IPI receipt counter can lag delivery at
+  snapshot time); observed once in run 2, PASS in run 1 and in the user's
+  manual run. Outside this Cycle's repair surface; candidate for a later
+  smoke-harness wait condition, not fixed here per excluded scope.
 
 **Verification Evidence**
 
-Pending.
+| 验证项 | 命令或操作 | 输出摘录 | 覆盖范围 | 结论 |
+|---|---|---|---|---|
+| 结构见证 RED | `rustc --test tests/ms04-async-rx-host-harness.rs -o /tmp/ms04-harness && /tmp/ms04-harness migration`（修复前） | `panicked ... must not keep the incomplete seqlock (self.seq)`；8 passed / 1 failed | 见证拒绝旧 seqlock | PASS (RED) |
+| migration host 子集 GREEN | `/tmp/ms04-harness migration`（修复后） | `test result: ok. 9 passed; 0 failed; 95 filtered out` | 并发 seeded tuple、view lock 结构 guard、迁移状态机/选择/v5 packing | PASS |
+| 构建 ordinary | `make build` | `Finished release profile`（`.axconfig.toml` max-cpu-num=1） | kernel+qemu features，含 uart_migration_logic | PASS |
+| 构建 SMP=16 | `make defconfig SMP=16 && make build SMP=16` | `Finished release profile`（max-cpu-num=16） | qemu+smp 特征 | PASS |
+| QEMU 组合 smoke（有界） | `timeout 120 make justrun SMP=16` | `[NET-SMP-SMOKE] PASS`、`[NET-MIG-SMOKE] PASS`（owner/runner phase=2 Restored）、`[UART-SMP-SMOKE] PASS`（含 ipi_received_causal）、`[UART-MIG-SMOKE] PASS`（rx/tx phase=2 Restored）；用户手动运行同命令全 PASS | 固定 placement + 双驱动迁移，SMP=16 | PASS |
+| diff 检查 | `git diff --check && git diff --cached --check` | 无输出，exit 0 | 补丁格式 | PASS |
+| OpenSpec 严格验证 | `openspec validate ms08-qemu-multi-hart-correctness-baseline --strict` | `Change 'ms08-qemu-multi-hart-correctness-baseline' is valid`，exit 0 | change 结构 | PASS |
+
+注：cpumask/mask 测试未重跑——`crates/axtask/src/cpumask.rs` 本次未改动，
+Cycle 001 的 mask 结论继续有效（覆盖范围未变化）。
 
 **Persisted Evidence**
 
-None required.
+None required（mode `none`；各项输出摘要已在本 Response 内）。
 
 **Experience Candidates**
 
-Pending.
+None。`ipi_received_causal` 时序窗口仅一次观察到且用户手动运行已通过，
+证据不足以登记 Issue；若后续复现，可由 Recorder 评估。
 
 **Remaining Issues**
 
-Pending.
+- Minor（不阻塞）：UART-SMP smoke 的 `ipi_received_causal` 在快照时刻可能
+  观察到 IPI 接收计数滞后（见 Deviations）。建议后续 Cycle 在
+  drain-convergence 等待后对接收计数增加短等待或最终重查；不在本 Cycle
+  范围内修复。
 
 **Commit or Diff Reference**
 
-None.
+Worktree diff（未提交）：
+- `kernel/src/drivers/uart_migration_logic.rs`（+59/-44 行区域）
+- `tests/ms04-async-rx-host-harness.rs`（+45/-12 行区域）
+
+Pre-existing work committed before this Cycle's execution: `9efb2529`.
 
 ## Plan Review
 
-- Review Result: pending
+- Review Result: accepted
 
 **Findings**
 
-Pending.
+- Blocking findings: None. Independent diff review confirms that `ViewLock` uses an
+  Acquire compare-exchange and `ViewGuard::drop` releases with a Release store.
+  `MigrationSlot::{load,store}` hold the separate guard only while copying the
+  six atomic fields. The old sequence/fence protocol is absent; `in_progress`
+  remains separate and neither view method calls external code while locked.
+- Minor: the concurrent witness's introductory comment still calls the slot a
+  seqlock, although its assertions and the product implementation use the new
+  lock. This documentation mismatch does not affect A4.
+- Minor: Act reported one `ipi_received_causal` snapshot lag in an initial QEMU
+  smoke, followed by a bounded manual run with all four markers PASS. This is
+  outside repair 4.4-R1 and does not contradict its tuple-coherence evidence.
 
 **Deviation Classification**
 
-None.
+None. The two Minor observations do not change the repair contract.
 
 **Acceptance Gaps**
 
-Pending.
+None. A4/4.4-R1 is closed by the lock's source ordering and the seeded
+concurrent tuple witness; A1–A3 and the user-waived single-pass A5 remain
+covered by Cycle 001's unchanged surfaces and the current Act verification.
 
 **Convergence**
 
-N/A
+reduced — the parent Cycle's weak-memory tuple-coherence gap is closed.
 
 **Evidence**
 
-Pending.
+- Independently inspected `kernel/src/drivers/uart_migration_logic.rs` and its
+  worktree diff: all six loads and stores are under `view_lock.acquire()`;
+  RAII Release unlock and separate `in_progress` are explicit. Inspected the
+  seeded tuple test and structural guard in
+  `tests/ms04-async-rx-host-harness.rs`, plus UART/network call sites.
+- Adopted the uninvalidated Act Response results: focused migration host subset
+  9 passed, ordinary and SMP=16 builds passed, bounded SMP=16 combined smoke
+  had four PASS markers in the user's final manual run, and strict OpenSpec
+  validation exited 0. The worktree contains the same two product/test files
+  identified by Act, with no additional product modification since that
+  report. The QEMU result supports this QEMU SMP scope, not physical hardware.
+- Review commands: `git diff --check` and `git diff --cached --check` both
+  exited 0 with no output. Persisted Evidence mode is `none`; no directory is
+  required.
 
 **Follow-up Decision**
 
-Awaiting user approval and Act Response.
+Accept Iteration 003. The short lock satisfies the existing A4 contract and
+no blocking finding remains. Expand Iteration 004 as a draft protocol plan;
+its execution still requires separate plan approval and Act instruction.
 
 **Iteration Plan Update**
 
@@ -308,4 +393,4 @@ None.
 
 **Next Iteration**
 
-None.
+`../004-ms08-uart-and-network-qualification-protocols/000-initial.md`.

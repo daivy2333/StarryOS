@@ -13,8 +13,9 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 - 将 UART RX/TX copier 从 driver 内部立即普通 spawn 调整为由 kernel adapter 在 secondary-ready 后以入队前 affinity 各启动一次，并保存 task handle。
 - 保持 UART RX 和 TX 的 SPSC 身份：RX copier 是唯一 producer，TTY reader 是唯一 consumer；TTY writer 是逻辑唯一 producer，TX copier 是唯一 consumer。迁移只改变执行 hart，不创建第二 endpoint。
 - 对 UART 增加 QEMU-only placement 与进度观测，验证 IRQ→RX/TX copier、copier→TTY caller、write/readiness 和 `flush/tcdrain` 的跨 hart wake、Full→恢复和 quiet path。
-- 保留网络每个硬件 queue 只有一个逻辑 owner，并继续验证 queue owner、stack runner、readiness、迁移以及 reset/I/O 交错。
-- UART 和网络分开建立固定 placement Gate，再运行组合压力；任一驱动的普通运行成功不能替代它自身的跨 hart 证据。
+- 保留网络每个硬件 queue 只有一个逻辑 owner，并验证 queue owner、stack runner、readiness、跨 hart 直接唤醒、双向数据面、Full→恢复和资源账本。
+- 最终 QEMU runtime 只验证 `SMP=16` 网络。UART 只作为已由用户人工确认的 console 基础设施，不再执行专项资格；受控迁移在 INFO console 下的偶发超时按用户决定作为日志时序扰动风险接受，不再修复或作为通过条件。
+- 最终 Gate 不重复 reset/link、UART 专项、组合压力和旧阶段逐项回归；这些跳过项不扩大最终结论。
 - 保留 early console 独立性和 D1 的有界 TX slow-poll workaround。QEMU NS16550 结果不证明 D1/K3 的 MMIO、clock、IRQ 或真板时序。
 
 ### Scenario Sketch
@@ -40,11 +41,11 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 - **可观察结果**：唯一 owner 推进 descriptor，stack runner 和应用持续获得进度，slot、descriptor 和 ticket 守恒。
 - **失败边界**：第二 owner、重复回收、静默丢包、饥饿或 quiet window 忙轮询均失败。
 
-#### Sad Path：容量、超时与恢复
+#### Sad Path：容量与超时
 
-- **前置状态**：UART ring 或网络 slot/descriptor 达到 Full，或网络处于 reset/link 交错。
-- **触发动作**：其他 hart 释放容量、发布 completion，或请求 reset。
-- **可观察结果**：等待者由对应事件恢复；UART 保留未接受字节，网络仅由唯一 owner 推进 epoch/recovery。
+- **前置状态**：网络 slot/descriptor 达到 Full。
+- **触发动作**：其他 hart 上的 owner 回收 completion 并释放容量。
+- **可观察结果**：等待者由对应事件恢复，未接受数据只重试一次，descriptor、slot 和 ticket 最终闭合。
 - **失败边界**：超时必须标记对应 Gate 失败，不得以周期轮询、第二 owner 或无界重试恢复。
 
 #### Edge Case：hart 集合和受控迁移
@@ -61,18 +62,18 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 - **可观察结果**：读取返回“不在集合”；写入返回明确错误且 mask 字节、位数和已设置 bit 不变。
 - **失败边界**：不得依赖 `debug_assert`、读取垃圾 bit、改变合法 bit、panic/UB，或让调用方绕过工作区安全封装直接访问 registry mask。
 
-#### Compatibility：单 hart、early console 和真板边界
+#### Compatibility：console、既有恢复语义和真板边界
 
-- **前置状态**：使用单 hart QEMU、D1 特性或 early boot/panic 输出。
-- **触发动作**：构建并运行既有 UART/网络回归。
-- **可观察结果**：单 hart 语义不变，early console 不依赖 async copier，D1 workaround 保留。
+- **前置状态**：使用 UART console 启动 `SMP=16` 网络资格，既有 reset/link 和单 hart结果保持未修改。
+- **触发动作**：运行裁剪后的网络 guest probe 与 host peer。
+- **可观察结果**：console 能承载完整有界测试输出；本轮不修改 UART、reset/link 或既有单 hart行为。
 - **失败边界**：QEMU 通过不得被标记为 D1/K3 真板通过；真板硬件事实仍由后续 milestone 重新取证。
 
 ## Capabilities
 
 ### New Capabilities
 
-- `qemu-multi-hart-async-io-correctness`: 规定 QEMU 多 hart 下共享调度/同步原语、UART 和 VirtIO-MMIO 网络的动态 placement、唯一所有权、跨 hart wake、背压、完成、受控迁移与恢复资格。
+- `qemu-multi-hart-async-io-correctness`: 规定 QEMU 多 hart 下共享调度/同步原语，以及 VirtIO-MMIO 网络固定 placement、唯一所有权、跨 hart wake、双向数据面、背压恢复和 quiet 行为的最终资格。UART 多 hart实现保留，但专项 runtime、受控迁移稳定性和 reset/link 交错不进入最终通过条件。
 
 ### Modified Capabilities
 
@@ -91,4 +92,5 @@ StarryOS 在 QEMU 默认路径中同时启动异步 UART 和 VirtIO-MMIO 网络�
 - 2026-09-16：用户批准动态 online/schedulable placement，并在读取 K3 静态资料后批准将正式 QEMU runtime 从 `SMP=8` 修订为 `SMP=16`。
 - 2026-09-16：用户明确要求将既有异步 UART 与网卡一起纳入多核适配，并以“同意开始重写计划”批准本次范围重规划。
 - 2026-09-20：用户明确要求将 `cpumask 0.1` 越界访问风险纳入当前 Cycle 并一并解决，批准 Iteration 003 的范围和验证契约重规划。
-- 未豁免 Gate，也未将 QEMU 结果外推为 D1/K3 真板资格。
+- 2026-09-26：用户确认 UART 正常，要求最终验证只编写/调整网络测试代码和服务器来证明多 hart 网络功能；明确不再执行 UART 专项、受控迁移修复、reset/link 重跑和旧阶段逐项回归。接受 INFO console 可能扰动 owner migration 时序、因此不取得受控迁移稳定性结论的风险。
+- 未将 QEMU 结果外推为 D1/K3 真板资格，也不把 console 输出本身表述为 UART 异步 RX、背压、drain 或迁移的独立证明。

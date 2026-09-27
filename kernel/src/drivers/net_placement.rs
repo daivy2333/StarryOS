@@ -279,8 +279,9 @@ pub fn snapshot_boot_smoke() {
 // 与 UART copier 迁移同一契约（共享 uart_migration_logic 的纯决策/状态机）：
 // 已保存的 owner/runner handle（绝不新建第二实例）从 fixed singleton 加宽到
 // {orig, second}，由 pinned 在 second 的一次性刺激任务经 axnet 自己的 nudge
-// seam 发真实唤醒，同一 hart counter 直接观察到 second 上的 poll，随后恢复
-// singleton 并再次观察。任何拒绝在执行任务状态变更前发生，且只增 rejects。
+// seam 发真实唤醒（仅针对已验证提交 Blocked 的目标，Running/Ready 不唤醒），
+// 同一 hart counter 直接观察到 second 上的 poll，随后恢复 singleton 并再次
+// 观察。任何拒绝在执行任务状态变更前发生，且只增 rejects。
 
 /// 网络后台角色（owner = RX queue owner；runner = stack runner）。
 #[cfg(feature = "qemu")]
@@ -456,17 +457,53 @@ fn migrate_role_inner(
     });
 
     // 真实唤醒刺激：pinned 在 second 的一次性任务经 axnet nudge seam 唤醒，
-    // 直到控制流观察到 second 上的直接 poll（有界）。
+    // 直到控制流观察到 second 上的直接 poll（有界）。刺激是状态驱动的：
+    // 只唤醒已验证提交 `TaskState::Blocked` 的 saved target——对 Running/Ready
+    // 的盲唤醒只会预置 `AxWaker.woke`、抑制自然 park，没有任何
+    // `Blocked -> Ready`，正是它在 SMP=16 runtime 中让 owner 迁移超时
+    // （Cycle 002，6.2-R2）。观察到 second-hart poll、singleton 已回滚
+    // （saved task 的 mask 不再覆盖 second）或迭代耗尽都会终止刺激。
     if axtask::spawn_with_name_affinity(
         move || {
+            // QEMU-only stimulus-exit summary (Cycle 002 diagnostics): one
+            // line per stimulus run, classifying the residual race window
+            // (wakes issued but never scheduled vs Blocked gate never passed
+            // vs singleton rollback exit).
+            #[cfg(feature = "qemu")]
+            let (mut iters, mut wakes, mut rollback) = (0u64, 0u64, 0u64);
             for _ in 0..64 {
-                wake_role(role);
+                #[cfg(feature = "qemu")]
+                {
+                    iters += 1;
+                }
                 let v = migration_slot(role).load();
                 if v.observed_polls > v.requested_polls {
-                    break;
+                    break; // 控制流已提交 second-hart 观察
+                }
+                let Some(task) = saved_task(role) else {
+                    break; // handle 丢失：停止刺激
+                };
+                if !task.cpumask().get(second) {
+                    #[cfg(feature = "qemu")]
+                    {
+                        rollback += 1;
+                    }
+                    break; // singleton 已回滚：不再发陈旧刺激
+                }
+                if task.state() == axtask::TaskState::Blocked {
+                    #[cfg(feature = "qemu")]
+                    {
+                        wakes += 1;
+                    }
+                    wake_role(role); // 真实 Blocked -> Ready + 目标 hart IPI
                 }
                 axtask::yield_now();
             }
+            #[cfg(feature = "qemu")]
+            warn!(
+                "[NET-MIG-STIM] iters={} wakes={} rollback-exit={}",
+                iters, wakes, rollback
+            );
         },
         "net-migration-stimulus".into(),
         singleton(second),
@@ -488,6 +525,18 @@ fn migrate_role_inner(
         waited += 1;
         if waited > WAIT_LIMIT {
             let _ = restore_singleton(&task, orig);
+            let (slast, smask, sevents) = hart_tuple(role);
+            let parked = task.state() == axtask::TaskState::Blocked;
+            let (sname, plc_other) = match role {
+                NetRole::Owner => ("owner", axnet::runner_hart_tuple()),
+                NetRole::Runner => ("runner", axnet::owner_hart_tuple()),
+            };
+            ax_println!(
+                "[NET-MIG-{sname}] TIMEOUT-widened wait={waited} req_events={events_at_request} \
+                 orig={orig} second={second} last={slast} mask=0x{smask:x} events={sevents} \
+                 parked={parked} other_last={} other_events={}",
+                plc_other.0, plc_other.2
+            );
             return Err(NetMigrateError::ObserveTimeout);
         }
         axtask::yield_now();

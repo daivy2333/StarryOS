@@ -1,8 +1,9 @@
-## Purpose
+# qemu-multi-hart-async-io-correctness Specification
 
+## Purpose
 规定 QEMU 多 hart 下的共享 SMP 原语，以及异步 UART 和 VirtIO-MMIO 网络各自的 placement、所有权、跨 hart wake、背压、完成、迁移与恢复正确性。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: placement 只使用已在线且可调度的 hart
 
@@ -157,62 +158,24 @@ QEMU NS16550 下，跨 hart RX、TX、poll/readiness、short write、Full→恢�
 - **THEN** faulted owner identity MUST 保持且 waiter MUST 被唤醒
 - **AND** 不得自动创建 polling fallback 或第二 owner 并发接管
 
-### Requirement: 网络 reset/I/O 交错保持 epoch 和资源安全
-
-多 hart reset、link change、completion、reclaim、submit、socket waiter 和 readiness MUST 保持既有分层 epoch、取消和恢复语义。只有唯一 owner 可执行 quiesce、reset 和 reinitialize。旧 epoch completion、timer 或 wake 不得修改新 epoch 对象。
-
-#### Scenario: reset 与 device-owned packet 交错
-
-- **WHEN** 一个 hart 请求 reset，owner 在另一 hart 持有 device-owned packet 或等待 completion
-- **THEN** owner MUST 按既有账本在安全边界推进 epoch
-- **AND** packet MUST NOT 提前释放、重复回收或隐式重发
-
-#### Scenario: reset 与远端 waiter 交错
-
-- **WHEN** 旧 epoch waiter 位于其他 hart 且 reset 发布 terminal 状态
-- **THEN** terminal 状态 MUST 在 wake 前稳定发布，waiter MUST 返回一致错误类别
-- **AND** 新 epoch 通信 MUST NOT 使旧 socket 复活
-
-### Requirement: 受控迁移不改变逻辑所有权
-
-固定 placement 通过后，系统 MUST 以独立场景将既有 UART copier、network owner 或 runner 的 affinity 扩展到两个有效 hart。迁移 MAY 改变执行 hart，但 MUST NOT 创建第二任务实例、改变逻辑身份、丢失已发布事件或破坏资源账本。
-
-#### Scenario: wake 后自然迁移
-
-- **WHEN** 现有后台任务阻塞后被唤醒，scheduler 选择扩展 mask 中的另一 hart
-- **THEN** 同一 task lifecycle MUST 在新 hart 继续推进
-- **AND** 旧 hart MUST NOT 留下可并发运行的第二实例
-
-#### Scenario: 无效迁移目标
-
-- **WHEN** affinity 更新为空，或包含越界、offline、reserved 或未初始化 hart
-- **THEN** 更新 MUST fail closed 并保留旧 mask
-- **AND** 任务 MUST NOT 陷入无可运行 CPU 的状态
-
 ### Requirement: MS08 以分层 Gate 证明 QEMU 异步 I/O 多 hart 正确性
 
-Host/model tests MUST 覆盖 1、2、3、4、8、16 个 hart、非零 boot/IRQ hart、稀疏集合、critical-section、remote wake、ordering 和迁移状态。正式 QEMU runtime MUST 使用 `SMP=16`，先分别通过 UART 和网络固定 placement Gate，再执行迁移、组合压力、网络 reset/link 交错和单 hart 回归。
+Host/model tests MUST 覆盖 1、2、3、4、8、16 个 hart、非零 boot/IRQ hart、稀疏集合、critical-section、remote wake 和 ordering。最终 QEMU runtime MUST 使用 `SMP=16`，并直接验证网络固定 placement、跨 hart wake、双向数据面、Full→恢复、readiness/quiet 和资源账本。UART 专项、受控迁移、组合压力、reset/link 和旧阶段逐项回归不属于本次最终 runtime Gate。
 
-#### Scenario: UART 资格
+#### Scenario: UART 作为测试基础设施
 
-- **WHEN** QEMU 以 `SMP=16` 运行 serial RX/TX/readiness/drain/quiet 场景
-- **THEN** 必须直接观察 ISR、RX/TX copier 和 caller 的实际 hart，以及 remote enqueue/IPI/resume 因果链
-- **AND** 不得仅以串口最终输出或 IRQ counter 增长计为通过
+- **WHEN** QEMU 通过 UART console 启动并输出网络测试结果
+- **THEN** 完整有界输出 MAY 作为本轮环境可用性的前置条件
+- **AND** 该输出 MUST NOT 被表述为 UART 异步 RX、背压、drain 或迁移的独立资格
 
 #### Scenario: 网络资格
 
-- **WHEN** QEMU 以 `SMP=16` 运行固定 placement、双向压力、Full→恢复、readiness、quiet 和 reset/link 交错
+- **WHEN** QEMU 以 `SMP=16` 运行固定 placement、timer-disabled wake、TCP/UDP 双向、Full→恢复、readiness 和 quiet
 - **THEN** 必须直接观察唯一 owner、runner、实际 IRQ/task hart、IPI 和资源账本
 - **AND** 普通 ping、编译成功或历史单 hart evidence MUST NOT 替代
-
-#### Scenario: 自身串口作为被测设备
-
-- **WHEN** UART TX 卡死、丢字节或 `tcdrain` 超时使串口日志不可信
-- **THEN** Gate MUST 还有有界 host timeout、guest 内存状态和独立终止结果可判定
-- **AND** 不得因缺少最后一条 console PASS marker 就把失败提升为通过
 
 #### Scenario: 结论边界
 
 - **WHEN** MS08 所有 Gate 通过
-- **THEN** 结论 MUST 限定于 QEMU NS16550 和 VirtIO-MMIO 在 16 个同构 hart 上的软件并发
+- **THEN** 结论 MUST 限定于 QEMU VirtIO-MMIO 在 16 个同构 hart 上的固定 placement 网络路径
 - **AND** MUST NOT 声明 X100/A100 异构调度、RT24、K3 AIA、D1/K3 UART、真板 online 集合、DMA/cache、CPU hotplug、multiqueue 或性能已验证

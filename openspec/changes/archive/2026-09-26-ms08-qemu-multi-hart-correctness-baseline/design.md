@@ -181,6 +181,8 @@
 
 **Decision**：host/model 先覆盖 critical-section、placement、remote wake policy、ordering 和迁移状态，拓扑包含 1/2/3/4/8/16、非零 boot/IRQ hart 及稀疏集合；target build 随后证明 feature/ABI 集成。正式 QEMU runtime 只使用 `SMP=16`：先运行 timer-disabled wake witness，再分别运行 UART 固定 placement 的 RX/TX/Full/readiness/drain/quiet 和网络固定 placement 的双向/Full/readiness/quiet，然后运行独立 migration、UART+网络组合压力、网络 reset/I/O/link 交错与单 hart 回归。UART 作为被测 console 时，必须以 host timeout、内存 snapshot 和独立退出结果补充串口 marker。
 
+**Iteration 005 运行契约修订**：启动期受控迁移 smoke 先于用户态资格探针执行，`HartCounter` 的 mask 因而可能包含历史迁移 hart。placement case 以当前 singleton affinity、实际 poll-site 最近 hart、非零进度和历史 mask 包含该 hart的一致关系判定；独立 migration case 验证历史迁移。多 bit 历史 mask 不等于当前第二实例，当前 affinity 也不能代替实际执行观测。UART 注入前关闭 TTY 输入回显，guest 在有界空间内逐帧重组任意 read 分块；保留原始串口 transcript 和独立 host 结果。本修订不改变 V5 wire 布局、SPSC/owner 唯一性或 `SMP=16` 验收规模。
+
 **Reason**：按故障域排序可把全局原语、UART、网络和 recovery 失败分别定位；先运行组合压力会无法判断是 console 失效、scheduler 失效还是网络停滞。
 
 **Impact**：任一自动 Gate失败即停止后续 QEMU资格；任一 runtime case失败不得临时修改产品后继续计入同一结果。单 hart回归不计入多 hart通过。
@@ -206,6 +208,20 @@
 - vendor/fork `cpumask`：拒绝，当前需求只需要隔离其不安全边界；复制整个 crate 扩大维护面。
 - 越界写入静默 no-op：拒绝，调用方无法区分合法位原值为 false 与写入被拒绝；写 API 必须返回明确错误。
 
+### D11：最终资格收敛到固定 placement 的多 hart 网络数据面
+
+**Decision**：最终 QEMU runtime 只运行一个 `SMP=16` 网络资格 profile。复用现有 guest probe、host TCP/UDP peer 和 validator，保留 placement、timer-disabled remote wake、TCP/UDP 双向、Full→恢复、readiness/quiet 和终态资源账本；移除该 profile 中的 owner/runner migration、reset/link 和 UART cases。UART console 只承担启动与测试输出传输，完整有界输出是环境前置条件，不作为 UART 异步数据面的独立资格。最终 Gate 不逐项重跑旧阶段 runtime。
+
+**Reason**：现有网络运行已经通过普通数据面、背压恢复和资源闭合；剩余 owner migration 超时只在 INFO console 环境出现，固定 WARN 环境不出现。受控 migration 是 QEMU-only 诊断控制，不属于固定 singleton owner/runner 的正常数据路径。用户明确接受日志改变调度时序可能掩盖潜在迁移竞态的风险，并要求用最小网络 client/server 场景判断当前目标。
+
+**Impact**：最终结论只覆盖 QEMU VirtIO-MMIO 在 16 个同构 hart 上的固定 placement 网络路径，以及直接观测到的跨 hart wake、双向收发、背压恢复、readiness/quiet 和资源守恒。它不证明受控迁移在不同日志级别下稳定，不新增多 hart reset/link 结论，也不新增 UART、单 hart兼容性、真板或性能结论。现有迁移、reset/link 和 UART diagnostic code 可保留，但不为了本轮资格继续扩张或修复。
+
+**Alternatives**：
+
+- 修复 role-specific armed-wait generation 后再验收 migration：拒绝；用户明确接受该诊断路径的剩余风险。
+- 再跑 UART、reset/link、组合压力和全部旧阶段回归：拒绝；它们不再属于修订后的最终结论。
+- 只做 ping：拒绝；不能直接证明 TCP/UDP 双向、Full→恢复、readiness/quiet、remote wake 和 descriptor/slot/ticket 闭合。
+
 ## Risks / Trade-offs
 
 - **[vendor `axtask` 扩大维护面]** → 保持版本和上游文件结构，patch仅含 affinity/IPI/telemetry；邻接 root、axnet standalone和 target build均回归，禁止顺带清理。
@@ -226,5 +242,5 @@
 2. 先将 UART copier 启动移到 secondary-ready adapter，建立固定 placement、snapshot 和 UART-only runtime Gate。
 3. 再将网络 owner/runner 移到同一 placement 基线，建立 V5 和 network-only runtime Gate。
 4. 先用工作区 `AxCpuMask` 安全封装消除 release 越界风险，再增加两类后台任务的 migration control 和 ordering witnesses，保持默认固定布局。
-5. 增加 MS08 guest/host protocol 与 validator，执行 `SMP=16` UART、network、combined、migration 和 recovery 资格。
+5. 增加 guest/host protocol 与 validator；最终只执行裁剪后的 `SMP=16` 网络固定 placement/data-path 资格。UART、combined、migration、reset/link 和旧阶段逐项 runtime 按 D11 跳过。
 6. 基础原语未通过时回退 root/axnet 的 `axtask` patch 和 kernel `smp` feature 传播；某一驱动集成未通过时恢复其旧启动入口，但不得声明 SMP 资格。early console、UART 公开契约、MS07 单 hart 行为和 network V1–V4 ABI 始终保留。

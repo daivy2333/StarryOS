@@ -220,17 +220,59 @@ impl MigrationAtomicView {
     }
 }
 
+/// 专用的短生命周期视图锁：只串行化一次六字段视图的 load/store 拷贝，
+/// 与 `MigrationSlot::in_progress` 的迁移 single-flight 完全独立（pinned
+/// stimulus 读者在迁移持有 `in_progress` 期间仍会读视图，复用它会死锁）。
+///
+/// 获取使用 Acquire compare-exchange，保证锁内 Relaxed 字段访问不会被重排
+/// 到锁边界之外；释放经由 RAII guard 的 Release store，任何 early return
+/// 都不会把读者永久楔住。Rust 的 Acquire/Release 模型无法为自研 seqlock
+/// 提供本锁所需的双向边界（Release fence 只能约束其之前的操作），因此这
+/// 里用互斥短临界区替代 fence 序列协议，在所有支持的内存模型上读者都只
+/// 返回旧完整视图或新完整视图之一。
+struct ViewLock(AtomicBool);
+
+impl ViewLock {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// 自旋获取；返回持有期间独占视图拷贝的 RAII guard。
+    fn acquire(&self) -> ViewGuard<'_> {
+        while self
+            .0
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        ViewGuard { lock: self }
+    }
+}
+
+/// [`ViewLock::acquire`] 的 RAII 释放 guard：drop 时以 Release store 解锁，
+/// 锁内字段写因此对下一个获取者完整可见。
+struct ViewGuard<'a> {
+    lock: &'a ViewLock,
+}
+
+impl Drop for ViewGuard<'_> {
+    fn drop(&mut self) {
+        self.lock.0.store(false, Ordering::Release);
+    }
+}
+
 /// single-flight 迁移状态槽：生产侧控制流经 [`MigrationSlot::try_enter`] 独占
 /// 写，snapshot/V5 并行只读。
 ///
-/// [`MigrationSlot::store`] 用 seqlock（偶数 seq = 已提交稳定视图，奇数 =
-/// 写入进行中）原子化一次整体写入与并发 [`MigrationSlot::load`] 的多次读取：
-/// 这是单写多读的简单 seqlock，读者只在两次读到的 seq 一致且为偶数时返回，
-/// 保证永远拿不到撕裂的 phase/from/to/poll 元组，同时所有访问都经过原子字段，
-/// 不存在未同步的 `Sync` 数据竞争。
+/// [`MigrationSlot::load`] 与 [`MigrationSlot::store`] 的每次六字段视图拷贝
+/// 都经由私有的短生命周期 [`ViewLock`] 串行化（见其上文档）：读者与 writer
+/// 并发时，每次 `load` 都返回某次完整提交的 phase/from/to/poll 元组，永不
+/// 撕裂；所有字段访问都在锁内 Relaxed 执行，锁边界提供唯一的同步点。
+/// `in_progress` 只负责迁移 single-flight，不参与视图访问。
 pub struct MigrationSlot {
     in_progress: AtomicBool,
-    seq: AtomicUsize,
+    view_lock: ViewLock,
     view: MigrationAtomicView,
 }
 
@@ -238,32 +280,22 @@ impl MigrationSlot {
     pub const fn new() -> Self {
         Self {
             in_progress: AtomicBool::new(false),
-            seq: AtomicUsize::new(0),
+            view_lock: ViewLock::new(),
             view: MigrationAtomicView::new(),
         }
     }
 
-    /// 读取当前一致视图。与写并发时自旋重试，直到某次写入完整提交。
+    /// 读取当前一致视图。与写并发时经由短视图锁互斥，返回某次完整提交
+    /// 的元组（旧视图或新视图之一）。
     pub fn load(&self) -> MigrationView {
-        loop {
-            // 奇数 seq 表示 store 正在两次 seq 标记之间写入，跳过而非读撕裂。
-            let seq1 = self.seq.load(Ordering::Acquire);
-            if seq1 & 1 == 1 {
-                continue;
-            }
-            let v = MigrationView {
-                phase: self.view.phase.load(Ordering::Relaxed),
-                from: self.view.from.load(Ordering::Relaxed),
-                to: self.view.to.load(Ordering::Relaxed),
-                requested_polls: self.view.requested_polls.load(Ordering::Relaxed),
-                observed_polls: self.view.observed_polls.load(Ordering::Relaxed),
-                rejects: self.view.rejects.load(Ordering::Relaxed),
-            };
-            // seq 一致且偶数：两次读取之间没有 store 运行，所有字段来自同一
-            // 次完整提交的视图（Acquire 在 Release 提交后读到偶数 seq）。
-            if seq1 == self.seq.load(Ordering::Acquire) {
-                return v;
-            }
+        let _guard = self.view_lock.acquire();
+        MigrationView {
+            phase: self.view.phase.load(Ordering::Relaxed),
+            from: self.view.from.load(Ordering::Relaxed),
+            to: self.view.to.load(Ordering::Relaxed),
+            requested_polls: self.view.requested_polls.load(Ordering::Relaxed),
+            observed_polls: self.view.observed_polls.load(Ordering::Relaxed),
+            rejects: self.view.rejects.load(Ordering::Relaxed),
         }
     }
 
@@ -279,14 +311,10 @@ impl MigrationSlot {
         self.in_progress.store(false, Ordering::Release);
     }
 
-    /// 整体覆写视图。调用者必须持有 try_enter 成功的临界区（single writer）。
+    /// 整体覆写视图。调用者必须持有 try_enter 成功的临界区（single writer），
+    /// 六字段替换本身与并发 `load` 经由短视图锁互斥。
     pub fn store(&self, v: MigrationView) {
-        // 奇数：标记写入进行中（reader 在此窗口重试）。该标记本身用 Relaxed 即可，
-        // 但紧跟一个 Release fence 把该标记的写入序排在后续所有字段写之前；否则在
-        // 弱序目标（RISC-V SMP）上，后续 Relaxed 字段写可能在奇数标记之前可见，读者
-        // 会读到旧偶数 seq 两次却采样到新字段（撕裂视图）。
-        self.seq.fetch_add(1, Ordering::Relaxed);
-        core::sync::atomic::fence(Ordering::Release);
+        let _guard = self.view_lock.acquire();
         self.view.phase.store(v.phase, Ordering::Relaxed);
         self.view.from.store(v.from, Ordering::Relaxed);
         self.view.to.store(v.to, Ordering::Relaxed);
@@ -297,8 +325,5 @@ impl MigrationSlot {
             .observed_polls
             .store(v.observed_polls, Ordering::Relaxed);
         self.view.rejects.store(v.rejects, Ordering::Relaxed);
-        // 偶数：Release 提交并由 Release fence 之前的所有字段写保证先于它；Acquire
-        // reader 读到该偶数 seq 即同步到全部字段写（已知一个写窗口的完整视图）。
-        self.seq.store(self.seq.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
     }
 }

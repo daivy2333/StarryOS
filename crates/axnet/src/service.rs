@@ -978,6 +978,19 @@ impl Service {
             self.socket_epoch += 1;
         }
         self.link_state = Some(link);
+        // QEMU-only layered link diagnostics (Cycle 002): the transition
+        // commit point.  One line per committed generation.
+        #[cfg(feature = "qemu-diagnostics")]
+        {
+            let avail = self.recovery_owner_summary_target().available;
+            warn!(
+                "[NET-LINK-COMMIT] {} gen={} epoch={} avail={}",
+                if down { "down" } else { "up" },
+                self.link_generation,
+                self.socket_epoch,
+                avail
+            );
+        }
         if down { LinkStep::Down } else { LinkStep::Up }
     }
 

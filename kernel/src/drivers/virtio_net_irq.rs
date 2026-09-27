@@ -93,6 +93,26 @@ fn net_irq_handler() {
     let publish_used = virtio_net_irq_logic::should_publish_rx(status);
     let publish_config = virtio_net_irq_logic::should_publish_config(status);
     if publish_used || publish_config {
+        // QEMU-only layered link diagnostics (Cycle 002): config IRQs are
+        // printed with an occurrence counter — the first few unconditionally,
+        // then only on a status change — so a config storm shows its value
+        // and repetition without flooding the serial log.
+        #[cfg(feature = "qemu")]
+        if publish_config {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static CONFIG_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+            static CONFIG_IRQ_LAST: AtomicU64 = AtomicU64::new(u64::MAX);
+            let n = CONFIG_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+            let key = status as u64;
+            if n < 8 || CONFIG_IRQ_LAST.swap(key, Ordering::Relaxed) != key {
+                warn!(
+                    "[NET-LINK-IRQ] config status=0x{:02x} count={} hart={}",
+                    status,
+                    n + 1,
+                    axhal::percpu::this_cpu_id()
+                );
+            }
+        }
         let before = axhal::asm::irqs_enabled();
         if publish_used {
             axnet::publish_queue_event();

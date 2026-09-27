@@ -236,6 +236,51 @@ pub(crate) static QUEUE_EVENT: QueueEvent = QueueEvent::new();
 static RECOVERY_RESET_REQUEST: spin::Mutex<RecoveryRequestState> =
     spin::Mutex::new(RecoveryRequestState::new());
 
+/// QEMU-only layered link diagnostics (Cycle 002): one info line per distinct
+/// owner link-step outcome.  Identical repeated outcomes (e.g. an `Again`
+/// retry loop) print once with a sampled occurrence counter, so a storm
+/// collapses to a single line whose counter either advances (livelock) or
+/// freezes (deadlock inside the step).  A Down/Up outcome additionally arms
+/// round-phase tracing for the next few `service_round` calls.
+#[cfg(feature = "qemu-diagnostics")]
+static ROUND_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "qemu-diagnostics")]
+static TRACE_UNTIL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "qemu-diagnostics")]
+fn net_link_step_diag(step: &crate::service::LinkStep) {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(u64::MAX);
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    const SAMPLE: u64 = 1024;
+    let tag: u64 = match step {
+        crate::service::LinkStep::NoEvent => 0,
+        crate::service::LinkStep::Down => 1,
+        crate::service::LinkStep::Up => 2,
+        crate::service::LinkStep::Again => 3,
+        crate::service::LinkStep::Unsupported => 4,
+        crate::service::LinkStep::Fault => 5,
+    };
+    let n = COUNT.fetch_add(1, Ordering::Relaxed);
+    if matches!(
+        step,
+        crate::service::LinkStep::Down | crate::service::LinkStep::Up
+    ) {
+        TRACE_UNTIL.store(ROUND_COUNT.load(Ordering::Relaxed) + 4, Ordering::Relaxed);
+    }
+    if LAST.swap(tag, Ordering::Relaxed) != tag || n % SAMPLE == 0 {
+        let name = match step {
+            crate::service::LinkStep::NoEvent => "no-event",
+            crate::service::LinkStep::Down => "down",
+            crate::service::LinkStep::Up => "up",
+            crate::service::LinkStep::Again => "again",
+            crate::service::LinkStep::Unsupported => "unsupported",
+            crate::service::LinkStep::Fault => "fault",
+        };
+        warn!("[NET-LINK-STEP] {} (total {})", name, n + 1);
+    }
+}
+
 /// The one bounded explicit-recovery request.  It shares the lifecycle
 /// transition lock with the resident owner so a request cannot survive a
 /// natural recovery and trigger a second reset after the owner becomes Active
@@ -1517,6 +1562,22 @@ impl RxRxFuture {
         #[cfg(not(feature = "qemu-diagnostics"))]
         let hold = 0u64;
 
+        // QEMU-only layered round tracing (Cycle 002): phase prints only on
+        // rounds near a link flap (armed by net_link_step_diag); every other
+        // round stays silent, so there is no log storm.
+        #[cfg(feature = "qemu-diagnostics")]
+        let (round_n, trace_round) = {
+            use core::sync::atomic::Ordering;
+            let n = ROUND_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            (n, n <= TRACE_UNTIL.load(Ordering::Relaxed))
+        };
+        #[cfg(not(feature = "qemu-diagnostics"))]
+        let (round_n, trace_round) = (0u64, false);
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            warn!("[NET-ROUND] {} enter", round_n);
+        }
+
         // Stage 1: TX completion reclaim (≤32). Releasing a completion
         // frees a driver buffer and its live ticket.
         let mut reclaimed = 0usize;
@@ -1566,6 +1627,10 @@ impl RxRxFuture {
         // Stage 2: RX copy/refill (≤32). A full slot never reaps a used
         // descriptor, so no frame is dropped; the stage stops and the round
         // continues with TX submit.
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            warn!("[NET-ROUND] {} s1-reclaim reclaimed={}", round_n, reclaimed);
+        }
         let mut copied = 0usize;
         let mut rx_full = false;
         loop {
@@ -1603,6 +1668,13 @@ impl RxRxFuture {
         // Stage 3: TX slot submit (≤32). A successful submit pops the slot
         // and keeps its ticket live; `Again` retains the slot frame and
         // stops this stage.
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            warn!(
+                "[NET-ROUND] {} s2-rx copied={} full={}",
+                round_n, copied, rx_full
+            );
+        }
         let mut submitted = 0usize;
         let mut submit_full = false;
         #[cfg(feature = "qemu-diagnostics")]
@@ -1658,11 +1730,18 @@ impl RxRxFuture {
         // resumes it. RX-slot Full waits for stack drain, but never before a
         // still-advanceable TX backlog.
         //
-        // RW-1: a stage held by the QEMU diagnostic lease cannot advance.
+        // RW-1: a stage held by the QEMU diagnostic hold cannot advance.
         // Its resource must not drive self-wake (busy loop) nor the
         // arm/recheck protocol (it would retry forever on the held
         // completion). A held stage can only resume via lease expiry or an
         // explicit Release, so the round sleeps until the lease deadline.
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            warn!(
+                "[NET-ROUND] {} s3-submit submitted={} full={}",
+                round_n, submitted, submit_full
+            );
+        }
         #[cfg(feature = "qemu-diagnostics")]
         let hold_active = hold != crate::diag::HOLD_NONE;
         #[cfg(not(feature = "qemu-diagnostics"))]
@@ -1680,6 +1759,13 @@ impl RxRxFuture {
             }
         };
         let tx_pending = service.tx_slot_pending_target();
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            warn!(
+                "[NET-ROUND] {} pending={:?} tx_pending={}",
+                round_n, pending, tx_pending
+            );
+        }
         // RW-1: a visible TX completion is consumed by the reclaim stage;
         // under a reclaim hold it can never advance, so it must not
         // self-wake. TX slots are consumed by submit; under a submit hold
@@ -1704,9 +1790,17 @@ impl RxRxFuture {
             reclaim_held,
             reclaimed,
         ) {
+            #[cfg(feature = "qemu-diagnostics")]
+            if trace_round {
+                warn!("[NET-ROUND] {} data-deadline outcome", round_n);
+            }
             return outcome;
         }
-        if pending.contains(NetQueueDirection::RX) || tx_completion_advanceable {
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            warn!("[NET-ROUND] {} decide", round_n);
+        }
+        let decision = if pending.contains(NetQueueDirection::RX) || tx_completion_advanceable {
             // A visible completion can advance reclaim/RX/submit: retry.
             self.telemetry.self_yield.fetch_add(1, Ordering::Relaxed);
             RoundOutcome::SelfWakeYield
@@ -1753,7 +1847,25 @@ impl RxRxFuture {
         } else {
             self.telemetry.empty_check.fetch_add(1, Ordering::Relaxed);
             RoundOutcome::RegisterRecheck
+        };
+        #[cfg(feature = "qemu-diagnostics")]
+        if trace_round {
+            let name = match &decision {
+                RoundOutcome::SelfWakeYield => "self-wake",
+                RoundOutcome::RegisterRecheck => "register-recheck",
+                RoundOutcome::WaitSpace(d) => match d {
+                    SpaceDecision::Waiting => "wait-space",
+                    SpaceDecision::Retry => "wait-space-retry",
+                },
+                RoundOutcome::SleepUntil(_) => "sleep-until-lease",
+                RoundOutcome::Fault(_) => "fault",
+                RoundOutcome::Recover(_, _) => "recover",
+                RoundOutcome::Drift(_) => "drift",
+                RoundOutcome::SubmitTimeout(_) => "submit-timeout",
+            };
+            warn!("[NET-ROUND] {} outcome={}", round_n, name);
         }
+        decision
     }
 
     /// First poll: acquire the Service, run the all-or-nothing bidirectional
@@ -1832,7 +1944,9 @@ impl RxRxFuture {
         let causes = self.notify.take_causes();
         let mut link_change = false;
         if causes.config || self.initial_link_pending {
-            match service.link_policy_step_target() {
+            let link_step = service.link_policy_step_target();
+            net_link_step_diag(&link_step);
+            match link_step {
                 LinkStep::Again => {
                     // Retain the retry work: re-publish the CONFIG cause to
                     // self-wake. An initial-link `Again` keeps its pending flag

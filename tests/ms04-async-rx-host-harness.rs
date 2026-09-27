@@ -3450,12 +3450,12 @@ fn mask_ord_hash_delegate_to_inner_in_source() {
     );
 }
 
-/// Structural guard: cycle-001 repair must remove the raw `UnsafeCell` migration
-/// slot and its `unsafe impl Sync` in favor of atomic fields plus a weak-memory
-/// correct seqlock. In particular the begin-write odd marker must be followed by
-/// a Release fence so no field store can become observable before the odd
-/// sequence is published (a bare Relaxed begin would tear on RISC-V SMP), and the
-/// even commit must be a Release so acquiring readers see the full view.
+/// Structural guard: cycle-002 repair must replace the incomplete custom
+/// seqlock with a dedicated short-lived Acquire/Release view lock that is
+/// RAII-released. The sequence counter and its Release fences must be gone: a
+/// Release fence after the relaxed odd marker cannot keep later field stores
+/// below it, and the second Acquire sequence load cannot keep earlier field
+/// loads above it, so readers could still accept a torn tuple on RISC-V SMP.
 #[test]
 fn migration_slot_has_no_unsafe_cell_sync() {
     const LOGIC: &str = include_str!("../kernel/src/drivers/uart_migration_logic.rs");
@@ -3465,19 +3465,51 @@ fn migration_slot_has_no_unsafe_cell_sync() {
             "MigrationSlot must not use raw {forbidden}"
         );
     }
+    // The incomplete seqlock publication must not remain in any form.
+    for forbidden in ["self.seq", "fence(Ordering::Release)", "fetch_add"] {
+        assert!(
+            !LOGIC.contains(forbidden),
+            "MigrationSlot must not keep the incomplete seqlock ({forbidden})"
+        );
+    }
     assert!(
         LOGIC.contains("struct MigrationAtomicView"),
         "MigrationSlot must store each field as an atomic"
     );
+    // A distinct short-lived view lock must serialize every six-field copy.
     assert!(
-        LOGIC.contains("fence(Ordering::Release)"),
-        "the odd begin-marker must publish via a Release fence before any field store"
+        LOGIC.contains("struct ViewLock"),
+        "MigrationSlot must own a dedicated short-lived view lock"
     );
-    let commit = "self.seq.store(self.seq.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release)";
     assert!(
-        LOGIC.contains(commit),
-        "the even commit must be a Release store that publishes the full view"
+        LOGIC.contains("compare_exchange(false, true, Ordering::Acquire"),
+        "the view lock must be acquired with an Acquire compare-exchange"
     );
+    assert!(
+        LOGIC.matches("self.view_lock.acquire()").count() >= 2,
+        "both load() and store() must route their six-field copy through the view lock"
+    );
+    assert!(
+        LOGIC.contains("impl Drop for ViewGuard"),
+        "the view lock must be released through an RAII guard"
+    );
+    let guard = production_guard::block_after(LOGIC, "impl Drop for ViewGuard")
+        .expect("ViewGuard drop impl must exist");
+    assert!(
+        guard.contains("store(false, Ordering::Release)"),
+        "the RAII guard must release the view lock with a Release store"
+    );
+
+    // The view lock must stay independent of the long-lived single-flight flag:
+    // neither load() nor store() may touch `in_progress`.
+    for method in ["pub fn load", "pub fn store"] {
+        let body = production_guard::block_after(LOGIC, method)
+            .unwrap_or_else(|| panic!("{method} body not found"));
+        assert!(
+            !body.contains("in_progress"),
+            "{method} must not reuse the migration single-flight flag"
+        );
+    }
 }
 
 /// Structural guard: the network migration control must route target
@@ -3534,6 +3566,59 @@ fn net_migration_control_uses_safe_seams_in_source() {
     // The ioctl command is a new, QEMU-only value.
     assert!(CTL.contains("const NET_IRQ_MIGRATE: u32 = 0x4e49_4436;"));
     assert!(CTL.contains("cmd == NET_IRQ_MIGRATE"));
+}
+
+/// Cycle 002 (6.2-R2): the second-hart migration stimulus must be
+/// state-driven — it may call the role's genuine wake only for a saved target
+/// observed in `TaskState::Blocked`.  A blind wake against Running/Ready only
+/// pre-sets `AxWaker.woke` and suppresses the natural park without any
+/// `Blocked -> Ready`, which is the runtime owner-migration timeout this
+/// repair closes.  Termination must cover second-hart observation, singleton
+/// rollback and the bounded iteration count.
+#[test]
+fn net_migration_stimulus_is_blocked_gated_in_source() {
+    const PLACE: &str = include_str!("../kernel/src/drivers/net_placement.rs");
+    let body = production_guard::block_after(PLACE, "fn migrate_role_inner")
+        .expect("migrate_role_inner must implement the QEMU-only control flow");
+    let stimulus = production_guard::block_after(body, "move ||")
+        .expect("the pinned second-hart stimulus closure must exist");
+
+    // The stimulus must gate on the saved target's public Blocked state ...
+    let gate = stimulus
+        .find("task.state() == axtask::TaskState::Blocked")
+        .expect("stimulus must verify TaskState::Blocked before waking");
+    // ... and its first (and only) wake must sit inside that gated branch:
+    // Running/Ready is never nudged.
+    let wake = stimulus
+        .find("wake_role(role)")
+        .expect("stimulus must issue the role's genuine wake");
+    assert!(
+        gate < wake,
+        "the wake must follow the Blocked-state gate (no ungated wake path)"
+    );
+    assert!(
+        !stimulus[gate..wake].contains('}'),
+        "the wake must stay inside the Blocked-gated branch"
+    );
+
+    // Bounded, state-driven termination: observation, rollback, iteration cap.
+    assert!(
+        stimulus.contains("observed_polls > v.requested_polls"),
+        "stimulus must exit once the control observes the second-hart poll"
+    );
+    assert!(
+        stimulus.contains("cpumask().get(second)"),
+        "stimulus must stop when the widened mask is rolled back"
+    );
+    assert!(
+        stimulus.contains("for _ in 0..64"),
+        "stimulation stays bounded; no enlarged blind wake count"
+    );
+    // The control-side timeout diagnostic must distinguish the failing stage.
+    assert!(
+        body.contains("parked="),
+        "the QEMU-only timeout print must record whether the target parked"
+    );
 }
 
 // ===== Task 4.4: cross-hart ordering audit — concurrent IER RMW witness =====
