@@ -34,9 +34,19 @@
 //! Faults are not caught; the serial wire shapes separate the layers:
 //! `stage=4 apmu begin` with nothing after it — APMU access fault (mapping
 //! layer); readbacks whose bit0/bit1 are not set after step 2 — APMU write
-//! not effective; `stage=4 ... done` followed by `stage=5 mac probe begin`
+//! not effective (Iteration 004 reports this through the PHY-stage gate);
+//! `stage=4 ... done` followed by `stage=5 mac probe begin`
 //! and silence — the clock-gating assumption is falsified; all-zero/all-one
-//! MAC reads — deeper clock/reset layer.
+//! MAC identity reads — deeper clock/reset layer. The debug register is a
+//! status register: its zero value is the idle state and is reported as
+//! `sem=idle`, never as a fault conclusion (Iteration 004).
+//!
+//! The 100 µs inter-step waits go through the [`ProbeEnv`] time interface
+//! (native `time` CSR via axhal on the board, injected clock in host tests),
+//! replacing the Iteration 003 estimated spin loop. Host tests drive the
+//! sequence through the same seam and assert the real wait parameters.
+
+use super::phy_probe::ProbeEnv;
 
 /// Target MAC base from the board DT: `ethernet@cac82000`,
 /// `reg = <0x0 0xcac82000 0x0 0x2000>` (shipped `tools/k3_com260_ifx.dtb`).
@@ -67,15 +77,18 @@ pub const PHY_INTF_MODE_MASK: u32 = 0b11 << 3;
 pub const PHY_INTF_RGMII: u32 = 0b01 << 3;
 
 /// Spin between the two APMU steps and before the MAC probe, matching the
-/// traced `delay_us(100)` (`k3_gmac/syscon.rs:242-263`).
+/// traced `delay_us(100)` (`k3_gmac/syscon.rs:242-263`). Applied through the
+/// [`ProbeEnv`] native time interface.
 const APMU_STEP_DELAY_US: usize = 100;
+/// [`APMU_STEP_DELAY_US`] in nanoseconds, the unit [`ProbeEnv::wait_nanos`].
+const APMU_STEP_DELAY_NANOS: u64 = APMU_STEP_DELAY_US as u64 * 1_000;
 
 /// Buffer size for one probe line built by [`format_read_line`].
 pub const READ_LINE_BUF_LEN: usize = 96;
 
 /// Reads printed per register on the serial wire (same-boot repetition,
 /// task 4.1 contract: every read is emitted, none is filtered).
-const READS_PER_REG: usize = 2;
+pub const READS_PER_REG: usize = 2;
 
 /// Coarse read classification. The fault layer is not representable here:
 /// a trapping MMIO read never returns, which the serial wire shows as the
@@ -124,14 +137,14 @@ pub const fn apmu_step2(old: u32) -> u32 {
     (old & !EMAC_BUS_RST_DEASSERT) | EMAC_BUS_RST_DEASSERT
 }
 
-fn push_bytes(buf: &mut [u8], n: &mut usize, src: &[u8]) {
+pub(crate) fn push_bytes(buf: &mut [u8], n: &mut usize, src: &[u8]) {
     let end = *n + src.len();
     assert!(end <= buf.len(), "probe line buffer overflow");
     buf[*n..end].copy_from_slice(src);
     *n = end;
 }
 
-fn push_u32_hex8(buf: &mut [u8], n: &mut usize, value: u32) {
+pub(crate) fn push_u32_hex8(buf: &mut [u8], n: &mut usize, value: u32) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut digits = [0u8; 8];
     for (i, d) in digits.iter_mut().enumerate() {
@@ -140,7 +153,17 @@ fn push_u32_hex8(buf: &mut [u8], n: &mut usize, value: u32) {
     push_bytes(buf, n, &digits);
 }
 
-fn push_usize(buf: &mut [u8], n: &mut usize, value: usize) {
+/// Formats a 16-bit value as four lowercase hex digits (MDIO DATA words).
+pub(crate) fn push_u16_hex4(buf: &mut [u8], n: &mut usize, value: u16) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut digits = [0u8; 4];
+    for (i, d) in digits.iter_mut().enumerate() {
+        *d = HEX[((value >> (12 - i * 4)) & 0xf) as usize];
+    }
+    push_bytes(buf, n, &digits);
+}
+
+pub(crate) fn push_usize(buf: &mut [u8], n: &mut usize, value: usize) {
     let mut digits = [0u8; 20];
     let mut len = 0;
     let mut rest = value;
@@ -180,10 +203,64 @@ pub fn format_read_line<'a>(
     core::str::from_utf8(&buf[..n]).expect("probe line is ASCII")
 }
 
+/// Register-semantic label for the MAC debug register: a zero is the idle
+/// state (all debug status lines inactive), not a clock/reset fault — only
+/// the identity register carries the all-zero/all-one fault signature
+/// (Iteration 004 contract).
+pub const fn debug_sem_label(value: u32) -> &'static str {
+    if value == 0 {
+        "idle"
+    } else {
+        "active"
+    }
+}
+
+/// Formats one debug read line into `buf`: raw value, coarse class and the
+/// register-semantic label, so a legitimate idle zero is never read as a
+/// fault conclusion.
+///
+/// Shape: `[starry-k3] stage=5 mac debug read<N>=0xXXXXXXXX class=<label> sem=<idle|active>\n`
+pub fn format_debug_line<'a>(buf: &'a mut [u8], read_idx: usize, value: u32) -> &'a str {
+    let class = classify_mac_read(value);
+    let mut n = 0usize;
+    push_bytes(buf, &mut n, b"[starry-k3] stage=5 mac debug read");
+    push_usize(buf, &mut n, read_idx);
+    push_bytes(buf, &mut n, b"=0x");
+    push_u32_hex8(buf, &mut n, value);
+    push_bytes(buf, &mut n, b" class=");
+    push_bytes(buf, &mut n, class_label(class).as_bytes());
+    push_bytes(buf, &mut n, b" sem=");
+    push_bytes(buf, &mut n, debug_sem_label(value).as_bytes());
+    push_bytes(buf, &mut n, b"\n");
+    core::str::from_utf8(&buf[..n]).expect("probe line is ASCII")
+}
+
+/// Formats the stage-6 PHY gate decision line from the accepted stage-4/5
+/// facts. `proceed` is derived by the caller from the same facts passed in.
+///
+/// Shape: `[starry-k3] stage=6 gate apmu-clk=<0|1> apmu-rst=<0|1> mac-version=<label> <proceed|stop>\n`
+pub fn format_gate_line<'a>(
+    buf: &'a mut [u8],
+    clk_ok: bool,
+    rst_ok: bool,
+    version_label: &str,
+    proceed: bool,
+) -> &'a str {
+    let mut n = 0usize;
+    push_bytes(buf, &mut n, b"[starry-k3] stage=6 gate apmu-clk=");
+    push_bytes(buf, &mut n, if clk_ok { b"1" } else { b"0" });
+    push_bytes(buf, &mut n, b" apmu-rst=");
+    push_bytes(buf, &mut n, if rst_ok { b"1" } else { b"0" });
+    push_bytes(buf, &mut n, b" mac-version=");
+    push_bytes(buf, &mut n, version_label.as_bytes());
+    push_bytes(buf, &mut n, if proceed { b" proceed\n" } else { b" stop\n" });
+    core::str::from_utf8(&buf[..n]).expect("probe line is ASCII")
+}
+
 /// Formats one APMU sequence line into `buf` and returns it as `&str`.
 ///
 /// Shape: `[starry-k3] stage=4 apmu ctrl <label>=0xXXXXXXXX\n` — raw u32
-/// values only; readback bit judgement belongs to the change Act Response.
+/// values only; readback bit judgement stays in the dedicated gate helpers.
 pub fn format_apmu_line<'a>(buf: &'a mut [u8], label: &str, value: u32) -> &'a str {
     let mut n = 0usize;
     push_bytes(buf, &mut n, b"[starry-k3] stage=4 apmu ctrl ");
@@ -194,61 +271,93 @@ pub fn format_apmu_line<'a>(buf: &'a mut [u8], label: &str, value: u32) -> &'a s
     core::str::from_utf8(&buf[..n]).expect("probe line is ASCII")
 }
 
-/// Busy-wait `us` microseconds, calibrated at the 50 spin iterations per µs
-/// used by the traced reference (`k3_gmac/syscon.rs:312-319`). Timer-free on
-/// purpose: the minimal platform stage has no timer initialized.
-fn delay_us(us: usize) {
-    for _ in 0..us * 50 {
-        core::hint::spin_loop();
+/// Raw stage-4 readbacks; the PHY-stage gate judges them via
+/// [`apmu_bits_effective`].
+pub struct ApmuOutcome {
+    pub before: u32,
+    pub after1: u32,
+    pub after2: u32,
+}
+
+/// Stage-4 effectiveness gate (Iteration 004): the step-1 readback must show
+/// the EMAC bus clock enabled, and the step-2 readback must show the clock
+/// retained and the bus reset deasserted. Pure and host-tested; the raw
+/// values themselves stay on the serial wire.
+pub const fn apmu_bits_effective(after1: u32, after2: u32) -> (bool, bool) {
+    let clk_ok = after1 & EMAC_BUS_CLK_EN != 0;
+    let rst_ok = after2 & (EMAC_BUS_CLK_EN | EMAC_BUS_RST_DEASSERT)
+        == (EMAC_BUS_CLK_EN | EMAC_BUS_RST_DEASSERT);
+    (clk_ok, rst_ok)
+}
+
+/// Classification summary of the stage-5 read pairs, feeding the PHY-stage
+/// gate. Debug zero (idle) never fails identity.
+pub struct MacProbeSummary {
+    pub version_classes: [MacReadClass; READS_PER_REG],
+    pub debug_classes: [MacReadClass; READS_PER_REG],
+}
+
+impl MacProbeSummary {
+    /// The MAC identity is usable for the PHY gate only if every version read
+    /// classifies `Ok`.
+    pub const fn version_identity_ok(&self) -> bool {
+        let mut i = 0;
+        while i < READS_PER_REG {
+            match self.version_classes[i] {
+                MacReadClass::Ok => {}
+                _ => return false,
+            }
+            i += 1;
+        }
+        true
     }
 }
 
 /// APMU GMAC bus clock-enable sequence (stage=4), in the board-verified
 /// two-step write order traced in R69 (`k3_gmac/syscon.rs:242-263`): step 1
 /// applies [`apmu_step1`] (clock + RGMII), step 2 applies [`apmu_step2`]
-/// (reset deassert), each followed by an [`APMU_STEP_DELAY_US`] spin. Every
-/// readback is emitted as a raw u32 through `emit`; the kernel never judges
-/// expected values.
+/// (reset deassert), each followed by an [`APMU_STEP_DELAY_NANOS`] wait on
+/// `env`'s native time interface. Every readback is emitted as a raw u32
+/// through `emit`; expected-value judgement lives in [`apmu_bits_effective`].
 ///
-/// # Safety
-///
-/// The APMU window `[APMU_BASE_PADDR, APMU_BASE_PADDR + 0x400)` must be
-/// identity-mapped (K3 `devices.mmio-ranges`). The only write target is the
-/// CTRL register at `APMU_CTRL_OFFSET` (0x3ec); no other APMU address (in
-/// particular DLINE 0x3f0) is read or written.
-pub unsafe fn apmu_clock_enable(mut emit: impl FnMut(&str)) {
+/// `env` must expose only the APMU CTRL register window: the sequence reads
+/// and writes `APMU_BASE_PADDR + APMU_CTRL_OFFSET` and nothing else (host
+/// tested).
+pub fn apmu_clock_enable(env: &mut impl ProbeEnv, mut emit: impl FnMut(&str)) -> ApmuOutcome {
     emit("[starry-k3] stage=4 apmu begin\n");
-    let ctrl = (APMU_BASE_PADDR + APMU_CTRL_OFFSET) as usize;
-    // SAFETY: identity-mapped APMU CTRL read; see the safety contract above.
-    let before = unsafe { core::ptr::read_volatile(ctrl as *const u32) };
+    let ctrl = APMU_BASE_PADDR + APMU_CTRL_OFFSET;
+    let before = env.mmio_read(ctrl);
     let mut buf = [0u8; READ_LINE_BUF_LEN];
     emit(format_apmu_line(&mut buf, "before", before));
     let step1 = apmu_step1(before);
     let mut buf = [0u8; READ_LINE_BUF_LEN];
     emit(format_apmu_line(&mut buf, "step1", step1));
-    // SAFETY: CTRL 0x3ec is the only APMU write target of this sequence.
-    unsafe { core::ptr::write_volatile(ctrl as *mut u32, step1) };
-    // SAFETY: identity-mapped APMU CTRL read.
-    let after1 = unsafe { core::ptr::read_volatile(ctrl as *const u32) };
+    env.mmio_write(ctrl, step1);
+    let after1 = env.mmio_read(ctrl);
     let mut buf = [0u8; READ_LINE_BUF_LEN];
     emit(format_apmu_line(&mut buf, "after1", after1));
-    delay_us(APMU_STEP_DELAY_US);
+    env.wait_nanos(APMU_STEP_DELAY_NANOS);
     let step2 = apmu_step2(after1);
     let mut buf = [0u8; READ_LINE_BUF_LEN];
     emit(format_apmu_line(&mut buf, "step2", step2));
-    // SAFETY: CTRL 0x3ec is the only APMU write target of this sequence.
-    unsafe { core::ptr::write_volatile(ctrl as *mut u32, step2) };
-    // SAFETY: identity-mapped APMU CTRL read.
-    let after2 = unsafe { core::ptr::read_volatile(ctrl as *const u32) };
+    env.mmio_write(ctrl, step2);
+    let after2 = env.mmio_read(ctrl);
     let mut buf = [0u8; READ_LINE_BUF_LEN];
     emit(format_apmu_line(&mut buf, "after2", after2));
-    delay_us(APMU_STEP_DELAY_US);
+    env.wait_nanos(APMU_STEP_DELAY_NANOS);
     emit("[starry-k3] stage=4 apmu clock enable done\n");
+    ApmuOutcome {
+        before,
+        after1,
+        after2,
+    }
 }
 
 /// Read-only MAC probe (stage=5): prints a begin marker, then
-/// [`READS_PER_REG`] lines per register (raw value + classification), then a
-/// done marker, through `emit`. Runs after [`apmu_clock_enable`].
+/// [`READS_PER_REG`] lines per register (raw value + classification; the
+/// debug lines carry the register-semantic label), then a done marker, and
+/// returns the classification summary for the PHY-stage gate. Runs after
+/// [`apmu_clock_enable`].
 ///
 /// # Safety
 ///
@@ -256,8 +365,10 @@ pub unsafe fn apmu_clock_enable(mut emit: impl FnMut(&str)) {
 /// must be identity-mapped (K3 `devices.mmio-ranges`) with the GMAC bus clock
 /// already enabled by [`apmu_clock_enable`]. The probe performs volatile
 /// reads inside the DT-declared window only and never writes any register.
-pub unsafe fn probe_and_report(mut emit: impl FnMut(&str)) {
+pub unsafe fn probe_and_report(mut emit: impl FnMut(&str)) -> MacProbeSummary {
     emit("[starry-k3] stage=5 mac probe begin base=0xcac82000 (read-only)\n");
+    let mut version_classes = [MacReadClass::Ok; READS_PER_REG];
+    let mut debug_classes = [MacReadClass::Ok; READS_PER_REG];
     for (name, offset) in [("version", MAC_REG_VERSION), ("debug", MAC_REG_DEBUG)] {
         for read_idx in 1..=READS_PER_REG {
             let addr = (MAC_BASE_PADDR + offset) as usize;
@@ -265,8 +376,21 @@ pub unsafe fn probe_and_report(mut emit: impl FnMut(&str)) {
             // see the function safety contract above.
             let value = unsafe { core::ptr::read_volatile(addr as *const u32) };
             let mut buf = [0u8; READ_LINE_BUF_LEN];
-            emit(format_read_line(&mut buf, name, read_idx, value));
+            match name {
+                "version" => {
+                    version_classes[read_idx - 1] = classify_mac_read(value);
+                    emit(format_read_line(&mut buf, name, read_idx, value));
+                }
+                _ => {
+                    debug_classes[read_idx - 1] = classify_mac_read(value);
+                    emit(format_debug_line(&mut buf, read_idx, value));
+                }
+            }
         }
     }
     emit("[starry-k3] stage=5 mac probe done (parking next)\n");
+    MacProbeSummary {
+        version_classes,
+        debug_classes,
+    }
 }

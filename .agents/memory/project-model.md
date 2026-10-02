@@ -122,17 +122,17 @@ PLIC 初始化 MUST 保持 `init_primary()`（全局一次性初始化）与 `in
 - **AND** DWMAC 代码 MUST 仅在目标控制器兼容时进入移植候选
 - **AND** 新平台 MUST 重新取得本平台运行证据
 
-### Requirement: M42 — k3 参考资料可信度分级与主动引用
+### Requirement: M42 — k3 参考资料默认采信与用法对齐
 
-CoM260 Kit（K3）板级工作引用 `/home/daivy/projects/serial/work/k3/` 及其 `others/` 下资源时，可信度 MUST 按来源分级：`k3/docs/`（R61）按其自有来源分级（official fact / cross-validation / inference / unknown）与 known-gaps 台账引用，`partially-observed` 覆盖状态不得当作完整官方正文；`k3/others/Buildroot-K3-v1.0.7/`（R70）为官方预构建发布包，只作固件/镜像组成与 DTB 候选的离线依据，不证明当前板实际刷写状态；`k3/others/Rt-Async-AMP/`（R69）为同板真板验证的第三方工程，其带可溯源标注的寄存器偏移、位域与时序（如 APMU CTRL 两步 clock 写序）可作契约与实现依据，框架代码不得直接并入 StarryOS，负面样本按审查反例处理；`k3/.claude/` 真板记录与分析（R71）和 `k3/openspec/` 验收语料（R72）的可信度绑定采集时的板态与 revision。所有引用 MUST 保留文件路径与来源分级，且任何 k3 资料均不替代当前板运行时事实。
+CoM260 Kit（K3）板级工作引用 `/home/daivy/projects/serial/work/k3/` 及其 `others/` 下资源时，官网可追溯信息（R61）与同板真板经验（R69–R72）MUST 默认采信为契约与实现依据，不得以「未经本仓验证」为默认理由降低采信或增设前置验证条件；资源自身标注 unverified/unknown/inference 的内容与 `partially-observed` 覆盖状态不因本约束升格，仍按其标注使用。R69 的可溯源寄存器偏移、位域、时序及其用法语义（读写次序、锁定/解锁协议、写而不读等操作形态）同等默认采信：契约 MUST 对齐参考实现的用法，MUST NOT 发明参考实现从不执行的验证前置（如对解锁后写入语义的寄存器要求读回验证）；偏离参考用法须在契约中给出独立来源或明确理由。适用边界保持：R70 官方预构建包不证明当前板实际刷写状态；R69 框架代码不得直接并入 StarryOS，负面样本按审查反例处理；R71/R72 绑定其采集时板态与 revision。当前板运行时观察事实（寄存器实读值、PHYID、link 状态）MUST 由板上观察取得，参考资料提供预期与解释，不替代观察本身。所有引用 MUST 保留文件路径与来源标注。
 
-**来源**: 2026-10-01 用户审计指令（k3 资源利用不足）；MS09 Iteration 003 板上阻塞由 R69 APMU 写序定位 | **状态**: ✅ active
+**来源**: 2026-10-01 用户审计指令（k3 资源利用不足；Iteration 003 板上阻塞由 R69 APMU 写序定位）；2026-10-02 用户审计指令（官网信息与真板经验默认采信；Iteration 004 IO-PD 读前置被 R69 用法语义否定） | **状态**: ✅ active
 
 #### Scenario: 制定板级契约前检索参考资源
 
 - **WHEN** MS09+ 的 Plan/Explorer 为 CoM260 Kit 板级工作制定契约或调查输入
-- **THEN** MUST 按 R66 的里程碑优先读取表主动检索 R69–R72 对应资源，引用时标注来源分级
-- **AND** 不得把上述资源留到板上阻塞后才首次检索
+- **THEN** MUST 按 R66 的里程碑优先读取表主动检索 R69–R72 对应资源，检索深度覆盖寄存器布局与参考实现的用法语义（读写次序、解锁协议、何时写不读），引用时标注来源
+- **AND** 不得把上述资源留到板上阻塞后才首次检索，也不得对参考实现按写入驱动的寄存器增设其从不执行的读验证前置
 
 <!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 <!-- arc: cleanup-uart-documentation-system --> M03, M33, M35 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/

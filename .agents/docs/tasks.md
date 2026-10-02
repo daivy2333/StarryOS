@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-09-26 | 路线规划更新: 2026-08-14 | 分支: mul-hart-k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS06 与 MS16 已归档。
+> 任务状态最后同步: 2026-10-02 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS09 与 MS16 已归档。
 
 ---
 
@@ -19,9 +19,9 @@
 | <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ✅ 完成（MS06；最终 Cycle `001-replan` accepted，单 hart QEMU 手工验收全过；host/QEMU 进程证据完整性按用户明确授权豁免） |
 | <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ✅ 完成（MS07；Iteration 000–007 全部 accepted；最终 Cycle 006 六 case + MS01/MS04/MS05/MS06 回归全过；change 已归档于 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`） |
 | <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ✅ 完成（MS08；Iteration 000–005 共 18 个 Cycle 全部 accepted；最终 Cycle `005/003-rework` 的 `SMP=16` 六 case network-only 运行 exit 0。UART 专项、受控迁移稳定性、reset/link 交错与旧阶段回归按用户明确授权豁免） |
-| <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ⏳ 等待目标硬件（T12 已完成） |
-| <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ⏳ 等待 T13 |
-| <!-- T15 --> T15 | 目标板 Clock/Reset/PHY | 依据 T13 的 bootloader handoff 决定保留或恢复 clock/reset；只建立链路 | preserved 状态有原值；PHY/link 或等效链路结果可重复 | T14 | ⏳ 等待 T14 |
+| <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ✅ 完成（MS09；板级事实、安全 RAM 边界与可重复临时启动已 accepted） |
+| <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ✅ 完成（MS09；FIT RAM 启动可重复，MAC version=0x1054 可读可解释） |
+| <!-- T15 --> T15 | 目标板 Clock/Reset/PHY | 依据 T13 的 bootloader handoff 决定保留或恢复 clock/reset；只建立链路 | preserved 状态有原值；PHY/link 或等效链路结果可重复 | T14 | ✅ 完成（MS09；APMU 两步使能 + IO-PD 按 R69 用法设置，PHYID=0x001cc916 RTL8211F，插拔循环可重复） |
 | <!-- T16 --> T16 | 目标板设备中断 delivery | 只接 MAC IRQ claim、handler、device status 和 EOI | IRQ claim 与设备 status 对齐；无中断风暴；CPU/hart 初始化可区分 | T15 | ⏳ 等待 T15 |
 | <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ⏳ 等待 T16 |
 | <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ⏳ 等待 T17 |
@@ -127,7 +127,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS09：目标板事实与可观测链路基线
 
-- Status: planned
+- Status: completed — 2026-10-02；最终 Review accepted。交付结论限于 CoM260 Kit 的板级事实核对、安全 RAM 边界、可撤销临时 RAM 启动、MAC 只读寄存器基线（APMU 两步使能后 version=0x1054）与 PHY/link 可观测基线（IO-PD 按 R69 用法 ASAR 解锁+整字写、MDIO Clause 22、RTL8211F 身份与 ≥5 个完整插拔循环）；重复启动第三轮、部分 reset 观察与 U-Boot 控制台只读采集按用户明确授权豁免，不计入本结论。
 - Outcome: 目标板可重复启动，MAC 控制器和链路状态可访问、可解释，并据此选定硬件后端。
 - Rationale: T13 是 T14-T15 的调查输入；三者共同形成后端开发可依赖的平台基线。目标板尚未确认，不能预选 DWMAC 或继承 VF2 配置。
 - Dependencies: MS08；目标硬件可用
@@ -138,7 +138,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 每项事实来自真板、固件描述或手册，未知项明确阻塞。
 - Diagnostic boundary: 失败限制在启动链、MMIO 映射、clock/reset、PHY/链路或控制器识别。
 - Split signals: 启动/MMIO 已形成可复用基线，但 PHY 因外部硬件长期独立阻塞。
-- Related changes: None
+- Related changes: `ms09-com260-kit-observable-link-baseline`（已归档于 `openspec/changes/archive/2026-10-02-ms09-com260-kit-observable-link-baseline/`；Iteration 000–004 共 6 个 Cycle 全部 accepted，11/11 tasks 闭合；行为规格已合并为 `openspec/specs/k3-com260-kit-observable-link-baseline/`）
 
 ### MS10：目标板可诊断设备中断基线
 
@@ -246,4 +246,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`ms08-qemu-multi-hart-correctness-baseline`（QEMU 多 hart 正确性基线，覆盖 T12）已于 2026-09-26 正常完成并归档至 `openspec/changes/archive/2026-09-26-ms08-qemu-multi-hart-correctness-baseline/`；Iteration 000–005 共 18 个 Cycle 全部 accepted，Tasks 1.1–7.3 全部闭合（7.1–7.3 及 6.1 为用户明确豁免的 SKIPPED）。行为规格已合并为 `openspec/specs/qemu-multi-hart-async-io-correctness/`。后续里程碑为 MS09（目标板事实与可观测链路基线，等待 T12 前置即已完成，且需目标硬件可用）。
+无活跃 change。`ms09-com260-kit-observable-link-baseline`（CoM260 Kit 目标板事实与可观测链路基线，覆盖 T13–T15）已于 2026-10-02 正常完成并归档至 `openspec/changes/archive/2026-10-02-ms09-com260-kit-observable-link-baseline/`；Iteration 000–004 共 6 个 Cycle 全部 accepted，Tasks 1.1–5.2 全部闭合（重复启动第三轮、部分 reset 观察与 U-Boot 只读采集为用户明确授权豁免，注记于各自 Cycle）。行为规格已合并为 `openspec/specs/k3-com260-kit-observable-link-baseline/`。后续里程碑为 MS10（目标板可诊断设备中断基线，前置 T15 已完成）。

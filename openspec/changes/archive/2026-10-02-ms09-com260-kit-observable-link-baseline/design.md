@@ -56,6 +56,13 @@
 - **影响：**首次现场数据若不能低成本重取、且摘要会丢失决定性结构，后续 Plan 再按公共 Evidence 准入规则修订；不能为当前未知环境预建日志仓或校验器。
 - **替代：**新增资格封装器、Hash/manifest/时间审计；项目规则禁止，拒绝。
 
+### D6 — 固定当前板 PHY，以原生时间接口约束早期观察
+
+- **决定：**Iteration 004 复用 accepted 的 APMU 两步使能与 MAC 身份基线；按已确认 DTB 和 R69 恢复 GMAC pad 的必要 mux、以 GPIO1_5 active-low 做一次 PHY 硬件复位，然后只对地址 1 执行 Clause 22。IO-PD 电压域按 DTB `power-source=1800` 与 R69 用法设置：APBC ASAR 一次性解锁（ASFAR=0xbaba、ASSAR=0xeb10）后向 io_pd 整字写 BIT(2)（1V8），不做读验证——2026-10-02 板上读 0 否定 000 契约的只读预期，参考实现从不读取该寄存器，依据 M42 用法对齐修订；其余非 mux 电气配置保持不动。MDIO divider 采用同板参考值 CR=5，访问按原生时间接口限制为 10 ms；输出实际 PHYID 后才允许标准 BMCR 自动协商操作。寄存器与时序的具体契约见 `iterations/004-phy-link/001-rework.md`（其 IO-PD 步骤替代 000 契约的同项）。
+- **原因：**当前板 DTB 给出 PHY@1、GPIO1_5、复位 0/20000/100000 μs 与 gmac1 mux；R69 给出可追溯的 K3 GPIO/pad 布局和同板 MDIO 实现，Linux 上游交叉核对 DWMAC4 MDIO 字段与 Clause 22 状态。当前 K3 TimeIf 已从 24 MHz `time` CSR 供时，早期无需 timer IRQ；参考的估算自旋、超时后继续和扫描地址不作为当前契约。
+- **影响：**APMU 原有 100 μs 等待改用已有时间接口；MAC debug 零值按状态解释。物理观察使用 120 s 窗口、100 ms 采样，直接报告 PHY 可达性、协商和 link 状态，板上完成两次插拔循环。Clause 22 link 证明 PHY 与对端物理协商，不证明 RGMII 数据通路，因此不写 DLINE、vendor page 或 MAC 收发配置。
+- **来源：**当前板 `tools/k3_com260_ifx.dtb`；R69 的 `net/k3_gmac/{mdio,regs,syscon}.rs` 与 `soc/k3/pinctrl/{regs,mod}.rs`；上游 [MDIO](https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/net/ethernet/stmicro/stmmac/stmmac_mdio.c)、[DWMAC4 字段](https://raw.githubusercontent.com/torvalds/linux/v6.18/drivers/net/ethernet/stmicro/stmmac/dwmac4_core.c)、[Clause 22 定义](https://raw.githubusercontent.com/torvalds/linux/v6.18/include/uapi/linux/mii.h)。来源等级和操作边界在当前 Cycle 保留。
+
 ## Risks / Trade-offs
 
 - [当前环境无串口设备或用户尚未提供板上资料] → 第一阶段仍可完成官方来源梳理、只读采集程序与 host 测试；第二阶段的板上实跑及安全 RAM 判定等待现场，不制造目标板数值。

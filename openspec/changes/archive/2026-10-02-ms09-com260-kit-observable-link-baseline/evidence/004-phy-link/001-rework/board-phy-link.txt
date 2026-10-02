@@ -1,0 +1,61 @@
+Boot at 1970-01-01 00:00:34.419388500 UTC
+
+[starry-k3] stage=1 entry-reached
+[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200
+[starry-k3] stage=3 parked, halting (reset to recover)
+[starry-k3] stage=4 apmu begin
+[starry-k3] stage=4 apmu ctrl before=0x00000000
+[starry-k3] stage=4 apmu ctrl step1=0x00000009
+[starry-k3] stage=4 apmu ctrl after1=0x00000009
+[starry-k3] stage=4 apmu ctrl step2=0x0000000b
+[starry-k3] stage=4 apmu ctrl after2=0x0000000b
+[starry-k3] stage=4 apmu clock enable done
+[starry-k3] stage=5 mac probe begin base=0xcac82000 (read-only)
+[starry-k3] stage=5 mac version read1=0x00001054 class=ok
+[starry-k3] stage=5 mac version read2=0x00001054 class=ok
+[starry-k3] stage=5 mac debug read1=0x00000000 class=all-zero sem=idle
+[starry-k3] stage=5 mac debug read2=0x00000000 class=all-zero sem=idle
+[starry-k3] stage=5 mac probe done (parking next)
+[starry-k3] stage=6 gate apmu-clk=1 apmu-rst=1 mac-version=ok proceed
+[starry-k3] stage=6 pad/gpio begin
+[starry-k3] stage=6 iopd write=0x00000004 ok
+[starry-k3] stage=6 pin=21 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=22 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=23 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=24 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=25 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=26 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=27 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=28 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=29 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=30 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=31 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=32 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=33 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=34 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=35 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=37 mux=0 before=0x0000a440 action=keep after=0x0000a440 ok
+[starry-k3] stage=6 gpio reset begin
+[starry-k3] stage=6 gpio reset done
+[starry-k3] stage=6 pad/gpio done
+[starry-k3] stage=7 mdio/phy begin
+[starry-k3] stage=7 phy id1=0x001c id2=0xc916 phyid=0x001cc916 result=rtl8211f
+[starry-k3] stage=7 phy bmcr=0x1040 bmsr=0x7989 link=down an-capable=1 an-complete=0
+[starry-k3] stage=7 mdio/phy done
+[starry-k3] stage=8 link observation begin window-ms=120000 interval-ms=100
+[starry-k3] stage=8 an restart bmcr-before=0x1040 bmcr-written=0x1240
+[starry-k3] stage=8 an advert reg4=0x01e1 reg9=0x0200
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 observation-ended last=negotiating up-observed=yes

@@ -1,6 +1,6 @@
 # MS09 CoM260 Kit 可观测链路任务
 
-任务对应全局 T13–T15，状态以逐项勾选为准。当前展开至 Iteration 001；参考资料、板载 Linux 实测和 StarryOS 真板运行分别验收，不互相冒充。后继 Iteration 的具体板上参数由已接受的前轮事实写入各自 Cycle。
+任务对应全局 T13–T15，状态以逐项勾选为准。Iteration 000–004 全部 accepted（11/11 tasks）；参考资料、板载 Linux 实测和 StarryOS 真板运行分别验收，不互相冒充。
 
 ## 1. 官方参考基线与 Linux 只读采集程序（全局 T13 前半）
 
@@ -21,12 +21,12 @@
 
 ## 4. 目标 MAC 寄存器基线（全局 T14 后半）
 
-- [ ] 4.1 在 K3 最小平台探针中按 2.3 已核实的 MMIO/clock handoff 只读目标 MAC 身份与状态；先有异常/全零/全一失败见证，再以重复真板读值和可解释的控制器身份验收，失败停在 MMIO/clock/reset 诊断边界。
+- [x] 4.1 在 K3 最小平台探针中按 2.3 已核实的 MMIO/clock handoff 只读目标 MAC 身份与状态；先有异常/全零/全一失败见证，再以重复真板读值和可解释的控制器身份验收，失败停在 MMIO/clock/reset 诊断边界。（2026-10-02：003/001-rework Review accepted；APMU 两步使能后 version=0x1054×2，debug=0 经用户接受；第二轮及本轮 reset 观察已豁免，原话与风险见该 Cycle。）
 
 ## 5. PHY 与物理 link 基线（全局 T15）
 
-- [ ] 5.1 在 K3 板级控制/MDIO 最小路径中依据 2.3 的 handoff 保留或恢复必要 clock/reset，并读取实际 PHY；先见证不可读/错误状态，再以 PHY 可读、身份可解释及错误分层验收，不进入 DMA/IRQ。
-- [ ] 5.2 在当前 Kit 已确认的 RJ45 与对端连接条件下观察 link 协商和断开状态；以重复 link up/down 及与无对端、PHY 不可读相区分的结果验收，保持 QEMU/D1/VF2 兼容回归通过。
+- [x] 5.1 在 K3 板级控制/MDIO 最小路径中依据 2.3 的 handoff 保留或恢复必要 clock/reset，并读取实际 PHY；先见证不可读/错误状态，再以 PHY 可读、身份可解释及错误分层验收，不进入 DMA/IRQ。（2026-10-02：004/000 读前置阻塞经 001-rework 以 R69 用法对齐修复——APBC ASAR 解锁 + io_pd 整字写 BIT(2)；真板三写生效、mux/GPIO 完成、PHYID=0x001cc916 rtl8211f；Review accepted）
+- [x] 5.2 在当前 Kit 已确认的 RJ45 与对端连接条件下观察 link 协商和断开状态；以重复 link up/down 及与无对端、PHY 不可读相区分的结果验收，保持 QEMU/D1/VF2 兼容回归通过。（2026-10-02：真板 120 s 窗口 6 次 up、≥5 个完整 up→down→up 循环（契约要求两次），每次 up 带 latch-cleared，observation-ended 后 reset 回原系统；QEMU/D1 构建回归保持、vf2 既有签名未退化；Review accepted）
 
 ## Iteration Plan
 
@@ -61,7 +61,7 @@
 
 - Tasks: 4.1
 - Depends on: Iteration 002 accepted。
-- Stable baseline: 目标 MAC 寄存器非全零/全一，身份和状态在重复启动下可解释。
+- Stable baseline: 目标 MAC 身份非全零/全一，状态按寄存器语义解释；debug=0 不单独否定已可读的身份。已执行观察及重复启动豁免以 accepted Cycle 为准。
 - Verification boundary: 真板控制器读值直接判定；异常访问与 clock/reset handoff 问题分层。
 - Diagnostic boundary: 失败限于已确认 MMIO 映射、控制器身份或 handoff 状态。
 - Non-goals: MDIO/link、MAC IRQ、DMA ring。
@@ -79,4 +79,4 @@
 
 Iteration 000 的来源核对与采集程序共同形成“可在当前板执行的调查入口”，host 侧可独立验证；单独只写来源表或只编译空程序都不是稳定成果。Iteration 001 才形成当前板事实与安全边界；Iteration 002–004 依次分离启动、MAC MMIO 和外部链路故障域。各任务只属于一个 Iteration，不把当前板无法提供的值提前固化。若 T13 证明 MAC handoff 时 clock/reset 尚不可用，先由 Plan 调整 003/004 的依赖和任务契约，不让 Act 在 003 猜测写序。
 
-当前边界：Iteration 000–002 均已 accepted（1.1–3.3 闭合；两项用户豁免——U-Boot 控制台命令采集、第三轮重复循环——原话与风险保留于对应 Act Response；vf2 构建入口 pre-existing 失败为 Issue 候选未落账）。Iteration 003 Cycle `000-initial` Act `blocked` 于 clock/reset handoff（板上三轮定位 GMAC 总线时钟门控挂死），Plan Review `rework-required`（2026-10-01）；Cycle `001-rework`（repair item 4.1-R1：APMU `0x3ec` 最小 clock 使能两步写序 + stage=4/5 观测扩展，依据 R69 + 板 DTB + 上游标注）已创建，`Plan Context` 为 `draft` 待用户批准后置 `ready`，再由用户指令 `openspec-act` 执行；板上两轮启动按 R68 Runbook 执行。其余 Iteration 不创建目录。
+当前边界：Iteration 000–004 全部 accepted，1.1–5.2 共 11 项任务闭合（2026-10-02）。Iteration 004 经 000-initial（IO-PD 读前置真板阻塞，定性 Plan 错误）与 001-rework（按修订后 M42 对齐 R69 用法：APBC ASAR 解锁 + io_pd 整字写 BIT(2)，design D6 已同步修订）两 Cycle 完成；最终 V1 host GREEN（phy 30 项 + mac 15 项）、V2 四构建基线保持、V3 真板 PHYID=`0x001cc916` rtl8211f 且 ≥5 个完整 up→down→up 循环；板上日志按用户要求保存于 `evidence/004-phy-link/001-rework/`。既有用户豁免保留于各自 Cycle，不延伸为后续范围豁免。change 待用户调用 `openspec-docs-maintainer` 收尾（合并行为规格增量并归档）；vf2 既有构建失败沿用既有基线，不计为成功。

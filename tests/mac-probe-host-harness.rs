@@ -1,6 +1,8 @@
-//! MAC-probe pure-logic host test harness (MS09 Iteration 003, task 4.1).
+//! MAC-probe pure-logic host test harness (MS09 Iteration 003, task 4.1;
+//! extended by Iteration 004 for the PHY gate facts and the env-based APMU
+//! sequence with native time-interface waits).
 //!
-//! Uses `#[path]` to reference the real `kernel/src/platform/mac_probe.rs`
+//! Uses `#[path]` to reference the real `kernel/src/platform/{mac_probe,phy_probe}.rs`
 //! without compiling the full kernel. Runs via `rustc --test` → `/tmp` binary
 //! (same convention as `early-console-host-harness.rs`).
 #![allow(dead_code)]
@@ -9,11 +11,14 @@ extern crate core;
 
 #[path = "../kernel/src/platform/mac_probe.rs"]
 mod mac_probe;
+#[path = "../kernel/src/platform/phy_probe.rs"]
+mod phy_probe;
 
 use mac_probe::{
     APMU_BASE_PADDR, APMU_CTRL_OFFSET, EMAC_BUS_CLK_EN, EMAC_BUS_RST_DEASSERT, MAC_REG_DEBUG,
     MAC_REG_VERSION, MAC_WINDOW_SIZE, MacReadClass, PHY_INTF_MODE_MASK, PHY_INTF_RGMII, apmu_step1,
-    apmu_step2, class_label, classify_mac_read, format_apmu_line, format_read_line,
+    apmu_step2, class_label, classify_mac_read, format_apmu_line, format_debug_line,
+    format_gate_line, format_read_line,
 };
 
 #[test]
@@ -62,15 +67,23 @@ fn line_format_for_normal_read() {
 
 #[test]
 fn line_format_for_zero_and_one_reads() {
+    // MS09 Iteration 004: the debug register line carries a register-semantic
+    // label — a legitimate idle zero is not reported as a fault conclusion.
     let mut zero_buf = [0u8; mac_probe::READ_LINE_BUF_LEN];
     assert_eq!(
-        format_read_line(&mut zero_buf, "debug", 2, 0x0),
-        "[starry-k3] stage=5 mac debug read2=0x00000000 class=all-zero\n"
+        format_debug_line(&mut zero_buf, 2, 0x0),
+        "[starry-k3] stage=5 mac debug read2=0x00000000 class=all-zero sem=idle\n"
     );
     let mut one_buf = [0u8; mac_probe::READ_LINE_BUF_LEN];
     assert_eq!(
-        format_read_line(&mut one_buf, "version", 2, 0xffff_ffff),
-        "[starry-k3] stage=5 mac version read2=0xffffffff class=all-one\n"
+        format_debug_line(&mut one_buf, 2, 0xffff_ffff),
+        "[starry-k3] stage=5 mac debug read2=0xffffffff class=all-one sem=active\n"
+    );
+    // Version lines keep their Iteration 003 shape (no sem suffix).
+    let mut ver_buf = [0u8; mac_probe::READ_LINE_BUF_LEN];
+    assert_eq!(
+        format_read_line(&mut ver_buf, "version", 1, 0x0),
+        "[starry-k3] stage=5 mac version read1=0x00000000 class=all-zero\n"
     );
 }
 
@@ -139,4 +152,112 @@ fn apmu_line_format_is_raw_value_only() {
         format_apmu_line(&mut done_buf, "after2", 0x0000_001b),
         "[starry-k3] stage=4 apmu ctrl after2=0x0000001b\n"
     );
+}
+
+// ---------------------------------------------------------------------------
+// MS09 Iteration 004: gate facts, env-based APMU sequence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apmu_bits_effective_cases() {
+    // Board-observed shape (003/001-rework): before=0, after1=9, after2=0xb.
+    let (clk, rst) = mac_probe::apmu_bits_effective(0x9, 0xb);
+    assert!(clk && rst);
+    // Step-1 readback without the clock bit: clock not effective.
+    assert_eq!(mac_probe::apmu_bits_effective(0x8, 0xb), (false, true));
+    // Clock enabled but reset bit missing in the step-2 readback.
+    assert_eq!(mac_probe::apmu_bits_effective(0x9, 0x9), (true, false));
+    // Clock bit dropped between steps also fails the reset-side check.
+    assert_eq!(mac_probe::apmu_bits_effective(0x9, 0x2), (true, false));
+}
+
+#[test]
+fn mac_probe_summary_version_identity_ok() {
+    use mac_probe::{MacProbeSummary, READS_PER_REG};
+    let ok = MacProbeSummary {
+        version_classes: [MacReadClass::Ok; READS_PER_REG],
+        debug_classes: [MacReadClass::AllZero; READS_PER_REG],
+    };
+    assert!(ok.version_identity_ok(), "debug=0 (idle) is not an identity failure");
+    let bad = MacProbeSummary {
+        version_classes: [MacReadClass::Ok, MacReadClass::AllZero],
+        debug_classes: [MacReadClass::Ok; READS_PER_REG],
+    };
+    assert!(!bad.version_identity_ok());
+}
+
+#[test]
+fn gate_line_format_proceed_and_stop() {
+    let mut buf = [0u8; mac_probe::READ_LINE_BUF_LEN];
+    assert_eq!(
+        format_gate_line(&mut buf, true, true, "ok", true),
+        "[starry-k3] stage=6 gate apmu-clk=1 apmu-rst=1 mac-version=ok proceed\n"
+    );
+    let mut stop_buf = [0u8; mac_probe::READ_LINE_BUF_LEN];
+    assert_eq!(
+        format_gate_line(&mut stop_buf, false, true, "all-zero", false),
+        "[starry-k3] stage=6 gate apmu-clk=0 apmu-rst=1 mac-version=all-zero stop\n"
+    );
+}
+
+/// Minimal env for the APMU-only window: a single CTRL register plus waits.
+struct FakeApmu {
+    ctrl: u32,
+    writes: Vec<(u64, u32)>,
+    waits_ns: Vec<u64>,
+}
+
+impl FakeApmu {
+    fn new() -> Self {
+        FakeApmu { ctrl: 0, writes: Vec::new(), waits_ns: Vec::new() }
+    }
+}
+
+impl phy_probe::ProbeEnv for FakeApmu {
+    fn mmio_read(&mut self, _paddr: u64) -> u32 {
+        self.ctrl
+    }
+
+    fn mmio_write(&mut self, paddr: u64, value: u32) {
+        assert_eq!(
+            paddr,
+            APMU_BASE_PADDR + APMU_CTRL_OFFSET,
+            "the APMU sequence must write the CTRL register only"
+        );
+        self.writes.push((paddr, value));
+        self.ctrl = value;
+    }
+
+    fn now_nanos(&self) -> u64 {
+        0
+    }
+
+    fn wait_nanos(&mut self, nanos: u64) {
+        self.waits_ns.push(nanos);
+    }
+}
+
+#[test]
+fn apmu_sequence_via_env_matches_traced_order_and_board_shape() {
+    let mut env = FakeApmu::new();
+    let mut lines = Vec::new();
+    let outcome = mac_probe::apmu_clock_enable(&mut env, |line| lines.push(line.to_string()));
+    // Board-observed raw shape (003/001-rework): before=0, after1=9, after2=b.
+    assert_eq!((outcome.before, outcome.after1, outcome.after2), (0, 0x9, 0xb));
+    // Two-step write order on the CTRL register only.
+    assert_eq!(
+        env.writes,
+        vec![
+            (APMU_BASE_PADDR + APMU_CTRL_OFFSET, apmu_step1(0)),
+            (APMU_BASE_PADDR + APMU_CTRL_OFFSET, apmu_step2(0x9)),
+        ]
+    );
+    // The two inter-step waits use the native time interface with the real
+    // 100 µs parameter (never a spin-calibration constant).
+    assert_eq!(env.waits_ns, vec![100_000, 100_000]);
+    assert!(lines.contains(&"[starry-k3] stage=4 apmu begin\n".to_string()));
+    assert!(lines.contains(&"[starry-k3] stage=4 apmu ctrl before=0x00000000\n".to_string()));
+    assert!(lines.contains(&"[starry-k3] stage=4 apmu ctrl after1=0x00000009\n".to_string()));
+    assert!(lines.contains(&"[starry-k3] stage=4 apmu ctrl after2=0x0000000b\n".to_string()));
+    assert!(lines.contains(&"[starry-k3] stage=4 apmu clock enable done\n".to_string()));
 }

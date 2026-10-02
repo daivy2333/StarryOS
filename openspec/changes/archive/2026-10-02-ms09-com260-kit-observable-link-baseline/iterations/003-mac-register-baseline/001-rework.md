@@ -109,9 +109,13 @@ PASS——调查完整（写序正文、位常量、RMW/delay 语义、板 DTB �
 
 无实质偏差。两处契约内记录：(1) APMU 读回行标签钉扎为 `before/step1/after1/step2/after2`（契约未钉扎标签字面；行形态与「全部读回为原始 u32 值」一致，host 测试覆盖）；(2) GREEN condition 允许 qemu/lichee「采信未失效结论」，但 `k3`/`mac_probe` 模块经 `platform/mod.rs` 无条件参与全平台编译，覆盖面已变化，故本轮实际重跑两构建（均 exit 0）——比采信更保守。
 
+记录修复（Plan Review 2026-10-02 Follow-up Decision）：Plan Context Verification/Evidence 夹带的「新镜像 kernel crc 记录」要求经 Review Finding 1 判定无效（身份型归属条件），本轮执行与判定不使用 CRC 对照；冻结的 Plan Context 不改写，以本 Response 与该 Review 为准。原「板上执行协议」段的两轮执行指令、固定 CRC 对照与 GREEN/Stop when 复述（含 after1 需含 bit1 的错误阶段期望）已移除；Round 1 实况与最终裁决状态见「板上执行」「板上结果」与 Blocker Resolution。
+
 **自检（Gate 3）**
 
 stage=1/2/3 三行文本与顺序逐字未动；GMAC 寄存器零写；APMU 仅 CTRL 0x3ec 读/写，DLINE/WOL/pinctrl/GPIO/MDIO 未触碰；无「先关时钟」变体；无内核内期望值判定（after2 仅打印原始值，位对照留本 Response）；FIT load/entry 地址与 ITS 未变。发现并修复：harness import 未按 rustfmt 排序（已格式化并重跑 harness 保持 GREEN）。遗留 Minor：k3.rs stage=2 行存在 pre-existing 换行风格与 rustfmt 建议不一致（本轮未触碰该行，按 Surgical Changes 不清理）。
+
+记录修复自检（2026-10-02，按 Plan Review Follow-up Decision）：本 Response 已删除 CRC 匹配/拒绝/归属判定与「Round 2/reset 待补」、after1-bit1 旧指令，改以 stage=4/5 原始读值行与既有用户裁决陈述最终状态；Plan Context、Blocker Handoff、用户原话、原始串口与既有豁免逐字未动；产品代码与测试零变更，既有 GREEN 直接采信。
 
 **验证（Gate 4）**
 
@@ -124,28 +128,14 @@ stage=1/2/3 三行文本与顺序逐字未动；GMAC 寄存器零写；APMU 仅 
 
 **Persisted Evidence**
 
-- `evidence/003-mac-register-baseline/001-rework/board-mac-regs.txt` + 同目录 `README.md` — 已创建，含 Round 1 串口采集原文（TLV serial# 脱敏，其余逐字保留）；第 2 轮与两轮 `reset` 观察待补齐。`required` 模式维持。host 侧验证结果按「普通验证结果写 Act Response」不入 Evidence。
+- `evidence/003-mac-register-baseline/001-rework/board-mac-regs.txt` + 同目录 `README.md` — 已创建，含 Round 1 串口采集原文（TLV serial# 脱敏，其余逐字保留）。第 2 轮与两轮 `reset` 观察经用户豁免（见 Blocker Resolution），不另采集，`required` 模式以 Round 1 记录满足。host 侧验证结果按「普通验证结果写 Act Response」不入 Evidence。
 
-**板上执行协议（Round 1 已按此执行，Round 2 待补）**
+**板上执行（Round 1 实况，2026-10-01，已收口）**
 
-镜像：仓库根 `StarryOS_riscv64-k3.fit`（上文验证段产出，已含 APMU 序列）。板上 U-Boot `iminfo`/`bootm` 应显示 kernel crc32 `87ffd369`——不一致即板上载入旧镜像，停止并重新拷贝。
+镜像为仓库根 `StarryOS_riscv64-k3.fit`（上文验证段产出，已含 APMU 序列），按 R68 Runbook 装载：上电/复位同时长按 `s` 进 `U-Boot>`；`usb start` → `fatls`/`iminfo`（U-Boot 自动打印的 FIT 完整性字段为历史现场，原文保留于 Evidence，不参与 Gate 判定）→ `fatload usb 0:0 0x2e0000000 StarryOS_riscv64-k3.fit`（280,096 B，63 ms 成功）→ `setenv fdt_high 0xffffffffffffffff` → `bootm 0x2e0000000`。串口完整记录 stage=1–5 全序列。执行契约（GREEN 判定与 Stop when）以冻结的 Plan Context 为准；Stop when 曾在 debug 读值上触发并按规则交接（见 Blocker Handoff）。第二轮与两轮 `reset`→`k3 login:` 观察经用户豁免（见 Blocker Resolution）。
 
-按 R68 Runbook 执行两轮独立上电/复位循环，每轮：
+**板上结果（Round 1，2026-10-01）**
 
-1. 上电/复位同时长按 `s` 进 `U-Boot>`；`usb start` → `fatls usb 0:0 /` → `fatload usb 0:0 0x2e0000000 StarryOS_riscv64-k3.fit` → `iminfo 0x2e0000000`（crc 对照 `87ffd369`）。
-2. `setenv fdt_high 0xffffffffffffffff`（必做）→ `bootm 0x2e0000000`。
-3. 串口完整记录 stage=1–5：`[k3:pt-mmu]`、stage=1/2/3 三行、`stage=4 apmu begin`、`before/step1/after1/step2/after2` 五行、`stage=4 apmu clock enable done`、`stage=5 mac probe begin`、version/debug 各 ≥2 遍读值行、`stage=5 mac probe done`。
-4. `reset` → 确认回 `k3 login:`。
-
-GREEN 判定（对应 Acceptance）：两轮 stage 序列完整且读值一致；after1/after2 读回 bit0（0x1）与 bit1（0x2）均置位；MAC version/debug 非全零/全一，version 与 `0x1054`（User ID `0x10` / Synopsys ID `0x54`）对照可解释（对照在本 Response，内核不判定）；每轮复位回原系统。
-
-Stop when（命中即停，串口原文交回，不现场补写）：`apmu begin` 后静默；读回位未置位；`apmu … done` 后 `stage=5 mac probe begin` 静默；MAC 读值全零/全一；身份无法对应 DWMAC。
-
-串口全文（两轮装载 + stage 序列 + 复位观察 + 一行环境说明含 kernel crc）贴回会话；Act 采集入 Evidence 并按 GREEN 判定 / Stop when 处置——Round 1 已采集，处置结果见 Blocker Handoff。
-
-**板上结果（Round 1/2，2026-10-01）**
-
-- 镜像核对：板上 `iminfo`/`bootm` kernel crc32 `87ffd369` 与 host `dumpimage -l` 一致（FIT 280,096 B，`fatload` 63 ms 成功），确认为本轮新镜像。
 - APMU（stage=4）：`before=0x00000000`——证实 U-Boot handoff 后 GMAC 总线时钟门控（父 Cycle 000 阻塞根因成立）；`step1=0x00000009`（= CLK_EN | RGMII，与纯函数预期一致）读回 `0x00000009`；`step2=0x0000000b`（= `0x9 | RST_DEASSERT`）读回 `0x0000000b`。bit0/bit1 均置位、读回粘滞、两步写序写生效。
 - MAC（stage=5）：`version read1/read2 = 0x00001054 class=ok`——与板上 Linux 驱动观测 `User ID: 0x10, Synopsys ID: 0x54`（`evidence/001-board-ram-boundary/000-initial/uboot-readonly.txt:569`）精确一致，非全零/全一，身份可解释。`debug read1/read2 = 0x00000000 class=all-zero`——见 Blocker Handoff。
 - 复位观察：本轮未见 `reset`→`k3 login:` 记录（用户贴回范围止于 `stage=5 mac probe done`）。
@@ -185,3 +175,54 @@ None——R68 流程未变化；GMAC_DEBUG 语义问题经用户裁决为非实�
 **未解决问题**
 
 无阻塞项。移交事项：GMAC_DEBUG 位域语义澄清随 Iteration 004 计划顺带覆盖（用户裁决）；Iteration 004 展开时以本 Response 与 Evidence 为 Current Baseline 输入。
+
+## Plan Review
+
+- Review Result: accepted
+- Reviewed: 2026-10-02；Iteration 003 / Cycle 001-rework；Act Response `reported`；本次为有限记录修复后的独立复审。
+- Phase status: 契约与用户裁决核对 DONE；当前完整 diff 与实际代码独立检查 DONE；required Evidence 检查 DONE；记录修复复核 DONE；验证来源核对 DONE。
+
+**Findings**
+
+1. **已解决：Plan 错误 + Act 记录沿用错误，CRC 归属判定。** 本次完整读取工作树 diff 与 Act Response：固定 CRC 匹配、拒绝条件、重新拷贝指令和以 CRC 确认运行归属的推论均已删除。冻结的 Plan Context 中 Verification/Evidence 的 CRC 要求无效，以公共规则与本 Review 为准；不得重新作为匹配、拒绝或 Gate 条件。Act 验证摘要及原始串口中的工具自动输出只保留为历史现场。没有专用身份接口、fixture、审计器或判定脚本需要删除；产品代码和测试未因本次记录修复变化，既有目标行为 GREEN 可直接采信。
+2. **已解决：Act 记录与用户裁决冲突。** 最终 Persisted Evidence 和板上执行段已明确第二轮与本轮 reset 观察获豁免；after1 同时要求 bit1 的错误指令已删除。Blocker Handoff 中的“待补”是解除阻塞前的历史现场，由紧随其后的 Blocker Resolution 明确替代。用户原话、原始串口及冷启动一致性风险均保留，最终快照没有新增上板待办。板上执行摘要把 fatls/iminfo 合并写在 fatload 前；原文实际为 fatload 后 iminfo，且未记录 fatls。该顺序摘要差异为非阻塞 Minor，操作顺序以原始串口为准，不从摘要推导额外已执行步骤。
+3. **非阻塞：Plan 错误 + 新证据，debug 全零的解释边界。** 原始记录显示 APMU `0→9→b`、version 两次 `0x1054`、debug 两次零；stage=4/5 均到 done。version 已直接证明目标 MAC 身份寄存器可读，debug 的粗分类不能单独证明整个控制器不可达。用户接受 debug=0 的原有裁决有效。本结论不声称 PHY/link、IRQ、DMA 或网络收发工作。上一轮 Review 已取得的 Linux v6.18 位域解释仅作为 IP 家族交叉解释采信，不提升为 K3 手册或板上 v6.18.3 的精确核对；语义澄清保留给后续 PHY/link 计划。
+4. **非阻塞：参考延时与分类注释。** 独立读取 R69 `syscon.rs:209–319`、`regs.rs:160–190` 与实际代码，两步 RMW 和 bit0/bit1/RGMII 位域吻合；本仓 step2 仅改 bit1、保留 WOL，符合当前契约。参考 `us×50` 为估算自旋，本仓 `delay_us` 的“calibrated”没有校准证据；已有 `TimeIf::current_ticks()` 读取 time CSR。MAC 全零/全一的注释也把粗分类过度解释为 clock/reset 故障。两项均不阻塞本轮已取得的寄存器可达性，不要求当前 Cycle 增加产品修改；后续涉及 PHY reset 或 MDIO deadline 时必须调查实时时间能力与寄存器语义，不能外推精确 100 µs。
+5. **非阻塞：体系摘要滞后。** 当前 HEAD 为 `046a519b`，工作树仅当前 Cycle 文档有未提交改动；产品代码与测试无 HEAD 后变动。SNAPSHOT、全局 tasks 和 change tasks 的旧边界不用于判定当前 Cycle。全局状态同步属于 Maintainer；本次审计仅写 Plan Review，不改其他角色区域或公共状态。
+
+**Acceptance Gaps**
+
+- None blocking。D1：version 身份证据成立，debug 子项按既有用户裁决接受；D2：APMU 写生效和单轮每寄存器两次读值自一致成立，第二轮与本轮 reset 观察 WAIVED；D3：写入边界、来源、兼容性及记录修复均满足。
+- 未实测范围：本轮冷启动间读值一致性、本轮复位观察、精确延时间隔、PHY/link。前两项风险与用户原话保留在 Blocker Resolution，后两项不计为本轮成果。
+
+**Evidence**
+
+- 本次独立检查当前完整 `git diff -- <本 Cycle>`，以及 `git diff 160d7967 HEAD -- kernel/src/platform/mac_probe.rs tests/mac-probe-host-harness.rs kernel/src/platform/k3.rs crates/axplat-riscv64-k3/axconfig.toml crates/axplat-riscv64-k3/build.rs` 的完整产品变更面；逐项读取实际代码、`platform/mod.rs`、`entry.rs` K3 调用入口、Makefile、平台 time/init 和 R69 相关正文。历史 diff 用于定位变更，不作为通过条件，不以 Act Self-Review 代替独立阅读。
+- 代码结论：对齐 u32 volatile MMIO；APMU 仅 CTRL `0x3ec` 两处写；step1 保留 mask 外位，step2 保留 bit1 外位；无先关时钟动作，MAC 仅 version/debug 各两次读取；stage=1/2/3 文本与次序保留；未进入 DLINE、GPIO、MDIO、IRQ、DMA 或异步网络。
+- required Evidence 已完整读取：`evidence/003-mac-register-baseline/001-rework/README.md`、`board-mac-regs.txt`。决定性原文为 after1=`0x00000009`、after2=`0x0000000b`、version read1/read2=`0x00001054`、debug read1/read2=`0x00000000`，stage=4/5 均到 done。Round 1 满足经过用户裁决的通过条件；原始文件头的“待补”属于采集时状态，由 Blocker Resolution 替代。父 Cycle 的未创建 Evidence 由本 Cycle 替代，不补建。
+- 采信当前 Act Response 的实际运行结论：`rustc --edition=2024 --test tests/mac-probe-host-harness.rs -o /tmp/mac-probe-host-test` RED exit 1（新增符号不存在），随后编译并运行 `test result: ok. 11 passed; 0 failed`、exit 0；`make k3`、`make build`、`make lichee` 均 exit 0；early-console 六项沿既有未失效结论。`git diff --name-only HEAD -- kernel crates tests Makefile Cargo.toml Cargo.lock src tools` 本次无输出、exit 0；结合完整工作树 diff 未发现覆盖变化。
+- SKIPPED: 重跑已通过的 host、构建和板上验证；覆盖未变化，本次只审计记录修复，按公共规则直接采信。范围外 vf2 和旧 ms04 harness 故障沿既有候选，不复测。
+- 文档结构检查：本次 `openspec validate ms09-com260-kit-observable-link-baseline` 输出 `Change 'ms09-com260-kit-observable-link-baseline' is valid`、exit 0；`git diff --check` 无输出、exit 0。仅本 Cycle 文档有工作树改动，完整 diff 已读；上述检查只验证文档修改，不替代目标行为证据。
+
+**Gate and Task Status**
+
+- Gate 1 / Gate 2：继承获批范围、计划与用户裁决；CRC 归属条件无效，未新增 requirement、测试策略或硬件操作。
+- Gate 3：独立 spec/code 检查与有限记录修复复核 PASS。
+- Gate 4：行为及规范收口 PASS；第二轮与本轮 reset 观察 WAIVED，原话和风险在 Blocker Resolution。
+- Gate 5：PASS；没有继续同类盲试，没有越过当前审计范围执行硬件操作或产品修改。
+- 当前任务 4.1 / repair item 4.1-R1 已满足经过用户裁决的验收；本 Iteration 以本 Review 终态收口。5.1/5.2 未开始，整体变更未完成；Iteration Map 保持不变。
+- Issue candidates：沿用 vf2 构建入口、ms04 host harness 的 pre-existing 缺陷候选；本轮新增 None，不落账。
+
+**Follow-up Decision**
+
+接受本 Cycle。上一轮唯一阻塞收口的记录问题已解决，Acceptance gap 缩小至无阻塞项，不需要继续当前 Cycle 修复或创建 rework/replan。Plan Context、Act Response、Blocker Handoff、用户原话和原始 Evidence 保持原文；当前审计完成后 Cycle 冻结。
+
+后续为既有 Map 的 Iteration 004（tasks 5.1–5.2，PHY 与 link）。本次用户请求为审计，按公共规则 Scope Control 将后继实现调查和执行契约规划留给下一次 Plan 指令；不将其记为本轮已完成事项，不授权 Act，不同步全局状态。
+
+**Next Cycle**
+
+None。
+
+**Next Iteration**
+
+Iteration 004：PHY 与 link（既有 Map；本次审计未展开目录或 Cycle，待用户要求规划）。

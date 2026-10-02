@@ -1,8 +1,10 @@
+# k3-com260-kit-observable-link-baseline Specification
+
 ## Purpose
 
 规定 StarryOS 如何复用可追溯的 K3 官方参考资料和真板成功经验，在 CoM260 Kit 的官方 Linux 上只读采集运行资源，再以已核对的板级事实完成可撤销的首次启动，并使早期串口、MAC 控制器及 PHY/link 状态可直接观察；本能力不包含设备中断、DMA 或网络收发。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 目标板事实先于硬件后端选择
 
@@ -80,12 +82,12 @@ CoM260 Kit 首字节 MUST 在异步 UART task、设备 IRQ、DMA、网络栈和 
 
 ### Requirement: MAC 寄存器与 PHY/link 构成独立可观测链路
 
-目标 MAC 后端 MUST 在当前板已核实的资源上读取可解释的身份或状态寄存器，并 MUST 把全零/全一或访问异常判为未验证。PHY/MDIO 可访问性与物理 link 状态 MUST 分别报告；clock/reset 状态只可在已核实的 handoff 基础上保留或恢复，不得盲写。MS09 的 link 观察 MUST NOT 宣称设备 IRQ、DMA 或网络包收发已经工作。
+目标 MAC 后端 MUST 在当前板已核实的资源上读取可解释的身份或状态寄存器，并 MUST 把身份全零/全一或访问异常判为未验证；状态值 MUST 按寄存器语义解释，合法空闲零值不得单独否定已验证的身份。PHY/MDIO 可访问性与物理 link 状态 MUST 分别报告；clock/reset 状态只可在已核实的 handoff 基础上保留或恢复，不得盲写。MS09 的 link 观察 MUST NOT 宣称设备 IRQ、DMA 或网络包收发已经工作。
 
 #### Scenario: 控制器和链路均可观察
 
 - **WHEN** 当前板 MAC/PHY 资源已核实且网络对端接好
-- **THEN** MAC 身份/状态 MUST 可解释且不是全零/全一
+- **THEN** MAC 身份 MUST 可解释且不是全零/全一，状态 MUST 按寄存器语义可解释
 - **AND** PHY/MDIO 与 link 结果 MUST 在相同条件下重复一致
 
 #### Scenario: 对端未连接
@@ -96,9 +98,21 @@ CoM260 Kit 首字节 MUST 在异步 UART task、设备 IRQ、DMA、网络栈和 
 
 #### Scenario: 寄存器或 PHY 访问失败
 
-- **WHEN** MAC 读值全零/全一、访问异常，或 PHY/MDIO 无法读取
+- **WHEN** MAC 身份读值全零/全一、访问异常，或 PHY/MDIO 无法读取
 - **THEN** 对应阶段 MUST 报告失败并停止依赖它的后续初始化
 - **AND** 不得自动尝试另一个未确认的板型参数
+
+#### Scenario: MDIO 超时或 PHY 状态异常
+
+- **WHEN** MDIO busy 在限定时间内不清除，PHY 身份不可读或与已确认实例冲突，或观察期间 PHY 状态访问失败
+- **THEN** 系统 MUST 报告访问阶段、地址、寄存器和原始值或超时结果，并停止依赖该访问的后续操作
+- **AND** 不得把访问失败报告为普通 link down，也不得超时后继续协商或自动扫描其他地址
+
+#### Scenario: 插拔后重新协商
+
+- **WHEN** 可访问的 PHY 与同一启用自动协商的对端重复断开并重新连接
+- **THEN** 观察 MUST 能区分断开、协商中和协商完成的 link up
+- **AND** 无对端直到观察窗口结束 MUST 报告观察结束且未见 link up，不得宣称链路验收完成
 
 ### Requirement: K3 平台选择不改变既有平台
 

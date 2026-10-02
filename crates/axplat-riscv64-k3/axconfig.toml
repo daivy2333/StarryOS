@@ -35,6 +35,9 @@ mmio-ranges = [
     [0xd401_7000, 0x1000],
     [0xcac8_2000, 0x2000], # ethernet@cac82000 (board DT reg) — MS09 Iter 003 MAC probe
     [0xd428_2800, 0x400],  # system-controller@d4282800, spacemit,k3-syscon-apmu (board DT reg) — MS09 Iter 003 GMAC bus clock enable
+    [0xd401_9000, 0x100],  # gpio@d4019000, pinctrl GPIO controller (board DT reg) — MS09 Iter 004 PHY reset GPIO1_5
+    [0xd401_5000, 0x1000], # system-controller@d4015000, spacemit,k3-syscon-apbc (board DT reg) — MS09 Iter 004-R1 IO-PD ASAR unlock
+    [0xd401_e000, 0x1000], # single page covering MFPR 0xd401e000/0x400 and IO-PD 0xd401e800/0x34 (board DT regs) — MS09 Iter 004 gmac1 pad mux RMW / IO-PD voltage write; one mapping for both resources
 ] # [(uint, uint)]
 timer-frequency = 24_000_000
 timer-irq = "0x8000_0000_0000_0005"

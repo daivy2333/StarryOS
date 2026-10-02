@@ -71,12 +71,22 @@ pub const K3: PlatformDescriptor = PlatformDescriptor {
 /// - stage 4 (MS09 Iteration 003 rework): APMU GMAC bus clock-enable
 ///   sequence lines (begin / raw readbacks / done). `apmu begin` without
 ///   following lines means the APMU access faulted (mapping layer);
-///   readbacks whose bit0/bit1 stay clear after step 2 mean the APMU write
-///   was not effective (syscon write layer);
+///   readback effectiveness is reported by the stage-6 gate;
 /// - stage 5 (MS09 Iteration 003): read-only target-MAC identity/status
-///   probe lines; `probe begin` without register lines after it falsifies
-///   the clock-gating assumption, all-zero/all-one reads point at a deeper
-///   clock/reset layer.
+///   probe lines (debug zero is reported as `sem=idle`, not a fault);
+///   `probe begin` without register lines after it falsifies the
+///   clock-gating assumption;
+/// - stage 6 (MS09 Iteration 004, task 5.1): a gate line carrying the APMU
+///   clock/reset effectiveness and the MAC identity class — identity
+///   all-zero/all-one or ineffective APMU bits stop every later stage; then
+///   the read-only IO-PD voltage check, the minimal gmac1 pad-mux RMW and
+///   exactly one GPIO1_5 PHY hardware reset (`pad/gpio begin` / `done`);
+/// - stage 7 (MS09 Iteration 004, task 5.1): bounded MDIO reads of PHYID1/2
+///   at address 1 plus BMCR/BMSR status with the anomaly checks
+///   (`mdio/phy begin` / `done`; timeouts and identity failures stop);
+/// - stage 8 (MS09 Iteration 004, task 5.2): one AN restart, read-only
+///   advertisement dump and the 120 s link observation window; the kernel
+///   never judges PASS and parks afterwards.
 ///
 /// # Safety
 ///
@@ -93,14 +103,84 @@ pub unsafe fn run_first_byte_park() -> ! {
         "[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200\n",
     );
     console.write_str("[starry-k3] stage=3 parked, halting (reset to recover)\n");
-    // SAFETY: APMU and MAC windows are identity-mapped via devices.mmio-ranges;
-    // the APMU sequence writes only CTRL 0x3ec, the MAC probe reads only
-    // (see mac_probe).
-    unsafe {
-        super::mac_probe::apmu_clock_enable(|line| console.write_str(line));
-        super::mac_probe::probe_and_report(|line| console.write_str(line));
+
+    let mut env = K3Env;
+    let apmu = super::mac_probe::apmu_clock_enable(&mut env, |line| console.write_str(line));
+    // SAFETY: MAC window is identity-mapped via devices.mmio-ranges;
+    // probe_and_report reads only (see mac_probe).
+    let mac = unsafe { super::mac_probe::probe_and_report(|line| console.write_str(line)) };
+
+    // PHY-stage gate (5.1): identity all-zero/all-one or ineffective APMU
+    // clock/reset bits stop every later stage; debug=0 (idle) never does.
+    let (clk_ok, rst_ok) = super::mac_probe::apmu_bits_effective(apmu.after1, apmu.after2);
+    let version_ok = mac.version_identity_ok();
+    let version_label = if version_ok {
+        "ok"
+    } else {
+        super::mac_probe::class_label(mac.version_classes[0])
+    };
+    let mut buf = [0u8; super::mac_probe::READ_LINE_BUF_LEN];
+    console.write_str(super::mac_probe::format_gate_line(
+        &mut buf,
+        clk_ok,
+        rst_ok,
+        version_label,
+        clk_ok && rst_ok && version_ok,
+    ));
+    if !(clk_ok && rst_ok && version_ok) {
+        park();
     }
+
+    match super::phy_probe::run_pad_gpio(&mut env, |line| console.write_str(line)) {
+        super::phy_probe::PadGpioOutcome::Done => {}
+        super::phy_probe::PadGpioOutcome::Stopped(_) => park(),
+    }
+    match super::phy_probe::run_phy_identity(&mut env, |line| console.write_str(line)) {
+        super::phy_probe::PhyStatus::Ok => {}
+        super::phy_probe::PhyStatus::Stopped(_) => park(),
+    }
+    // Stage 8 (5.2): one AN restart, advertisement dump and the fixed 120 s
+    // link observation window; it reports and ends by itself, then we park.
+    super::phy_probe::run_link_observation(&mut env, |line| console.write_str(line));
+    park();
+}
+
+/// Parks the boot hart until reset (the recovery path is the stock system).
+fn park() -> ! {
     loop {
         riscv::asm::wfi();
+    }
+}
+
+/// Board access + native time source for the Iteration 004 probe stages.
+///
+/// `mmio_*` addresses come exclusively from `mac_probe`/`phy_probe` constants
+/// inside the DT-declared windows identity-mapped via `devices.mmio-ranges`
+/// (UART/MAC/APMU plus the Iteration 004 GPIO `0xd4019000/0x100` and the
+/// single pad page `0xd401e000/0x1000`). Time reads the 24 MHz `time` CSR via
+/// axhal; no timer IRQ is required.
+struct K3Env;
+
+impl super::phy_probe::ProbeEnv for K3Env {
+    fn mmio_read(&mut self, paddr: u64) -> u32 {
+        // SAFETY: paddr is a probe constant inside an identity-mapped
+        // DT-declared window (see the type contract above).
+        unsafe { core::ptr::read_volatile(paddr as usize as *const u32) }
+    }
+
+    fn mmio_write(&mut self, paddr: u64, value: u32) {
+        // SAFETY: same window contract as mmio_read; probe code writes only
+        // the APMU CTRL register, the APBC ASAR unlock keys and the gmac1
+        // IO-PD voltage word, the gmac1 pad mux fields, GPIO1_5 and the
+        // MDIO ADDR/DATA registers.
+        unsafe { core::ptr::write_volatile(paddr as usize as *mut u32, value) }
+    }
+
+    fn now_nanos(&self) -> u64 {
+        axhal::time::monotonic_time_nanos()
+    }
+
+    fn wait_nanos(&mut self, nanos: u64) {
+        axhal::time::busy_wait(core::time::Duration::from_nanos(nanos))
     }
 }

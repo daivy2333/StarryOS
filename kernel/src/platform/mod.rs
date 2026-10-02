@@ -18,6 +18,7 @@ pub use early_console::{DwApbUart32EarlyConsole, EarlyConsole, Ns16550U8EarlyCon
 pub mod k3;
 pub mod lichee_d1;
 pub mod mac_probe;
+pub mod phy_probe;
 pub mod qemu;
 #[cfg(all(target_arch = "riscv64", feature = "lichee-d1"))]
 pub mod smoke;
