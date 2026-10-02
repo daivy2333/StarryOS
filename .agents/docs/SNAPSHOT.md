@@ -1,12 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-10-01
-> Revision: `160d7967b585f2319e89188d0644c16f3c79b04b`
+> Updated: 2026-10-02
+> Revision: `ddbbf29c`（MS09 Iteration 004 + change 收尾归档提交）
 > Branch: `k3`
-> Worktree: dirty（未提交）
-
-> 本文件描述工作树当前状态，含 HEAD `160d7967` 之后尚未提交的 MS09 实现与文档改动；下方「仓库现场」逐项列出未提交内容。
+> Worktree: clean
 
 ## 项目身份
 
@@ -33,8 +31,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 | `crates/uart_16550/` | 本地 UART 驱动实现 |
 | `crates/axfs-ng/` | 本地文件系统组件 |
 | `crates/axplat-riscv64-lichee-d1/` | Lichee RV Dock D1 平台组件 |
-| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09 新增） |
-| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC 探针 host harness、host serial/peer harness 与纯输出 validator |
+| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09 交付） |
+| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、host serial/peer harness 与纯输出 validator |
 | `openspec/`、`.agents/` | 规范、变更、项目记忆、分析和操作文档 |
 
 ## 支持范围与交付形态
@@ -55,23 +53,28 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 - UART 多 hart 实现、copier 固定 placement、snapshot 观测与 D1 有界 TX slow-poll workaround
   保留；UART 专项 runtime 资格未取得（console 输出只作为测试基础设施，不构成 UART 异步
   语义结论）。受控迁移稳定性、reset/link 交错、组合压力和真板性能均无结论。
-- Lichee RV Dock D1 与 VisionFive 2 是仓库覆盖的 RISC-V 真实平台形态；SpacemiT K3 CoM260 Kit 是异步 NIC 的目标板，MS09 板级基线进行中。VisionFive 2 支持和 ArceOS DWMAC 经验不构成该目标的证据。
+- Lichee RV Dock D1 与 VisionFive 2 是仓库覆盖的 RISC-V 真实平台形态；SpacemiT K3 CoM260 Kit
+  是异步 NIC 的目标板。MS09 板级基线已完成并归档：板级事实与安全 RAM 边界核对、FIT 临时 RAM
+  启动可重复且回滚原系统、APMU 两步使能后 GMAC `version=0x1054` 可读、IO-PD 按 R69 用法
+  APBC ASAR 解锁+整字写、MDIO Clause 22 读得真实 PHYID `0x001cc916`（RTL8211F）、120 s 窗口
+  内 ≥5 个完整 link up→down→up 插拔循环可重复。结论不含设备 IRQ、DMA、网络收发与异步队列
+  （MS10+ 范围）。VisionFive 2 支持和 ArceOS DWMAC 经验不构成该目标板证据。
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2`、`k3` 与 `smp` 等产品组装入口。
 - 交付物包括可启动内核镜像、平台构建产物，以及配套的内核态和用户态测试载荷。
 
 ## 仓库现场
 
-- 当前 Git 分支为 `k3`；`net-k3`、`mul-hart-k3` 的历史结论已并入该分支（MS01–MS08 全部完成并归档）。
-- HEAD 为 `160d7967`（"docs: relocate project memory from .claude/ to .agents/ and rewrite AGENTS.md"）。
-  MS09 实现与文档改动尚未提交：K3 feature 与 `crates/axplat-riscv64-k3/`、`kernel/src/platform/k3.rs`、
-  FIT/ITS/DTB（`tools/`）、板上采集程序与 MAC 探针（`tests/`）、Runbook R67/R68 与本次 R/M 登记。
-- 活跃 change：`ms09-com260-kit-observable-link-baseline`（MS09 目标板事实与可观测链路基线，8/11 tasks）。
-  Iteration 000–002（参考基线、板级事实与 RAM 边界、K3 启动与首字节）已 accepted；Iteration 003
-  （MAC 只读寄存器基线，task 4.1）Act 状态 `blocked`——板上三轮将 fault 层定位为 clock/reset handoff
-  （GMAC 总线挂死），最小 APMU clock 写序契约待 Plan 按 design D4 修订。
+- 当前 Git 分支为 `k3`，工作树干净。
+- HEAD 为 `ddbbf29c`（MS09 Iteration 004 PHY/link 基线实现、change 收尾归档与全局状态同步）。
+- 无活跃 change：`ms09-com260-kit-observable-link-baseline`（覆盖 T13–T15）已于 2026-10-02
+  完成（Iteration 000–004 共 6 个 Cycle 全部 accepted，11/11 tasks）并归档于
+  `openspec/changes/archive/2026-10-02-ms09-com260-kit-observable-link-baseline/`；行为规格
+  合并为 `openspec/specs/k3-com260-kit-observable-link-baseline/`。板上日志证据
+  `archive/.../evidence/004-phy-link/001-rework/board-phy-link.txt`。
+- 后续里程碑为 MS10（目标板可诊断设备中断基线，前置 T15 已完成）。
 - 已知遗留：`make host-test` 中 `tests/ms04-async-rx-host-harness.rs::net_migration_stimulus_is_blocked_gated_in_source`
-  失败（已验证为 pre-existing，源自 MS08 Iteration 001–003 的 placement 改动），待后续处理；vf2 构建入口
-  pre-existing 失败为 Issue 候选未落账。
+  失败（pre-existing，源自 MS08 Iteration 001–003 的 placement 改动）；vf2 构建入口 pre-existing
+  失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账。
 - 详细里程碑状态见 [`tasks.md`](tasks.md)。
 
 ## 权威入口
