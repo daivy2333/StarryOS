@@ -6,6 +6,7 @@
 **/target/
 /.axconfig.*
 *.img
+*.fit
 /kernel-rv
 /kernel-la
 /.cargo

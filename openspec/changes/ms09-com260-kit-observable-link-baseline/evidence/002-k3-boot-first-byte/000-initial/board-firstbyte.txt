@@ -1,0 +1,266 @@
+# MS09 Iteration 002 / 3.3 板上首字节采集 — CoM260 Kit 真板记录
+
+环境: 2026-10-01；串口终端（host 侧，115200 8N1 无流控）；进入 U-Boot Shell 手法=板子启动时串口长按 `s` 键（SpacemiT 定制入口，官方文档交叉验证 + 本板确认有效）；装载路线=B1 U 盘（FAT32 整盘，`fatload usb 0:0`）；FIT=`StarryOS_riscv64-k3.fit`（276,000 B，`make k3` 产物，kernel load/entry 0x180000000、FDT load 0x181000000）。
+
+状态: 已闭合（含用户豁免）。第一轮（page-alloc-4g 容量 panic，根因定位，panic 后操作者复位重启进入第二轮——panic 场景恢复路径间接有效）；第二轮（64g 修复后 FIT）**完整跑通**——`[k3:pt-mmu]`/stage=1/2/3 全序列 + 用户确认 `reset` 正常回原 Linux（原话见 §3）。第三轮重复循环经用户豁免跳过（原话「我们就不麻烦流程了」），风险：固定 FIT 的完整标记序列为单次完整循环（另一轮为不同 FIT 的诊断循环）。
+
+## 1.1 U-Boot 控制台信息（只读采集）
+
+```
+=> version
+U-Boot 2022.10 (May 27 2026 - 09:33:48 +0000), Build: jenkins-BSP-build-bsp-deb-407
+gcc (Bianbu 15.2.0-16ubuntu1bb3) 15.2.0
+GNU ld (GNU Binutils for Bianbu) 2.46
+
+=> bdinfo
+boot_params = 0x0000000000000000
+DRAM bank   = 0x0000000000000000
+-> start    = 0x0000000102000000
+-> size     = 0x00000001fe000000
+baudrate    = 115200 bps
+relocaddr   = 0x00000002fde9c000
+reloc off   = 0x00000001fbe9c000
+Build       = 64-bit
+ethaddr     = REDACTED
+fdt_blob    = 0x00000002fbe88f30
+new_fdt     = 0x00000002fbe88f30
+fdt_size    = 0x000000000000ee20
+Video       = dpu@c0340000 active
+FB base     = 0x00000002fe000000
+FB size     = 1920x1080x32
+lmb_dump_all:
+ memory.cnt  = 0x1
+ memory[0]   [0x102000000-0x2ffffffff], 0x1fe000000 bytes flags: 0
+ reserved.cnt  = 0x6
+ reserved[0] [0x100000000-0x1000fffff], 0x00100000 bytes flags: 4
+ reserved[1] [0x100200000-0x1006fffff], 0x00500000 bytes flags: 4
+ reserved[2] [0x100800000-0x100cfffff], 0x00500000 bytes flags: 4
+ reserved[3] [0x100f00000-0x1011fffff], 0x00300000 bytes flags: 4
+ reserved[4] [0x2fbd7c000-0x2ffffffff], 0x04284000 bytes flags: 0
+ reserved[5] [0x2fbe87610-0x2ffffffff], 0x041789f0 bytes flags: 0
+devicetree  = board
+
+=> printenv kernel_addr_r bootcmd bootdelay fdt_high
+kernel_addr_r=0x140000000
+bootcmd=run autoboot; echo "run autoboot"
+bootdelay=0
+## Error: "fdt_high" not defined
+
+=> help loady fatload
+loady - load binary file over serial line (ymodem mode)
+Usage: loady [ addr [ baud ] ]
+fatload - load binary file from a dos filesystem
+Usage: fatload <interface> [<dev[:part]> [<addr> [<filename> [bytes [pos]]]]]
+```
+
+## 1.2 USB 枚举与 U 盘内容
+
+```
+=> usb start
+Bus dwc3@81400000: No USB maximum speed specified. Using super speed
+k3-usb3-phy phy@81f00000: k3 usb3 phy enter...
+mv_usb_phy phy@81500000: k1x-ci-usb-phy-probe: Enter...
+USB XHCI 1.10
+Register 2000140 NbrPorts 2
+5 USB Device(s) found
+scanning usb for storage devices... 1 Storage Device(s) found
+
+=> fatls usb 0:0 /
+            System Volume Information/
+    153520   hello
+    160576   explorer
+  10579968   boot-official-backup.img
+    143496   boot_probe
+  10579968   boot-before-q19b-debug.img
+    124928   starry-lichee-boot.img
+    161792   starry-lichee-kbench-boot.img
+  10579968   boot-before-userbench.img
+    989184   starry-lichee-userbench-boot.img
+   1001472   starry-lichee-fullbench-mem-boot.img
+    141312   starry-lichee-rootfs-probe-boot.img
+    980992   starry-lichee-fullbench-command-boot.img
+    154760   ms09-board-facts
+    276000   StarryOS_riscv64-k3.fit
+14 file(s), 1 dir(s)
+```
+
+## 1.3 装载尝试
+
+```
+=> fatload usb 0:0 0x2e0000000 starryos-k3.fit
+Failed to load 'starryos-k3.fit'
+（原因：文件名大小写敏感，须用原大小写）
+
+=> fatload usb 0:0 0x2e0000000 StarryOS_riscv64-k3.fit
+276000 bytes read in 55 ms (4.8 MiB/s)
+
+=> loady 0x2e0000000
+## Ready for binary (ymodem) download to 0x2E0000000 at 115200 bps...
+CCCCCCC
+Cancelled
+（loady 待命正常；因 fatload 已成功，操作者取消 ymodem 发送）
+```
+
+## 1.4 FIT 只读校验
+
+```
+=> md.b 0x2e0000000 0x10
+2e0000000: d0 0d fe ed 00 04 36 20 00 00 00 38 00 04 31 f4  ......6 ...8..1.
+（首字节 d0 0d fe ed = FDT magic 0xd00dfeed，FIT 即 FDT 容器，符合预期）
+
+=> iminfo 0x2e0000000
+## Checking Image at 2e0000000 ...
+   FIT image found
+    FIT description: StarryOS K3 Com260 IFX temporary RAM boot image
+     Image 0 (kernel)
+      Description:  StarryOS riscv64-k3 kernel (single hart)
+      Type:         Kernel Image
+      Compression:  uncompressed
+      Data Start:   0x2e00000f8
+      Data Size:    123072 Bytes = 120.2 KiB
+      Architecture: RISC-V
+      OS:           Linux
+      Load Address: 0x180000000
+      Entry Point:  0x180000000
+      Hash algo:    crc32
+      Hash value:   c57cb0f5
+     Image 1 (fdt-k3-com260-ifx)
+      Description:  K3 Com260 IFX device tree (bootfs k3_com260_ifx.dtb)
+      Type:         Flat Device Tree
+      Compression:  uncompressed
+      Data Start:   0x2e001e2d0
+      Data Size:    150998 Bytes = 147.5 KiB
+      Architecture: RISC-V
+      Load Address: 0x181000000
+      Hash algo:    crc32
+      Hash value:   8711c0d6
+     Default Configuration: 'conf-starry-k3'
+     Configuration 0 (conf-starry-k3)
+      Kernel:       kernel
+      FDT:          fdt-k3-com260-ifx
+## Checking hash(es) for FIT Image at 2e0000000 ...
+   Hash(es) for Image 0 (kernel): crc32+
+   Hash(es) for Image 1 (fdt-k3-com260-ifx): crc32+
+```
+
+## 1.5 bootm 启动与首字节（第一轮）
+
+```
+=> bootm 0x2e0000000
+## Loading kernel from FIT Image at 2e0000000 ...
+   Using 'conf-starry-k3' configuration
+   Trying 'kernel' kernel subimage
+   Verifying Hash Integrity ... crc32+ OK
+## Loading fdt from FIT Image at 2e0000000 ...
+   Trying 'fdt-k3-com260-ifx' fdt subimage
+   Verifying Hash Integrity ... crc32+ OK
+   Loading fdt from 0x2e001e2d0 to 0x181000000
+   Booting using the fdt blob at 0x181000000
+   Loading Kernel Image
+   Loading Device Tree to 00000002fbd4f000, end 00000002fbd76dd5 ... OK
+fail to get alias node efuse_power
+Starting kernel ...
+Removing MTD device #0 (nor0) with use count 1
+[k3:pt-mmu]
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = riscv64
+platform = riscv64-k3
+target = riscv64gc-unknown-none-elf
+build_mode = release
+log_level = warn
+backtrace = false
+smp = 1
+
+Boot at 1970-01-01 00:04:20.454076541 UTC
+
+panicked at /home/daivy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axallocator-0.2.0/src/bitmap.rs:80:9:
+bitmap capacity exceeded: need 1507328 pages but CAP is 1048576 (start=0xffffffc180082000, size=0x16ff7e000)
+<backtrace disabled>
+```
+
+## 2. 观察备注
+
+- 进入手法：长按 `s` 在本板有效（`Autoboot in 0 seconds` 与其不矛盾——s 键为 SpacemiT 定制早期 console 入口，不走标准 autoboot 打断路径）。Iteration 001 遗留「控制台进入手法」未裁决项闭合。
+- `kernel_addr_r=0x140000000`（落入 CMA `0x140000000–0x160000000`，禁作装载地址）——佐证本次 staging `0x2e0000000` 的选择。
+- U-Boot lmb `reserved[4]=[0x2fbd7c000, 0x2ffffffff]`：观测到的 U-Boot 自占区起点高于本 change 裁决窗口上界 `0x2f0000000`——Iteration 001「U-Boot 自占边界」豁免项的现场佐证补齐（部分闭合）。
+- FDT 重定位观察：bootm 将 FDT 从 `0x181000000` 重定位到 `0x2fbd4f000`（`fdt_high` 未定义时的默认行为）；重定位址高于裁决窗口、在 U-Boot 自占区一带。内核以 a1 接收该指针。
+- 首字节链路判定：`[k3:pt-mmu]` 出现 → U-Boot 跳转、K3 Sv39 引导页表、MMU、UART0 clock/pinmux/MMIO 全部工作；axruntime 横幅与平台信息（riscv64-k3 / smp=1）输出 → 平台 crate 装配正确。
+- panic 定位：`axallocator` 位图页分配器容量 CAP=1,048,576 页（4 GiB，`page-alloc-4g`）< 声明窗口 5.75 GiB（`phys_ram_range` 起点 `0xffffffc180082000`、`size=0x16ff7e000`）。修复方向：k3 构建启用 `axfeat/page-alloc-64g`（BitAlloc16M，64 GiB CAP；axallocator cfg 链 64g 优先于 4g，与其他平台无交互）。
+- RTC 无电池（Boot 时刻 1970-01-01 起）与 Iteration 001 Minor 一致。
+
+## 1.6 第二轮（page-alloc-64g 修复后）— 完整标记序列（2026-10-01）
+
+环境差异：新 FIT（kernel crc32 `e4e9f37d`，含 `axfeat/page-alloc-64g`）；装载前 `setenv fdt_high 0xffffffffffffffff`（易失）。
+
+```
+=> usb start
+...（USB 枚举同 1.2，1 Storage Device(s) found）...
+
+=> fatload usb 0:0 0x2e0000000 StarryOS_riscv64-k3.fit
+276000 bytes read in 63 ms (4.2 MiB/s)
+
+=> setenv fdt_high 0xffffffffffffffff
+
+=> bootm 0x2e0000000
+## Loading kernel from FIT Image at 2e0000000 ...
+   Using 'conf-starry-k3' configuration
+   Trying 'kernel' kernel subimage
+      Description:  StarryOS riscv64-k3 kernel (single hart)
+      Type:         Kernel Image
+      Compression:  uncompressed
+      Data Size:    123072 Bytes = 120.2 KiB
+      Architecture: RISC-V
+      OS:           Linux
+      Load Address: 0x180000000
+      Entry Point:  0x180000000
+      Hash algo:    crc32
+      Hash value:   e4e9f37d
+   Verifying Hash Integrity ... crc32+ OK
+## Loading fdt from FIT Image at 2e0000000 ...
+   Trying 'fdt-k3-com260-ifx' fdt subimage
+      Data Size:    150998 Bytes = 147.5 KiB
+      Load Address: 0x181000000
+      Hash value:   8711c0d6
+   Verifying Hash Integrity ... crc32+ OK
+   Loading fdt from 0x2e001e2d0 to 0x181000000
+   Booting using the fdt blob at 0x181000000
+   Loading Kernel Image
+   Using Device Tree in place at 0000000181000000, end 0000000181027dd5
+fail to get alias node efuse_power
+Starting kernel ...
+Removing MTD device #0 (nor0) with use count 1
+[k3:pt-mmu]
+
+（axruntime 横幅，同 1.5）
+
+arch = riscv64
+platform = riscv64-k3
+target = riscv64gc-unknown-none-elf
+build_mode = release
+log_level = warn
+backtrace = false
+smp = 1
+
+Boot at 1970-01-01 00:00:57.269153166 UTC
+
+[starry-k3] stage=1 entry-reached
+[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200
+[starry-k3] stage=3 parked, halting (reset to recover)
+```
+
+判定：`[k3:pt-mmu]` + axruntime 横幅 + 阶段标记 stage=1/2/3 完整出现，无 panic，stage=3 后受控停留（wfi）。`setenv fdt_high` 生效——U-Boot 不再重定位 FDT（`Using Device Tree in place at 0x181000000`），a1 指针落在引导页表已映射的 block 6。kernel crc32 由 `c57cb0f5`（第一轮 FIT）变为 `e4e9f37d`（64g 修复后 FIT），镜像更换事实在案。
+
+## 3. 待续（已闭合）
+
+- [x] 第二轮（分配器容量修复后）：完整 stage=1/2/3 序列（见 1.6）。
+- [x] 第二轮复位观察：用户 2026-10-01 确认（原话「我已经触发复位，正常回到原linux」）；另第一轮 panic 后操作者复位重启进入第二轮，panic 场景下恢复路径间接有效。
+- [~] 第三轮完整重复循环：用户豁免跳过（原话「这一步不用做……我们就不麻烦流程了」，2026-10-01）。风险与缓解：完整标记序列仅一次完整循环；缓解=第一轮独立证实同一跳转/页表/UART 路径（不同 FIT、至 panic 前），且 Iteration 001 已两次观察 stock 启动链重复稳定。

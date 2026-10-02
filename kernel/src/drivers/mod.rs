@@ -27,9 +27,9 @@ pub(crate) mod uart_migration_logic;
 pub mod uart_init;
 pub mod uart_smp_snapshot;
 pub(crate) mod uart_snapshot_types;
-#[cfg(not(feature = "lichee-d1"))]
+#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 pub mod virtio_net_irq;
-#[cfg(not(feature = "lichee-d1"))]
+#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 pub(crate) mod virtio_net_irq_logic;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 pub use ntty_async::ASYNC_TTY;

@@ -92,6 +92,8 @@ ci-test:
 host-test:
 	rustc --edition=2024 --test tests/early-console-host-harness.rs -o /tmp/early-console-test
 	/tmp/early-console-test
+	rustc --edition=2024 --test tests/mac-probe-host-harness.rs -o /tmp/mac-probe-host-test
+	/tmp/mac-probe-host-test
 	rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
 	/tmp/memtrack-session-test
 	rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test
@@ -193,6 +195,10 @@ host-test:
 		echo "FAIL: transient V5 sampling must be a single fail-closed read after an event, never a retry loop"; exit 1; fi
 	@if ! grep -nA10 'while (feed_rc == 1)' tests/ms08_network_smp_probe.c | grep -q 'ms08_net_stream_rx_audit'; then \
 		echo "FAIL: TCP roundtrip must audit the reassembly buffer before accepting the exchange"; exit 1; fi
+	# MS09 board facts host tests (Iteration 000, tasks 1.1/1.2)
+	cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/ms09_board_facts.c
+	cc -std=c11 -Wall -Wextra -Werror tests/ms09_board_facts_test.c -o /tmp/ms09-board-facts-test
+	/tmp/ms09-board-facts-test
 
 # MS16 network benchmark foundation tests (host, no QEMU needed)
 network-benchmark-test:
@@ -283,6 +289,10 @@ tests/ms08_uart_smp_probe: tests/ms08_uart_smp_probe.c
 tests/ms08_network_smp_probe: tests/ms08_network_smp_probe.c
 	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
 
+# MS09 board facts collector (RISC-V static Linux payload — run manually on the CoM260 Kit)
+target/ms09-board-facts: tests/ms09_board_facts.c
+	$(BENCH_CC) -std=c11 -Wall -Wextra -Werror -static -no-pie -Os -o $@ $<
+
 # Aliases
 rv:
 	$(MAKE) ARCH=riscv64 run
@@ -292,6 +302,22 @@ la:
 
 vf2:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=axplat-riscv64-visionfive2 BUS=mmio build
+
+# MEM=6400M keeps the axconfig window 0x1_6000_0000 + 0x1_9000_0000 intact
+# (MS09 Iteration 001 adjudicated safe RAM region).
+k3:
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3 MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n build
+	$(MAKE) --no-print-directory k3-fit
+
+# K3 temporary FIT (kernel + FDT) for U-Boot RAM boot. Addresses must stay
+# inside the MS09 Iteration 001 adjudicated window [0x160000000, 0x2f0000000):
+# kernel load/entry 0x180000000 (payload floor), FDT load 0x181000000
+# (kernel .bin is ~123 KiB, so the 16 MiB offset excludes overlap).
+k3-fit:
+	@echo "Packing K3 FIT (kernel + FDT, temporary RAM boot)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3.its StarryOS_riscv64-k3.fit
+	@dumpimage -l StarryOS_riscv64-k3.fit
 
 lichee:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
@@ -345,4 +371,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit

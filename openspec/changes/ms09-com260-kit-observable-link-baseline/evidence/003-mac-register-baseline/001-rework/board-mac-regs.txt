@@ -1,0 +1,191 @@
+# MS09 Iteration 003 / Cycle 001-rework — 板上 MAC 只读寄存器基线采集
+# 日期: 2026-10-01  操作: 用户手动上板  采集方式: 串口终端原文
+# 镜像: StarryOS_riscv64-k3.fit, kernel crc32 87ffd369（host `dumpimage -l` 与板上 `iminfo` 一致）
+# 环境: CoM260 Kit, U-Boot 2022.10 (May 27 2026), staging 0x2e0000000, `setenv fdt_high 0xffffffffffffffff`, 串口 115200 8N1
+# 状态: 第 1/2 轮；第 2 轮与两轮 `reset`→`k3 login:` 观察待补
+# 脱敏: TLV serial# 值已脱敏，其余逐字保留
+
+=== Round 1 ===
+
+U-Boot 2022.10 (May 27 2026 - 09:33:48 +0000), Build: jenkins-BSP-build-bsp-deb-407
+
+[   0.893] CPU:   rv64imafdcvh
+[   0.896] Model: spacemit k3 com260 ifx board
+[   0.900] DRAM:  8 GiB
+[   0.912] reset driver probe finish
+[   1.006] eSPI not ready, skipping EC probe
+[   1.010] Core:  631 devices, 35 uclasses, devicetree: board
+[   1.014] WDT:   Started watchdog@d4014000 with servicing (60s timeout)
+[   1.019] MMC:   spacemit_sdhci sdh@d4280000: probe done.
+[   1.025] sdh@d4280000: 0
+[   1.027] Loading Environment from mtdENV... k1x_qspi spi@d420c000: qspi iobase:0x0x00000000d420c000, ahb_addr:0x0x00000000b8000000, max_hz:26000000Hz
+[   1.041] k1x_qspi spi@d420c000: rx buf size:128, tx buf size:256, ahb buf size=512
+[   1.048] k1x_qspi spi@d420c000: AHB read enabled
+[   1.053] k1x_qspi spi@d420c000: AHB buf size: 512
+[   1.057] k1x_qspi spi@d420c000: Speed Change: 26000000 Hz -> 26500000 Hz
+[   1.064] SF: Detected gd25lq64c with page size 256 Bytes, erase size 4 KiB, total 8 MiB
+OK
+[   1.348] ufs: bRefClkFreq current=0 expected=0
+[   1.419] ufs-spacemit_k3 ufs@c0e00000: [RX, TX]: gear=[3, 3], lane[2, 2], pwr[FAST MODE, FAST MODE], rate = 2
+[   1.437] bootlogo loaded from ufs_fs (0:2)
+[   1.440] Found device 'mipi@d421a800', disp_uc_priv=00000002fbea3790
+[   1.444] spacemit_panel_of_to_plat panel lcd_tc358762xbg_dpi_800x480
+[   1.462] pll_ctrl_reg0 = 0x3A155555
+[   1.462] pll_ctrl_reg1 = 0x4582820B
+[   1.466] Panel is lcd_tc358762xbg_dpi
+[   1.470] fb=2fe000000, size=800x480
+[   1.474] dpi_panel_probe: Warning: cannot get enable GPIO: ret=-2
+[   1.589] dpi_panel_probe: Atmel I2C read failed: 0
+[   1.591] panel device error -1
+[   1.595] Found device 'dp1@cac88000', disp_uc_priv=00000002fbea36d0
+[   1.753] dp cannot get HPD signal
+[   1.754] spacemit_display_init: device 'dpu@c0340000' display won't probe (ret=-1)
+[   1.764] initialize_console_log_buffer
+[   1.765] Have allocated memory for console log buffer
+[   1.770] In:    serial
+[   1.772] Out:   serial
+[   1.774] Err:   serial
+[   1.778] CTF2301: Start probing ctf2301@4c
+[   1.932] dp cannot get HPD signal
+[   1.932] display devices not found or not probed yet: -1
+[   1.938] Found 4 valid MAC addresses.
+[   1.941] TLV item: product_name = k3_com260_ifx
+[   1.946] TLV item: serial# = COM3K****（脱敏）
+[   1.950] TLV item: ddr_partnumber = MT62F1G32D2DS
+[   1.956] spacemit reboot: read PMIC reg 0xab value 0xf0
+[   1.961] SRAM cleared: addr=0xc0800000 size=0x80000
+[   1.965] 227 bytes read in 1 ms (221.7 KiB/s)
+[   1.969] ## Info: input data size = 228 = 0xE4
+[   1.973] load env_k3.txt from bootfs successful
+[   1.978] Autoboot in 0 seconds
+=> [   1.990] usb start
+starting USB...
+[  12.547] Bus dwc3@81400000: No USB maximum speed specified. Using super speed
+[  12.554] k3-usb3-phy phy@81f00000: k3 usb3 phy enter...
+[  12.562] mv_usb_phy phy@81500000: k1x-ci-usb-phy-probe: Enter...
+[  12.565] k3-usb3-phy phy@81f00000: Update Combo Mode 20 to USB Mode
+[  12.572] k3-usb3-phy phy@81f00000: PUPHY Rx Reg Configured
+[  12.577] k3-usb3-phy phy@81f00000: PHY version: 0x302 init as USB3 mode
+[  12.583] dwc3-generic-host dwc3@81400000: this is a DesignWare USB3 DRD Core
+[  12.590] Register 2000140 NbrPorts 2
+Starting the controller
+[  12.596] USB XHCI 1.10
+[  12.598] scanning bus dwc3@81400000 for devices... devnum=1 poweron: query_delay=100 connect_timeout=1100
+[  12.625] start port scan
+[  12.884] devnum=2 poweron: query_delay=350 connect_timeout=1350
+[  13.272] devnum=3 poweron: query_delay=350 connect_timeout=1350
+[  14.622] 5 USB Device(s) found
+[  14.622]        scanning usb for storage devices... 1 Storage Device(s) found
+=> [  18.853] fatload usb 0:0 0x2e0000000 StarryOS_riscv64-k3.fit
+280096 bytes read in 63 ms (4.2 MiB/s)
+=> [  25.188] iminfo 0x2e0000000
+
+## Checking Image at 2e0000000 ...
+   FIT image found
+[  25.950]    FIT description: StarryOS K3 Com260 IFX temporary RAM boot image
+[  25.957]     Image 0 (kernel)
+[  25.960]      Description:  StarryOS riscv64-k3 kernel (single hart)
+[  25.966]      Type:         Kernel Image
+[  25.970]      Compression:  uncompressed
+[  25.974]      Data Start:   0x2e00000f8
+[  25.977]      Data Size:    127168 Bytes = 124.2 KiB
+[  25.982]      Architecture: RISC-V
+[  25.986]      OS:           Linux
+[  25.989]      Load Address: 0x180000000
+[  25.993]      Entry Point:  0x180000000
+[  25.996]      Hash algo:    crc32
+[  25.999]      Hash value:   87ffd369
+[  26.003]     Image 1 (fdt-k3-com260-ifx)
+[  26.007]      Description:  K3 Com260 IFX device tree (bootfs k3_com260_ifx.dtb)
+[  26.014]      Type:         Flat Device Tree
+[  26.018]      Compression:  uncompressed
+[  26.022]      Data Start:   0x2e001f2d0
+[  26.026]      Data Size:    150998 Bytes = 147.5 KiB
+[  26.031]      Architecture: RISC-V
+[  26.034]      Load Address: 0x181000000
+[  26.038]      Hash algo:    crc32
+[  26.041]      Hash value:   8711c0d6
+[  26.044]     Default Configuration: 'conf-starry-k3'
+[  26.049]     Configuration 0 (conf-starry-k3)
+[  26.053]      Description:  StarryOS K3 single-hart first-byte RAM boot
+[  26.060]      Kernel:       kernel
+[  26.063]      FDT:          fdt-k3-com260-ifx
+[  26.068] ## Checking hash(es) for FIT Image at 2e0000000 ...
+[  26.073]    Hash(es) for Image 0 (kernel): crc32+
+[  26.078]    Hash(es) for Image 1 (fdt-k3-com260-ifx): crc32+
+=> [  32.552] setenv fdt_high 0xffffffffffffffff
+=> bootm 0x2e0000000
+## Loading kernel from FIT Image at 2e0000000 ...
+[  39.451]    Using 'conf-starry-k3' configuration
+[  39.456]    Trying 'kernel' kernel subimage
+[  39.460]      Description:  StarryOS riscv64-k3 kernel (single hart)
+[  39.466]      Type:         Kernel Image
+[  39.470]      Compression:  uncompressed
+[  39.474]      Data Start:   0x2e00000f8
+[  39.477]      Data Size:    127168 Bytes = 124.2 KiB
+[  39.482]      Architecture: RISC-V
+[  39.485]      OS:           Linux
+[  39.489]      Load Address: 0x180000000
+[  39.492]      Entry Point:  0x180000000
+[  39.496]      Hash algo:    crc32
+[  39.499]      Hash value:   87ffd369
+[  39.503]    Verifying Hash Integrity ... crc32+ OK
+[  39.508] ## Loading fdt from FIT Image at 2e0000000 ...
+[  39.513]    Using 'conf-starry-k3' configuration
+[  39.517]    Trying 'fdt-k3-com260-ifx' fdt subimage
+[  39.522]      Description:  K3 Com260 IFX device tree (bootfs k3_com260_ifx.dtb)
+[  39.529]      Type:         Flat Device Tree
+[  39.533]      Compression:  uncompressed
+[  39.537]      Data Start:   0x2e001f2d0
+[  39.541]      Data Size:    150998 Bytes = 147.5 KiB
+[  39.546]      Architecture: RISC-V
+[  39.549]      Load Address: 0x181000000
+[  39.553]      Hash algo:    crc32
+[  39.556]      Hash value:   8711c0d6
+[  39.560]    Verifying Hash Integrity ... crc32+ OK
+[  39.564]    Loading fdt from 0x2e001f2d0 to 0x181000000
+[  39.569]    Booting using the fdt blob at 0x181000000
+[  39.674]    Loading Kernel Image
+[  39.744]    Using Device Tree in place at 0000000181000000, end 0000000181027dd5
+[  39.816] fail to get alias node efuse_power
+[  40.018]
+Starting kernel ...
+
+[  40.018] Removing MTD device #0 (nor0) with use count 1
+[k3:pt-mmu]
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = riscv64
+platform = riscv64-k3
+target = riscv64gc-unknown-none-elf
+build_mode = release
+log_level = warn
+backtrace = false
+smp = 1
+
+Boot at 1970-01-01 00:00:40.080934 UTC
+
+[starry-k3] stage=1 entry-reached
+[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200
+[starry-k3] stage=3 parked, halting (reset to recover)
+[starry-k3] stage=4 apmu begin
+[starry-k3] stage=4 apmu ctrl before=0x00000000
+[starry-k3] stage=4 apmu ctrl step1=0x00000009
+[starry-k3] stage=4 apmu ctrl after1=0x00000009
+[starry-k3] stage=4 apmu ctrl step2=0x0000000b
+[starry-k3] stage=4 apmu ctrl after2=0x0000000b
+[starry-k3] stage=4 apmu clock enable done
+[starry-k3] stage=5 mac probe begin base=0xcac82000 (read-only)
+[starry-k3] stage=5 mac version read1=0x00001054 class=ok
+[starry-k3] stage=5 mac version read2=0x00001054 class=ok
+[starry-k3] stage=5 mac debug read1=0x00000000 class=all-zero
+[starry-k3] stage=5 mac debug read2=0x00000000 class=all-zero
+[starry-k3] stage=5 mac probe done (parking next)

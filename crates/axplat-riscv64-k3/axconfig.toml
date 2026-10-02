@@ -1,0 +1,44 @@
+# SpacemiT K3 Com260 IFX platform configuration.
+#
+# Facts come from MS09 Iteration 001 board adjudication (change
+# ms09-com260-kit-observable-link-baseline, Iteration 001 Act Response,
+# evidence/001-board-ram-boundary/) cross-checked with the shipped
+# k3_com260_ifx.dtb (extracted from the Buildroot-K3-v1.0.7 bootfs):
+# - Safe RAM window [0x160000000, 0x2f0000000): above the CMA pool
+#   (0x140000000 + 512 MiB), below SWIOTLB (0x2f0e00000), the framebuffer
+#   reservation (0x2fe000000) and the observed U-Boot working area
+#   (>= 0x2f9700000). Kernel payload >= 0x180000000.
+# - UART0 0xd4017000, reg-shift=2 (stride 4), reg-io-width=4 (U32 access);
+#   clock/reset/pinctrl stay in the bootloader handoff state.
+# - timebase-frequency = 0x16e3600 = 24 MHz (shipped DTB, cpu node).
+# - No PLIC/AIA base is configured: MS09 keeps IRQ delivery fail-closed
+#   (irq-if stub only); APLIC/IMSIC addresses are recorded facts, not wired.
+
+arch = "riscv64"
+platform = "riscv64-k3"
+package = "axplat-riscv64-k3"
+
+[plat]
+max-cpu-num = 1
+phys-memory-base = 0x1_6000_0000
+phys-memory-size = 0x1_9000_0000
+kernel-base-paddr = 0x1_8000_0000
+kernel-base-vaddr = "0xffff_ffc1_8000_0000"
+phys-virt-offset = "0xffff_ffc0_0000_0000"
+phys-bus-offset = 0
+kernel-aspace-base = "0xffff_ffc0_0000_0000"
+kernel-aspace-size = "0x0000_003f_ffff_ffff"
+boot-stack-size = 0x40000
+
+[devices]
+mmio-ranges = [
+    [0xd401_7000, 0x1000],
+    [0xcac8_2000, 0x2000], # ethernet@cac82000 (board DT reg) — MS09 Iter 003 MAC probe
+    [0xd428_2800, 0x400],  # system-controller@d4282800, spacemit,k3-syscon-apmu (board DT reg) — MS09 Iter 003 GMAC bus clock enable
+] # [(uint, uint)]
+timer-frequency = 24_000_000
+timer-irq = "0x8000_0000_0000_0005"
+ipi-irq = "0x8000_0000_0000_0001"
+virtio-mmio-ranges = [] # [(uint, uint)]
+uart-paddr = 0xd401_7000
+uart-irq = 42

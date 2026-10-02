@@ -151,19 +151,19 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             .map_err(|_| AxError::InvalidInput)?;
         return Ok(0);
     }
-    #[cfg(not(feature = "lichee-d1"))]
+    #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
     if cmd == NET_IRQ_SNAPSHOT_V1 {
         let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v1();
         (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV1).vm_write(snapshot)?;
         return Ok(0);
     }
-    #[cfg(not(feature = "lichee-d1"))]
+    #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
     if cmd == NET_IRQ_SNAPSHOT_V2 {
         let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v2();
         (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV2).vm_write(snapshot)?;
         return Ok(0);
     }
-    #[cfg(not(feature = "lichee-d1"))]
+    #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
     if cmd == NET_IRQ_SNAPSHOT_V3 {
         let snapshot = crate::drivers::virtio_net_irq::irq_snapshot_v3();
         (arg as *mut crate::drivers::virtio_net_irq_logic::IrqSnapshotV3).vm_write(snapshot)?;
@@ -198,7 +198,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
             .map_err(|_| AxError::InvalidInput)?;
         return Ok(0);
     }
-    #[cfg(not(feature = "lichee-d1"))]
+    #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
     if cmd == NET_RX_SOFTWARE_NUDGE {
         axnet::software_nudge();
         return Ok(0);

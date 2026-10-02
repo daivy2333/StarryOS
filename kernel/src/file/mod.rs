@@ -1,7 +1,7 @@
 pub mod epoll;
 pub mod event;
 mod fs;
-#[cfg(not(feature = "lichee-d1"))]
+#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 mod net;
 mod pidfd;
 mod pipe;
@@ -21,7 +21,7 @@ use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{RLIMIT_NOFILE, stat, statx, statx_timestamp};
 use spin::RwLock;
 
-#[cfg(not(feature = "lichee-d1"))]
+#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 pub use self::net::Socket;
 pub use self::{
     fs::{Directory, File, resolve_at, with_fs},

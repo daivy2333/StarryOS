@@ -1,0 +1,43 @@
+/dts-v1/;
+
+/ {
+	description = "StarryOS K3 Com260 IFX temporary RAM boot image";
+	#address-cells = <2>;
+
+	images {
+		kernel {
+			description = "StarryOS riscv64-k3 kernel (single hart)";
+			data = /incbin/("../StarryOS_riscv64-k3.bin");
+			type = "kernel";
+			arch = "riscv";
+			os = "linux";
+			compression = "none";
+			load = <0x1 0x80000000>;
+			entry = <0x1 0x80000000>;
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+
+		fdt-k3-com260-ifx {
+			description = "K3 Com260 IFX device tree (bootfs k3_com260_ifx.dtb)";
+			data = /incbin/("k3_com260_ifx.dtb");
+			type = "flat_dt";
+			arch = "riscv";
+			compression = "none";
+			load = <0x1 0x81000000>;
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+	};
+
+	configurations {
+		default = "conf-starry-k3";
+		conf-starry-k3 {
+			description = "StarryOS K3 single-hart first-byte RAM boot";
+			kernel = "kernel";
+			fdt = "fdt-k3-com260-ifx";
+		};
+	};
+};

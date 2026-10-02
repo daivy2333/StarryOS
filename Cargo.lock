@@ -825,6 +825,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axplat-riscv64-k3"
+version = "0.1.0"
+dependencies = [
+ "axconfig-macros",
+ "axcpu",
+ "axplat",
+ "log",
+ "riscv 0.16.0",
+ "sbi-rt",
+]
+
+[[package]]
 name = "axplat-riscv64-lichee-d1"
 version = "0.1.0"
 dependencies = [
@@ -3166,6 +3178,7 @@ name = "starryos"
 version = "0.2.0-preview.2"
 dependencies = [
  "axfeat",
+ "axplat-riscv64-k3",
  "axplat-riscv64-lichee-d1",
  "axplat-riscv64-visionfive2",
  "page_table_entry",

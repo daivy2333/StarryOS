@@ -122,6 +122,18 @@ PLIC 初始化 MUST 保持 `init_primary()`（全局一次性初始化）与 `in
 - **AND** DWMAC 代码 MUST 仅在目标控制器兼容时进入移植候选
 - **AND** 新平台 MUST 重新取得本平台运行证据
 
+### Requirement: M42 — k3 参考资料可信度分级与主动引用
+
+CoM260 Kit（K3）板级工作引用 `/home/daivy/projects/serial/work/k3/` 及其 `others/` 下资源时，可信度 MUST 按来源分级：`k3/docs/`（R61）按其自有来源分级（official fact / cross-validation / inference / unknown）与 known-gaps 台账引用，`partially-observed` 覆盖状态不得当作完整官方正文；`k3/others/Buildroot-K3-v1.0.7/`（R70）为官方预构建发布包，只作固件/镜像组成与 DTB 候选的离线依据，不证明当前板实际刷写状态；`k3/others/Rt-Async-AMP/`（R69）为同板真板验证的第三方工程，其带可溯源标注的寄存器偏移、位域与时序（如 APMU CTRL 两步 clock 写序）可作契约与实现依据，框架代码不得直接并入 StarryOS，负面样本按审查反例处理；`k3/.claude/` 真板记录与分析（R71）和 `k3/openspec/` 验收语料（R72）的可信度绑定采集时的板态与 revision。所有引用 MUST 保留文件路径与来源分级，且任何 k3 资料均不替代当前板运行时事实。
+
+**来源**: 2026-10-01 用户审计指令（k3 资源利用不足）；MS09 Iteration 003 板上阻塞由 R69 APMU 写序定位 | **状态**: ✅ active
+
+#### Scenario: 制定板级契约前检索参考资源
+
+- **WHEN** MS09+ 的 Plan/Explorer 为 CoM260 Kit 板级工作制定契约或调查输入
+- **THEN** MUST 按 R66 的里程碑优先读取表主动检索 R69–R72 对应资源，引用时标注来源分级
+- **AND** 不得把上述资源留到板上阻塞后才首次检索
+
 <!-- arc: ARC-202607251326 --> 27 M 条目已归档 (2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 <!-- arc: cleanup-uart-documentation-system --> M03, M33, M35 archived (2026-07-25) -> openspec/changes/archive/2026-07-25-cleanup-uart-docs/
 <!-- arc: MIG-20260720-legacy-specs --> Legacy original: openspec/changes/archive/mig-20260720-legacy-specs/architecture-original.md (hash: 5b054d98), 1053 lines, ADR-001~063. Current valid constraints extracted as M01-M40. Decisions rationale preserved in decisions/spec.md. Tombstoned ADRs (A014-A017, A020-A021, A032, A063-A064) noted here — details in archive carriers ARC-202607081429 and arc-202607152005. Also see ARC-202607251326 for M02-M40 partial archival.

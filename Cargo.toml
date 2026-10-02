@@ -112,6 +112,19 @@ smp = ["axfeat/smp", "starry-kernel/smp", "axplat-riscv64-visionfive2?/smp"]
 
 vf2 = ["dep:axplat-riscv64-visionfive2", "axfeat/driver-sdmmc"]
 
+k3 = [
+    "dep:axplat-riscv64-k3",
+    "axplat-riscv64-k3/irq-if",
+    "axfeat/bus-mmio",
+    # K3 adjudicated RAM window is 5.75 GiB kernel-managed; the default
+    # page-alloc-4g bitmap (1M pages) overflows at axruntime init (board
+    # panic, MS09 Iteration 002 3.3 first run). axallocator's cfg chain
+    # prefers 64g over 4g when both are set, so other platforms are
+    # unaffected.
+    "axfeat/page-alloc-64g",
+    "starry-kernel/k3",
+]
+
 [[bin]]
 name = "starryos"
 path = "src/main.rs"
@@ -127,6 +140,10 @@ optional = true
 
 [dependencies.axplat-riscv64-lichee-d1]
 path = "crates/axplat-riscv64-lichee-d1"
+optional = true
+
+[dependencies.axplat-riscv64-k3]
+path = "crates/axplat-riscv64-k3"
 optional = true
 
 [dependencies.page_table_entry]

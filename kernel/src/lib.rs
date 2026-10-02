@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![cfg_attr(
-    feature = "lichee-d1",
+    any(feature = "lichee-d1", feature = "k3"),
     allow(dead_code, unused_imports, unused_variables)
 )]
 
@@ -36,20 +36,20 @@ mod config;
 // Crate-root shared IRQ restore policy (no feature gate: `lichee-d1-smoke`
 // excludes `drivers` but still requires the critical-section impl).
 mod critical_section_policy;
-#[cfg(not(feature = "lichee-d1-smoke"))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "k3")))]
 mod drivers;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod file;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod mm;
 pub mod platform;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod pseudofs;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod syscall;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod task;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod time;
 
 // Critical section implementation for embassy-sync AtomicWaker.

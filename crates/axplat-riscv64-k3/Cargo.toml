@@ -1,0 +1,23 @@
+[package]
+name = "axplat-riscv64-k3"
+version = "0.1.0"
+edition = "2024"
+authors = ["StarryOS contributors"]
+description = "axplat HAL implementation for SpacemiT K3 Com260 IFX"
+license = "GPL-3.0-or-later OR Apache-2.0"
+repository = "https://github.com/Starry-OS/StarryOS"
+
+[features]
+irq-if = ["axplat/irq"]
+
+[lib]
+name = "axplat_riscv64_k3"
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4"
+riscv = "0.16"
+sbi-rt = { version = "0.0.3", features = ["legacy"] }
+axconfig-macros = "0.2"
+axcpu = { version = "=0.3.0-preview.8" }
+axplat = { version = "=0.3.1-pre.6" }

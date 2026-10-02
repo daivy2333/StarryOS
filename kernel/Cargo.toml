@@ -11,6 +11,7 @@ repository.workspace = true
 [features]
 dev-log = []
 input = ["dep:axinput", "axfeat/input"]
+k3 = []
 lichee-d1 = []
 lichee-d1-smoke = []
 lichee-d1-async-uart = ["uart_16550/telemetry"]

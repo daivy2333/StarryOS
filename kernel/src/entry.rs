@@ -30,8 +30,8 @@ use {
     axtask::{AxTaskExt, spawn_task},
     starry_process::{Pid, Process},
 };
-// ── QEMU imports (no D1 feature at all) ──────────────────────────────
-#[cfg(not(feature = "lichee-d1"))]
+// ── QEMU imports (no D1 and no K3 feature) ───────────────────────────
+#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 use {
     crate::{
         drivers::{ASYNC_TTY, uart_init},
@@ -83,8 +83,20 @@ pub fn init(args: &[String], envs: &[String]) {
         lichee_d1_init(args, envs);
     }
 
+    // ── K3 minimal first-byte path (MS09 Iteration 002) ──────────────
+    #[cfg(all(target_arch = "riscv64", feature = "k3"))]
+    {
+        let _ = (args, envs);
+        // SAFETY: K3 UART0 MMIO is identity-mapped via the platform
+        // mmio-ranges and left in the bootloader handoff state (MS09
+        // Iteration 001 adjudication); this path runs once at boot.
+        unsafe {
+            crate::platform::k3::run_first_byte_park();
+        }
+    }
+
     // ── QEMU mode ────────────────────────────────────────────────────
-    #[cfg(not(feature = "lichee-d1"))]
+    #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
     {
         // Initialize UART hardware + async driver (MMIO, ring buffers, ISR, copiers)
         uart_init::init_uart_hardware();

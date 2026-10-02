@@ -1,0 +1,79 @@
+MS09_FACTS_BEGIN
+MS09_FACTS_ROOT: source=sysfs root=/sys/firmware/devicetree/base
+MS09_FACTS_MODEL: SpacemiT K3 Com260 IFX
+MS09_FACTS_COMPATIBLE: spacemit,k3-com260-ifx
+MS09_FACTS_CHOSEN: stdout-path=serial0:115200 console=console=ttyS0,115200
+MS09_FACTS_UART: path=/soc/system-controller@c0881f00 compatible=spacemit,k3-syscon-rcpu-uartctrl reg=0xc0881f00/0x100 interrupts=<missing>
+MS09_FACTS_UART: path=/soc/serial@d4017200 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017200/0x100 interrupts=0000002d,00000004 clocks=/soc/system-controller@d4015000#2,/soc/system-controller@d4015000#12,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#2
+MS09_FACTS_UART: path=/soc/serial@c0881000 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xc0881000/0x100 interrupts=000000fb,00000004 clocks=/soc/system-controller@c0881f00#0,/soc/system-controller@c0881f00#6,/soc/system-controller@d4050000#25 resets=/soc/system-controller@c0881f00#0
+MS09_FACTS_UART: path=/soc/serial@d4017500 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017500/0x100 interrupts=00000030,00000004 clocks=/soc/system-controller@d4015000#5,/soc/system-controller@d4015000#15,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#5
+MS09_FACTS_UART: path=/soc/serial@c0881300 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xc0881300/0x100 interrupts=000000fe,00000004 clocks=/soc/system-controller@c0881f00#3,/soc/system-controller@c0881f00#9,/soc/system-controller@d4050000#25 resets=/soc/system-controller@c0881f00#3
+MS09_FACTS_MAC: path=/soc/ethernet@a0000000 compatible=spacemit,k3-gmac,snps,dwmac-5.10a reg=0xa0000000/0x2000 phy-mode=missing interrupts=000000ed,00000004,000000ec,00000004 clocks=/soc/system-controller@c0880000#14,/soc/system-controller@c0880000#16 resets=/soc/system-controller@c0880000#7
+MS09_FACTS_UART: path=/soc/serial@d4017800 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017800/0x100 interrupts=00000033,00000004 clocks=/soc/system-controller@d4015000#8,/soc/system-controller@d4015000#18,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#8
+MS09_FACTS_UART: path=/soc/serial@d4017100 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017100/0x100 interrupts=0000002c,00000004 clocks=/soc/system-controller@d4015000#1,/soc/system-controller@d4015000#11,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#1
+MS09_FACTS_MAC: path=/soc/ethernet@cac80000 compatible=spacemit,k3-gmac,snps,dwmac-5.10a reg=0xcac80000/0x2000 phy-mode=missing interrupts=00000083,00000004,00000114,00000004 clocks=/soc/system-controller@d4282800#75,/soc/system-controller@d4282800#77 resets=/soc/system-controller@d4282800#77
+MS09_FACTS_UART: path=/soc/serial@f0612000 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xf0612000/0x100 interrupts=0000002b,00000004 clocks=/soc/system-controller@f0610000#0,/soc/system-controller@f0610000#1,/soc/system-controller@d4050000#25 resets=/soc/system-controller@f0610000#0
+MS09_FACTS_UART: path=/soc/serial@d4017400 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017400/0x100 interrupts=0000002f,00000004 clocks=/soc/system-controller@d4015000#4,/soc/system-controller@d4015000#14,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#4
+MS09_FACTS_UART: path=/soc/serial@c0881200 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xc0881200/0x100 interrupts=000000fd,00000004 clocks=/soc/system-controller@c0881f00#2,/soc/system-controller@c0881f00#8,/soc/system-controller@d4050000#25 resets=/soc/system-controller@c0881f00#2
+MS09_FACTS_MAC: path=/soc/ethernet@cac8e000 compatible=spacemit,k3-gmac,snps,dwmac-5.10a reg=0xcac8e000/0x2000 phy-mode=missing interrupts=00000082,00000004,00000116,00000004 clocks=/soc/system-controller@d4282800#83,/soc/system-controller@d4282800#85 resets=/soc/system-controller@d4282800#79
+MS09_FACTS_UART: path=/soc/serial@d4017700 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017700/0x100 interrupts=00000032,00000004 clocks=/soc/system-controller@d4015000#7,/soc/system-controller@d4015000#17,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#7
+MS09_FACTS_UART: path=/soc/serial@c0881500 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xc0881500/0x100 interrupts=00000100,00000004 clocks=/soc/system-controller@c0881f00#5,/soc/system-controller@c0881f00#11,/soc/system-controller@d4050000#25 resets=/soc/system-controller@c0881f00#5
+MS09_FACTS_UART: path=/soc/serial@d4017000 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017000/0x100 interrupts=0000002a,00000004 clocks=/soc/system-controller@d4015000#0,/soc/system-controller@d4015000#10,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#0 pinctrl-0=/soc/pinctrl@d401e000/uart0-0-cfg
+MS09_FACTS_MAC: path=/soc/ethernet@cac82000 compatible=spacemit,k3-gmac,snps,dwmac-5.10a reg=0xcac82000/0x2000 max-speed=1000 phy-mode=rgmii interrupts=00000085,00000004,00000115,00000004 clocks=/soc/system-controller@d4282800#79,/soc/system-controller@d4282800#81 resets=/soc/system-controller@d4282800#78 pinctrl-0=/soc/pinctrl@d401e000/gmac1-cfg
+MS09_FACTS_PHY: path=/soc/ethernet@cac82000/mdio/ethernet-phy@1 reg=1 compatible=ethernet-phy-id001c.c916,ethernet-phy-ieee802.3-c22
+MS09_FACTS_PHY: path=/soc/ethernet@cac82000/mdio/ethernet-phy@1 compatible=ethernet-phy-id001c.c916,ethernet-phy-ieee802.3-c22 reg=1
+MS09_FACTS_UART: path=/soc/serial@d4017300 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017300/0x100 interrupts=0000002e,00000004 clocks=/soc/system-controller@d4015000#3,/soc/system-controller@d4015000#13,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#3
+MS09_FACTS_UART: path=/soc/serial@c0881100 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xc0881100/0x100 interrupts=000000fc,00000004 clocks=/soc/system-controller@c0881f00#1,/soc/system-controller@c0881f00#7,/soc/system-controller@d4050000#25 resets=/soc/system-controller@c0881f00#1
+MS09_FACTS_UART: path=/soc/serial@d4017600 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd4017600/0x100 interrupts=00000031,00000004 clocks=/soc/system-controller@d4015000#6,/soc/system-controller@d4015000#16,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#6
+MS09_FACTS_UART: path=/soc/serial@d401f000 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xd401f000/0x100 interrupts=00000119,00000004 clocks=/soc/system-controller@d4015000#9,/soc/system-controller@d4015000#19,/soc/system-controller@d4050000#25 resets=/soc/system-controller@d4015000#9
+MS09_FACTS_UART: path=/soc/serial@c0881400 compatible=spacemit,k1-uart,intel,xscale-uart reg=0xc0881400/0x100 interrupts=000000ff,00000004 clocks=/soc/system-controller@c0881f00#4,/soc/system-controller@c0881f00#10,/soc/system-controller@d4050000#25 resets=/soc/system-controller@c0881f00#4
+MS09_FACTS_MEMORY: node=memory@102000000 path=/memory@102000000 addr=0x102000000 size=0x1fe000000
+MS09_FACTS_CPU: node=cpu@1 reg=1 status=okay
+MS09_FACTS_CPU: node=cpu@8 reg=8 status=okay
+MS09_FACTS_CPU: node=cpu@6 reg=6 status=okay
+MS09_FACTS_CPU: node=cpu@14 reg=14 status=okay
+MS09_FACTS_CPU: node=cpu@4 reg=4 status=okay
+MS09_FACTS_CPU: node=cpu@12 reg=12 status=okay
+MS09_FACTS_CPU: node=cpu@2 reg=2 status=okay
+MS09_FACTS_CPU: node=cpu@10 reg=10 status=okay
+MS09_FACTS_CPU: node=cpu@0 reg=0 status=okay
+MS09_FACTS_CPU: node=cpu@9 reg=9 status=okay
+MS09_FACTS_CPU: node=cpu@7 reg=7 status=okay
+MS09_FACTS_CPU: node=cpu@15 reg=15 status=okay
+MS09_FACTS_CPU: node=cpu@5 reg=5 status=okay
+MS09_FACTS_CPU: node=cpu@13 reg=13 status=okay
+MS09_FACTS_CPU: node=cpu@3 reg=3 status=okay
+MS09_FACTS_CPU: node=cpu@11 reg=11 status=okay
+MS09_FACTS_RESERVED: node=rcpu0_pwr@100200000 path=/reserved-memory/rcpu0_pwr@100200000 addr=0x100200000 size=0x300000
+MS09_FACTS_RESERVED: node=vdev0vring1@c0879000 path=/reserved-memory/vdev0vring1@c0879000 addr=0xc0879000 size=0x3000
+MS09_FACTS_RESERVED: node=mmode_resv7@1,800000 path=/reserved-memory/mmode_resv7@1,800000 addr=0x100800000 size=0x400000
+MS09_FACTS_RESERVED: node=mmode_resv1@1,600000 path=/reserved-memory/mmode_resv1@1,600000 addr=0x100600000 size=0x100000
+MS09_FACTS_RESERVED: node=vdev0buffer@100700000 path=/reserved-memory/vdev0buffer@100700000 addr=0x100700000 size=0xfc000
+MS09_FACTS_RESERVED: node=vdev0vring2@c087c000 path=/reserved-memory/vdev0vring2@c087c000 addr=0xc087c000 size=0x1000
+MS09_FACTS_RESERVED: node=rcpu1_runtime@100800000 path=/reserved-memory/rcpu1_runtime@100800000 addr=0x100800000 size=0x300000
+MS09_FACTS_RESERVED: node=mmode_resv5@1,400000 path=/reserved-memory/mmode_resv5@1,400000 addr=0x100400000 size=0x200000
+MS09_FACTS_RESERVED: node=dpu_reserved1@101d80000 path=/reserved-memory/dpu_reserved1@101d80000 addr=0x101d80000 size=0x280000
+MS09_FACTS_RESERVED: node=mmode_resv4@1,200000 path=/reserved-memory/mmode_resv4@1,200000 addr=0x100200000 size=0x200000
+MS09_FACTS_RESERVED: node=mmode_resv0@1,0 path=/reserved-memory/mmode_resv0@1,0 addr=0x100000000 size=0x100000
+MS09_FACTS_RESERVED: node=rcpu_dtb_table@100f00000 path=/reserved-memory/rcpu_dtb_table@100f00000 addr=0x100f00000 size=0x300000
+MS09_FACTS_RESERVED: node=vdev0vring0@c086c000 path=/reserved-memory/vdev0vring0@c086c000 addr=0xc086c000 size=0x3000
+MS09_FACTS_RESERVED: node=mmode_resv6@1,1000000 path=/reserved-memory/mmode_resv6@1,1000000 addr=0x101000000 size=0x200000
+MS09_FACTS_RESERVED: node=mmode_resv3@1,f00000 path=/reserved-memory/mmode_resv3@1,f00000 addr=0x100f00000 size=0x100000
+MS09_FACTS_RESERVED: node=rcpu0_rsc_table@1007fc000 path=/reserved-memory/rcpu0_rsc_table@1007fc000 addr=0x1007fc000 size=0x4000
+MS09_FACTS_RESERVED: node=vdev0buffer@100d00000 path=/reserved-memory/vdev0buffer@100d00000 addr=0x100d00000 size=0xfc000
+MS09_FACTS_RESERVED: node=vdev0vring1@c086f000 path=/reserved-memory/vdev0vring1@c086f000 addr=0xc086f000 size=0x3000
+MS09_FACTS_RESERVED: node=rpmi0@100e00000 path=/reserved-memory/rpmi0@100e00000 addr=0x100e00000 size=0x4000
+MS09_FACTS_RESERVED: node=dpu_reserved@101b00000 path=/reserved-memory/dpu_reserved@101b00000 addr=0x101b00000 size=0x280000
+MS09_FACTS_RESERVED: node=rcpu1_rsc_table@100dfc000 path=/reserved-memory/rcpu1_rsc_table@100dfc000 addr=0x100dfc000 size=0x4000
+MS09_FACTS_RESERVED: node=rcpu1_heap@100B00000 path=/reserved-memory/rcpu1_heap@100B00000 addr=0x100b00000 size=0x200000
+MS09_FACTS_RESERVED: node=mmode_resv2@1,c00000 path=/reserved-memory/mmode_resv2@1,c00000 addr=0x100c00000 size=0x100000
+MS09_FACTS_RESERVED: node=vdev0vring0@c0876000 path=/reserved-memory/vdev0vring0@c0876000 addr=0xc0876000 size=0x3000
+MS09_FACTS_RESERVED: node=rcpu0_heap@100500000 path=/reserved-memory/rcpu0_heap@100500000 addr=0x100500000 size=0x200000
+MS09_FACTS_RESERVED: node=framebuffer@2,fe000000 path=/reserved-memory/framebuffer@2,fe000000 addr=0x2fe000000 size=0x2000000
+MS09_FACTS_CPU_SYS: online=0-15 MS09_FACTS_CPU_SYS: possible=0-15 MS09_FACTS_CPU_SYS: present=0-15
+MS09_FACTS_NET: iface=end1 of_node=/soc/ethernet@cac82000 driver=dwmac-spacemit-ethqos carrier=0
+MS09_FACTS_FIRMWARE_ONLY: item=u_boot_relocation note=需启动阶段核对
+MS09_FACTS_FIRMWARE_ONLY: item=safe_ram_region note=需启动阶段核对
+MS09_FACTS_FIRMWARE_ONLY: item=firmware_harts note=需启动阶段核对
+MS09_FACTS_END
+运行环境: 2026-10-01；当前 CoM260 Kit 官方 Linux（Bianbu，kernel 6.18.3-generic，hostname k3）；二进制经 U 盘（/dev/sdb 整盘 FAT32，挂载 /mnt/usb）传输、板上 /tmp 运行；root shell；输出以 MS09_FACTS_END 正常结束、shell 回到提示符。

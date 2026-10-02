@@ -2,7 +2,7 @@
 
 #[cfg(feature = "input")]
 mod event;
-#[cfg(not(feature = "lichee-d1"))]
+#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 mod fb;
 #[cfg(feature = "dev-log")]
 mod log;
@@ -199,7 +199,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(rtc::Rtc),
         ),
     );
-    #[cfg(not(feature = "lichee-d1"))]
+    #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
     if axdisplay::has_display() {
         root.add(
             "fb0",

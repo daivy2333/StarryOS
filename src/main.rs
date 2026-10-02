@@ -25,3 +25,6 @@ extern crate axplat_riscv64_visionfive2;
 
 #[cfg(any(feature = "lichee-d1", feature = "lichee-d1-async-uart"))]
 extern crate axplat_riscv64_lichee_d1;
+
+#[cfg(feature = "k3")]
+extern crate axplat_riscv64_k3;
