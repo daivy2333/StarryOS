@@ -1,8 +1,8 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-10-02
-> Revision: `ddbbf29c`（MS09 Iteration 004 + change 收尾归档提交）
+> Updated: 2026-10-03
+> Revision: `b3e644aa`（MS10 AIA 底座 + PHY 设备 IRQ 基线 + change 收尾归档提交）
 > Branch: `k3`
 > Worktree: clean
 
@@ -31,8 +31,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 | `crates/uart_16550/` | 本地 UART 驱动实现 |
 | `crates/axfs-ng/` | 本地文件系统组件 |
 | `crates/axplat-riscv64-lichee-d1/` | Lichee RV Dock D1 平台组件 |
-| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09 交付） |
-| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、host serial/peer harness 与纯输出 validator |
+| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09+MS10 交付：板级基线 + AIA 中断底座） |
+| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、MS10 AIA/设备 IRQ 探针 host harness、host serial/peer harness 与纯输出 validator |
 | `openspec/`、`.agents/` | 规范、变更、项目记忆、分析和操作文档 |
 
 ## 支持范围与交付形态
@@ -59,19 +59,29 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
   APBC ASAR 解锁+整字写、MDIO Clause 22 读得真实 PHYID `0x001cc916`（RTL8211F）、120 s 窗口
   内 ≥5 个完整 link up→down→up 插拔循环可重复。结论不含设备 IRQ、DMA、网络收发与异步队列
   （MS10+ 范围）。VisionFive 2 支持和 ArceOS DWMAC 经验不构成该目标板证据。
+- SpacemiT K3 的可诊断设备中断基线（MS10）已交付：AIA 软件投递底座（APLIC MSI + IMSIC
+  S-mode，`stopei` 原子 claim+EOI 先于 handler，SETIPNUM/GENMSI 双入口、双 mask、retrap、
+  unknown、风暴预算止损）与 PHY 设备 IRQ/status 基线（pin35 按 DTB 武装 GPIO+下降沿并释放
+  CLEAR hold、INSR COR 前快照、真实插拔 source60/INSR bit4/link 对齐 claim、1 s quiet、
+  MAC 133/277 只读观察）均真板验证。本板裁决事实：EIE 掩码窗口 MSI 丢弃（掩码只作止损、须
+  触发后置掩码）、MFPR EDGE CLEAR 复位默认置位（hold-in-clear）、每物理事件一条 INSR=0 回声
+  claim（分类器排除）。stage10 与 stage8 观察窗为 30 s（操作者指示）。结论不含 DMA 收发、
+  异步 queue task、多 hart 流量与 timer/UART IRQ 的调度用途（MS11+/MS17 范围）。
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2`、`k3` 与 `smp` 等产品组装入口。
 - 交付物包括可启动内核镜像、平台构建产物，以及配套的内核态和用户态测试载荷。
 
 ## 仓库现场
 
 - 当前 Git 分支为 `k3`，工作树干净。
-- HEAD 为 `ddbbf29c`（MS09 Iteration 004 PHY/link 基线实现、change 收尾归档与全局状态同步）。
-- 无活跃 change：`ms09-com260-kit-observable-link-baseline`（覆盖 T13–T15）已于 2026-10-02
-  完成（Iteration 000–004 共 6 个 Cycle 全部 accepted，11/11 tasks）并归档于
-  `openspec/changes/archive/2026-10-02-ms09-com260-kit-observable-link-baseline/`；行为规格
-  合并为 `openspec/specs/k3-com260-kit-observable-link-baseline/`。板上日志证据
-  `archive/.../evidence/004-phy-link/001-rework/board-phy-link.txt`。
-- 后续里程碑为 MS10（目标板可诊断设备中断基线，前置 T15 已完成）。
+- HEAD 为 `b3e644aa`（MS10 AIA 底座 + PHY 设备 IRQ 基线实现、change 收尾归档与全局状态同步）。
+- 无活跃 change：`ms10-com260-kit-diagnosable-device-irq-baseline`（覆盖 T16）已于 2026-10-03
+  完成并归档于
+  `openspec/changes/archive/2026-10-03-ms10-com260-kit-diagnosable-device-irq-baseline/`；
+  行为规格合并为 `openspec/specs/k3-com260-kit-device-irq-baseline/`。板上日志证据
+  `archive/.../evidence/001-phy-device/000-initial/board-phy-irq.txt`（第 3 轮板测）与
+  `archive/.../evidence/000-initial/001-replan/board-aia-irq.txt`（第 5 轮板测）。
+- 后续里程碑为 MS11（目标控制器轮询双向网络基线）与 MS17（K3 交互 shell 基线），二者前置
+  T16/MS10 均已完成，可并行推进。
 - 已知遗留：`make host-test` 中 `tests/ms04-async-rx-host-harness.rs::net_migration_stimulus_is_blocked_gated_in_source`
   失败（pre-existing，源自 MS08 Iteration 001–003 的 placement 改动）；vf2 构建入口 pre-existing
   失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账。
