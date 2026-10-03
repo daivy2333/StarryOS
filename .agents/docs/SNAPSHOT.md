@@ -2,7 +2,7 @@
 
 > Sync status: current
 > Updated: 2026-10-03
-> Revision: `b3e644aa`（MS10 AIA 底座 + PHY 设备 IRQ 基线 + change 收尾归档提交）
+> Revision: `f7044e12`（MS10 收尾 + stage8 begin 行常量化 follow-up）
 > Branch: `k3`
 > Worktree: clean
 
@@ -73,7 +73,7 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 ## 仓库现场
 
 - 当前 Git 分支为 `k3`，工作树干净。
-- HEAD 为 `b3e644aa`（MS10 AIA 底座 + PHY 设备 IRQ 基线实现、change 收尾归档与全局状态同步）。
+- HEAD 为 `f7044e12`（MS10 实现、change 收尾归档、stage8 begin 行常量化 follow-up 与全局状态同步）。
 - 无活跃 change：`ms10-com260-kit-diagnosable-device-irq-baseline`（覆盖 T16）已于 2026-10-03
   完成并归档于
   `openspec/changes/archive/2026-10-03-ms10-com260-kit-diagnosable-device-irq-baseline/`；
