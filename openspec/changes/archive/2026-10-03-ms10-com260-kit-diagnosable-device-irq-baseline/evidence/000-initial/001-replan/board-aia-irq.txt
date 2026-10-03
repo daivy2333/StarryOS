@@ -1,0 +1,125 @@
+# CoM260 Kit raw serial record — MS10 Iteration 000 / Cycle 001-replan board acceptance
+# Source: operator serial session (115200 8N1, no flow control), 2026-10-03, board run 5.
+# Capture scope: U-Boot FAT load + full kernel boot (stage 0 marker through stage=9 pass).
+# FIT: StarryOS_riscv64-k3.fit (crc32 1a8b97d9), load 0x2e0000000 → kernel 0x180000000, FDT 0x181000000.
+# U-Boot commands: usb start; fatload usb 0:0 0x2e0000000 StarryOS_riscv64-k3.fit;
+#   setenv fdt_high 0xffffffffffffffff; bootm 0x2e0000000 (no saveenv).
+# The lines between "Starting kernel ..." and the banner are U-Boot's own output.
+
+=> [  41.072] setenv fdt_high 0xffffffffffffffff
+=> bootm 0x2e0000000
+## Loading kernel from FIT Image at 2e0000000 ...
+[  49.089]    Using 'conf-starry-k3' configuration
+[  49.094]    Trying 'kernel' kernel subimage
+[  49.098]      Description:  StarryOS riscv64-k3 kernel (single hart)
+[  49.104]      Type:         Kernel Image
+[  49.108]      Compression:  uncompressed
+[  49.112]      Data Start:   0x2e00000f8
+[  49.121]      Data Size:    155840 Bytes = 152.2 KiB
+[  49.124]      Architecture: RISC-V
+[  49.125]      OS:           Linux
+[  49.127]      Load Address: 0x180000000
+[  49.131]      Entry Point:  0x180000000
+[  49.138]      Hash value:   8afb39ac
+[  49.141]    Verifying Hash Integrity ... crc32+ OK
+[  49.146] ## Loading fdt from FIT Image at 2e0000000 ...
+[  49.151]    Using 'conf-starry-k3' configuration
+[  49.155]    Trying 'fdt-k3-com260-ifx' fdt subimage
+[  49.168]      Description:  K3 Com260 IFX device tree (bootfs k3_com260_ifx.dtb)
+[  49.172]      Type:         Flat Device Tree
+[  49.175]      Compression:  uncompressed
+[  49.179]      Data Start:   0x2e00262d0
+[  49.183]      Data Size:    150998 Bytes = 147.5 KiB
+[  49.185]      Architecture: RISC-V
+[  49.187]      Load Address: 0x181000000
+[  49.194]      Hash value:   8711c0d6
+[  49.198]    Verifying Hash Integrity ... crc32+ OK
+[  49.203]    Loading fdt from 0x2e00262d0 to 0x181000000
+[  49.208]    Booting using the fdt blob at 0x181000000
+[  49.313]    Loading Kernel Image
+[  49.382]    Using Device Tree in place at 0000000181000000, end 0000000181027dd5
+[  49.454] fail to get alias node efuse_power
+[  49.656]
+Starting kernel ...
+
+[  49.657] Removing MTD device #0 (nor0) with use count 1
+[k3:pt-mmu]
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888     "Y88b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P" "Y8888   "Y88888P"   "Y8888P"
+
+arch = riscv64
+platform = riscv64-k3
+target = riscv64gc-unknown-none-elf
+build_mode = release
+log_level = warn
+backtrace = false
+smp = 1
+
+Boot at 1970-01-01 00:00:49.719295583 UTC
+
+[k3:irq] init=global begin
+[k3:irq] probe domaincfg=0x80000004 smsicfg=0x0/0x0 mmsicfg=0x0/0x0 srcfg1=0x0->0x1[k3:irq] msicfg written=0xe0400/0x80604000 readback=0x0/0x0 readback-refused (delivery test adjudicates)[k3:irq] domaincfg enabled=0x104 readback=0x80000104[k3:irq] init=global done
+[k3:irq] init=percpu begin
+[k3:irq] init=percpu done
+[ 49.753522 0 axplat_riscv64_k3::irq:112] k3-irq: register source 9223372036854775813 rejected (unsupported route or duplicate)
+[starry-k3] stage=1 entry-reached
+[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200
+[starry-k3] stage=3 parked, halting (reset to recover)
+[starry-k3] stage=4 apmu begin
+[starry-k3] stage=4 apmu ctrl before=0x00000000
+[starry-k3] stage=4 apmu ctrl step1=0x00000009
+[starry-k3] stage=4 apmu ctrl after1=0x00000009
+[starry-k3] stage=4 apmu ctrl step2=0x0000000b
+[starry-k3] stage=4 apmu ctrl after2=0x0000000b
+[starry-k3] stage=4 apmu clock enable done
+[starry-k3] stage=5 mac probe begin base=0xcac82000 (read-only)
+[starry-k3] stage=5 mac version read1=0x00001054 class=ok
+[starry-k3] stage=5 mac version read2=0x00001054 class=ok
+[starry-k3] stage=5 mac debug read1=0x00000000 class=all-zero sem=idle
+[starry-k3] stage=5 mac debug read2=0x00000000 class=all-zero sem=idle
+[starry-k3] stage=5 mac probe done (parking next)
+[starry-k3] stage=6 gate apmu-clk=1 apmu-rst=1 mac-version=ok proceed
+[starry-k3] stage=6 pad/gpio begin
+[starry-k3] stage=6 iopd write=0x00000004 ok
+[starry-k3] stage=6 pin=21 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=22 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=23 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=24 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=25 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=26 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=27 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=28 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=29 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=30 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=31 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=32 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=33 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=34 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=35 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=37 mux=0 before=0x0000a440 action=keep after=0x0000a440 ok
+[starry-k3] stage=6 gpio reset begin
+[starry-k3] stage=6 gpio reset done
+[starry-k3] stage=6 pad/gpio done
+[starry-k3] stage=7 mdio/phy begin
+[starry-k3] stage=7 phy id1=0x001c id2=0xc916 phyid=0x001cc916 result=rtl8211f
+[starry-k3] stage=7 phy bmcr=0x1040 bmsr=0x7989 link=down an-capable=1 an-complete=0
+[starry-k3] stage=7 mdio/phy done
+[starry-k3] stage=8 link observation begin window-ms=120000 interval-ms=100
+[starry-k3] stage=8 an restart bmcr-before=0x1040 bmcr-written=0x1240
+[starry-k3] stage=8 an advert reg4=0x01e1 reg9=0x0200
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 observation-ended last=negotiating up-observed=yes
+[starry-k3] stage=9 begin aia-software-probe budget=32[starry-k3] stage=9 readback domaincfg=0x80000104 msi=0x0/0x0 delivery=1 threshold=0 srcfg=0x0 target=0x0 eie0=0x0[starry-k3] stage=9 setip trigger=1 raw=0x10001[starry-k3] stage=9 setip trigger=2 raw=0x10001[starry-k3] stage=9 setip trigger=3 raw=0x10001[starry-k3] stage=9 genmsi trigger=1 raw=0x10001[starry-k3] stage=9 genmsi trigger=2 raw=0x10001[starry-k3] stage=9 genmsi trigger=3 raw=0x10001[starry-k3] stage=9 aplic-mask blocked=1 fresh=1[starry-k3] stage=9 eie-mask blocked=1 drained=0 retained=0 fresh=1[starry-k3] stage=9 retrap independent-claims=2[starry-k3] stage=9 unknown-eid delta=1 no-handler=1[starry-k3] stage=9 storm events=32 sext-masked quiet=1[starry-k3] stage=9 pass setip=3 genmsi=3 aplic_mask=0 aplic_fresh=1 eie_mask=0 eie_retained=0 eie_fresh=1 retrap=2 unknown=1 drained=0 storm=32 eip0=0x0

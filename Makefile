@@ -96,6 +96,12 @@ host-test:
 	/tmp/mac-probe-host-test
 	rustc --edition=2024 --test tests/phy-probe-host-harness.rs -o /tmp/phy-probe-host-test
 	/tmp/phy-probe-host-test
+	rustc --edition=2024 --test tests/k3-aia-host-harness.rs -o /tmp/k3-aia-host-test
+	/tmp/k3-aia-host-test
+	rustc --edition=2024 --test tests/k3-aia-probe-host-harness.rs -o /tmp/k3-aia-probe-host-test
+	/tmp/k3-aia-probe-host-test
+	rustc --edition=2024 --test tests/k3-device-irq-host-harness.rs -o /tmp/k3-device-irq-host-test
+	/tmp/k3-device-irq-host-test
 	rustc --edition=2024 --test tests/memtrack-session-host-harness.rs -o /tmp/memtrack-session-test
 	/tmp/memtrack-session-test
 	rustc --edition=2024 --test tests/ms03-irq-host-harness.rs -o /tmp/ms03-irq-host-test

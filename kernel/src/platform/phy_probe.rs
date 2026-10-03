@@ -254,6 +254,249 @@ pub fn mdio_write(env: &mut impl ProbeEnv, phy: u32, reg: u32, value: u16) -> Re
 }
 
 // ---------------------------------------------------------------------------
+// Paged vendor access + device cause/ack facts (MS10 Iteration 001, task 2.1)
+// ---------------------------------------------------------------------------
+//
+// D5 fixed device contract (board DTB + R69 same-position sources, adjudicated
+// in the Iteration 001 Plan Context):
+// - RTL8211F vendor pages are selected by writing reg `0x1f`; the selector
+//   reads back the current page. Every paged access saves the original page
+//   first and restores it last — a failed access still attempts the restore,
+//   and a failed restore is reported separately from the primary failure.
+// - INER: page `0xa42`, reg `0x12`, bit4 = link-change interrupt enable.
+// - INSR: page `0xa43`, reg `0x1d` — clear-on-read. It is read exactly once
+//   per serviced event and the value is retained as the cause snapshot.
+// - Edge status: the `syscon-gpio-edge` sub-window `0xd4019800/0x10` holds
+//   four read-only words. They are snapshotted whole (undecoded pin-bank bits
+//   included) and never written.
+// - MFPR35 (`0xd401e000 + 35*4 = 0xd401e08c`) is the PHY INTN pad. Its edge
+//   field is bits [6:4] (RISE|FALL|CLEAR, R69 `soc/k3/pinctrl/regs.rs`). The
+//   ack is: set CLEAR → read back → clear CLEAR (re-arm), with every bit
+//   outside CLEAR preserved (mux and electrical bits untouched).
+
+/// RTL8211F page selector register (present in every page; reads back the
+/// currently selected page).
+pub const PHY_PAGE_SEL_REG: u32 = 0x1f;
+/// Vendor page holding INER (interrupt enable).
+pub const PHY_PAGE_INER: u16 = 0xa42;
+/// INER register offset inside page `a42`.
+pub const PHY_INER_REG: u32 = 0x12;
+/// INER bit4: link-change interrupt enable.
+pub const PHY_INER_LINK_CHANGE: u16 = 1 << 4;
+/// Vendor page holding INSR (interrupt status).
+pub const PHY_PAGE_INSR: u16 = 0xa43;
+/// INSR register offset inside page `a43`.
+pub const PHY_INSR_REG: u32 = 0x1d;
+/// INSR bit4: link-change cause (same position as the INER enable bit).
+pub const PHY_INSR_LINK_CHANGE: u16 = 1 << 4;
+
+/// Paged-access failure taxonomy: the primary operation and the page-restore
+/// outcome are reported independently; no fake data value is ever produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PagedError {
+    /// Reading the page selector failed; nothing was modified.
+    SaveFailed(MdioError),
+    /// The main operation failed; `restore` is the page-restore outcome.
+    Primary {
+        primary: MdioError,
+        restore: Option<MdioError>,
+    },
+    /// The main operation succeeded but restoring the original page failed.
+    RestoreOnly(MdioError),
+}
+
+/// Reads the currently selected page.
+pub fn mdio_page(env: &mut impl ProbeEnv) -> Result<u16, MdioError> {
+    mdio_read(env, PHY_ADDR, PHY_PAGE_SEL_REG)
+}
+
+/// Selects `page` (no restore); the caller pairs this with [`mdio_page`].
+fn mdio_select_page(env: &mut impl ProbeEnv, page: u16) -> Result<(), MdioError> {
+    mdio_write(env, PHY_ADDR, PHY_PAGE_SEL_REG, page)
+}
+
+/// Runs `f` with the vendor page selected, restoring the saved page after —
+/// including on failure. Returns the restore outcome alongside `f`'s.
+fn with_page<E: ProbeEnv, T>(
+    env: &mut E,
+    page: u16,
+    f: impl FnOnce(&mut E) -> Result<T, MdioError>,
+) -> Result<T, PagedError> {
+    let saved = match mdio_page(env) {
+        Ok(v) => v,
+        Err(e) => return Err(PagedError::SaveFailed(e)),
+    };
+    if let Err(e) = mdio_select_page(env, page) {
+        // The select write failed; restore anyway (idempotent) and report
+        // both outcomes.
+        let restore = mdio_select_page(env, saved).err();
+        return Err(PagedError::Primary { primary: e, restore });
+    }
+    let core = f(env);
+    let restore = mdio_select_page(env, saved).err();
+    match (core, restore) {
+        (Ok(v), None) => Ok(v),
+        (Ok(_), Some(re)) => Err(PagedError::RestoreOnly(re)),
+        (Err(pe), re) => Err(PagedError::Primary { primary: pe, restore: re }),
+    }
+}
+
+/// Paged Clause 22 read: save page → select → read → restore.
+pub fn paged_read(
+    env: &mut impl ProbeEnv,
+    page: u16,
+    reg: u32,
+) -> Result<u16, PagedError> {
+    with_page(env, page, |env| mdio_read(env, PHY_ADDR, reg))
+}
+
+/// Paged Clause 22 write: save page → select → write → restore.
+pub fn paged_write(
+    env: &mut impl ProbeEnv,
+    page: u16,
+    reg: u32,
+    value: u16,
+) -> Result<(), PagedError> {
+    with_page(env, page, |env| mdio_write(env, PHY_ADDR, reg, value))
+}
+
+/// Written and read-back INER values after the enable attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InerEnableEvidence {
+    pub written: u16,
+    pub readback: u16,
+}
+
+impl InerEnableEvidence {
+    /// The link-change enable bit stuck in the register.
+    pub const fn stuck(&self) -> bool {
+        self.readback & PHY_INER_LINK_CHANGE != 0
+    }
+}
+
+/// Enables the PHY link-change interrupt: a bits-preserving paged RMW of INER
+/// a42:12 bit4, verified by a paged read-back (board runs falsify nothing
+/// silently: an unstuck enable means INTB can never fire).
+pub fn iner_enable_link_change(env: &mut impl ProbeEnv) -> Result<InerEnableEvidence, PagedError> {
+    let before = paged_read(env, PHY_PAGE_INER, PHY_INER_REG)?;
+    let after = before | PHY_INER_LINK_CHANGE;
+    if after != before {
+        paged_write(env, PHY_PAGE_INER, PHY_INER_REG, after)?;
+    }
+    let readback = paged_read(env, PHY_PAGE_INER, PHY_INER_REG)?;
+    Ok(InerEnableEvidence {
+        written: after,
+        readback,
+    })
+}
+
+/// `syscon-gpio-edge` sub-window base (board DT `reg = <0xd4019800 0x10>`).
+pub const GPIO_EDGE_BASE_PADDR: u64 = 0xd401_9800;
+/// Edge status words in the sub-window (four u32, read-only).
+pub const GPIO_EDGE_WORDS: usize = 4;
+
+/// Reads the four raw edge-status words. The window is never written and the
+/// values are kept whole — undecoded pin-bank bits are retained, not guessed.
+pub fn read_edge_words(env: &mut impl ProbeEnv) -> [u32; GPIO_EDGE_WORDS] {
+    let mut words = [0u32; GPIO_EDGE_WORDS];
+    for (i, w) in words.iter_mut().enumerate() {
+        *w = env.mmio_read(GPIO_EDGE_BASE_PADDR + (i as u64) * 4);
+    }
+    words
+}
+
+/// MFPR of pin 35 (`PAD_MFPR_BASE_PADDR + 35*4`): the PHY INTN pad.
+pub const PAD35_MFPR_PADDR: u64 = PAD_MFPR_BASE_PADDR + 35 * 4;
+/// MFPR edge-detect rising-enable bit (R69 `pinctrl/regs.rs`).
+pub const PAD_EDGE_RISE: u32 = 1 << 4;
+/// MFPR edge-detect falling-enable bit.
+pub const PAD_EDGE_FALL: u32 = 1 << 5;
+/// MFPR edge-status clear bit (write-1 to clear the latched pad edge).
+pub const PAD_EDGE_CLEAR: u32 = 1 << 6;
+/// MFPR edge field mask, bits [6:4].
+pub const PAD_EDGE_FIELD_MASK: u32 = PAD_EDGE_RISE | PAD_EDGE_FALL | PAD_EDGE_CLEAR;
+/// GPIO mux function value (pin 35 handoff fact: the stock system leaves the
+/// PHY INTN pad in GPIO function; the board DTB `ethernet-phy@1` declares it
+/// as a pinctrl GPIO interrupt with falling-edge trigger).
+pub const PAD_MUX_GPIO: u32 = 0;
+
+/// Raw evidence of the pin 35 interrupt-path setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadEdgeSetupEvidence {
+    pub before: u32,
+    pub written: u32,
+    pub readback: u32,
+}
+
+impl PadEdgeSetupEvidence {
+    /// The written value took effect and changed only the mux field plus the
+    /// EDGE field's CLEAR-release and FALL-enable (every electrical bit
+    /// preserved).
+    pub const fn ok(&self) -> bool {
+        let non_mux_written = self.written & !PAD_MUX_MASK;
+        let non_mux_expected =
+            (self.before & !PAD_MUX_MASK & !PAD_EDGE_CLEAR) | PAD_EDGE_FALL;
+        self.readback == self.written
+            && non_mux_written == non_mux_expected
+            && self.written & PAD_MUX_MASK == PAD_MUX_GPIO
+    }
+}
+
+/// Arms the PHY INTN pad for the pinctrl GPIO interrupt path (board DTB
+/// `ethernet-phy@1 interrupts = <35 2>`: pin 35, falling edge): mux → GPIO,
+/// the falling-edge enable set, the CLEAR hold released (every pad resets
+/// with CLEAR=1 — board runs 1–2 falsified latching with the reset default
+/// left in place), every other bit preserved, then read back. Called once
+/// from the stage 10 setup before the window opens; the ack sequence later
+/// pulses CLEAR and re-arms back to exactly this released state.
+pub fn pad35_edge_setup(env: &mut impl ProbeEnv) -> PadEdgeSetupEvidence {
+    let before = env.mmio_read(PAD35_MFPR_PADDR);
+    let written = (before & !PAD_MUX_MASK & !PAD_EDGE_CLEAR) | PAD_EDGE_FALL;
+    env.mmio_write(PAD35_MFPR_PADDR, written);
+    let readback = env.mmio_read(PAD35_MFPR_PADDR);
+    PadEdgeSetupEvidence {
+        before,
+        written,
+        readback,
+    }
+}
+
+/// Ack write 1: set CLEAR, preserving every other bit (edge config, mux and
+/// electrical bits).
+pub const fn pad_edge_ack_set(old: u32) -> u32 {
+    old | PAD_EDGE_CLEAR
+}
+
+/// Ack write 2 (re-arm): clear CLEAR, restoring every other bit.
+pub const fn pad_edge_rearm(old: u32) -> u32 {
+    old & !PAD_EDGE_CLEAR
+}
+
+/// Raw evidence of one pad-edge ack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadEdgeAckEvidence {
+    pub before: u32,
+    pub set_readback: u32,
+    pub rearm_readback: u32,
+}
+
+/// The D5 pad ack: set CLEAR → read back → clear CLEAR (re-arm). Only the
+/// CLEAR bit ever differs from `before`; the caller snapshots every
+/// destructive cause before calling this.
+pub fn pad35_edge_ack(env: &mut impl ProbeEnv) -> PadEdgeAckEvidence {
+    let before = env.mmio_read(PAD35_MFPR_PADDR);
+    env.mmio_write(PAD35_MFPR_PADDR, pad_edge_ack_set(before));
+    let set_readback = env.mmio_read(PAD35_MFPR_PADDR);
+    env.mmio_write(PAD35_MFPR_PADDR, pad_edge_rearm(before));
+    let rearm_readback = env.mmio_read(PAD35_MFPR_PADDR);
+    PadEdgeAckEvidence {
+        before,
+        set_readback,
+        rearm_readback,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Clause 22 registers and status semantics
 // ---------------------------------------------------------------------------
 
@@ -368,8 +611,9 @@ pub const fn bmsr_anomaly_label(anomaly: BmsrAnomaly) -> &'static str {
 // Link observation (stage 8, task 5.2)
 // ---------------------------------------------------------------------------
 
-/// Observation window and sample interval (5.2 contract item 2).
-pub const LINK_WINDOW_NANOS: u64 = 120_000_000_000;
+/// Observation window and sample interval (5.2 contract item 2; window
+/// shortened from 120 s to 30 s per the 2026-10-03 operator instruction).
+pub const LINK_WINDOW_NANOS: u64 = 30_000_000_000;
 pub const LINK_SAMPLE_INTERVAL_NANOS: u64 = 100_000_000;
 
 /// Physical link state for one sample. Negotiating covers the restart bit
@@ -720,10 +964,11 @@ enum ObsStop {
 
 /// Stage 8 (task 5.2): apply one bits-preserving AN restart, dump the
 /// advertisement registers read-only, then sample BMCR + BMSR×2 every 100 ms
-/// inside a fixed 120 s window. State changes (and the initial state) are
-/// emitted; the window and per-transaction deadlines are never extended.
-/// When the window ends the last state is reported — the kernel never judges
-/// PASS and never resets or reboots by itself.
+/// inside a fixed window (30 s since the 2026-10-03 operator instruction,
+/// originally 120 s). State changes (and the initial state) are emitted; the
+/// window and per-transaction deadlines are never extended. When the window
+/// ends the last state is reported — the kernel never judges PASS and never
+/// resets or reboots by itself.
 pub fn run_link_observation<E: ProbeEnv>(env: &mut E, mut emit: impl FnMut(&str)) {
     emit("[starry-k3] stage=8 link observation begin window-ms=120000 interval-ms=100\n");
     let mut buf = [0u8; PHY_LINE_BUF_LEN];

@@ -11,8 +11,10 @@
 # - UART0 0xd4017000, reg-shift=2 (stride 4), reg-io-width=4 (U32 access);
 #   clock/reset/pinctrl stay in the bootloader handoff state.
 # - timebase-frequency = 0x16e3600 = 24 MHz (shipped DTB, cpu node).
-# - No PLIC/AIA base is configured: MS09 keeps IRQ delivery fail-closed
-#   (irq-if stub only); APLIC/IMSIC addresses are recorded facts, not wired.
+# - APLIC 0xe0804000 (window 0x4000) is wired by MS10 Iteration 000 (change
+#   ms10-com260-kit-diagnosable-device-irq-baseline): the AIA core drives it
+#   through the identity-mapped devices.mmio-ranges window; IMSIC access is
+#   CSR-based (siselect/sireg/stopei) and needs no MMIO range.
 
 arch = "riscv64"
 platform = "riscv64-k3"
@@ -35,9 +37,10 @@ mmio-ranges = [
     [0xd401_7000, 0x1000],
     [0xcac8_2000, 0x2000], # ethernet@cac82000 (board DT reg) — MS09 Iter 003 MAC probe
     [0xd428_2800, 0x400],  # system-controller@d4282800, spacemit,k3-syscon-apmu (board DT reg) — MS09 Iter 003 GMAC bus clock enable
-    [0xd401_9000, 0x100],  # gpio@d4019000, pinctrl GPIO controller (board DT reg) — MS09 Iter 004 PHY reset GPIO1_5
+    [0xd401_9000, 0x1000], # gpio@d4019000 (reg 0x100) + syscon-gpio-regs 0x800 window + syscon-gpio-edge sub-window 0xd4019800/0x10 (board DT regs) — MS09 Iter 004 PHY reset GPIO1_5; MS10 Iter 001 read-only edge snapshot
     [0xd401_5000, 0x1000], # system-controller@d4015000, spacemit,k3-syscon-apbc (board DT reg) — MS09 Iter 004-R1 IO-PD ASAR unlock
     [0xd401_e000, 0x1000], # single page covering MFPR 0xd401e000/0x400 and IO-PD 0xd401e800/0x34 (board DT regs) — MS09 Iter 004 gmac1 pad mux RMW / IO-PD voltage write; one mapping for both resources
+    [0xe080_4000, 0x4000], # interrupt-controller@e0804000 (board DT reg) — MS10 Iter 000 APLIC domain, MSI-only (DM RO=1, run-3 board evidence)
 ] # [(uint, uint)]
 timer-frequency = 24_000_000
 timer-irq = "0x8000_0000_0000_0005"

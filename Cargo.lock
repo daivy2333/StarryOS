@@ -3079,6 +3079,7 @@ dependencies = [
  "axlog",
  "axmm",
  "axnet-ng",
+ "axplat-riscv64-k3",
  "axpoll",
  "axruntime",
  "axsync",

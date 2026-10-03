@@ -24,6 +24,17 @@ pub mod qemu;
 pub mod smoke;
 pub mod visionfive2;
 
+/// K3 stage 9 AIA software-injection probe (MS10 Iteration 000); the module
+/// binds the kernel's optional `axplat-riscv64-k3` dependency for the
+/// production backend and chip observation seam.
+#[cfg(feature = "k3")]
+pub mod aia_probe;
+
+/// K3 stage 10 PHY device IRQ/status probe (MS10 Iteration 001): the D5
+/// cause-snapshot-before-ack core and the device window on the RAM boot path.
+#[cfg(feature = "k3")]
+pub mod k3_device_irq_probe;
+
 #[cfg(all(
     feature = "qemu",
     any(feature = "lichee-d1", feature = "lichee-d1-async-uart")

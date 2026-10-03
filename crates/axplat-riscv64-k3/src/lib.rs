@@ -9,10 +9,12 @@ mod boot;
 mod console;
 mod init;
 #[cfg(feature = "irq-if")]
-mod irq_stub;
+pub mod irq;
 mod mem;
 mod power;
 mod time;
+
+pub mod aia;
 
 pub mod config {
     //! Platform configuration module.

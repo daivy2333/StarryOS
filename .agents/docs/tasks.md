@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-10-02 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS09 与 MS16 已归档。
+> 任务状态最后同步: 2026-10-03 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS10 与 MS16 已归档。
 
 ---
 
@@ -22,7 +22,7 @@
 | <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ✅ 完成（MS09；板级事实、安全 RAM 边界与可重复临时启动已 accepted） |
 | <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ✅ 完成（MS09；FIT RAM 启动可重复，MAC version=0x1054 可读可解释） |
 | <!-- T15 --> T15 | 目标板 Clock/Reset/PHY | 依据 T13 的 bootloader handoff 决定保留或恢复 clock/reset；只建立链路 | preserved 状态有原值；PHY/link 或等效链路结果可重复 | T14 | ✅ 完成（MS09；APMU 两步使能 + IO-PD 按 R69 用法设置，PHYID=0x001cc916 RTL8211F，插拔循环可重复） |
-| <!-- T16 --> T16 | 目标板设备中断 delivery | 只接 MAC IRQ claim、handler、device status 和 EOI | IRQ claim 与设备 status 对齐；无中断风暴；CPU/hart 初始化可区分 | T15 | ⏳ 等待 T15 |
+| <!-- T16 --> T16 | 目标板设备中断 delivery | 只接 MAC IRQ claim、handler、device status 和 EOI | IRQ claim 与设备 status 对齐；无中断风暴；CPU/hart 初始化可区分 | T15 | ✅ 完成（MS10；AIA 软件底座 + PHY 设备 IRQ 插拔对齐板上验证，change 已归档） |
 | <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ⏳ 等待 T16 |
 | <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ⏳ 等待 T17 |
 | <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ⏳ 等待 T18 |
@@ -61,7 +61,10 @@ milestone 可以由一个或多个 change 完成，不预先绑定数量。
 ```text
 QEMU:  MS01 -> MS02 -> MS03 -> MS16 -> MS04 -> MS05 -> MS06 -> MS07 -> MS08
 BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触发)
+SHELL: MS10 -> MS17 -> MS18（平台交互/存储方向，与 BOARD 数据面正交，可并行推进）
 ```
+
+MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 用户批准新增，依据 R74 探索）。
 
 <!-- arc: ARC-202609171804 --> MS01-MS04、MS16 已归档 (2026-09-17) → ../../openspec/changes/archive/2026-09-17-ARC-202609171804/proposal.md
 
@@ -142,7 +145,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 
 ### MS10：目标板可诊断设备中断基线
 
-- Status: planned
+- Status: completed — 2026-10-03；用户审计接受。交付结论限于 CoM260 Kit 的 AIA 软件投递底座（APLIC MSI + IMSIC S-mode，`stopei` 原子 claim+EOI 先于 handler，SETIPNUM/GENMSI 双入口、双 mask、retrap、unknown、风暴预算止损）与 PHY 设备 IRQ/status 基线（pin35 按 DTB 武装 GPIO+下降沿、CLEAR hold 释放、INSR COR 前快照、真实插拔 source60/INSR bit4/link 对齐、quiet、MAC 133/277 只读观察）；本板裁决事实：EIE 掩码窗口 MSI 丢弃（掩码只作止损、须触发后置掩码）、MFPR EDGE CLEAR 复位默认置位（hold-in-clear）、每物理事件一条 INSR=0 回声 claim（分类器排除）。stage10 与 stage8 观察窗按用户指示为 30 s。重复启动仅一轮、COMBO 中断组合与非预期 MAC 事件注入不在本轮结论内。
 - Outcome: 目标 MAC 中断经板级中断控制器 claim/dispatch、handler、device status 和 EOI 可重复投递；破坏性 cause 在 ack 前可保留和审计。
 - Rationale: 真板中断控制器和设备触发模式是独立高风险故障域，不能由 QEMU 证据替代。
 - Dependencies: MS09
@@ -153,7 +156,7 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Verification boundary: 组合 cause 不因 ack 丢失，无中断风暴，CPU/hart 初始化和目标触发模式可区分；cause snapshot 不作为 descriptor completion 结论。
 - Diagnostic boundary: 失败限制在板级中断控制器、cause 寄存器语义、设备触发模式或 snapshot/ack/EOI 顺序。
 - Split signals: 目标控制器暴露多个必须独立验收的中断路径。
-- Related changes: None
+- Related changes: `ms10-com260-kit-diagnosable-device-irq-baseline`（已归档于 `openspec/changes/archive/2026-10-03-ms10-com260-kit-diagnosable-device-irq-baseline/`；Iteration 000–001 全部 accepted，Tasks 1.1–2.3 闭合；行为规格已合并为 `openspec/specs/k3-com260-kit-device-irq-baseline/`）
 
 ### MS11：目标控制器轮询双向网络基线
 
@@ -230,6 +233,34 @@ BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触�
 - Split signals: 两个或更多独立瓶颈同时达到触发条件；为后续候选创建 MS16+。
 - Related changes: None
 
+### MS17：K3 交互 shell 基线
+
+- Status: planned
+- Outcome: CoM260 Kit 上 StarryOS 具备首个可交互用户面：串口 console 可输入命令并得到输出，timer 超时/调度唤醒在 K3 生效，R68 RAM 启动环内可复现。
+- Rationale: 交互性是与 NIC 数据面正交的独立故障域（IRQ 扩展、UART RX、tty/用户态）；R74 探索证明最小路径零存储依赖（用户程序内嵌内核镜像），PXA UART/AIA 机制按 M42 从 tgoskits 默认采信，异步 UART 契约沿用本仓 QEMU/D1 已验证实现。
+- Dependencies: MS10
+- Scope: K3 `IrqIf` 实化到 timer + UART RX（复用 MS10 的 AIA claim/dispatch 底座）；K3 PXA UART 硬件层适配接入现有 `UartPort`/copier/waker/poll 契约；tty console 输入路径；用户程序内嵌载体与 spawn 在 K3 接通（syscall/VFS/进程加载沿用 QEMU 已验证实现）。
+- Non-goals: 存储驱动与 rootfs（MS18）、GMAC 数据面（MS11–MS15）、多 hart（MS14）、网络投递、持久部署、第二 UART。
+- Stable baseline: 单 hart 串口双向交互稳定可重复（命令→输出、sleep/超时生效），既有 QEMU/D1/VF2 构建与行为不回归；后续 K3 开发获得交互观察面。
+- Verification boundary: 真板交互直接观察 + host 纯逻辑测试；单 hart 证据（SMP 属 MS14）。
+- Diagnostic boundary: 失败限于 AIA 底座扩展、UART RX 驱动、tty/用户态 spawn 或内嵌程序载体。
+- Split signals: 存储提前进入范围；或 UART 交互与用户态进程面各自独立受阻。
+- Related changes: None
+
+### MS18：K3 存储与 rootfs 用户态基线
+
+- Status: planned
+- Outcome: K3 上从块设备挂载 rootfs 并运行完整用户态（shell 与用户程序从文件系统加载），形成可复现的存储与文件系统基线。
+- Rationale: rootfs 路线（R74 增强方向）复用 Linux 生态与本仓 QEMU rootfs 经验（同源发行）；存储是独立故障域（块设备、分区、文件系统、DMA/cache 一致性），必须独立验收，不与交互性混同。
+- Dependencies: MS17
+- Scope: K3 块设备驱动（UFS 或 SD/eMMC 按当前板介质事实从 tgoskits 参考适配其一）；分区识别与挂载接入现有 axfs-ng/VFS；rootfs 镜像来源与写入边界裁决（外置介质优先，挂载出厂分区读写为独立风险决策）；用户程序从 rootfs 加载。
+- Non-goals: 持久刷写固件分区（独立高危决策）、GMAC 数据面、多 hart、性能优化、双介质并行支持。
+- Stable baseline: rootfs 挂载后 shell 与用户程序从文件系统加载运行，介质事实与挂载来源可解释、可重复。
+- Verification boundary: 块设备、分区、挂载、程序加载逐层有直接观察；介质/分区事实来自当前板，不推定 R70 布局。
+- Diagnostic boundary: 失败限于块设备驱动、分区/挂载、文件系统或程序加载路径。
+- Split signals: UFS 与 SD/eMMC 需要不同驱动且其一已稳定；或挂载与程序加载各自独立受阻。
+- Related changes: None
+
 Roadmap 共同 Non-goals：
 
 - I13 的 PCI 兼容性不进入 MMIO 主线。
@@ -246,4 +277,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`ms09-com260-kit-observable-link-baseline`（CoM260 Kit 目标板事实与可观测链路基线，覆盖 T13–T15）已于 2026-10-02 正常完成并归档至 `openspec/changes/archive/2026-10-02-ms09-com260-kit-observable-link-baseline/`；Iteration 000–004 共 6 个 Cycle 全部 accepted，Tasks 1.1–5.2 全部闭合（重复启动第三轮、部分 reset 观察与 U-Boot 只读采集为用户明确授权豁免，注记于各自 Cycle）。行为规格已合并为 `openspec/specs/k3-com260-kit-observable-link-baseline/`。后续里程碑为 MS10（目标板可诊断设备中断基线，前置 T15 已完成）。
+无活跃 change。`ms10-com260-kit-diagnosable-device-irq-baseline`（CoM260 Kit 目标板可诊断设备中断基线，覆盖 T16）已于 2026-10-03 正常完成并归档至 `openspec/changes/archive/2026-10-03-ms10-com260-kit-diagnosable-device-irq-baseline/`；Iteration 000–001 全部 accepted，Tasks 1.1–2.3 全部闭合（三轮板测假设修正与 5 项非阻塞偏差注记于 Iteration 001 Cycle）。行为规格已合并为 `openspec/specs/k3-com260-kit-device-irq-baseline/`。后续里程碑为 MS11（目标控制器轮询双向网络基线）与 MS17（K3 交互 shell 基线），前置 T16/MS10 均已完成。

@@ -85,8 +85,9 @@ pub const K3: PlatformDescriptor = PlatformDescriptor {
 ///   at address 1 plus BMCR/BMSR status with the anomaly checks
 ///   (`mdio/phy begin` / `done`; timeouts and identity failures stop);
 /// - stage 8 (MS09 Iteration 004, task 5.2): one AN restart, read-only
-///   advertisement dump and the 120 s link observation window; the kernel
-///   never judges PASS and parks afterwards.
+///   advertisement dump and the fixed link observation window (30 s since
+///   the 2026-10-03 operator instruction, originally 120 s); the kernel
+///   never judges PASS.
 ///
 /// # Safety
 ///
@@ -139,9 +140,26 @@ pub unsafe fn run_first_byte_park() -> ! {
         super::phy_probe::PhyStatus::Ok => {}
         super::phy_probe::PhyStatus::Stopped(_) => park(),
     }
-    // Stage 8 (5.2): one AN restart, advertisement dump and the fixed 120 s
-    // link observation window; it reports and ends by itself, then we park.
+    // Stage 8 (5.2): one AN restart, advertisement dump and the fixed link
+    // observation window (30 s); it reports and ends by itself, then we
+    // continue to the AIA stages.
     super::phy_probe::run_link_observation(&mut env, |line| console.write_str(line));
+    // Stage 9 (MS10 Iter 000, task 1.3): bounded AIA software-injection
+    // probe on the same RAM boot path. The RJ45 stays stable — stage 9 is
+    // pure software delivery (Detached source 1 + GENMSI) and does not
+    // touch the PHY/MDIO state of stages 6–8. Outcome (pass/fail layer) is
+    // reported on the serial wire by the probe itself.
+    #[cfg(feature = "k3")]
+    if let super::aia_probe::Stage9Outcome::Passed(_) =
+        super::aia_probe::run_k3_stage9(|line| console.write_str(line))
+    {
+        // Stage 10 (MS10 Iter 001, tasks 2.1–2.2): 120 s device window after
+        // a healthy controller base. The operator unplugs/replugs the RJ45
+        // during the window; the handler snapshots every destructive cause
+        // before the pad ack and the foreground prints claim lines. The
+        // kernel never judges PASS (task 2.3 adjudicates from this wire).
+        super::k3_device_irq_probe::run_k3_stage10(|line| console.write_str(line));
+    }
     park();
 }
 

@@ -744,7 +744,11 @@ fn run_link_observation_two_plug_cycles_within_window() {
     assert!(lines
         .iter()
         .any(|l| l.contains("stage=8 observation-ended last=up up-observed=yes")));
-    assert_eq!(b.bmsr_reads, 2400, "exactly 1200 samples (fixed window)");
+    assert_eq!(
+        b.bmsr_reads,
+        2 * (phy_probe::LINK_WINDOW_NANOS / phy_probe::LINK_SAMPLE_INTERVAL_NANOS) as usize,
+        "exactly one BMSR pair per sample slot (fixed window)"
+    );
     // Exactly one BMCR write (the AN restart): the only MDIO DATA write in
     // the whole window, followed by the BMCR write trigger, preserving all
     // other bits (0x1140 → 0x1340). Read triggers write ADDR only.
@@ -778,7 +782,10 @@ fn run_link_observation_no_peer_reports_no_link() {
         .iter()
         .any(|l| l.contains("stage=8 observation-ended last=down up-observed=no no-link-observed")),
         "lines: {lines:?}");
-    assert_eq!(b.bmsr_reads, 2400);
+    assert_eq!(
+        b.bmsr_reads,
+        2 * (phy_probe::LINK_WINDOW_NANOS / phy_probe::LINK_SAMPLE_INTERVAL_NANOS) as usize
+    );
 }
 
 #[test]
@@ -819,7 +826,10 @@ fn run_link_observation_mdio_error_exits_immediately() {
         "lines: {lines:?}"
     );
     assert!(lines.iter().any(|l| l.contains("observation-ended error=mdio-timeout")));
-    assert!(b.bmsr_reads < 2400, "observation must stop at the error, not run on");
+    assert!(
+        b.bmsr_reads < 2 * (phy_probe::LINK_WINDOW_NANOS / phy_probe::LINK_SAMPLE_INTERVAL_NANOS) as usize,
+        "observation must stop at the error, not run on"
+    );
 }
 
 #[test]
@@ -832,7 +842,9 @@ fn run_link_observation_invalid_bmsr_stops() {
         "lines: {lines:?}"
     );
     assert!(lines.iter().any(|l| l.contains("observation-ended error=invalid-bmsr")));
-    assert!(b.bmsr_reads < 2400);
+    assert!(
+        b.bmsr_reads < 2 * (phy_probe::LINK_WINDOW_NANOS / phy_probe::LINK_SAMPLE_INTERVAL_NANOS) as usize
+    );
 }
 
 #[test]
@@ -847,7 +859,10 @@ fn run_link_observation_remote_fault_is_not_up_and_continues() {
         .iter()
         .any(|l| l.contains("observation-ended last=remote-fault up-observed=no no-link-observed")),
         "lines: {lines:?}");
-    assert_eq!(b.bmsr_reads, 2400);
+    assert_eq!(
+        b.bmsr_reads,
+        2 * (phy_probe::LINK_WINDOW_NANOS / phy_probe::LINK_SAMPLE_INTERVAL_NANOS) as usize
+    );
 }
 
 #[test]
@@ -865,7 +880,10 @@ fn run_link_observation_bmcr_anomaly_midwindow_stops() {
         "lines: {lines:?}"
     );
     assert!(lines.iter().any(|l| l.contains("observation-ended error=bmcr-anomaly")));
-    assert!(b.bmsr_reads < 2400, "observation must stop at the anomaly");
+    assert!(
+        b.bmsr_reads < 2 * (phy_probe::LINK_WINDOW_NANOS / phy_probe::LINK_SAMPLE_INTERVAL_NANOS) as usize,
+        "observation must stop at the anomaly"
+    );
 }
 
 // ---------------------------------------------------------------------------

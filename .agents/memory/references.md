@@ -123,6 +123,7 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R64 --> `.agents/analysis/k3-branch-board-adaptation-seams.md` | K3 分支真板适配接缝与待证事实（2026-09-29 采集）：k3 分支尚无 K3 feature/Makefile/平台入口，非 D1 构建落入 QEMU descriptor/early UART/VirtIO 路径；对照 D1 axplat boot 形状与本仓 `axdriver_net`/`axnet` owner、epoch、arm/recheck 契约梳理接入接缝；第三方 `k3_gmac` 不能直接注册为 StarryOS 后端；列出必须由目标板/固件裁决的未知项、依赖链失败路径与测试入口，MS09 起逐阶段接入 |
 | <!-- R65 --> `.agents/analysis/k3-com260-kit-staged-ms-exploration.md` | CoM260 Kit 真板里程碑分层探索（2026-09-29 采集）：板型号已确认但板卡修订、运行 DTB、固件、内存图均未知（known-gaps G7 仍 open）；按 MS09–MS14 逐级列出实现/硬件接缝、下一轮须取得的直接事实和进入后继阶段判据；MS09 首轮先取身份/启动边界、最小首字节、控制器与链路三组现场事实；确认型号不改变任何 T13–T25 Gate 状态 |
 | <!-- R66 --> `.agents/analysis/k3-reference-repository-information-value.md` | k3 参考仓库信息资产与用途评估（2026-09-29 采集）：核心价值为可追溯板级资料索引、G1–G15 缺口台账、历史真板排障经验和局部参考实现；给出仓库地图（docs 主题索引、Buildroot 预构建包、Rt-Async-AMP 第三方工程、.claude runbooks/analysis）与各里程碑优先读取资料；强调来源版本、SoC/模组/Kit 分层、第三方负面样本和持久写入风险四类判断边界，不替代当前板运行时事实 |
+| <!-- R74 --> `.agents/analysis/k3-com260-interactive-shell-exploration.md` | K3 CoM260 交互 shell 可行性探索（2026-10-02 采集）：参考仓库 Rt-Async-AMP 的 AP 侧真板 shell 形态（rtsh REPL、UFS rootfs + PXA UART console + GMAC 投递，FIT 仅 kernel+DTB）、tgoskits 可借鉴驱动面（PXA UART/AIA/UFS 与许可证边界）、以及本仓前置判断——MS09+MS10 为全部实质前置，MS11–MS15 与交互性正交，最小 shell 路线可零存储依赖；rootfs 路线为独立风险决策 |
 
 > ⚠️ STALE [2026-09-17] — R23 的项目状态已过期；R47 的 benchmark 身份、hash、manifest 和握手机制与当前规则冲突。两篇 Analysis 已就地标记，正文修订或替代前只复用未受警告影响的架构、workload 和指标内容。
 
