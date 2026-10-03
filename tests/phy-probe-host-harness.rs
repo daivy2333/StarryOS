@@ -695,6 +695,27 @@ fn sample_states(lines: &[String]) -> Vec<&str> {
 }
 
 #[test]
+fn stage8_begin_line_reports_window_from_constant() {
+    let mut b = observation_board();
+    b.phy.peer_schedule = vec![(7, true)];
+    let (lines, _) = capture(|emit| phy_probe::run_link_observation(&mut b, emit));
+    // The printed window must derive from LINK_WINDOW_NANOS, never a stale
+    // literal (the 120 s → 30 s operator instruction changed the constant).
+    let begin = lines
+        .iter()
+        .find(|l| l.contains("link observation begin"))
+        .expect("begin line");
+    assert!(
+        begin.contains(&format!(
+            "window-ms={} interval-ms={}",
+            phy_probe::LINK_WINDOW_NANOS / 1_000_000,
+            phy_probe::LINK_SAMPLE_INTERVAL_NANOS / 1_000_000
+        )),
+        "{begin}"
+    );
+}
+
+#[test]
 fn sample_state_matrix() {
     use phy_probe::{LinkState, Sample};
     // restart bit still set → negotiating even with link bits up

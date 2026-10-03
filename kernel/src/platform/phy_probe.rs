@@ -970,7 +970,14 @@ enum ObsStop {
 /// ends the last state is reported — the kernel never judges PASS and never
 /// resets or reboots by itself.
 pub fn run_link_observation<E: ProbeEnv>(env: &mut E, mut emit: impl FnMut(&str)) {
-    emit("[starry-k3] stage=8 link observation begin window-ms=120000 interval-ms=100\n");
+    let mut buf = [0u8; PHY_LINE_BUF_LEN];
+    emit(line(&mut buf, |b, n| {
+        push_str(b, n, "[starry-k3] stage=8 link observation begin window-ms=");
+        push_usize(b, n, (LINK_WINDOW_NANOS / 1_000_000) as usize);
+        push_str(b, n, " interval-ms=");
+        push_usize(b, n, (LINK_SAMPLE_INTERVAL_NANOS / 1_000_000) as usize);
+        push_str(b, n, "\n");
+    }));
     let mut buf = [0u8; PHY_LINE_BUF_LEN];
 
     let bmcr_before = match mdio_read(env, PHY_ADDR, BMCR_REG) {
