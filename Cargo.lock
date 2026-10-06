@@ -3120,6 +3120,7 @@ dependencies = [
  "riscv 0.16.0",
  "scope-local",
  "slab",
+ "smoltcp",
  "spin 0.10.0",
  "starry-process",
  "starry-signal",

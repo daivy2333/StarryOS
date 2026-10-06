@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-10-03 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS10 与 MS16 已归档。
+> 任务状态最后同步: 2026-10-06 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS11 与 MS16 已归档。
 
 ---
 
@@ -23,9 +23,9 @@
 | <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ✅ 完成（MS09；FIT RAM 启动可重复，MAC version=0x1054 可读可解释） |
 | <!-- T15 --> T15 | 目标板 Clock/Reset/PHY | 依据 T13 的 bootloader handoff 决定保留或恢复 clock/reset；只建立链路 | preserved 状态有原值；PHY/link 或等效链路结果可重复 | T14 | ✅ 完成（MS09；APMU 两步使能 + IO-PD 按 R69 用法设置，PHYID=0x001cc916 RTL8211F，插拔循环可重复） |
 | <!-- T16 --> T16 | 目标板设备中断 delivery | 只接 MAC IRQ claim、handler、device status 和 EOI | IRQ claim 与设备 status 对齐；无中断风暴；CPU/hart 初始化可区分 | T15 | ✅ 完成（MS10；AIA 软件底座 + PHY 设备 IRQ 插拔对齐板上验证，change 已归档） |
-| <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ⏳ 等待 T16 |
-| <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ⏳ 等待 T17 |
-| <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ⏳ 等待 T18 |
+| <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ✅ 完成（MS11；checked 18 页独占 arena、线性 PA/DMA、Zicbom 发布/回收序、高位地址与 4 GiB 环检查，host harness 全绿 + 板测成立） |
+| <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ✅ 完成（MS11；16 slot RX publish/reap/refill/wrap、分类 drop、stage11 真实 ARP RX 与 link-down 有界失败） |
+| <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ✅ 完成（MS11；单次回收 terminal、Full 不覆盖、001-rework doorbell 排他语义修复、stage12 20/20 terminal + 真实 ARP reply） |
 | <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | ⏳ 等待 T19 |
 | <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ⏳ 等待 T20 |
 | <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ⏳ 等待 T21 |
@@ -160,8 +160,8 @@ MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 
 
 ### MS11：目标控制器轮询双向网络基线
 
-- Status: planned
-- Outcome: 在明确 DMA/cache ownership 的前提下完成目标控制器轮询 RX/TX 和协议包收发。
+- Status: completed — 2026-10-06；用户审计接受（原话"工作被接受"）。交付结论限于 CoM260 Kit 的独占 18 页 DMA arena 与地址/cache 契约（checked 布局、线性 PA、Zicbom 发布/回收序、高位地址与 4 GiB 环检查、发布后 backing 保留）、16 slot 轮询 RX/TX（publish/reap/refill/wrap、单次回收、Full 不覆盖、分类 drop、阶段化 deadline/cancel/fail-stop owner 语义）、smoltcp 0.13.1 轮询 Device 与有界四协议会话（token 预留/背压、静态 socket、echo 1024B 上限、5 秒有界等待/close）与 stage13 真板验收（60 s 会话窗：ping 10 请求 10 应答、UDP/TCP 回显字节级一致、tcp-close=Closed、零 drop、16/16 terminal）；本板裁决事实：TX tail 为排他 fetch 上界（doorbell 写 next slot）、RX tail 写为唤醒 doorbell（fetch 由 OWN 驱动）。ping 形态（5+5 手动 Ctrl-C，契约文本 `ping -n 20`）与 reset 描述按用户原话豁免；Wireshark 按用户原话永久豁免。
+- Outcome: 在明确 DMA/cache ownership 的前提下完成目标控制器轮询 RX/TX 和 ARP/ICMP/UDP/TCP 协议包收发。
 - Rationale: T17 只有通过 T18-T19 的 descriptor 移动和真实包才能验证其 DMA/cache 契约。
 - Dependencies: MS10
 - Scope: T17-T19；DMA 地址转换、cache/barrier、descriptor/queue ownership、最小 RX/TX、抓包，以及 submit/doorbell、DMA terminal、reclaim 的分阶段诊断。
@@ -171,7 +171,7 @@ MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 
 - Verification boundary: RX/TX 回收不重复，坏帧、ring full 和 timeout 均标明失败阶段与 owner；不照搬 SDMMC timeout 数值或阶段。
 - Diagnostic boundary: 失败限制在 DMA 地址、cache/barrier、目标硬件队列、具体 submit/terminal/reclaim stage 或轮询数据面。
 - Split signals: RX 或 TX 暴露独立硬件阻塞，且另一方向已形成可复用稳定基线。
-- Related changes: None
+- Related changes: `ms11-com260-kit-polling-bidirectional-network-baseline`（已归档于 `openspec/changes/archive/2026-10-06-ms11-com260-kit-polling-bidirectional-network-baseline/`；Iteration 000–002 全部 accepted，Tasks 1.1–3.2 闭合；行为规格已合并为 `openspec/specs/k3-com260-kit-polling-network-baseline/`）
 
 ### MS12：目标后端异步双向数据面
 
@@ -277,4 +277,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`ms10-com260-kit-diagnosable-device-irq-baseline`（CoM260 Kit 目标板可诊断设备中断基线，覆盖 T16）已于 2026-10-03 正常完成并归档至 `openspec/changes/archive/2026-10-03-ms10-com260-kit-diagnosable-device-irq-baseline/`；Iteration 000–001 全部 accepted，Tasks 1.1–2.3 全部闭合（三轮板测假设修正与 5 项非阻塞偏差注记于 Iteration 001 Cycle）。行为规格已合并为 `openspec/specs/k3-com260-kit-device-irq-baseline/`。后续里程碑为 MS11（目标控制器轮询双向网络基线）与 MS17（K3 交互 shell 基线），前置 T16/MS10 均已完成。
+无活跃 change。`ms11-com260-kit-polling-bidirectional-network-baseline`（CoM260 Kit 目标控制器轮询双向网络基线，覆盖 T17-T19）已于 2026-10-06 正常完成并归档至 `openspec/changes/archive/2026-10-06-ms11-com260-kit-polling-bidirectional-network-baseline/`；Iteration 000–002 全部 accepted，Tasks 1.1–3.2 全部闭合（001 含 doorbell 排他语义 rework；002 板测 ping 形态与 reset 按用户原话豁免）。行为规格已合并为 `openspec/specs/k3-com260-kit-polling-network-baseline/`。后续里程碑：MS12（目标后端异步双向数据面，前置 T19 已完成）与 MS17（K3 交互 shell 基线）可并行推进。

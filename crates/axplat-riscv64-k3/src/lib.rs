@@ -16,6 +16,9 @@ mod time;
 
 pub mod aia;
 
+/// K3 GMAC DMA address/cache foundation (MS11 Iteration 000, task 1.1).
+pub mod dma;
+
 pub mod config {
     //! Platform configuration module.
     //!

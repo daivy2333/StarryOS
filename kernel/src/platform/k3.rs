@@ -158,7 +158,10 @@ pub unsafe fn run_first_byte_park() -> ! {
         // during the window; the handler snapshots every destructive cause
         // before the pad ack and the foreground prints claim lines. The
         // kernel never judges PASS (task 2.3 adjudicates from this wire).
-        super::k3_device_irq_probe::run_k3_stage10(|line| console.write_str(line));
+        let st10 = super::k3_device_irq_probe::run_k3_stage10(|line| console.write_str(line));
+        let st11 = super::k3_network_probe::run_k3_stage11(st10, |line| console.write_str(line));
+        let st12 = super::k3_network_probe::run_k3_stage12(st11, |line| console.write_str(line));
+        super::k3_network_probe::run_k3_stage13(st12, |line| console.write_str(line));
     }
     park();
 }
@@ -177,7 +180,7 @@ fn park() -> ! {
 /// (UART/MAC/APMU plus the Iteration 004 GPIO `0xd4019000/0x100` and the
 /// single pad page `0xd401e000/0x1000`). Time reads the 24 MHz `time` CSR via
 /// axhal; no timer IRQ is required.
-struct K3Env;
+pub(crate) struct K3Env;
 
 impl super::phy_probe::ProbeEnv for K3Env {
     fn mmio_read(&mut self, paddr: u64) -> u32 {

@@ -10,6 +10,7 @@ exclude = [
     "crates/smoltcp",
     "crates/uart_16550",
     "crates/virtio-drivers",
+    "tests/k3-polling-net-host",
 ]
 
 [workspace.package]
@@ -46,6 +47,18 @@ axsync = { version = "=0.3.0-preview.2" }
 axtask = { version = "=0.3.0-preview.2" }
 
 starry-kernel = { path = "kernel", version = "=0.2.0-preview.2" }
+
+# K3 polling network session (MS11 Iteration 002): the local smoltcp crate
+# with exactly the four-protocol feature set; no default features (no_std).
+smoltcp = { path = "crates/smoltcp", version = "0.13.1", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-icmp",
+    "socket-udp",
+    "socket-tcp",
+    "socket-tcp-reno",
+    "auto-icmp-echo-reply",
+] }
 
 [package]
 name = "starryos"

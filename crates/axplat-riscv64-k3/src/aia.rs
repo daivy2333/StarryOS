@@ -89,6 +89,9 @@ macro_rules! probe_line {
     ($out:expr, $($arg:tt)*) => {{
         let mut lb = LineBuf::new();
         let _ = core::write!(&mut lb, $($arg)*);
+        // 002 Cycle newline fix: stage 9+ wire lines carry a trailing \n
+        // (stage 1-8 convention).
+        let _ = lb.write_str("\n");
         $out(lb.as_str());
     }};
 }

@@ -512,3 +512,18 @@ fn genmsi_bypass_does_not_break_the_aplic_mask_evidence() {
     assert_eq!(handler_event_count(), base, "no handler registered yet");
     assert!(pending_set(1), "GENMSI must bypass the APLIC source gate");
 }
+
+// ---------------------------------------------------------------------------
+// 002 Cycle newline fix witness (MS11 Iteration 002, task 3.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stage9_wire_lines_carry_trailing_newline() {
+    let _guard = test_guard();
+    let mut lines = Vec::new();
+    let _summary = run_and_pass(&mut lines);
+    assert!(!lines.is_empty(), "the stage 9 run prints wire lines");
+    for l in &lines {
+        assert!(l.ends_with('\n'), "wire line missing trailing newline: {l:?}");
+    }
+}

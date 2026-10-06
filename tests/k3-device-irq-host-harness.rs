@@ -1231,3 +1231,18 @@ fn mac_routes_are_observed_without_software_trigger() {
         .count();
     assert_eq!(triggers, 0, "observation must not software-trigger sources");
 }
+
+// ---------------------------------------------------------------------------
+// 002 Cycle newline fix witness (MS11 Iteration 002, task 3.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stage10_wire_lines_carry_trailing_newline() {
+    let _guard = test_guard();
+    let mut env = fresh_env();
+    let (_outcome, lines) = run_stage(&mut env);
+    assert!(!lines.is_empty(), "the stage 10 run prints wire lines");
+    for l in &lines {
+        assert!(l.ends_with('\n'), "wire line missing trailing newline: {l:?}");
+    }
+}

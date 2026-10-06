@@ -1,0 +1,62 @@
+Board serial excerpt — MS11 Iteration 000 Cycle 000-initial, V3 (link up, ARP stimulus)
+Date: 2026-10-03, operator board run 3 (k3 branch, worktree with change only)
+Image: StarryOS_riscv64-k3.fit (make k3, this cycle build); UART0 115200 8N1; PC 192.168.137.1/24 direct
+Conditions: cable plugged; `arp -d 192.168.137.2` + `ping -n 1 -w 1000 192.168.137.2` issued inside the stage 11 window; Wireshark on the PC NIC
+Content: verbatim serial excerpt as pasted by the operator (stages 9–11; stages 1–8 not included in the paste). No redaction applied.
+
+[k3:irq] init=global begin
+[k3:irq] probe domaincfg=0x80000004 smsicfg=0x0/0x0 mmsicfg=0x0/0x0 srcfg1=0x0->0x1[k3:irq] msicfg written=0xe0400/0x80604000 readback=0x0/0x0 readback-refused (delivery test adjudicates)[k3:irq] domaincfg enabled=0x104 readback=0x80000104[k3:irq] init=global done
+[k3:irq] init=percpu begin
+[k3:irq] init=percpu done
+[ 69.098535 0 axplat_riscv64_k3::irq:112] k3-irq: register source 9223372036854775813 rejected (unsupported route or duplicate)
+[starry-k3] stage=1 entry-reached
+[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200
+[starry-k3] stage=3 parked, halting (reset to recover)
+[starry-k3] stage=4 apmu begin
+[starry-k3] stage=4 apmu ctrl before=0x00000000
+[starry-k3] stage=4 apmu ctrl step1=0x00000009
+[starry-k3] stage=4 apmu ctrl after1=0x00000009
+[starry-k3] stage=4 apmu ctrl step2=0x0000000b
+[starry-k3] stage=4 apmu ctrl after2=0x0000000b
+[starry-k3] stage=4 apmu clock enable done
+[starry-k3] stage=5 mac probe begin base=0xcac82000 (read-only)
+[starry-k3] stage=5 mac version read1=0x00001054 class=ok
+[starry-k3] stage=5 mac version read2=0x00001054 class=ok
+[starry-k3] stage=5 mac debug read1=0x00000000 class=all-zero sem=idle
+[starry-k3] stage=5 mac debug read2=0x00000000 class=all-zero sem=idle
+[starry-k3] stage=5 mac probe done (parking next)
+[starry-k3] stage=6 gate apmu-clk=1 apmu-rst=1 mac-version=ok proceed
+[starry-k3] stage=6 pad/gpio begin
+[starry-k3] stage=6 iopd write=0x00000004 ok
+[starry-k3] stage=6 pin=21 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=22 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=23 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=24 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=25 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=26 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=27 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=28 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=29 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=30 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=31 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=32 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=33 mux=1 before=0x0000c440 action=write after=0x0000c441 ok
+[starry-k3] stage=6 pin=34 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=35 mux=1 before=0x0000a440 action=write after=0x0000a441 ok
+[starry-k3] stage=6 pin=37 mux=0 before=0x0000a440 action=keep after=0x0000a440 ok
+[starry-k3] stage=6 gpio reset begin
+[starry-k3] stage=6 gpio reset done
+[starry-k3] stage=6 pad/gpio done
+[starry-k3] stage=7 mdio/phy begin
+[starry-k3] stage=7 phy id1=0x001c id2=0xc916 phyid=0x001cc916 result=rtl8211f
+[starry-k3] stage=7 phy bmcr=0x1040 bmsr=0x7989 link=down an-capable=1 an-complete=0
+[starry-k3] stage=7 mdio/phy done
+[starry-k3] stage=8 link observation begin window-ms=30000 interval-ms=100
+[starry-k3] stage=8 an restart bmcr-before=0x1040 bmcr-written=0x1240
+[starry-k3] stage=8 an advert reg4=0x01e1 reg9=0x0200
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x7989 bmsr2=0x7989 state=negotiating
+[starry-k3] stage=8 sample bmcr=0x1040 bmsr1=0x79a9 bmsr2=0x79ad state=up latch-cleared
+[starry-k3] stage=8 observation-ended last=up up-observed=yes
+[starry-k3] stage=9 begin aia-software-probe budget=32[starry-k3] stage=9 readback domaincfg=0x80000104 msi=0x0/0x0 delivery=1 threshold=0 srcfg=0x0 target=0x0 eie0=0x0[starry-k3] stage=9 setip trigger=1 raw=0x10001[starry-k3] stage=9 setip trigger=2 raw=0x10001[starry-k3] stage=9 setip trigger=3 raw=0x10001[starry-k3] stage=9 genmsi trigger=1 raw=0x10001[starry-k3] stage=9 genmsi trigger=2 raw=0x10001[starry-k3] stage=9 genmsi trigger=3 raw=0x10001[starry-k3] stage=9 aplic-mask blocked=1 fresh=1[starry-k3] stage=9 eie-mask blocked=1 drained=0 retained=0 fresh=1[starry-k3] stage=9 retrap independent-claims=2[starry-k3] stage=9 unknown-eid delta=1 no-handler=1[starry-k3] stage=9 storm events=32 sext-masked quiet=1[starry-k3] stage=9 pass setip=3 genmsi=3 aplic_mask=0 aplic_fresh=1 eie_mask=0 eie_retained=0 eie_fresh=1 retrap=2 unknown=1 drained=0 storm=32 eip0=0x0[starry-k3] stage=10 begin device-probe window-ms=30000 quiet-ms=1000 cap=32 source=60 mac=133/277[starry-k3] stage=10 iner enable written=0x0030 rb=0x0030 initial bmsr=0x79ad/0x79ad link=up[starry-k3] stage=10 insr-drain=0x0020[starry-k3] stage=10 pad35 setup before=0x0000a441 written=0x0000a420 readback=0x0000a420 ok=1[starry-k3] stage=10 route source=60 pending=0 enable=1 target=0x3c[starry-k3] stage=10 route source=133 pending=0 enable=1 target=0x85[starry-k3] stage=10 route source=277 pending=0 enable=1 target=0x115[starry-k3] stage=10 mac-obs gmac1160=0x00000000 apmu-ctrl=0x0000000b apmu-wake-bit12=0[starry-k3] stage=10 window open[starry-k3] stage=10 claim idx=0 source=60 edge=0x00000000/0x00000008/0x00000000/0x00000000 mfpr=0x0000a420 insr=0x0010 bmsr=0x7989/0x7989 link=down aligned=1 raw=0x3c003c[starry-k3] stage=10 claim idx=1 source=60 edge=0x00000000/0x00000008/0x00000000/0x00000000 mfpr=0x0000a420 insr=0x0000 bmsr=0x7989/0x7989 link=down aligned=0 raw=0x3c003c[starry-k3] stage=10 claim idx=2 source=60 edge=0x00000000/0x00000008/0x00000000/0x00000000 mfpr=0x0000a420 insr=0x0010 bmsr=0x79a9/0x79ad link=up aligned=1 raw=0x3c003c[starry-k3] stage=10 claim idx=3 source=60 edge=0x00000000/0x00000008/0x00000000/0x00000000 mfpr=0x0000a420 insr=0x0000 bmsr=0x79ad/0x79ad link=up aligned=0 raw=0x3c003c[starry-k3] stage=10 window-close edge=0x00000000/0x00000000/0x00000000/0x00000000 mfpr35=0x0000a420 setip60=0[starry-k3] stage=10 result=link-down-and-up-observed claims=4 down=1 up=1 unaligned=2 mdio-err=0 quiet=1 quiet-claims=0 window-elapsed-ms=30003[starry-k3] stage=11 begin window-ms=30000 scratch=1514 masks=60/133/277[starry-k3] stage=11 init LinkConfig { speed: S1000, full_duplex: true } rx-running[starry-k3] stage=11 frame slot=0 len=280 raw=0x3001011c data=[starry-k3] stage=11 arp-req slot=1 len=60 raw=0x30010040 data=ffffffffffff00e04c602f600806000108000604000100e04c602f60c0a88901000000000000c0a88902000000000000000000000000000000000000[starry-k3] stage=11 frame slot=2 len=60 raw=0x30010040 data=[starry-k3] stage=11 frame slot=3 len=60 raw=0x30010040 data=[starry-k3] stage=11 frame slot=4 len=120 raw=0x3001007c data=[starry-k3] stage=11 frame slot=5 len=60 raw=0x30010040 data=[starry-k3] stage=11 frame slot=6 len=60 raw=0x30010040 data=[starry-k3] stage=11 frame slot=7 len=60 raw=0x30010040 data=[starry-k3] stage=11 result frames=8 drops=0 revocations=0 printed=8 arp-sample=1 window-elapsed-ms=30000

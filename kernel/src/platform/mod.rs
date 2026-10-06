@@ -35,6 +35,18 @@ pub mod aia_probe;
 #[cfg(feature = "k3")]
 pub mod k3_device_irq_probe;
 
+/// K3 GMAC polling driver (MS11 Iteration 000): exclusive-arena DMA
+/// foundation, bounded RX and the stage 11 foreground integration. Lives in
+/// `platform` because the k3 build shape excludes the `drivers` tree (the
+/// k3 image is the minimal park-path kernel).
+#[cfg(feature = "k3")]
+pub mod k3_gmac;
+
+/// K3 stage 11 raw GMAC RX observation window (MS11 Iteration 000, task
+/// 1.3): the stage 10 gate, route masks and the polling driver foreground.
+#[cfg(feature = "k3")]
+pub mod k3_network_probe;
+
 #[cfg(all(
     feature = "qemu",
     any(feature = "lichee-d1", feature = "lichee-d1-async-uart")

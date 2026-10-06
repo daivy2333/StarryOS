@@ -1,10 +1,10 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-10-03
-> Revision: `f7044e12`（MS10 收尾 + stage8 begin 行常量化 follow-up）
+> Updated: 2026-10-06
+> Revision: MS11 closeout 单提交（实现 + 收尾同一提交，2026-10-06）
 > Branch: `k3`
-> Worktree: clean
+> Worktree: clean（本提交后）
 
 ## 项目身份
 
@@ -31,8 +31,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 | `crates/uart_16550/` | 本地 UART 驱动实现 |
 | `crates/axfs-ng/` | 本地文件系统组件 |
 | `crates/axplat-riscv64-lichee-d1/` | Lichee RV Dock D1 平台组件 |
-| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09+MS10 交付：板级基线 + AIA 中断底座） |
-| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、MS10 AIA/设备 IRQ 探针 host harness、host serial/peer harness 与纯输出 validator |
+| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09+MS10+MS11 交付：板级基线 + AIA 中断底座 + GMAC DMA 地址/cache 基础） |
+| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、MS10 AIA/设备 IRQ 探针 host harness、MS11 GMAC 轮询驱动 host harness 与 k3-polling-net-host Cargo 测试包、host serial/peer harness 与纯输出 validator |
 | `openspec/`、`.agents/` | 规范、变更、项目记忆、分析和操作文档 |
 
 ## 支持范围与交付形态
@@ -67,21 +67,29 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
   触发后置掩码）、MFPR EDGE CLEAR 复位默认置位（hold-in-clear）、每物理事件一条 INSR=0 回声
   claim（分类器排除）。stage10 与 stage8 观察窗为 30 s（操作者指示）。结论不含 DMA 收发、
   异步 queue task、多 hart 流量与 timer/UART IRQ 的调度用途（MS11+/MS17 范围）。
+- SpacemiT K3 的目标控制器轮询双向网络基线（MS11）已交付：独占 18 页 DMA arena 与地址/cache
+  契约（checked 布局、线性 PA、Zicbom 发布/回收序、高位地址与 4 GiB 环检查、发布后 backing
+  保留到外部复位）、16 slot 轮询 RX/TX（publish/reap/refill/wrap、单次回收、Full 不覆盖、
+  分类 drop、阶段化 deadline/cancel/fail-stop owner 语义）、smoltcp 0.13.1 轮询 Device 与有界
+  四协议会话（token 预留/背压、静态 socket、echo 1024B 上限、5 秒有界等待/close）与 stage13
+  真板验收（60 s 会话窗 ping/UDP/TCP/ARP 交换成立，零 drop、16/16 terminal）。本板裁决事实：
+  TX tail 为排他 fetch 上界（doorbell 写 next slot）、RX tail 写为唤醒 doorbell（fetch 由 OWN
+  驱动）。结论不含异步 wake、运行时 reset/link-flap 恢复、SMP、offload 与性能（MS12+ 范围）。
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2`、`k3` 与 `smp` 等产品组装入口。
 - 交付物包括可启动内核镜像、平台构建产物，以及配套的内核态和用户态测试载荷。
 
 ## 仓库现场
 
 - 当前 Git 分支为 `k3`，工作树干净。
-- HEAD 为 `f7044e12`（MS10 实现、change 收尾归档、stage8 begin 行常量化 follow-up 与全局状态同步）。
-- 无活跃 change：`ms10-com260-kit-diagnosable-device-irq-baseline`（覆盖 T16）已于 2026-10-03
-  完成并归档于
-  `openspec/changes/archive/2026-10-03-ms10-com260-kit-diagnosable-device-irq-baseline/`；
-  行为规格合并为 `openspec/specs/k3-com260-kit-device-irq-baseline/`。板上日志证据
-  `archive/.../evidence/001-phy-device/000-initial/board-phy-irq.txt`（第 3 轮板测）与
-  `archive/.../evidence/000-initial/001-replan/board-aia-irq.txt`（第 5 轮板测）。
-- 后续里程碑为 MS11（目标控制器轮询双向网络基线）与 MS17（K3 交互 shell 基线），二者前置
-  T16/MS10 均已完成，可并行推进。
+- HEAD 为 MS11 closeout 单提交（2026-10-06：MS11 实现、换行修复、change 收尾归档、Runbook
+  R68 更新与全局状态同步）。
+- 无活跃 change：`ms11-com260-kit-polling-bidirectional-network-baseline`（覆盖 T17-T19）已于
+  2026-10-06 完成并归档于
+  `openspec/changes/archive/2026-10-06-ms11-com260-kit-polling-bidirectional-network-baseline/`；
+  行为规格合并为 `openspec/specs/k3-com260-kit-polling-network-baseline/`。板上四协议证据记录于
+  归档 change Iteration 002 Cycle Act Response「V3' 真板结果」节。
+- 后续里程碑为 MS12（目标后端异步双向数据面，前置 T19 已完成）与 MS17（K3 交互 shell 基线），
+  二者可并行推进。
 - 已知遗留：`make host-test` 中 `tests/ms04-async-rx-host-harness.rs::net_migration_stimulus_is_blocked_gated_in_source`
   失败（pre-existing，源自 MS08 Iteration 001–003 的 placement 改动）；vf2 构建入口 pre-existing
   失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账。
