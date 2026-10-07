@@ -1,15 +1,15 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-10-06 | 路线规划更新: 2026-08-14 | 分支: k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I18；MS01-MS11 与 MS16 已归档。
+> 任务状态最后同步: 2026-10-06 | 路线规划更新: 2026-10-06 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I19；MS01-MS11 与 MS16 已归档。
 
 ---
 
-## 当前：异步 NIC 开发
+## 当前：K3 网卡与串口异步化
 
 每个 milestone 只引入一个主要调试变量。执行前必须通过 OpenSpec Plan 建立 BDD、RTM、测试见证和获批 change。完成状态只依据对应 change 的新鲜证据更新。
 
-执行顺序固定为 T01→T25。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
+NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。当前排期为 MS12→MS13→MS17→MS14，MS14 同时验收网卡与 UART 多 hart 异步行为。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
 
 | ID | Milestone | 交付范围 | 验证 Gate | 前置 | 状态 |
 |---|---|---|---|---|---|
@@ -26,12 +26,12 @@
 | <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ✅ 完成（MS11；checked 18 页独占 arena、线性 PA/DMA、Zicbom 发布/回收序、高位地址与 4 GiB 环检查，host harness 全绿 + 板测成立） |
 | <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ✅ 完成（MS11；16 slot RX publish/reap/refill/wrap、分类 drop、stage11 真实 ARP RX 与 link-down 有界失败） |
 | <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ✅ 完成（MS11；单次回收 terminal、Full 不覆盖、001-rework doorbell 排他语义修复、stage12 20/20 terminal + 真实 ARP reply） |
-| <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | ⏳ 等待 T19 |
+| <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | 待执行（MS12 计划已批准，首轮 Cycle ready；当前轮先完成 IRQ/timer 接缝） |
 | <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ⏳ 等待 T20 |
 | <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ⏳ 等待 T21 |
-| <!-- T23 --> T23 | 真板多 hart | 验证 queue affinity、跨 hart wake、控制面同步和 ordering | 双向流量与 reset 交错无 race；每项 ordering 有角色说明 | T22 | ⏳ 等待 T22 |
-| <!-- T24 --> T24 | 真板长稳压力 | 组合 burst、双向和 ring full；只评估稳定性与指标 | 长时间运行无 stall；drop、p99、occupancy 和环境可复现 | T23 | ⏳ 等待 T23 |
-| <!-- T25 --> T25 | 数据驱动优化 | 按测量逐项评估 batch、moderation、offload、zero-copy 和 multiqueue | 每项独立 A/B；正确性 Gate 不退化；无数据则记录 SKIPPED | T24；指标触发 | ⏳ 等待 T24 |
+| <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ⏳ 等待 MS13 与 MS17 |
+| <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ⏳ 等待 T23 |
+| <!-- T25 --> T25 | 已转为 I19 | 不再作为执行任务；方向见 `.agents/memory/improvements.md` I19 | 不参与当前路线完成判定 | 不适用 | superseded — 2026-10-06 用户批准退出路线 |
 
 <!-- arc: ARC-202609171804 --> T01-T06 已归档 (2026-09-17) → ../../openspec/changes/archive/2026-09-17-ARC-202609171804/proposal.md
 
@@ -47,24 +47,28 @@
 - M39：跨 hart ordering 按同步角色说明；QEMU 单 hart 不能作为 SMP 证据。
 - R53：W1C/clear-on-read cause 保留只补充 register-recheck，不替代 descriptor/cookie completion ledger；单请求 DMA fail-stop 只作为恢复语义的安全下限，不扩张 MS05。
 - I06 只在 T13-T24 的触发条件满足时评估。
-- I13-I18 未承诺，不得混入 T01-T25；I17 仅在 MS08+MS07 accepted 且唯一 spawn seam 稳定后评估，I18 仅在 MS08 accepted + 至少一个其他 async 设备稳定后评估。
+- I13-I19 未承诺，不得混入当前执行路线；I17 仅在 MS08+MS07 accepted 且唯一 spawn seam 稳定后评估，I18 仅在 MS08 accepted + 至少一个其他 async 设备稳定后评估。I19 不阻塞 MS14 收口。
 
 ---
 
 ## Milestone Roadmap
 
-本节按稳定基线组织项目阶段。现有 T01-T25 保留为单变量执行分解；一个
+本节按稳定基线组织项目阶段。现有 T01-T24 保留为 NIC 单变量执行分解，MS17 和 MS14 补齐 UART；一个
 milestone 可以由一个或多个 change 完成，不预先绑定数量。
 
 路线先完成 QEMU 异步基线，再进入目标板：
 
 ```text
 QEMU:  MS01 -> MS02 -> MS03 -> MS16 -> MS04 -> MS05 -> MS06 -> MS07 -> MS08
-BOARD: MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS14 -> MS15 (指标触发)
-SHELL: MS10 -> MS17 -> MS18（平台交互/存储方向，与 BOARD 数据面正交，可并行推进）
+K3:    MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS17 -> MS14（当前交付终点）
+       MS14 的依赖为 MS13 + MS17；MS17 的技术前置仍为 MS10
+独立存储方向: MS17 -> MS18（不进入当前异步化交付排期）
+未承诺优化: I19（原 MS15/T25，不作为 MS14 的前置或后继任务）
 ```
 
-MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 用户批准新增，依据 R74 探索）。
+MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批准新增，依据 R74 探索）。本次把 MS17 提到 MS14 之前，保留 MS18 的独立存储规划和原编号。
+
+2026-10-06 用户批准本次顺序和范围调整，原话：“批准当前的工作，另外调整一下tasks里面的ms规划，我们把ms14当作最后的ms，优先把12、13、17做完，然后进入ms14，这样k3板子上的多hart网卡和串口的异步化就做完了，性能优化退化到I文档，开始这个更改吧给你豁免”。批准覆盖路线写入、I19 登记和 MS12 计划批准状态同步；不豁免行为测试或真板验收，也不把历史 UART 未验收项计为完成。
 
 <!-- arc: ARC-202609171804 --> MS01-MS04、MS16 已归档 (2026-09-17) → ../../openspec/changes/archive/2026-09-17-ARC-202609171804/proposal.md
 
@@ -175,7 +179,7 @@ MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 
 
 ### MS12：目标后端异步双向数据面
 
-- Status: planned
+- Status: active — 2026-10-06 计划获批，首轮 Cycle ready；实施未开始
 - Outcome: 已验证的 QEMU queue/stack 契约适配到目标控制器异步 RX/TX。
 - Rationale: T20-T21 共享同一真板 IRQ、DMA 和队列适配边界，合并后形成双向 transport parity。
 - Dependencies: MS11
@@ -186,7 +190,7 @@ MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 
 - Verification boundary: RX/TX burst、queue full、drop、occupancy 和 flush 均可观测。
 - Diagnostic boundary: 失败限制在目标 transport 适配、真板 IRQ/DMA 或既有异步契约回归。
 - Split signals: RX 与 TX 依赖不同硬件能力，且任一方向可独立成为后续稳定前置。
-- Related changes: None
+- Related changes: `ms12-com260-kit-async-bidirectional-data-plane`（7 项任务、3 个 Iteration；当前 `iterations/000-initial/000-initial.md` ready，Act/Review pending）
 
 ### MS13：目标板单 CPU/hart 恢复语义
 
@@ -203,53 +207,46 @@ MS17–MS18 属 T01–T25 NIC 单变量分解之外的平台方向（2026-10-02 
 - Split signals: link 恢复与完整设备 reset 出现不可共享的生命周期和验证边界。
 - Related changes: None
 
-### MS14：目标板多 CPU/hart 稳定性与性能基线
+### MS17：K3 单 hart 异步串口与交互 shell 基线
 
 - Status: planned
-- Outcome: 真板多 hart 异步网络在组合压力和长时间运行下形成可复现的稳定性与性能基线。
-- Rationale: T24 只提供 T23 的完成证据和后续优化输入，不单独形成产品能力。
-- Dependencies: MS13
-- Scope: T23-T24；queue affinity、跨 hart wake、双向压力、ring full、reset 交错和 soak。
-- Non-goals: batching、moderation、offload、zero-copy 和 multiqueue。
-- Workload: 真板并发、长稳测试、指标采集、环境固定和证据整理。
-- Stable baseline: 长时间运行无 stall，drop、p99、occupancy、IRQ 和 CPU 指标可复现。
-- Verification boundary: 真板多 hart 证据独立保存，每项 ordering 有角色说明。
-- Diagnostic boundary: 失败限制在跨 hart 同步、真板调度、恢复交错或稳定性退化。
-- Split signals: SMP 正确性与 soak 环境分别需要长期独立交付，且前者已能成为后续稳定基线。
-- Related changes: None
-
-### MS15：首个数据驱动优化闭环
-
-- Status: planned
-- Outcome: 关闭 MS14 数据确认的一个主要瓶颈，并建立不退化正确性的 A/B 基线。
-- Rationale: T25 包含多个独立故障域；每个 milestone 只接纳一个有数据支持的优化方向。
-- Dependencies: MS14；指标达到明确触发条件
-- Scope: T25 中首个被数据触发的内聚候选，例如 batch、moderation、offload、zero-copy 或 multiqueue。
-- Non-goals: 同时打包多个独立优化；无数据时预先实现候选能力。
-- Workload: 瓶颈归因、单项实现、A/B 测量、正确性回归和收益记录。
-- Stable baseline: 一个优化方向有可复现收益，且 MS14 正确性 Gate 不退化。
-- Verification boundary: 同环境独立 A/B；无触发数据时记录 SKIPPED，不实施。
-- Diagnostic boundary: 失败限制在被选中的单项优化及其直接交互面。
-- Split signals: 两个或更多独立瓶颈同时达到触发条件；为后续候选创建 MS16+。
-- Related changes: None
-
-### MS17：K3 交互 shell 基线
-
-- Status: planned
-- Outcome: CoM260 Kit 上 StarryOS 具备首个可交互用户面：串口 console 可输入命令并得到输出，timer 超时/调度唤醒在 K3 生效，R68 RAM 启动环内可复现。
+- Outcome: CoM260 Kit 上 StarryOS 具备首个可交互用户面：串口异步 RX/TX 接通，console 可输入命令并得到输出，timer 超时/调度唤醒在 K3 生效，R68 RAM 启动环内可复现。
 - Rationale: 交互性是与 NIC 数据面正交的独立故障域（IRQ 扩展、UART RX、tty/用户态）；R74 探索证明最小路径零存储依赖（用户程序内嵌内核镜像），PXA UART/AIA 机制按 M42 从 tgoskits 默认采信，异步 UART 契约沿用本仓 QEMU/D1 已验证实现。
-- Dependencies: MS10
-- Scope: K3 `IrqIf` 实化到 timer + UART RX（复用 MS10 的 AIA claim/dispatch 底座）；K3 PXA UART 硬件层适配接入现有 `UartPort`/copier/waker/poll 契约；tty console 输入路径；用户程序内嵌载体与 spawn 在 K3 接通（syscall/VFS/进程加载沿用 QEMU 已验证实现）。
-- Non-goals: 存储驱动与 rootfs（MS18）、GMAC 数据面（MS11–MS15）、多 hart（MS14）、网络投递、持久部署、第二 UART。
-- Stable baseline: 单 hart 串口双向交互稳定可重复（命令→输出、sleep/超时生效），既有 QEMU/D1/VF2 构建与行为不回归；后续 K3 开发获得交互观察面。
-- Verification boundary: 真板交互直接观察 + host 纯逻辑测试；单 hart 证据（SMP 属 MS14）。
-- Diagnostic boundary: 失败限于 AIA 底座扩展、UART RX 驱动、tty/用户态 spawn 或内嵌程序载体。
+- Dependencies: MS10；排期在 MS12、MS13 完成之后，优先复用 MS12 已接通的 timer/task 底座，不新增对网络恢复语义的技术依赖
+- Scope: K3 `IrqIf` 实化到 timer + UART RX（复用 MS10 的 AIA claim/dispatch 底座）；K3 PXA UART 硬件层适配接入现有 `UartPort`/RX-TX copier/waker/poll 契约，包含双向异步 I/O、背压与 flush/drain 等待语义；tty console 输入路径；用户程序内嵌载体与 spawn 在 K3 接通（syscall/VFS/进程加载沿用 QEMU 已验证实现）。
+- Non-goals: 存储驱动与 rootfs（MS18）、GMAC 数据面（MS11–MS13）、多 hart（MS14）、网络投递、持久部署、第二 UART。
+- Stable baseline: 单 hart 串口双向异步 I/O 与交互稳定可重复（命令→输出、背压解除后恢复、flush/drain 和 sleep/超时生效），既有 QEMU/D1/VF2 构建与行为不回归；后续 K3 开发获得交互观察面。
+- Verification boundary: 真板 UART RX/TX、等待唤醒与交互直接观察 + host 生产路径测试；普通启动日志不作为异步 UART 验收；单 hart 证据（SMP 属 MS14）。
+- Diagnostic boundary: 失败限于 AIA 底座扩展、UART RX/TX 驱动、tty/用户态 spawn 或内嵌程序载体。
 - Split signals: 存储提前进入范围；或 UART 交互与用户态进程面各自独立受阻。
+- Related changes: None
+
+### MS14：K3 多 hart 网卡与串口异步化最终验收
+
+- Status: planned
+- Outcome: CoM260 Kit 上网卡和 UART 均在多 hart 下完成双向异步 I/O、跨 hart 唤醒与组合长稳验收；成为当前 K3 异步化路线的最终交付。
+- Rationale: MS12/MS13 提供网卡功能与恢复基线，MS17 提供串口单 hart 基线；本阶段只推进这些既有能力的多 hart 正确性和共同运行稳定性，不重新承担设备 bring-up。
+- Dependencies: MS13、MS17（含传递前置 MS12）；两条单 hart 基线均验收后才进入。
+- Scope: T23-T24；NIC queue/stack 与 UART RX/TX copier 的 affinity、跨 hart wake、共享状态同步与 ordering；分别覆盖两设备双向 I/O、容量/背压、等待取消/超时和 flush/drain；网络 reset/link 恢复交错；网卡流量与串口交互共同运行的长稳压力。
+- Non-goals: 新设备 bring-up、存储/rootfs（独立 MS18）、新增 UART 硬件 reset 能力、受控任务迁移、第二 UART，以及性能资格/优化（I19：batching、moderation、offload、zero-copy、multiqueue 等）。
+- Workload: 先分别完成网卡与 UART 的多 hart 适配和专项验证，再验证组合压力及长稳；复用既有 executor/copier/queue/stack，不引入通用驱动框架。
+- Stable baseline: 网卡与 UART 均有 K3 多 hart 双向异步运行结果；跨 hart wake 不丢失，各自资源/owner 账本闭合；网络恢复交错和组合长稳无 stall、永久 Pending、重复回收或资源泄漏。
+- Verification boundary: 网卡、UART 专项和组合运行分别观察目标行为；普通串口日志、QEMU SMP 或单 hart 结果均不代替 K3 UART 多 hart 验收。保留错误、drop、occupancy、IRQ/wake 等正确性观测；不以吞吐/p99/CPU 收益或完整性能矩阵作为完成门槛。
+- Diagnostic boundary: 分别定位 NIC queue/stack、UART copier/tty、平台跨 hart IRQ/IPI/调度和组合恢复边界，不以网络通过推定 UART 通过。
+- Balance audit: 网卡与 UART 各自具有独立故障域，专项验收必须保留；用户明确指定一个最终集成阶段，允许通过多个 change/Iteration 分开诊断，再共同验收，不新增后继 milestone。
+- Split signals: 任一设备多 hart 适配或组合长稳长期独立受阻时，在本阶段内拆分 change/Iteration 并记录未完成项；不因另一设备通过就收口，也不自动扩展新 milestone。
+- Related changes: None
+
+### MS15：性能优化已转为改进方向
+
+- Status: superseded — 2026-10-06 用户要求退出执行路线，转为 I19
+- Replacement: `.agents/memory/improvements.md` I19；未承诺实施，不是 MS14 的前置或后继阶段。
 - Related changes: None
 
 ### MS18：K3 存储与 rootfs 用户态基线
 
 - Status: planned
+- Scheduling: 保留既有独立存储规划；不列入当前 MS12→MS13→MS17→MS14 的异步化交付排期，不阻塞 MS14，也不作为其自动后继阶段。
 - Outcome: K3 上从块设备挂载 rootfs 并运行完整用户态（shell 与用户程序从文件系统加载），形成可复现的存储与文件系统基线。
 - Rationale: rootfs 路线（R74 增强方向）复用 Linux 生态与本仓 QEMU rootfs 经验（同源发行）；存储是独立故障域（块设备、分区、文件系统、DMA/cache 一致性），必须独立验收，不与交互性混同。
 - Dependencies: MS17
@@ -277,4 +274,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-无活跃 change。`ms11-com260-kit-polling-bidirectional-network-baseline`（CoM260 Kit 目标控制器轮询双向网络基线，覆盖 T17-T19）已于 2026-10-06 正常完成并归档至 `openspec/changes/archive/2026-10-06-ms11-com260-kit-polling-bidirectional-network-baseline/`；Iteration 000–002 全部 accepted，Tasks 1.1–3.2 全部闭合（001 含 doorbell 排他语义 rework；002 板测 ping 形态与 reset 按用户原话豁免）。行为规格已合并为 `openspec/specs/k3-com260-kit-polling-network-baseline/`。后续里程碑：MS12（目标后端异步双向数据面，前置 T19 已完成）与 MS17（K3 交互 shell 基线）可并行推进。
+`ms12-com260-kit-async-bidirectional-data-plane`：需求、设计、三轮 Map 与首轮 Cycle 已于 2026-10-06 获批；当前 `iterations/000-initial/000-initial.md` 为 ready，Act/Review pending，7 项实施任务未开始。全量状态以该 change 产物为准。
+
+当前优先顺序为 MS12→MS13→MS17→MS14；MS14 等待网络恢复与串口单 hart 两条基线验收。MS11 已完成并归档，详情保留在 MS11 条目。

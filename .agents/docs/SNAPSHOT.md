@@ -2,9 +2,9 @@
 
 > Sync status: current
 > Updated: 2026-10-06
-> Revision: MS11 closeout 单提交（实现 + 收尾同一提交，2026-10-06）
+> Revision: `aca5dfe9`
 > Branch: `k3`
-> Worktree: clean（本提交后）
+> Worktree: dirty（规划文档修改与未跟踪目录）
 
 ## 项目身份
 
@@ -80,16 +80,10 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 
 ## 仓库现场
 
-- 当前 Git 分支为 `k3`，工作树干净。
-- HEAD 为 MS11 closeout 单提交（2026-10-06：MS11 实现、换行修复、change 收尾归档、Runbook
-  R68 更新与全局状态同步）。
-- 无活跃 change：`ms11-com260-kit-polling-bidirectional-network-baseline`（覆盖 T17-T19）已于
-  2026-10-06 完成并归档于
-  `openspec/changes/archive/2026-10-06-ms11-com260-kit-polling-bidirectional-network-baseline/`；
-  行为规格合并为 `openspec/specs/k3-com260-kit-polling-network-baseline/`。板上四协议证据记录于
-  归档 change Iteration 002 Cycle Act Response「V3' 真板结果」节。
-- 后续里程碑为 MS12（目标后端异步双向数据面，前置 T19 已完成）与 MS17（K3 交互 shell 基线），
-  二者可并行推进。
+- 当前 Git 分支为 `k3`，HEAD 为 `aca5dfe9`；工作树含规划文档修改与未跟踪目录。
+- `openspec/changes/ms12-com260-kit-async-bidirectional-data-plane/` 包含目标后端异步网络
+  的需求、设计、任务与首轮执行契约；归档目录保留 MS11 轮询网络产物。当前行为规格包括
+  `openspec/specs/k3-com260-kit-polling-network-baseline/`；项目支持范围仍以已验收行为为准。
 - 已知遗留：`make host-test` 中 `tests/ms04-async-rx-host-harness.rs::net_migration_stimulus_is_blocked_gated_in_source`
   失败（pre-existing，源自 MS08 Iteration 001–003 的 placement 改动）；vf2 构建入口 pre-existing
   失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账。

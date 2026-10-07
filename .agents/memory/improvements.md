@@ -201,6 +201,27 @@ I18 在触发条件满足前 MUST 只记录观察与候选方向，不得预先�
 - **AND** Plan Context MUST 评估"宏 vs 代码生成 vs trait"三种实现路径的取舍
 - **AND** Plan Context MUST 包含"如果数据结构层无法对齐，本 I 失败"的退出条件
 
+### Requirement: I19 — K3 数据驱动性能优化
+
+性能测量补全和优化作为未承诺方向保留，不进入当前 MS12→MS13→MS17→MS14 执行路线，也不阻塞 MS14 网卡与 UART 多 hart 异步化验收。
+
+**来源**: 2026-10-06 用户明确要求“性能优化退化到I文档”；承接原 MS15/T25，以及原 MS14 的性能资格与优化输入要求。
+**状态**: 待评估，未承诺（原 MS15/T25 已退出执行路线）
+**触发条件**: MS14 验收后，实际测量确认主要瓶颈，且用户另行批准提升为独立工作。
+**关联**: I16（性能矩阵基础设施缺口）、R47/R49（既有测量口径）；不重复登记 I16 的设施清单。
+
+- **方向**: 根据 K3 真板数据评估首个内聚优化候选，例如 batch、moderation、offload、zero-copy 或 multiqueue；串口瓶颈按其实际路径单独归因，不照搬 NIC 优化。
+- **测量**: 按需建立吞吐、p99、IRQ 与 CPU 开销基线，识别瓶颈；复用有效的既有负载和原生测量能力，所需设施缺口按 I16 评估。
+- **通过条件**: 同环境独立 A/B 显示可复现收益，MS14 网卡与 UART 正确性不退化；每次只接纳一个有数据支持的优化方向。
+- **边界**: 不预先实现候选，不同时打包多个独立瓶颈；无触发数据时不实施。遵守公共规则，不恢复历史身份型证据或判定工具。
+
+#### Scenario: 稳定性验收后考虑优化
+
+- **WHEN** MS14 已验收且真实测量支持某个具体瓶颈
+- **AND** 用户另行批准该优化的目标与范围
+- **THEN** SHOULD 将所需方向提升为独立 change，并将对应已承诺范围标为 promoted
+- **AND** MUST 保持网卡、UART 和组合稳定性验收结果，不以性能收益代替正确性
+
 <!-- arc: ARC-202607251326 --> 4 条目已归档 (I07-I10, 2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 
 <!-- arc: cleanup-uart-documentation-system --> I12 (UART benchmark measurement) archived 2026-07-25. Universal measurement rules migrated to quality-gate-baseline/spec.md:Benchmark measurement methodology.
