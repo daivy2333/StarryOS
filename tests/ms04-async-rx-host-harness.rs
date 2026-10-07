@@ -1133,8 +1133,11 @@ fn uart_start_copiers_uses_pre_enqueue_affinity_and_saves_handle() {
     assert!(UART_INIT.contains(".rx_copier()"));
     assert!(UART_INIT.contains(".tx_copier()"));
 
-    // Each direction is started at most once and saves its handle.
-    for guard in ["RX_COPIER_STARTED.swap(true", "TX_COPIER_STARTED.swap(true"] {
+    // Each direction is started at most once and saves its handle. The
+    // once-guard moved to `CopierStartGuard` (MS17 Iteration 001 T4): the
+    // `claim()` spelling keeps the fail-closed duplicate-start semantics,
+    // which are behaviorally witnessed by k3-uart-plane-host-harness.rs.
+    for guard in ["RX_COPIER_STARTED.claim()", "TX_COPIER_STARTED.claim()"] {
         assert!(
             UART_INIT.contains(guard),
             "a duplicate-start guard {guard:?} must fail closed",
@@ -3588,7 +3591,13 @@ fn net_migration_stimulus_is_blocked_gated_in_source() {
         .find("task.state() == axtask::TaskState::Blocked")
         .expect("stimulus must verify TaskState::Blocked before waking");
     // ... and its first (and only) wake must sit inside that gated branch:
-    // Running/Ready is never nudged.
+    // Running/Ready is never nudged. Walked from the gate to the wake, the
+    // branch must never close (depth reaching 0 before the wake would mean
+    // the gate was exited first). Brace-balanced inner blocks — e.g. the
+    // QEMU-only telemetry `#[cfg(feature = "qemu")] { wakes += 1; }` added in
+    // MS08 Iterations 001–003 — cancel out and stay transparent to this
+    // check, so it witnesses exactly the gate containment without forbidding
+    // balanced telemetry inside the branch.
     let wake = stimulus
         .find("wake_role(role)")
         .expect("stimulus must issue the role's genuine wake");
@@ -3596,9 +3605,23 @@ fn net_migration_stimulus_is_blocked_gated_in_source() {
         gate < wake,
         "the wake must follow the Blocked-state gate (no ungated wake path)"
     );
+    let mut depth = 0usize;
+    for ch in stimulus[gate..wake].chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                assert!(
+                    depth > 0,
+                    "the wake must stay inside the Blocked-gated branch"
+                );
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
     assert!(
-        !stimulus[gate..wake].contains('}'),
-        "the wake must stay inside the Blocked-gated branch"
+        depth >= 1,
+        "the wake must sit inside the Blocked-gated branch"
     );
 
     // Bounded, state-driven termination: observation, rollback, iteration cap.

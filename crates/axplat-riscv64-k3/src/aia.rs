@@ -281,8 +281,21 @@ pub const SUPPORTED_ROUTES: [SourceRoute; 4] = [
     SourceRoute { source: 277, sm: SM_LEVEL_HIGH },
 ];
 
+/// UART route (MS17 Iteration 000, task T2): source/EID 42 LevelHigh. Opt-in
+/// only — without the `uart-irq` feature the source stays rejected like any
+/// other unrouted line, and the four MS10 routes are untouched.
+#[cfg(feature = "uart-irq")]
+pub const UART_ROUTE: SourceRoute = SourceRoute { source: 42, sm: SM_LEVEL_HIGH };
+
 pub fn route_for(source: usize) -> Option<&'static SourceRoute> {
-    SUPPORTED_ROUTES.iter().find(|r| r.source == source)
+    if let Some(route) = SUPPORTED_ROUTES.iter().find(|r| r.source == source) {
+        return Some(route);
+    }
+    #[cfg(feature = "uart-irq")]
+    if source == UART_ROUTE.source {
+        return Some(&UART_ROUTE);
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

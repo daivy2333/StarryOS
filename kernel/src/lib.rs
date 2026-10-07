@@ -30,13 +30,28 @@ compile_error!(
      one fullbench mode"
 );
 
+// MS17 Iteration 000: the K3 async UART mode is a single-hart qualification
+// shape; multi-hart async I/O is the MS14 milestone and must not silently
+// combine with it (the `make k3-uart-port` target rejects SMP>1 up front).
+#[cfg(all(feature = "k3-async-uart", feature = "smp"))]
+compile_error!(
+    "k3-async-uart is a single-hart qualification mode; the `smp` feature cannot be combined \
+     with it"
+);
+
 pub mod entry;
 
 mod config;
 // Crate-root shared IRQ restore policy (no feature gate: `lichee-d1-smoke`
 // excludes `drivers` but still requires the critical-section impl).
 mod critical_section_policy;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "k3")))]
+// MS17 Iteration 000: the K3 async UART mode opens `drivers` for the raw PXA
+// port modules (drivers/mod.rs excludes every QEMU/D1-shaped module there);
+// the k3 polling image keeps the whole tree excluded.
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    all(feature = "k3", not(feature = "k3-async-uart")),
+)))]
 mod drivers;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
 mod file;

@@ -329,6 +329,24 @@ k3-fit:
 	mkimage -f tools/starry-k3.its StarryOS_riscv64-k3.fit
 	@dumpimage -l StarryOS_riscv64-k3.fit
 
+# MS17 Iteration 000: K3 raw UART port qualification image. Single-hart only:
+# multi-hart async I/O is a later milestone (MS14) and must not silently
+# build this mode. Same adjudicated MEM/PLAT_CONFIG window as `make k3`.
+k3-uart-port:
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-uart-port is a single-hart qualification mode; SMP>1 is unsupported (see MS17/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-uart-port-test MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
+	$(MAKE) --no-print-directory k3-fit
+
+# MS17 Iteration 001: K3 async UART data-plane qualification image. The
+# Iteration 000 port plus copiers/rings over the uart_init K3 path;
+# single-hart only (multi-hart async I/O is MS14).
+k3-uart:
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-uart is a single-hart qualification mode; SMP>1 is unsupported (see MS17/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-uart MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
+	$(MAKE) --no-print-directory k3-fit
+
 lichee:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
 	@echo "Packing Android boot image (smoke)..."
@@ -381,4 +399,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-uart-port k3-uart

@@ -9,7 +9,15 @@ static mut RTC_EPOCHOFFSET_NANOS: u64 = 0;
 
 pub(super) fn init_early() {}
 
-pub(super) fn init_percpu() {}
+pub(super) fn init_percpu() {
+    // MS17 task T1 (`runtime-irq`): schedule the first timer event
+    // immediately. The runtime-registered handler re-arms the periodic
+    // deadline once SIE opens, so the first IRQ after `init_interrupt`
+    // starts the self-continuing tick; without the feature the platform
+    // stays timer-inert (no STIE, no SBI timer programming).
+    #[cfg(feature = "runtime-irq")]
+    sbi_rt::set_timer(0);
+}
 
 struct TimeIfImpl;
 

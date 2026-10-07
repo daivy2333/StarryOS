@@ -677,3 +677,71 @@ fn msicfg_readback_refused_warns_and_init_continues() {
     assert_eq!(b.aplic_get(APLIC_DOMAINCFG), APLIC_DOMAINCFG_IE | 0x4);
     assert_eq!(b.aplic_get(APLIC_SMSICFGADDR), aia::smsicfgaddr_low());
 }
+
+// ---------------------------------------------------------------------------
+// MS17 Iteration 000 task T2: UART route (source 42), cfg-split contracts
+// ---------------------------------------------------------------------------
+
+/// Legacy shape (`irq-if` only): source 42 stays rejected like any unrouted
+/// line — no route, no registration, no hardware effect.
+#[cfg(not(feature = "uart-irq"))]
+#[test]
+fn route42_rejected_without_uart_irq_optin() {
+    let _guard = test_guard();
+    assert!(aia::route_for(42).is_none(), "42 routed without opt-in");
+    reset_fake_imsic();
+    let store = FakeStore::new();
+    let chip = AiaChip::new(&store);
+    let mut b = FakeBackend::new(true);
+    assert!(!chip.register(&mut b, 42, handler_1), "42 accepted without opt-in");
+    assert!(b.write_log.is_empty(), "rejected 42 touched hardware");
+}
+
+/// Opt-in shape (`uart-irq`): source 42 LevelHigh registers, claims twice and
+/// disables before removal, exactly like a wired MS10 route.
+#[cfg(feature = "uart-irq")]
+#[test]
+fn route42_optin_registers_claims_and_disables_before_removal() {
+    use aia::APLIC_SOURCECFG_BASE;
+
+    let _guard = test_guard();
+    assert_eq!(aia::route_for(42).map(|r| (r.source, r.sm)), Some((42, SM_LEVEL_HIGH)));
+    reset_fake_imsic();
+    let store = FakeStore::new();
+    let chip = AiaChip::new(&store);
+    let mut b = FakeBackend::new(true);
+    assert!(chip.register(&mut b, 42, handler_1), "opt-in 42 registration failed");
+    assert_eq!(b.aplic_get(APLIC_SOURCECFG_BASE + 4 * 41), SM_LEVEL_HIGH);
+    assert!(enabled_bit(42));
+
+    // Two real claims through the production dispatch: each returns+completes
+    // exactly one pending and calls the handler.
+    set_pending(42);
+    assert_eq!(chip.handle_external(&mut b), Some(42));
+    assert_eq!(CALLS_1.load(Ordering::SeqCst), 1);
+    set_pending(42);
+    assert_eq!(chip.handle_external(&mut b), Some(42));
+    assert_eq!(CALLS_1.load(Ordering::SeqCst), 2);
+
+    // unregister masks both layers before removing the handler.
+    assert!(chip.unregister(&mut b, 42).is_some());
+    set_pending(42);
+    assert_eq!(chip.handle_external(&mut b), None);
+    assert_eq!(chip.spurious_count(), 1, "masked pending must be retained");
+    assert_eq!(CALLS_1.load(Ordering::SeqCst), 2);
+}
+
+/// Opt-in shape: 42 registration is still duplicate-safe.
+#[cfg(feature = "uart-irq")]
+#[test]
+fn route42_optin_duplicate_rejected_without_hardware() {
+    let _guard = test_guard();
+    reset_fake_imsic();
+    let store = FakeStore::new();
+    let chip = AiaChip::new(&store);
+    let mut b = FakeBackend::new(true);
+    assert!(chip.register(&mut b, 42, handler_1));
+    let writes_before = b.write_log.len();
+    assert!(!chip.register(&mut b, 42, handler_60), "duplicate 42 accepted");
+    assert_eq!(b.write_log.len(), writes_before, "duplicate 42 touched hardware");
+}

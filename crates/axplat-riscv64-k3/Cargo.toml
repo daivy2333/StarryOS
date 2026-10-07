@@ -9,6 +9,12 @@ repository = "https://github.com/Starry-OS/StarryOS"
 
 [features]
 irq-if = ["axplat/irq"]
+# MS17 Iteration 000 (task T1): the independent runtime timer slot. Implies
+# the AIA external routing (the timer slot lives beside it, not in it).
+runtime-irq = ["irq-if"]
+# MS17 Iteration 000 (task T2): opt-in UART route (source/EID 42). The
+# default AIA route table stays the four MS10 routes.
+uart-irq = ["irq-if"]
 
 [lib]
 name = "axplat_riscv64_k3"

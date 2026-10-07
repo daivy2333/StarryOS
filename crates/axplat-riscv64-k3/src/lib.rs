@@ -6,7 +6,9 @@ extern crate log;
 extern crate axplat;
 
 mod boot;
-mod console;
+/// Early/fault console plus the shared UART0 hardware guard consumed by the
+/// kernel-side async PXA port (MS17 Iteration 000, task T2).
+pub mod console;
 mod init;
 #[cfg(feature = "irq-if")]
 pub mod irq;
@@ -15,6 +17,9 @@ mod power;
 mod time;
 
 pub mod aia;
+
+/// Independent supervisor timer handler slot (MS17 Iteration 000, task T1).
+pub mod timer_irq;
 
 /// K3 GMAC DMA address/cache foundation (MS11 Iteration 000, task 1.1).
 pub mod dma;

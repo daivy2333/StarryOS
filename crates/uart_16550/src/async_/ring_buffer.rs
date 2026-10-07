@@ -90,20 +90,35 @@ impl<W: OsWakerSet> RingBufRx<W> {
 
     /// Push multiple bytes into the ring buffer (called by RX copier).
     ///
-    /// Returns the number of bytes pushed. Wakes all registered wakers
-    /// if at least one byte was pushed.
+    /// Accepts across both ring segments when the write position wraps, so a
+    /// wrapped vacancy reports its full acceptance capacity instead of only
+    /// the contiguous tail (at most two bounded `push` calls). Returns the
+    /// number of bytes pushed — the remainder is the caller's drop
+    /// classification input. Wakes all registered wakers if at least one
+    /// byte was pushed.
     #[inline(always)]
     pub(crate) fn push_batch(&self, data: &[u8]) -> usize {
         // SAFETY: SPSC — only the RX copier task calls push().
-        let n = unsafe { &mut *self.writer.get() }.push(|buf| {
+        let writer = unsafe { &mut *self.writer.get() };
+        let mut pushed = writer.push(|buf| {
             let len = data.len().min(buf.len());
             buf[..len].copy_from_slice(&data[..len]);
             len
         });
-        if n > 0 {
+        if pushed < data.len() {
+            // Second segment: past the wrap boundary the writer exposes the
+            // head segment; a genuinely full ring accepts nothing here.
+            let rest = &data[pushed..];
+            pushed += writer.push(|buf| {
+                let len = rest.len().min(buf.len());
+                buf[..len].copy_from_slice(&rest[..len]);
+                len
+            });
+        }
+        if pushed > 0 {
             self.poll.wake();
         }
-        n
+        pushed
     }
 
     /// Pop data from the ring buffer (called by consumers like TtyRead).
@@ -426,6 +441,33 @@ mod readiness_tests {
         // Full ring: push must return 0
         assert_eq!(rx.push(&[9]), 0);
         assert_eq!(rx.occupied_len(), 8);
+    }
+
+    /// MS17 Iteration 001 T3: `push_batch` must accept across both ring
+    /// segments when the write position wraps. A wrapped vacancy (2 free at
+    /// the tail + 2 at the head) must take 4 bytes in one call — the
+    /// single-segment push accepted only the contiguous tail and silently
+    /// dropped the rest at the copier.
+    #[test]
+    fn rx_push_batch_accepts_across_wrap() {
+        let (_buf, ring) = make_ring(8);
+        let rx: RingBufRx<DummyWakerSet> = unsafe { RingBufRx::new(ring) };
+        // Wrap with split vacancy: 6 pushed, 2 popped.
+        assert_eq!(rx.push(&[1, 2, 3, 4, 5, 6]), 6);
+        let mut tmp = [0u8; 2];
+        assert_eq!(rx.pop(&mut tmp), 2);
+        assert_eq!(tmp, [1, 2]);
+        assert_eq!(rx.occupied_len(), 4);
+        // Two-segment acceptance: tail segment (2) + wrapped head segment (2).
+        assert_eq!(rx.push_batch(&[7, 8, 9, 10]), 4);
+        assert_eq!(rx.occupied_len(), 8);
+        // Byte order preserved across the wrap. The reader exposes one
+        // contiguous segment per pop: the 6-byte tail first, then the 2-byte
+        // wrapped head segment.
+        let mut out = [0u8; 8];
+        assert_eq!(rx.pop(&mut out), 6);
+        assert_eq!(rx.pop(&mut out[6..]), 2);
+        assert_eq!(out, [3, 4, 5, 6, 7, 8, 9, 10]);
     }
 
     // ── TX: vacant_len / has_space ───────────────────────────────────

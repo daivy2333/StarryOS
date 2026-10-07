@@ -138,6 +138,28 @@ k3 = [
     "starry-kernel/k3",
 ]
 
+# MS17 Iteration 000: K3 async UART mode — implies the polling `k3` shape and
+# enables the platform runtime timer slot (`runtime-irq`) plus the opt-in
+# UART42 route (`uart-irq`). Single-hart raw PXA port qualification; the
+# polling network stages stay compiled but are not entered.
+k3-async-uart = [
+    "k3",
+    "axplat-riscv64-k3/runtime-irq",
+    "axplat-riscv64-k3/uart-irq",
+    "starry-kernel/k3-async-uart",
+]
+
+# MS17 Iteration 000: the raw UART port qualification build (`make
+# k3-uart-port`); implies the async mode and selects only the raw
+# qualification entry.
+k3-uart-port-test = ["k3-async-uart", "starry-kernel/k3-uart-port-test"]
+
+# MS17 Iteration 001: K3 async UART data-plane mode (`make k3-uart`) —
+# implies the raw-port async mode and opens the copier/ring data plane
+# (uart_init K3 path over the Iteration 000 port). Single-hart; tty and
+# userland arrive with Iterations 002+.
+k3-uart = ["k3-async-uart", "starry-kernel/k3-uart"]
+
 [[bin]]
 name = "starryos"
 path = "src/main.rs"

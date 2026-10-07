@@ -94,6 +94,31 @@ pub trait UartPort: Send + Sync + 'static {
     /// cache for read-modify-write.  The OS layer owns the cache and
     /// the `set_ier` call that writes to hardware.
     fn update_ier(&self, set: IER, clear: IER);
+
+    /// Copier policy seam (MS17 Iteration 001 T3): this port's Q19C.8e
+    /// slow-poll spin iteration limit. Defaults to the D1/QEMU-tuned
+    /// [`TX_SLOW_POLL_LIMIT`]; a port may set `0` to disable the spin
+    /// entirely — the TX copier then waits on [`UartPort::tx_stall_wait`]
+    /// instead of busy-spinning.
+    const SLOW_POLL_LIMIT: u32 = TX_SLOW_POLL_LIMIT;
+
+    /// Copier policy seam (MS17 Iteration 001 T3): this port's TEMT
+    /// corner-case spin iteration limit. Defaults to [`TX_TEMT_POLL_LIMIT`];
+    /// `0` disables the spin — the drain then completes through the armed
+    /// THRE/TEMT wake path plus [`UartPort::tx_stall_wait`].
+    const TEMT_POLL_LIMIT: u32 = TX_TEMT_POLL_LIMIT;
+
+    /// Native stall wait for ports with disabled spin strategies.
+    ///
+    /// The TX copier awaits this when transmission cannot make progress
+    /// (stalled FIFO, or a shift register not yet drained at the TEMT
+    /// corner) **only** when this port disabled the corresponding spin via
+    /// [`Self::SLOW_POLL_LIMIT`] / [`Self::TEMT_POLL_LIMIT`] `== 0`. The
+    /// default spin-enabled ports never reach it, so the default body is an
+    /// immediately-ready future.
+    fn tx_stall_wait(&self) -> impl core::future::Future<Output = ()> + Send {
+        core::future::ready(())
+    }
 }
 
 /// Snapshot of TX drain progress for flush/tcdrain polling.
@@ -218,6 +243,14 @@ impl TxCompletion {
     pub const fn is_drained(&self) -> bool {
         self.ring_empty && !self.copier_active && self.staged_bytes == 0 && self.transmitter_empty
     }
+}
+
+/// TX copier poll outcome (MS17 Iteration 001 T3): `StallWait` tells the
+/// outer loop to await the port's native timer hook before the next poll —
+/// only ports with disabled spin strategies produce it.
+enum TxPollOutcome {
+    Normal,
+    StallWait,
 }
 
 /// Async UART driver with RX/TX copier tasks.
@@ -532,6 +565,13 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
     }
 
     /// RX copier loop with NAPI interrupt coalescing.
+    ///
+    /// Park edge discipline (MS17 Iteration 001 T3): check → register → arm
+    /// → recheck. The waker is registered *before* the DATA_READY arm, so an
+    /// IRQ landing in the old arm→register window is queued on the registered
+    /// waker instead of being a dropped no-op; the post-arm recheck
+    /// additionally converts bytes that arrived between the empty check and
+    /// the registration into immediate progress (isolated-byte lost wakeup).
     async fn rx_copier_loop(&self) {
         let mut read_buf = [0u8; COPIER_BUF_SIZE];
         let mut consecutive = 0u32;
@@ -547,33 +587,43 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                 let total = self.uart.receive_bytes(&mut read_buf[..batch]);
 
                 if total > 0 {
-                    self.rx.push_batch(&read_buf[..total]);
-                }
-
-                // NAPI logic: track consecutive successful reads
-                if consecutive >= NAPI_THRESHOLD {
-                    if total > 0 {
-                        consecutive += 1;
-                    } else {
-                        consecutive = 0;
-                        self.uart.update_ier(IER::DATA_READY, IER::empty());
+                    let pushed = self.rx.push_batch(&read_buf[..total]);
+                    // MS17-T3 drop classification: bytes the ring could not
+                    // accept (wrapped remainder or a genuinely full ring) are
+                    // counted, never silently ignored.
+                    #[cfg(feature = "telemetry")]
+                    if pushed < total {
+                        self.telemetry
+                            .rx_dropped_bytes
+                            .fetch_add((total - pushed) as u64, Ordering::Relaxed);
                     }
-                } else {
-                    consecutive = if total > 0 { consecutive + 1 } else { 0 };
+                    consecutive += 1;
+                    return Poll::Ready(total);
                 }
 
-                if consecutive < NAPI_THRESHOLD {
-                    self.uart.update_ier(IER::DATA_READY, IER::empty());
-                }
-
-                // Register waker for next interrupt
+                // Park edge: leave NAPI polling mode, register the waker
+                // first, then arm the RX IRQ.
+                consecutive = 0;
                 RX_WAKER.register(cx.waker());
+                self.uart.update_ier(IER::DATA_READY, IER::empty());
 
-                if total > 0 {
-                    Poll::Ready(total)
-                } else {
-                    Poll::Pending
+                // Recheck after arming: a byte that arrived between the empty
+                // check and this point had neither an armed IRQ nor a
+                // registered waker — this read is the only witness.
+                let again = self.uart.receive_bytes(&mut read_buf[..batch]);
+                if again > 0 {
+                    let pushed = self.rx.push_batch(&read_buf[..again]);
+                    #[cfg(feature = "telemetry")]
+                    if pushed < again {
+                        self.telemetry
+                            .rx_dropped_bytes
+                            .fetch_add((again - pushed) as u64, Ordering::Relaxed);
+                    }
+                    consecutive = 1;
+                    return Poll::Ready(again);
                 }
+
+                Poll::Pending
             })
             .await;
         }
@@ -596,7 +646,7 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
         let mut thre_idle_armed = false;
 
         loop {
-            poll_fn(|cx| {
+            let outcome = poll_fn(|cx| -> Poll<TxPollOutcome> {
                 #[cfg(feature = "telemetry")]
                 self.telemetry.tx_poll.fetch_add(1, Ordering::Relaxed);
 
@@ -767,6 +817,15 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                         break;
                     }
 
+                    // ── MS17-T3 port policy: spin-free stall wait ───────────
+                    // A port with `SLOW_POLL_LIMIT == 0` never spins: THRE is
+                    // armed above and `TX_WAKER` is registered, so the ISR or
+                    // the ~1 ms native timer hook resumes the copier.
+                    if U::SLOW_POLL_LIMIT == 0 {
+                        self.tx_copier_active.store(false, Ordering::Release);
+                        return Poll::Ready(TxPollOutcome::StallWait);
+                    }
+
                     // ── Q19C.8e: bounded slow-poll fallback ─────────────────────
                     // After fast retry budget (32) and final recheck both return zero,
                     // do NOT immediately pending. Instead, do a bounded slow-poll with
@@ -846,12 +905,20 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                 }
 
                 // TEMT corner-case: wait for shift register to drain.
+                // MS17-T3 port policy: `TEMT_POLL_LIMIT == 0` never spins —
+                // the drain completes via the armed THRE/TEMT wake path plus
+                // the port's native timer hook.
+                let mut temt_stall = false;
                 if !self.uart.transmitter_empty() {
-                    for _ in 0..TX_TEMT_POLL_LIMIT {
-                        if self.uart.transmitter_empty() {
-                            break;
+                    if U::TEMT_POLL_LIMIT == 0 {
+                        temt_stall = true;
+                    } else {
+                        for _ in 0..U::TEMT_POLL_LIMIT {
+                            if self.uart.transmitter_empty() {
+                                break;
+                            }
+                            core::hint::spin_loop();
                         }
-                        core::hint::spin_loop();
                     }
                 }
 
@@ -863,9 +930,22 @@ impl<R: OsRuntime, W: OsWakerSet, U: UartPort> AsyncUartDriver<R, W, U> {
                     self.uart.update_ier(IER::THR_EMPTY, IER::empty());
                 }
 
-                Poll::Ready(())
+                if temt_stall {
+                    // The copier leaves its poll cycle and parks on the port's
+                    // native timer hook; the next poll's TEMT recheck (empty-
+                    // ring park path) completes the four-condition drain.
+                    self.tx_copier_active.store(false, Ordering::Release);
+                    return Poll::Ready(TxPollOutcome::StallWait);
+                }
+                Poll::Ready(TxPollOutcome::Normal)
             })
             .await;
+
+            // MS17-T3: spin-free ports wait on the native timer hook between
+            // polls; spin-enabled (QEMU/D1) ports never produce `StallWait`.
+            if matches!(outcome, TxPollOutcome::StallWait) {
+                self.uart.tx_stall_wait().await;
+            }
         }
     }
 }
@@ -1585,5 +1665,362 @@ mod smp_witness_tests {
             2,
             "exactly one THRE arm per idle episode (initial park + post-drain re-park)"
         );
+    }
+
+    /// Fake port whose `update_ier(DATA_READY)` — the arm step of the RX park
+    /// edge — delivers three bytes to the hardware exactly once. This models
+    /// an IRQ landing inside the arm→register window: the pre-fix order (arm
+    /// before register) parks the copier `Pending` with the bytes stranded
+    /// (the wake had no registered waiter); the check → register → arm →
+    /// recheck order must move them in the same poll.
+    struct ArmInjectRxPort {
+        rx: Mutex<Vec<u8>>,
+        tx_sent: Mutex<Vec<u8>>,
+        transmitter_empty: AtomicBool,
+        thre_enables: AtomicU32,
+        arm_injections_left: AtomicU32,
+    }
+    impl UartPort for ArmInjectRxPort {
+        fn receive_bytes(&self, buf: &mut [u8]) -> usize {
+            let mut src = self.rx.lock().unwrap();
+            let n = buf.len().min(src.len());
+            buf[..n].copy_from_slice(&src[..n]);
+            src.drain(..n);
+            n
+        }
+        fn send_bytes(&self, buf: &[u8]) -> usize {
+            self.tx_sent.lock().unwrap().extend_from_slice(buf);
+            buf.len()
+        }
+        fn transmitter_empty(&self) -> bool {
+            self.transmitter_empty.load(AtomicOrdering::Relaxed)
+        }
+        fn update_ier(&self, set: IER, _clear: IER) {
+            if set.contains(IER::THR_EMPTY) {
+                self.thre_enables.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            if set.contains(IER::DATA_READY) {
+                // One-shot injection at the arm step (CAS so exhaustion at 0
+                // is final instead of wrapping around).
+                let mut left = self.arm_injections_left.load(AtomicOrdering::Relaxed);
+                while left > 0 {
+                    match self.arm_injections_left.compare_exchange_weak(
+                        left,
+                        left - 1,
+                        AtomicOrdering::AcqRel,
+                        AtomicOrdering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            self.rx
+                                .lock()
+                                .unwrap()
+                                .extend_from_slice(&[0xA1, 0xA2, 0xA3]);
+                            break;
+                        }
+                        Err(current) => left = current,
+                    }
+                }
+            }
+        }
+    }
+
+    /// MS17 Iteration 001 T3: the RX copier's park edge must follow
+    /// check → register → arm → recheck. An IRQ delivering bytes in the
+    /// arm→register window must be caught by the post-arm recheck in the
+    /// same poll — the pre-fix order (arm before register) left the copier
+    /// parked with the bytes unread and no wake source (isolated-byte lost
+    /// wakeup).
+    #[test]
+    fn rx_park_poll_rechecks_data_injected_at_arm() {
+        let _guard = WITNESS_LOCK.lock().unwrap();
+        let port: &'static ArmInjectRxPort = Box::leak(Box::new(ArmInjectRxPort {
+            rx: Mutex::new(Vec::new()),
+            tx_sent: Mutex::new(Vec::new()),
+            transmitter_empty: AtomicBool::new(true),
+            thre_enables: AtomicU32::new(0),
+            arm_injections_left: AtomicU32::new(1),
+        }));
+        let drv = make_driver(port);
+        let wake_count: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+        let rx_ready: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+
+        // A consumer waits for RX readiness, then the copier polls the empty
+        // UART and reaches the park edge — where the arm step delivers the
+        // "in-window" bytes.
+        drv.rx.register_waker(&counting_waker(rx_ready));
+        let mut fut = core::pin::pin!(drv.rx_copier());
+        park_with_waker(&mut fut, wake_count);
+
+        // The in-window bytes must have moved into the ring (post-arm
+        // recheck), not been stranded in the hardware with the copier parked.
+        assert_eq!(
+            drv.rx.occupied_len(),
+            3,
+            "bytes delivered at the arm step must be rechecked and pushed, not stranded"
+        );
+        let mut out = [0u8; 3];
+        assert_eq!(drv.rx.pop(&mut out), 3);
+        assert_eq!(out, [0xA1, 0xA2, 0xA3]);
+        assert!(
+            rx_ready.load(AtomicOrdering::Relaxed) >= 1,
+            "the recheck push must wake the waiting consumer"
+        );
+
+        // With the one-shot injection consumed, the copier parks cleanly on
+        // the empty UART (no busy loop, no phantom data).
+        let waker = counting_waker(wake_count);
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..128 {
+            assert_eq!(
+                fut.as_mut().poll(&mut cx),
+                Poll::Pending,
+                "copier must park after the in-window batch was drained"
+            );
+        }
+        assert_eq!(drv.rx.occupied_len(), 0);
+    }
+
+    /// MS17 Iteration 001 T3: bytes the RX ring cannot accept (near-full or
+    /// full) must be counted in an explicit ring-full drop class — never
+    /// silently ignored — while the accepted prefix stays intact and in order.
+    #[test]
+    fn rx_copier_classifies_ring_full_drops() {
+        let _guard = WITNESS_LOCK.lock().unwrap();
+        let port: &'static FakeUartPort = Box::leak(Box::new(FakeUartPort {
+            rx: Mutex::new(Vec::new()),
+            rx_pos: AtomicUsize::new(0),
+            tx_sent: Mutex::new(Vec::new()),
+            transmitter_empty: AtomicBool::new(true),
+            thre_enables: AtomicU32::new(0),
+        }));
+        // make_driver builds 256-byte rings; deliver 300 bytes in one poll.
+        let drv = make_driver(port);
+        let injected: Vec<u8> = (0..300u32).map(|i| i as u8).collect();
+        port.inject_rx(&injected);
+
+        let wake_count: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+        let waker = counting_waker(wake_count);
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = core::pin::pin!(drv.rx_copier());
+        for polls in 0..128 {
+            if drv.rx.occupied_len() == 256 {
+                break;
+            }
+            assert!(polls < 127, "copier never filled the ring");
+            let _ = fut.as_mut().poll(&mut cx);
+        }
+        assert_eq!(
+            drv.rx.occupied_len(),
+            256,
+            "the ring must hold exactly its capacity"
+        );
+        assert_eq!(
+            drv.telemetry.rx_dropped_bytes.load(AtomicOrdering::Relaxed),
+            44,
+            "the 44 unaccepted bytes must be counted in the ring-full drop class"
+        );
+        // The accepted prefix is intact and in order.
+        let mut out = [0u8; 256];
+        assert_eq!(drv.rx.pop(&mut out), 256);
+        assert_eq!(out[..], injected[..256]);
+
+        // No unbounded retry: after the hardware is drained the copier parks
+        // cleanly, the classification is final and the popped ring stays empty.
+        park_with_waker(&mut fut, wake_count);
+        assert_eq!(
+            drv.telemetry.rx_dropped_bytes.load(AtomicOrdering::Relaxed),
+            44,
+            "no further drops once the hardware is drained"
+        );
+        assert_eq!(drv.rx.occupied_len(), 0);
+    }
+
+    /// Port-policy fake (MS17-T3): both D1 spin fallbacks disabled; the port
+    /// counts timer-hook arms and its stall wait parks once, then completes on
+    /// any re-poll (models the native ~1 ms timer firing between the test's
+    /// manual polls).
+    struct K3PolicyPort {
+        tx_sent: Mutex<Vec<u8>>,
+        transmitter_empty: AtomicBool,
+        thre_enables: AtomicU32,
+        timer_arms: AtomicU32,
+        stalled: AtomicBool,
+    }
+    impl UartPort for K3PolicyPort {
+        const SLOW_POLL_LIMIT: u32 = 0;
+        const TEMT_POLL_LIMIT: u32 = 0;
+        fn receive_bytes(&self, _buf: &mut [u8]) -> usize {
+            0
+        }
+        fn send_bytes(&self, buf: &[u8]) -> usize {
+            if self.stalled.load(AtomicOrdering::Relaxed) {
+                return 0;
+            }
+            self.tx_sent.lock().unwrap().extend_from_slice(buf);
+            buf.len()
+        }
+        fn transmitter_empty(&self) -> bool {
+            self.transmitter_empty.load(AtomicOrdering::Relaxed)
+        }
+        fn update_ier(&self, set: IER, _clear: IER) {
+            if set.contains(IER::THR_EMPTY) {
+                self.thre_enables.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+        }
+        fn tx_stall_wait(&self) -> impl core::future::Future<Output = ()> + Send {
+            self.timer_arms.fetch_add(1, AtomicOrdering::Relaxed);
+            TimerLatch { polled_once: false }
+        }
+    }
+
+    /// One-shot latch future: parks once and self-wakes, then completes —
+    /// models the port's native ~1 ms timer between two manual polls.
+    struct TimerLatch {
+        polled_once: bool,
+    }
+    impl core::future::Future for TimerLatch {
+        type Output = ();
+        fn poll(
+            mut self: core::pin::Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> core::task::Poll<()> {
+            if self.polled_once {
+                return core::task::Poll::Ready(());
+            }
+            self.polled_once = true;
+            cx.waker().wake_by_ref();
+            core::task::Poll::Pending
+        }
+    }
+
+    /// MS17 Iteration 001 T3 (K3 policy): with `SLOW_POLL_LIMIT == 0` the TX
+    /// copier must never enter the D1 slow-poll spin or the yield ladder — a
+    /// stalled FIFO parks on the port's native timer hook (armed once) with
+    /// THRE live as the hardware wake fallback, and drains as soon as the
+    /// stall clears.
+    #[test]
+    fn tx_k3_policy_stall_parks_on_timer_hook_without_slow_poll() {
+        let _guard = WITNESS_LOCK.lock().unwrap();
+        let port: &'static K3PolicyPort = Box::leak(Box::new(K3PolicyPort {
+            tx_sent: Mutex::new(Vec::new()),
+            transmitter_empty: AtomicBool::new(false),
+            thre_enables: AtomicU32::new(0),
+            timer_arms: AtomicU32::new(0),
+            stalled: AtomicBool::new(true),
+        }));
+        let drv = make_driver(port);
+        let payload = [0x5Au8, 0x5B, 0x5C];
+        assert_eq!(drv.tx.push(&payload), 3);
+
+        let wake_count: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+        let mut fut = core::pin::pin!(drv.tx_copier());
+        // First park: stalled FIFO exhausts the fast-retry budget, arms THRE,
+        // and pends on the port timer hook — no spin path, no busy loop.
+        park_with_waker(&mut fut, wake_count);
+        assert_eq!(
+            port.timer_arms.load(AtomicOrdering::Relaxed),
+            1,
+            "the stall must arm the port's timer hook exactly once before parking"
+        );
+        assert!(
+            port.thre_enables.load(AtomicOrdering::Relaxed) >= 1,
+            "THRE must be armed as the hardware wake fallback before the stall park"
+        );
+        assert_eq!(
+            drv.tx_debug_snapshot().slow_poll_exhausted,
+            0,
+            "the K3 policy must not enter the slow-poll spin path"
+        );
+        assert_eq!(
+            drv.tx_debug_snapshot().yield_retries_exhausted,
+            0,
+            "the K3 policy must not run the yield/self-wake ladder"
+        );
+        assert_eq!(
+            drv.tx_staged_bytes.load(AtomicOrdering::Relaxed),
+            3,
+            "payload must remain staged (popped, not yet sent) while the FIFO is stalled"
+        );
+
+        // The timer fires (latch completes on the re-poll): with the FIFO
+        // unstalled the same copier loop drains the payload to hardware.
+        port.stalled.store(false, AtomicOrdering::Relaxed);
+        let waker = counting_waker(wake_count);
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..128 {
+            if *port.tx_sent.lock().unwrap() == payload {
+                break;
+            }
+            let _ = fut.as_mut().poll(&mut cx);
+        }
+        assert_eq!(
+            *port.tx_sent.lock().unwrap(),
+            payload.to_vec(),
+            "post-timer poll must drain the payload through the same loop"
+        );
+    }
+
+    /// MS17 Iteration 001 T3 (K3 policy): with `TEMT_POLL_LIMIT == 0` the TEMT
+    /// corner never spins — it arms THRE and the port timer hook, and the
+    /// four-condition drain completes through the next park's TEMT recheck
+    /// (`DRAIN_WAKER` wake) once the shift register empties.
+    #[test]
+    fn tx_k3_policy_temt_corner_uses_timer_hook_and_completes_drain() {
+        let _guard = WITNESS_LOCK.lock().unwrap();
+        let drain_wakes: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+        DRAIN_WAKER.register(&counting_waker(drain_wakes));
+        let port: &'static K3PolicyPort = Box::leak(Box::new(K3PolicyPort {
+            tx_sent: Mutex::new(Vec::new()),
+            transmitter_empty: AtomicBool::new(false),
+            thre_enables: AtomicU32::new(0),
+            timer_arms: AtomicU32::new(0),
+            stalled: AtomicBool::new(false),
+        }));
+        let drv = make_driver(port);
+        let payload = [0x01u8, 0x02, 0x03];
+        assert_eq!(drv.tx.push(&payload), 3);
+
+        let wake_count: &'static AtomicU32 = Box::leak(Box::new(AtomicU32::new(0)));
+        let mut fut = core::pin::pin!(drv.tx_copier());
+        // First park: all bytes accepted by the FIFO, but TEMT is still false
+        // — the corner arms THRE + the timer hook and pends; no spin, no DRAIN
+        // wake yet.
+        park_with_waker(&mut fut, wake_count);
+        assert_eq!(
+            port.timer_arms.load(AtomicOrdering::Relaxed),
+            1,
+            "the not-yet-drained transmitter must arm the port's timer hook"
+        );
+        assert!(
+            port.thre_enables.load(AtomicOrdering::Relaxed) >= 1,
+            "THRE must be armed at the TEMT corner"
+        );
+        assert!(!drv.tx_completion().is_drained(), "TEMT=false keeps the drain incomplete");
+        assert_eq!(
+            drain_wakes.load(AtomicOrdering::Relaxed),
+            0,
+            "no DRAIN wake while the shift register is still shifting"
+        );
+
+        // Shift register drains (TEMT=true): the next poll's empty-ring park
+        // path wakes DRAIN_WAKER and the four-condition drain completes.
+        port.transmitter_empty.store(true, AtomicOrdering::Relaxed);
+        let waker = counting_waker(wake_count);
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..128 {
+            let _ = fut.as_mut().poll(&mut cx);
+            if drain_wakes.load(AtomicOrdering::Relaxed) >= 1 {
+                break;
+            }
+        }
+        assert!(
+            drain_wakes.load(AtomicOrdering::Relaxed) >= 1,
+            "the TEMT recheck must wake the drain waiter"
+        );
+        assert!(
+            drv.tx_completion().is_drained(),
+            "the drain must complete once TEMT holds"
+        );
+        DRAIN_WAKER.register(&noop_waker());
     }
 }

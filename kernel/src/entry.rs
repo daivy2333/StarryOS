@@ -52,6 +52,9 @@ use crate::drivers::bench;
 // ── D1 benchmark imports (kbench and userbench) ──────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::uart_init;
+// ── K3 data-plane imports (MS17 Iteration 001) ───────────────────────
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+use crate::drivers::uart_init;
 #[cfg(feature = "lichee-d1-userbench")]
 use crate::mm::load_embedded_user_app;
 #[cfg(any(
@@ -83,8 +86,38 @@ pub fn init(args: &[String], envs: &[String]) {
         lichee_d1_init(args, envs);
     }
 
+    // ── K3 async UART data-plane mode (MS17 Iteration 001): port + copiers + rings ──
+    #[cfg(all(target_arch = "riscv64", feature = "k3-async-uart", feature = "k3-uart"))]
+    {
+        let _ = (args, envs);
+        uart_init::init_uart_hardware();
+        // SAFETY: this boot path runs once; no other ring producer (no
+        // benchmark in this mode) ran before the copiers start.
+        unsafe { uart_init::start_copiers() };
+        crate::platform::k3::run_uart_data_plane();
+    }
+
+    // ── K3 async UART raw mode (MS17 Iteration 000): timer proof + raw PXA ──
+    #[cfg(all(
+        target_arch = "riscv64",
+        feature = "k3-async-uart",
+        not(feature = "k3-uart")
+    ))]
+    {
+        let _ = (args, envs);
+        // SAFETY: K3 UART0 MMIO is identity-mapped via the platform
+        // mmio-ranges and left in the bootloader handoff state (MS09
+        // Iteration 001 adjudication); this path runs once at boot and
+        // never enters the GMAC/PHY polling stages.
+        crate::platform::k3::run_uart_port_bringup();
+    }
+
     // ── K3 minimal first-byte path (MS09 Iteration 002) ──────────────
-    #[cfg(all(target_arch = "riscv64", feature = "k3"))]
+    #[cfg(all(
+        target_arch = "riscv64",
+        feature = "k3",
+        not(feature = "k3-async-uart")
+    ))]
     {
         let _ = (args, envs);
         // SAFETY: K3 UART0 MMIO is identity-mapped via the platform

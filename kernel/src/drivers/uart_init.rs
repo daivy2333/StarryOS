@@ -14,11 +14,15 @@
 //! - UartPort: 硬件访问抽象
 
 use alloc::sync::Arc;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    feature = "k3-uart"
+)))]
 use core::task::Waker;
 use core::{
     ptr::{NonNull, addr_of_mut},
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use axlog::info;
@@ -26,8 +30,14 @@ use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use lazy_static::lazy_static;
 use memory_addr::VirtAddr;
 use spin::Once;
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    feature = "k3-uart"
+)))]
+use uart_16550::TtyWrite;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
-use uart_16550::{TtyWrite, async_::device_ops::AsyncUartWriter};
+use uart_16550::async_::device_ops::AsyncUartWriter;
 use uart_16550::{
     async_::{
         driver::{AsyncUartDriver, UartPort},
@@ -36,7 +46,7 @@ use uart_16550::{
     spec::registers::IER,
 };
 // ── QEMU NS16550 path ────────────────────────────────────────────────
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 use {
     axhal::mem::phys_to_virt,
     kspin::SpinNoIrq,
@@ -49,10 +59,15 @@ use super::serialized_writer::SerializedWriter;
 // ── D1 DW APB UART path ──────────────────────────────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    feature = "k3-uart"
+)))]
 use crate::pseudofs::dev::tty::terminal::ldisc::TtyWriteReady;
 use crate::{
     drivers::{
+        copier_start_guard::CopierStartGuard,
         os_arceos::{ArceOsRuntime, ArceOsWakerSet},
         placement,
         uart_smp_snapshot::{self, Copier},
@@ -64,7 +79,7 @@ use crate::{
 pub const BUF_SIZE: usize = 64 * 1024;
 
 /// 获取 UART MMIO 虚拟地址（从 platform descriptor 读取）
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 fn get_uart_mmio_virt() -> VirtAddr {
     let desc = platform::descriptor();
     phys_to_virt(PhysAddr::from(desc.console.base_paddr))
@@ -79,7 +94,7 @@ fn get_uart_mmio_virt() -> VirtAddr {
 
 // ── QEMU: 全局 UART 实例 ─────────────────────────────────────────────
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 lazy_static! {
     static ref UART: SpinNoIrq<Uart16550<MmioBackend>> = SpinNoIrq::new(unsafe {
         // SAFETY: get_uart_mmio_virt() returns the virtual address mapped from
@@ -94,7 +109,7 @@ lazy_static! {
     });
 }
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
     &UART
 }
@@ -102,13 +117,13 @@ pub fn uart_instance() -> &'static SpinNoIrq<Uart16550<MmioBackend>> {
 // ── QEMU: UartPort 实现 ──────────────────────────────────────────────
 
 /// ArceOS UART 端口抽象，实现 uart_16550 的 `UartPort` trait。
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 pub struct ArceOsUartPort {
     uart: &'static SpinNoIrq<Uart16550<MmioBackend>>,
     ier_cache: AtomicU8,
 }
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 impl UartPort for ArceOsUartPort {
     #[inline(always)]
     fn receive_bytes(&self, buf: &mut [u8]) -> usize {
@@ -139,7 +154,7 @@ impl UartPort for ArceOsUartPort {
     }
 }
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 lazy_static! {
     static ref UART_PORT: ArceOsUartPort = ArceOsUartPort {
         uart: &UART,
@@ -166,12 +181,15 @@ lazy_static! {
 
 // ── 类型别名 ─────────────────────────────────────────────────────────
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(all(not(feature = "lichee-d1-async-uart"), not(feature = "k3-uart")))]
 pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
 #[cfg(feature = "lichee-d1-async-uart")]
 pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, ArceOsD1UartPort>;
+// MS17 Iteration 001: K3 data-plane driver over the Iteration 000 PXA port.
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+pub type ArceOsDriver = AsyncUartDriver<ArceOsRuntime, ArceOsWakerSet, super::k3_uart::K3UartPort>;
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(all(not(feature = "lichee-d1-async-uart"), not(feature = "k3-uart")))]
 pub type ArceOsReader =
     uart_16550::async_::device_ops::AsyncUartReader<ArceOsRuntime, ArceOsWakerSet, ArceOsUartPort>;
 #[cfg(feature = "lichee-d1-async-uart")]
@@ -180,9 +198,16 @@ pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
     ArceOsWakerSet,
     ArceOsD1UartPort,
 >;
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+pub type ArceOsReader = uart_16550::async_::device_ops::AsyncUartReader<
+    ArceOsRuntime,
+    ArceOsWakerSet,
+    super::k3_uart::K3UartPort,
+>;
 
 #[cfg(all(
     not(feature = "lichee-d1-async-uart"),
+    not(feature = "k3-uart"),
     not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench"))
 ))]
 pub(crate) struct RawArceOsWriter(
@@ -195,6 +220,14 @@ pub(crate) struct RawArceOsWriter(
 pub(crate) struct RawArceOsWriter(
     pub(crate) AsyncUartWriter<ArceOsRuntime, ArceOsWakerSet, ArceOsD1UartPort>,
 );
+#[cfg(all(
+    target_arch = "riscv64",
+    feature = "k3-uart",
+    not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench"))
+))]
+pub(crate) struct RawArceOsWriter(
+    pub(crate) AsyncUartWriter<ArceOsRuntime, ArceOsWakerSet, super::k3_uart::K3UartPort>,
+);
 
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 #[derive(Clone)]
@@ -205,16 +238,31 @@ impl ArceOsWriter {
     pub(crate) fn new(raw: RawArceOsWriter) -> Self {
         Self(SerializedWriter::new(raw))
     }
+
+    /// Single-producer TX push through the serialized ring (MS17 Iteration
+    /// 001 data-plane payload output path; the Iteration 002 tty reaches the
+    /// same ring through the `TtyWrite` impl above).
+    pub(crate) fn push(&self, buf: &[u8]) -> usize {
+        self.0.with_lock(|raw| raw.0.try_write(buf))
+    }
 }
 
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    feature = "k3-uart"
+)))]
 impl TtyWrite for ArceOsWriter {
     fn write(&self, buf: &[u8]) -> usize {
         self.0.with_lock(|raw| raw.0.try_write(buf))
     }
 }
 
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    feature = "k3-uart"
+)))]
 impl TtyWriteReady for ArceOsWriter {
     fn waits_for_write_completion(&self) -> bool {
         true
@@ -250,8 +298,8 @@ static DRIVER: Once<Arc<ArceOsDriver>> = Once::new();
 // its first enqueue, and its task handle is saved for later migration/control.
 // Duplicate startup fails closed before a second copier instance can be created.
 
-static RX_COPIER_STARTED: AtomicBool = AtomicBool::new(false);
-static TX_COPIER_STARTED: AtomicBool = AtomicBool::new(false);
+static RX_COPIER_STARTED: CopierStartGuard = CopierStartGuard::new();
+static TX_COPIER_STARTED: CopierStartGuard = CopierStartGuard::new();
 lazy_static! {
     static ref RX_COPIER_TASK: kspin::SpinNoIrq<Option<axtask::AxTaskRef>> =
         kspin::SpinNoIrq::new(None);
@@ -298,7 +346,7 @@ fn driver_ref() -> &'static ArceOsDriver {
 
 // ── QEMU: ISR 包装器 ─────────────────────────────────────────────────
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 fn uart_isr_wrapper(_irq: usize) {
     uart_smp_snapshot::record_irq_hart();
     let base = NonNull::new(get_uart_mmio_virt().as_mut_ptr()).unwrap();
@@ -311,7 +359,7 @@ fn uart_isr_wrapper(_irq: usize) {
 }
 
 /// Zero-argument QEMU UART device handler for `axhal::irq::register`.
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 fn qemu_uart_irq_handler() {
     let desc = platform::descriptor();
     uart_isr_wrapper(desc.console.irq.unwrap_or(10));
@@ -340,7 +388,7 @@ fn d1_uart_irq_handler() {
 pub fn init_uart_hardware() {
     let desc = platform::descriptor();
 
-    #[cfg(not(feature = "lichee-d1-async-uart"))]
+    #[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
     {
         match axmm::iomap(PhysAddr::from(desc.console.base_paddr), 0x1000) {
             Ok(vaddr) => {
@@ -360,10 +408,22 @@ pub fn init_uart_hardware() {
         ax_println!("[UART INIT] D1 async UART init");
     }
 
+    // MS17 Iteration 001 (K3 data-plane): activate the PXA port through the
+    // K3UartCore sequence (register prep + AIA route 42). The result names
+    // the failing stage; notifications stay masked until the tasks arm them.
+    #[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+    match crate::drivers::k3_uart::activate_port() {
+        Ok(()) => crate::drivers::k3_uart::diag_line(
+            "[UART INIT] K3 UART42 activated (notifications masked; copiers arm next)",
+        ),
+        Err(e) => panic!("[UART INIT] K3 UART42 activation failed: {e:?}"),
+    }
+
+    #[cfg(not(feature = "k3-uart"))]
     let base_ptr = get_uart_mmio_virt().as_ptr();
 
     // ── QEMU: raw byte probe at stride 1 ──────────────────────────
-    #[cfg(not(feature = "lichee-d1-async-uart"))]
+    #[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
     {
         ax_println!("[UART INIT] Trying raw read at base+5 (stride 1, LSR)...");
         let lsr_raw: u8 = unsafe { base_ptr.add(5).read_volatile() };
@@ -408,16 +468,19 @@ pub fn init_uart_hardware() {
     let rx = unsafe { RingBufRx::<ArceOsWakerSet>::new(&RX_RING) };
     let tx = unsafe { RingBufTx::<ArceOsWakerSet>::new(&TX_RING) };
 
-    #[cfg(not(feature = "lichee-d1-async-uart"))]
+    #[cfg(all(not(feature = "lichee-d1-async-uart"), not(feature = "k3-uart")))]
     let uart_port: &'static ArceOsUartPort = &UART_PORT;
     #[cfg(feature = "lichee-d1-async-uart")]
     let uart_port: &'static ArceOsD1UartPort = &D1_UART_PORT;
+    #[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+    let uart_port: &'static super::k3_uart::K3UartPort = super::k3_uart::port();
 
     let driver = Arc::new(ArceOsDriver::new(rx, tx, uart_port));
     DRIVER.call_once(|| driver);
 
-    // Step 5: Register ISR
-    #[cfg(not(feature = "lichee-d1-async-uart"))]
+    // Step 5: Register ISR (the K3 route is registered inside
+    // `K3UartCore::activate`, so no extra step runs in the K3 data plane)
+    #[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
     {
         let irq = desc.console.irq.expect("QEMU console IRQ must be known");
         if !axhal::irq::register(irq, qemu_uart_irq_handler) {
@@ -476,7 +539,7 @@ pub unsafe fn start_copiers() {
 
     // Guards reject a second call; both closures are `move` and only touch the
     // `&'static` driver, so every operation here is safe.
-    if RX_COPIER_STARTED.swap(true, Ordering::SeqCst) {
+    if !RX_COPIER_STARTED.claim() {
             panic!("[UART INIT] RX copier already started (duplicate start)");
         }
         // Publish the pinned affinity *before* first enqueue so a reader cannot
@@ -493,12 +556,12 @@ pub unsafe fn start_copiers() {
             "uart-rx-copier".into(),
             mask,
         ) else {
-            RX_COPIER_STARTED.store(false, Ordering::SeqCst);
+            RX_COPIER_STARTED.rollback();
             panic!("[UART INIT] RX copier: invalid affinity mask hart={}", pl.uart_rx);
         };
         *RX_COPIER_TASK.lock() = Some(task);
 
-        if TX_COPIER_STARTED.swap(true, Ordering::SeqCst) {
+        if !TX_COPIER_STARTED.claim() {
             panic!("[UART INIT] TX copier already started (duplicate start)");
         }
         uart_smp_snapshot::record_pinned(Copier::Tx, pl.uart_tx);
@@ -513,7 +576,7 @@ pub unsafe fn start_copiers() {
             "uart-tx-copier".into(),
             mask,
         ) else {
-            TX_COPIER_STARTED.store(false, Ordering::SeqCst);
+            TX_COPIER_STARTED.rollback();
             panic!("[UART INIT] TX copier: invalid affinity mask hart={}", pl.uart_tx);
         };
         *TX_COPIER_TASK.lock() = Some(task);
@@ -527,7 +590,7 @@ pub unsafe fn start_copiers() {
 
 // ── QEMU: 寄存器状态日志 ──────────────────────────────────────────────
 
-#[cfg(not(feature = "lichee-d1-async-uart"))]
+#[cfg(not(any(feature = "lichee-d1-async-uart", feature = "k3-uart")))]
 fn log_uart_state(uart: &mut Uart16550<MmioBackend>) {
     use uart_16550::spec::registers::{ISR, LSR};
 

@@ -27,6 +27,10 @@ pub struct Telemetry {
     pub tx_no_progress: AtomicU64,
     /// Total bytes successfully written to the UART FIFO by the TX copier.
     pub tx_hw_bytes: AtomicU64,
+    /// MS17 Iteration 001 T3: RX bytes the ring could not accept at the
+    /// copier push edge (ring-full drop class: near-full vacancy or a
+    /// genuinely full ring). Informational only — `Relaxed`.
+    pub rx_dropped_bytes: AtomicU64,
 }
 
 impl fmt::Debug for Telemetry {
@@ -38,6 +42,10 @@ impl fmt::Debug for Telemetry {
                 &self.tx_no_progress.load(Ordering::Relaxed),
             )
             .field("tx_hw_bytes", &self.tx_hw_bytes.load(Ordering::Relaxed))
+            .field(
+                "rx_dropped_bytes",
+                &self.rx_dropped_bytes.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -50,6 +58,7 @@ impl Telemetry {
             tx_poll: AtomicU64::new(0),
             tx_no_progress: AtomicU64::new(0),
             tx_hw_bytes: AtomicU64::new(0),
+            rx_dropped_bytes: AtomicU64::new(0),
         }
     }
 
@@ -60,6 +69,7 @@ impl Telemetry {
         self.tx_poll.store(0, Ordering::Relaxed);
         self.tx_no_progress.store(0, Ordering::Relaxed);
         self.tx_hw_bytes.store(0, Ordering::Relaxed);
+        self.rx_dropped_bytes.store(0, Ordering::Relaxed);
     }
 }
 

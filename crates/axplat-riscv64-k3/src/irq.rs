@@ -106,6 +106,16 @@ impl IrqIf for IrqIfImpl {
     }
 
     fn register(irq: usize, handler: IrqHandler) -> bool {
+        // MS17 task T1: under `runtime-irq` the full timer vector goes to the
+        // independent slot (CAS + STIE), never into the AIA route table.
+        #[cfg(feature = "runtime-irq")]
+        if irq == crate::timer_irq::TIMER_IRQ_VECTOR {
+            if crate::timer_irq::register_irq(handler) {
+                return true;
+            }
+            warn!("k3-irq: timer handler duplicate rejected");
+            return false;
+        }
         if CHIP.register(&mut aia::HardwareBackend, irq, handler) {
             true
         } else {
@@ -115,12 +125,23 @@ impl IrqIf for IrqIfImpl {
     }
 
     fn unregister(irq: usize) -> Option<IrqHandler> {
+        #[cfg(feature = "runtime-irq")]
+        if irq == crate::timer_irq::TIMER_IRQ_VECTOR {
+            return crate::timer_irq::unregister_irq();
+        }
         CHIP.unregister(&mut aia::HardwareBackend, irq)
     }
 
     fn handle(irq: usize) -> Option<usize> {
+        // MS17 task T1: the timer vector dispatches exactly once through the
+        // independent slot and returns that vector.
+        #[cfg(feature = "runtime-irq")]
+        if irq == crate::timer_irq::TIMER_IRQ_VECTOR {
+            return crate::timer_irq::handle_irq(irq);
+        }
         // Only the external vector claims; timer/IPI vectors keep the MS09
-        // inert behavior (no STIE/SSIE is ever opened).
+        // inert behavior when the timer slot is not compiled in (no STIE/SSIE
+        // is ever opened there).
         if irq != EXTERNAL_IRQ_VECTOR {
             return None;
         }
