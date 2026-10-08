@@ -2,9 +2,9 @@
 
 > Sync status: current
 > Updated: 2026-10-08
-> Revision: `f93c03f6`
+> Revision: `ac09b515`
 > Branch: `k3`
-> Worktree: dirty（MS17 收尾文档与归档）
+> Worktree: clean
 
 ## 项目身份
 
@@ -81,7 +81,7 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 
 ## 仓库现场
 
-- 当前 Git 分支为 `k3`，HEAD 为 `f93c03f6`；工作树含 MS17 全部实现改动与收尾文档（HEAD/Revision 在收尾 docs 提交中同步）。
+- 当前 Git 分支为 `k3`，HEAD 为 `ac09b515`；工作树 clean。
 - `openspec/changes/ms12-com260-kit-async-bidirectional-data-plane/` 为唯一活跃 change（首轮 ready 保留，恢复前由 Plan 消费 MS17 accepted 底座复核契约）；归档目录保留 MS11 轮询网络与 MS17 异步串口/交互 shell 产物（`archive/2026-10-08-ms17-com260-kit-async-uart-interactive-shell/`）。当前行为规格包括 `openspec/specs/k3-com260-kit-polling-network-baseline/` 与 `openspec/specs/k3-com260-kit-async-uart-interactive-shell/`；项目支持范围仍以已验收行为为准。
 - 已知遗留：vf2 构建入口 pre-existing 失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账；SNAPSHOT 此前记录的 `make host-test` ms04 失败在当前工作区不复现（2026-10-07 host-test exit 0）。
 - 详细里程碑状态见 [`tasks.md`](tasks.md)。
