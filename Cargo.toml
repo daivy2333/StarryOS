@@ -173,6 +173,17 @@ k3-stdio = ["k3-uart", "axfeat/paging", "starry-kernel/k3-stdio"]
 # the minimal shell (help/echo/sleep/exit); single-hart only.
 k3-shell = ["k3-stdio", "starry-kernel/k3-shell"]
 
+# MS18 Iteration 000: K3 RAM-rootfs shape (`make k3-rootfs`) — implies the
+# k3-uart data plane (copiers start; no k3-stdio/shell boot path) and passes
+# the platform `ram-rootfs` reservation feature so the allocator keeps the
+# rootfs and DTB carrying windows. Single-hart only; the ordinary ext4 root
+# replaces the memory root for this shape.
+k3-rootfs = [
+    "k3-uart",
+    "axplat-riscv64-k3/ram-rootfs",
+    "starry-kernel/k3-rootfs",
+]
+
 [[bin]]
 name = "starryos"
 path = "src/main.rs"

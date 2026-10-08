@@ -376,6 +376,26 @@ k3-shell: k3-shell-elf
 k3-shell-elf: kernel/resources/k3-shell.c
 	$(BENCH_CC) $(BENCH_CFLAGS) -o kernel/resources/k3-shell.elf $<
 
+# MS18 Iteration 000: K3 RAM-rootfs image. The k3-uart data-plane shape with
+# the platform `ram-rootfs` reservation: rootfs/DTB carrying windows are kept
+# from the allocator and the ordinary ext4 root is mounted from the bootargs
+# `initrdmem` extent. Single-hart only (multi-hart async I/O is MS14);
+# mutually exclusive with k3-stdio/k3-shell/raw-port (kernel guard).
+k3-rootfs:
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-rootfs is a single-hart mode; SMP>1 is unsupported (see MS18/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-rootfs MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
+	$(MAKE) --no-print-directory k3-rootfs-fit
+
+# MS18 Iteration 001 replan: k3-rootfs ships its own FIT so the FDT load
+# address tracks the D1-r1 carrying window (0x2ef000000, above the rootfs
+# window) without touching the legacy single-hart image layout.
+k3-rootfs-fit:
+	@echo "Packing K3 RAM-rootfs FIT (kernel + FDT at 0x2ef000000)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3-rootfs.its StarryOS_riscv64-k3-rootfs.fit
+	@dumpimage -l StarryOS_riscv64-k3-rootfs.fit
+
 lichee:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
 	@echo "Packing Android boot image (smoke)..."
@@ -428,4 +448,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf k3-rootfs k3-rootfs-fit

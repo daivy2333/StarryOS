@@ -245,7 +245,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 
 ### MS18：K3 存储与 rootfs 用户态基线
 
-- Status: planned
+- Status: planned — 2026-10-08 RAM rootfs 普通 shell 基线已交付归档：单 hart 临时 RAM 启动、平台预留窗保护（D1-r1：rootfs 窗收档 256 MiB + DTB 窗上移 0x2ef000000）、ext4 挂载、动态 BusyBox `/bin/sh`（musl 解释器）与外部命令、k3-rootfs 隔离模式（互斥/SMP 拒绝、独立 FIT）、官方启动保持（RESET 回官方 Linux 用户实测）；真实块设备存储、分区与持久挂载仍按本条原 planned 范围保留后续，不因该基线标记完成。
 - Scheduling: 保留既有独立存储规划；不列入当前 MS12→MS13→MS17→MS14 的异步化交付排期，不阻塞 MS14，也不作为其自动后继阶段。
 - Outcome: K3 上从块设备挂载 rootfs 并运行完整用户态（shell 与用户程序从文件系统加载），形成可复现的存储与文件系统基线。
 - Rationale: rootfs 路线（R74 增强方向）复用 Linux 生态与本仓 QEMU rootfs 经验（同源发行）；存储是独立故障域（块设备、分区、文件系统、DMA/cache 一致性），必须独立验收，不与交互性混同。
@@ -256,7 +256,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 - Verification boundary: 块设备、分区、挂载、程序加载逐层有直接观察；介质/分区事实来自当前板，不推定 R70 布局。
 - Diagnostic boundary: 失败限于块设备驱动、分区/挂载、文件系统或程序加载路径。
 - Split signals: UFS 与 SD/eMMC 需要不同驱动且其一已稳定；或挂载与程序加载各自独立受阻。
-- Related changes: None
+- Related changes: `ms18-com260-kit-standard-shell-rootfs`（已归档于 `openspec/changes/archive/2026-10-08-ms18-com260-kit-standard-shell-rootfs/`；Iteration 000–001 accepted，002 shell 行为与恢复按用户 2026-10-08 裁决取消，S3/S5/S7/S8 后半未取得正式见证；行为规格已按见证状态合并为 `openspec/specs/k3-com260-kit-standard-shell-rootfs/`）
 
 Roadmap 共同 Non-goals：
 
@@ -276,4 +276,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 `ms12-com260-kit-async-bidirectional-data-plane`：需求、设计、三轮 Map 与首轮 Cycle 已于 2026-10-06 获批；首轮 ready 状态保留，恢复执行前由 Plan 消费 MS17 已 accepted 的共用底座结果并复核执行契约（交接指针已写入其 README/design/tasks）。全量状态以该 change 产物为准。
 
-当前优先顺序为 MS12→MS13→MS14；MS17 串口单 hart 基线已于 2026-10-08 完成并归档，MS14 剩余前置为 MS12→MS13 网络恢复基线。MS11、MS17 详情保留在各自条目。
+当前优先顺序为 MS12→MS13→MS14；MS17 串口单 hart 基线与 MS18 RAM rootfs 普通 shell 基线均已于 2026-10-08 完成并归档，MS14 剩余前置为 MS12→MS13 网络恢复基线。MS11、MS17、MS18 详情保留在各自条目。

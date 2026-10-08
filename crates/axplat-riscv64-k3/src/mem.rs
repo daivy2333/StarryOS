@@ -17,7 +17,17 @@ impl MemIf for MemIfImpl {
     }
 
     fn reserved_phys_ram_ranges() -> &'static [RawRange] {
-        &[]
+        // MS18 Iteration 000 (task 1.1): only the RAM-rootfs boot shape
+        // reserves the DTB and rootfs carrying windows; every other mode
+        // keeps the empty list (old modes must not gain reservations).
+        #[cfg(feature = "ram-rootfs")]
+        {
+            &crate::ram_layout::RAM_ROOTFS_RESERVED
+        }
+        #[cfg(not(feature = "ram-rootfs"))]
+        {
+            &[]
+        }
     }
 
     fn mmio_ranges() -> &'static [RawRange] {

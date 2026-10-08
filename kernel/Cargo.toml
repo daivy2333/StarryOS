@@ -34,6 +34,26 @@ k3-stdio = ["k3-uart"]
 # k3-shell`) — implies k3-stdio; entry.rs swaps the embedded ELF and
 # argv[0] to the shell payload over the same boot sequence.
 k3-shell = ["k3-stdio"]
+# MS18 Iteration 000 (tasks 1.1/1.2): K3 RAM-rootfs shape (`make
+# k3-rootfs`) — implies the k3-uart data plane and mounts the ordinary ext4
+# root from the bootargs `initrdmem` extent instead of the memory root.
+# The static-backed RamDisk needs the dyn Box device interface
+# (`AxBlockDevice = Box<dyn BlockDriverOps>`) handed to
+# `axfs::init_filesystems` via `AxDeviceContainer::from_one`; the RDIF
+# registry runtime is never called. `axfs/ext4` comes without
+# `axfeat/fs-ng-ext4` so axruntime keeps its auto-probe/mount off and the
+# entry owns the single ROOT_FS_CONTEXT initialization.
+k3-rootfs = [
+    "k3-uart",
+    "axfs/ext4",
+    "axplat-riscv64-k3/ram-rootfs",
+    "dep:axdriver",
+    "axdriver/dyn",
+    "axdriver/block",
+    "dep:axdriver_block",
+    "axdriver_block/ramdisk-static",
+    "dep:fdt-parser",
+]
 # K3 smoltcp polling Device/session (MS11 Iteration 002): implied by `k3`;
 # keeps the raw-GMAC harness and other platforms free of the smoltcp edge.
 k3-polling-net = ["dep:smoltcp"]
@@ -98,6 +118,12 @@ axplat-riscv64-k3 = { path = "../crates/axplat-riscv64-k3", optional = true, fea
 # K3 polling network session (MS11 Iteration 002, task 3.1): the local
 # no-default-features smoltcp with only the four-protocol feature set.
 smoltcp = { workspace = true, optional = true }
+
+# MS18 Iteration 000 (task 1.2): the dyn block-device interface and the
+# static-backed RAM disk behind the k3-rootfs shape. Versions unify with
+# axdriver's own edges (both are in the workspace lock).
+axdriver_block = { version = "0.1.4-preview.3", optional = true }
+fdt-parser = { version = "0.4.18", optional = true }
 
 axbacktrace = "0.1"
 axerrno = "0.2"

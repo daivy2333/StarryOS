@@ -378,11 +378,18 @@ dependencies = [
  "axdriver_pci",
  "axdriver_virtio",
  "axdriver_vsock",
+ "axerrno 0.2.2",
  "axhal",
+ "axklib",
  "cfg-if",
  "crate_interface 0.1.4",
+ "dma-api 0.7.3",
  "log",
+ "memory_addr",
+ "rd-block",
+ "rdrive",
  "smallvec",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -1532,6 +1539,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dma-api"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce802d0c429c6966bea151e8e78eb5906d5b5e2cdebd0e960097cbe3654a3db"
+dependencies = [
+ "aarch64-cpu-ext",
+ "cfg-if",
+ "derive_more",
+ "log",
+ "mbarrier",
+ "spin 0.10.0",
+ "thiserror",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2396,6 +2418,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pin-utils"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2553,6 +2581,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rd-block"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c50815cc41d1c013ac6b7e5c8d9b03462dec1b87f340813008a10850afbf4a92"
+dependencies = [
+ "dma-api 0.7.3",
+ "futures",
+ "rdif-block",
+ "spin_on",
+]
+
+[[package]]
 name = "rdif-base"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2575,6 +2615,17 @@ dependencies = [
  "async-trait",
  "paste",
  "rdif-def",
+ "thiserror",
+]
+
+[[package]]
+name = "rdif-block"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ee9db4499364cd4486d6859a0edbfddf535a519f5e031f214c6474cad3d497"
+dependencies = [
+ "dma-api 0.7.3",
+ "rdif-base 0.8.0",
  "thiserror",
 ]
 
@@ -2930,7 +2981,7 @@ checksum = "20ad586f110c679176859fe111f2c3dd176b95bbe731e9b4c3d1c6382cb301c9"
 dependencies = [
  "bare-test-macros",
  "bitflags 2.13.0",
- "dma-api",
+ "dma-api 0.5.2",
  "enum_dispatch",
  "heapless 0.9.2",
  "log",
@@ -3037,6 +3088,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin_on"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "076e103ed41b9864aa838287efe5f4e3a7a0362dd00671ae62a212e5e4612da2"
+dependencies = [
+ "pin-utils",
+]
+
+[[package]]
 name = "spinning_top"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3069,6 +3129,7 @@ dependencies = [
  "axconfig",
  "axdisplay",
  "axdriver",
+ "axdriver_block",
  "axerrno 0.2.2",
  "axfeat",
  "axfs-ng",
@@ -3097,6 +3158,7 @@ dependencies = [
  "enum_dispatch",
  "event-listener",
  "extern-trait",
+ "fdt-parser",
  "flatten_objects",
  "gimli",
  "hashbrown",

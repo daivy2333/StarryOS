@@ -39,6 +39,19 @@ compile_error!(
      with it"
 );
 
+// MS18 Iteration 000: the K3 RAM-rootfs shape is its own boot path — it
+// mounts the ext4 root instead of the memory root and never constructs the
+// embedded-payload stdio tree, while the stdio/shell/raw-port shapes mount
+// the memory root or own the raw reader. The paths are mutually exclusive.
+#[cfg(all(
+    feature = "k3-rootfs",
+    any(feature = "k3-stdio", feature = "k3-uart-port-test")
+))]
+compile_error!(
+    "k3-rootfs cannot be combined with k3-stdio/k3-shell/k3-uart-port-test; select exactly one \
+     K3 boot mode"
+);
+
 pub mod entry;
 
 mod config;

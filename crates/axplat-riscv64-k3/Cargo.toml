@@ -15,6 +15,10 @@ runtime-irq = ["irq-if"]
 # MS17 Iteration 000 (task T2): opt-in UART route (source/EID 42). The
 # default AIA route table stays the four MS10 routes.
 uart-irq = ["irq-if"]
+# MS18 Iteration 000 (task 1.1): the RAM-rootfs boot shape reserves the
+# rootfs carrying window and the DTB carrying window from the allocator.
+# Every other mode keeps the empty reservation list.
+ram-rootfs = []
 
 [lib]
 name = "axplat_riscv64_k3"

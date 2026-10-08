@@ -31,6 +31,23 @@ unsafe fn init_boot_page_table() {
         BOOT_PT_SV39[0x106] = (0x1_8000_0000 >> 12 << 10) | PTE_VRWX_GAD;
         // 0xffff_ffc0_c000_0000..0xffff_ffc1_0000_0000 (UART0 via phys_to_virt)
         BOOT_PT_SV39[0x103] = (0xc000_0000 >> 12 << 10) | PTE_VRWX_GAD;
+
+        // MS18 Iteration 000: under `ram-rootfs` the reserved DTB/rootfs
+        // windows split the free-memory list, and axruntime::init_allocator
+        // (running BEFORE the full paging switch) touches the start of every
+        // free region for allocator metadata — including the tail region at
+        // 0x2_8000_0000. Map the whole K3 RAM window (phys-memory-base
+        // 0x1_6000_0000 .. 0x2_f000_0000) identity + high-half so the
+        // pre-paging allocator sees all of it. Blocks 5..=11 are pure RAM on
+        // this board (all MMIO lives below 0x1400_0000); the entry still
+        // touches the rootfs only after full paging. 1G block N sits at
+        // N<<30, so its PTE frame field is N<<28.
+        #[cfg(feature = "ram-rootfs")]
+        for block in 5..=11usize {
+            let pte = ((block as u64) << 28) | PTE_VRWX_GAD;
+            BOOT_PT_SV39[block] = pte;
+            BOOT_PT_SV39[0x100 + block] = pte;
+        }
     }
 }
 

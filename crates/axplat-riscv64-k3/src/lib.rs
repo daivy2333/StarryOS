@@ -24,6 +24,11 @@ pub mod timer_irq;
 /// K3 GMAC DMA address/cache foundation (MS11 Iteration 000, task 1.1).
 pub mod dma;
 
+/// K3 RAM-rootfs boot layout: reserved windows, `initrdmem` item and DTB
+/// handoff validators (MS18 Iteration 000, task 1.1). Pure `core` logic;
+/// the allocator reservation consumes it only under `ram-rootfs`.
+pub mod ram_layout;
+
 pub mod config {
     //! Platform configuration module.
     //!
