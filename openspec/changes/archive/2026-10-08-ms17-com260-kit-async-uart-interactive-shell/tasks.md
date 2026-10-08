@@ -1,6 +1,6 @@
 # MS17 任务与 Iteration Map
 
-R1–R8/S1–S28、默认范围、设计和本 Map 已获批准。Iteration000：Cycle000–002 后 2026-10-07 Review accepted（T1/T2 闭合）。Iteration001：Cycle000 实施 + 首轮 Review 要求有限修复（k3.rs 尾随空白 + diff-check 复跑）→ 修复完成后 2026-10-07 复审 accepted（T3/T4 闭合；crate 74/74、板测 B5 数据面资格全过）。当前 Cycle 为 `iterations/002-tty-userland-stdio/000-initial.md`（ready，2026-10-07 用户原话"批准"；Act 等待执行指令）。任务勾选以 Iteration accepted 为准；后续轮以前轮 accepted 结果展开自包含 Cycle。
+R1–R8/S1–S28、默认范围、设计和本 Map 已获批准。Iteration000：Cycle000–002 后 2026-10-07 Review accepted（T1/T2 闭合）。Iteration001：Cycle000 实施 + 首轮 Review 要求有限修复（k3.rs 尾随空白 + diff-check 复跑）→ 修复完成后 2026-10-07 复审 accepted（T3/T4 闭合；crate 74/74、板测 B5 数据面资格全过）。Iteration002：Cycle000 实施后 2026-10-07 Review accepted（T5/T6 闭合；native tty 11/11 + host 9/9、板测 B6 probe 全阶段通过）。Iteration003：Cycle000 实施后 2026-10-07 Review accepted（T7/T8 闭合；native 20/20、板测 B7 两轮全场景 + 操作者裁决）。全部 8 项任务闭合，无待执行 Cycle；change 可交 docs-maintainer 收尾。任务勾选以 Iteration accepted 为准。
 
 ## Phase / Gate
 
@@ -10,9 +10,9 @@ R1–R8/S1–S28、默认范围、设计和本 Map 已获批准。Iteration000�
 | Gate1 | PASS | proposal User Decision 保留原话 |
 | Phase2 实码调查/设计/RTM/分轮 | completed | design、本文与首轮 Cycle |
 | Gate2 | PASS | 用户在方案交付及RAM启动说明后明确“批准”；首轮ready |
-| Act/Gate3–5 | completed | Iteration000 三 Cycle accepted（T1/T2）；Iteration001 Cycle000 首轮 Review 有限修复后复审 accepted（T3/T4，2026-10-07） |
-| 板测 | completed | Iteration000 B2/B3″/B4 两轮；Iteration001 B5 数据面资格全过（echo/long/txfull/drain/quiet/B4）；豁免与 Minor 见各 Cycle Review |
-| 后续 Cycle 展开 | in-progress | Iteration002 `000-initial.md` 已获批转 ready（2026-10-07 原话"批准"）；待 Act 指令 |
+| Act/Gate3–5 | completed | Iteration000 三 Cycle accepted（T1/T2）；Iteration001 Cycle000 复审 accepted（T3/T4）；Iteration002 Cycle000 accepted（T5/T6）；Iteration003 Cycle000 accepted（T7/T8，2026-10-07） |
+| 板测 | completed | Iteration000 B2/B3″/B4 两轮；Iteration001 B5 数据面资格全过；Iteration002 B6 probe 全阶段；Iteration003 B7 两轮交互全场景（含 SIGINT 对照、R68 复位）；豁免与 Minor 见各 Cycle Review |
+| 后续 Cycle 展开 | completed | 无剩余 Iteration；Next Iteration: None（2026-10-07 Iteration003 Review accepted） |
 | Recorder/Maintainer/归档 | SKIPPED | 未授权；不改 `.agents` |
 
 ## 全部任务
@@ -21,10 +21,10 @@ R1–R8/S1–S28、默认范围、设计和本 Map 已获批准。Iteration000�
 - [x] T2：PXA port、UART42 IRQ 与低层双向资格载荷。（Iteration 000 accepted，2026-10-07）
 - [x] T3：复用 copier，修复事件窗口、wrap/容量与物理 drain。（Iteration 001 accepted，2026-10-07）
 - [x] T4：唯一读写 owner、异步输出和 UART 数据面资格载荷。（Iteration 001 accepted，2026-10-07）
-- [ ] T5：修复实际 tty 行输入、EOF、容量与 readiness 接缝。
-- [ ] T6：K3 内存根/ELF/stdio 用户态入口及真实 syscall 资格载荷。
-- [ ] T7：内嵌最小 shell 命令与异常输入。
-- [ ] T8：交互、quiet/退出、受影响兼容和 MS12 交接检查。
+- [x] T5：修复实际 tty 行输入、EOF、容量与 readiness 接缝。（Iteration 002 accepted，2026-10-07）
+- [x] T6：K3 内存根/ELF/stdio 用户态入口及真实 syscall 资格载荷。（Iteration 002 accepted，2026-10-07）
+- [x] T7：内嵌最小 shell 命令与异常输入。（Iteration 003 accepted，2026-10-07）
+- [x] T8：交互、quiet/退出、受影响兼容和 MS12 交接检查。（Iteration 003 accepted，2026-10-07）
 
 ## Iteration Plan
 
@@ -53,7 +53,7 @@ R1–R8/S1–S28、默认范围、设计和本 Map 已获批准。Iteration000�
 - Verification boundary：生产ldisc与loader测试、静态ELF原生readelf、stdio镜像构建、操作者真实read/write/ppoll/sleep/EOF/signal场景。
 - Diagnostic boundary：line discipline/FD与syscall、paging/loader/process；UART/timer采用accepted结论。
 - Non-goals：shell完整命令、tcdrain/TCSETSW扩展、rootfs/块设备、fork/exec生态。
-- 当前文件：`iterations/002-tty-userland-stdio/000-initial.md`（ready，2026-10-07 批准；待 Act 指令）。
+- 状态：completed — 2026-10-07 Cycle000 Review accepted（tty native 11/11 + host 契约 9/9 + 板测 B6 probe 全阶段）。
 
 ### Iteration003：最小交互shell交付
 
@@ -62,6 +62,7 @@ R1–R8/S1–S28、默认范围、设计和本 Map 已获批准。Iteration000�
 - Verification boundary：生产C命令处理native tests、shell ELF/build、真实交互与RAM复位；受影响QEMU/D1构建及共有UART tests。
 - Diagnostic boundary：用户输入/命令语义与最终集成；不把下层回归失败归给shell。
 - Non-goals：网络命令、完整POSIX shell、K3多hart与组合长稳、性能优化。
+- 状态：completed — 2026-10-07 Cycle000 Review accepted（native 20/20、板测 B7 两轮全场景、MS12 交接指针写入；FIT strings 判定为 shell 镜像）。
 
 ### 平衡审计
 

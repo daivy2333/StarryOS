@@ -1,0 +1,5 @@
+# Evidence: 003-minimal-interactive-shell / 000-initial
+
+- 来源: user-required。用户在 B7 板测完成后明确要求"把这个输出保存到证据文件"（公共规则白名单：用户明确要求）。Plan Context 的 Persisted Evidence 为 none；Act Response 的一句话记录与 ≤20 行输出不足以承载用户点名的完整串口现场，故按请求保存。
+- 结论: B7 全场景通过，支持 A2（板测）与 S23–S28 的真板观察——boot 链 `mode=k3-shell` → banner → `sh> `；echo 文本回显；sleep 后提示符恢复；未知命令/非法参数（`sleep abc`、`exit -1`）usage 反馈后继续；>256 字符行整行丢弃不执行截断前缀；`exit` → `exit code=0` → kernel `stage=exit join=0` → `stage=drain done (TxCompletion four conditions)`；Ctrl-C（SIGINT）结束用户进程且 kernel owner 保持（round1）；每条命令均在空闲间隔后得到响应（IRQ/唤醒恢复持续成立）；外部 reset 回原系统（操作者执行并确认）。操作者裁决原话："异步串口正常"。Ctrl-D（EOF）未单独跑：其 read-0 语义已由 Iteration 002 B6 板测（同一 tty 路径）与 T7 native 测试覆盖，留 Plan Review 裁决。round1 的 `helo^Hp^H^H → helop` 为终端 Backspace 发送 0x08 所致（内核 VERASE 默认 0x7f，与 Linux 默认一致），非内核缺陷。
+- 文件: b7-serial-round1.txt（第一轮：boot/未知命令/help/Ctrl-C 对照轮，串口原文）；b7-serial-round2.txt（第二轮：echo/sleep/非法参数/超长行/exit/drain，串口原文）。两份均为操作者提供的串口粘贴，未脱敏（无敏感信息）。环境：CoM260 Kit，R68 RAM boot（`StarryOS_riscv64-k3.fit`，2026-10-07 20:06 shell 镜像），SMP=1。

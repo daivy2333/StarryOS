@@ -6,6 +6,7 @@ use core::sync::atomic::AtomicU32;
 use bytemuck::AnyBitPattern;
 use kspin::SpinNoPreempt;
 
+pub mod canonical;
 pub mod job;
 pub mod ldisc;
 pub mod termios;

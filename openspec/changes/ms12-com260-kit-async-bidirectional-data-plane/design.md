@@ -135,3 +135,5 @@ hold 使用200ms lease，显式 release，不到1s data deadline；auto-release 
 Gate2没有需用户决定的实质技术未知项；硬件待执行结果是验收项。用户已于2026-10-06以“批准当前的工作”批准本设计、三轮Map和首轮执行契约；批准状态见proposal User Decision。
 
 2026-10-06 后续排期调整：先完成 MS17，保留本网络设计与全部验收。timer/IRQ/task 共用底座由 MS17 优先承担；本设计的底座目标语义仍有效，MS17 实际 accepted 后才决定 T1 中哪些实现和测试已满足。后续当前代码/验证契约变化由 Plan 生成适用 replan Cycle，不能改写原 Plan Context 或把未运行的 MS17 计划作为 GREEN。
+
+2026-10-07 MS17 交接指针：MS17 已在 K3 上交付并验收共用底座（runtime timer/AIA、PXA UART 异步 port、copier 数据面与物理 drain、tty canonical、内存根内嵌用户态 stdio；各 Iteration 的 accepted 状态见 [../ms17-com260-kit-async-uart-interactive-shell/tasks.md](../ms17-com260-kit-async-uart-interactive-shell/tasks.md)）。T1 恢复时由 Plan 以这些 accepted 结论为输入逐项复核其 timer/IRQ/feature 接缝；本设计的 GMAC、queue、socket 与恢复语义不因之交变。

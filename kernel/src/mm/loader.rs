@@ -357,89 +357,104 @@ fn load_user_app_from_elf_data(
     args: &[String],
     envs: &[String],
 ) -> AxResult<(VirtAddr, VirtAddr)> {
-    let builder = ELFHeadersBuilder::new(elf_data).map_err(map_elf_error)?;
-    let range = builder.ph_range();
-    let elf = builder
-        .build(&elf_data[range.start as usize..range.end as usize])
-        .map_err(map_elf_error)?;
+    load_embedded_elf_into_aspace(uspace, elf_data, args, envs)
+}
 
-    // ELFParser::new handles ET_EXEC (base=0) vs ET_DYN/PIE (base=bias).
-    let elf_parser =
-        ELFParser::new(&elf, crate::config::USER_SPACE_BASE).map_err(|_| AxError::InvalidData)?;
+/// Kernel-side [`embedded_loader::ElfMapBackend`] over a real
+/// [`AddrSpace`]: the three trait calls translate 1:1 onto the eager
+/// path's map/populate/write sequence.
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
+))]
+struct AddrSpaceBackend<'a>(&'a mut AddrSpace);
 
-    for ph in elf_parser
-        .headers()
-        .ph
-        .iter()
-        .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
-    {
-        let vaddr = ph.virtual_addr as usize + elf_parser.base();
-        let seg_pad = vaddr.align_offset_4k();
-        let seg_align_size =
-            (ph.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
-        let seg_start = VirtAddr::from_usize(vaddr);
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
+))]
+impl super::embedded_loader::ElfMapBackend for AddrSpaceBackend<'_> {
+    type Err = AxError;
 
-        uspace.map(
-            seg_start.align_down_4k(),
-            seg_align_size,
-            mapping_flags(ph.flags),
-            false,
-            Backend::new_alloc(seg_start.align_down_4k(), PageSize::Size4K),
-        )?;
-        uspace.populate_area(
-            seg_start.align_down_4k(),
-            seg_align_size,
-            mapping_flags(ph.flags),
-        )?;
-
-        if ph.file_size > 0 {
-            let file_start = ph.offset as usize;
-            let file_end = file_start + ph.file_size as usize;
-            let seg_data = &elf_data[file_start..file_end.min(elf_data.len())];
-            uspace.write(seg_start, seg_data)?;
-        }
+    fn map_area(
+        &mut self,
+        vaddr: VirtAddr,
+        size: usize,
+        flags: super::embedded_loader::SegFlags,
+        populate: bool,
+    ) -> AxResult<()> {
+        self.0.map(
+            vaddr,
+            size,
+            seg_to_mapping_flags(flags),
+            populate,
+            Backend::new_alloc(vaddr, PageSize::Size4K),
+        )
     }
 
-    let entry = elf_parser.entry();
-    let entry = VirtAddr::from_usize(entry);
+    fn populate_area(
+        &mut self,
+        vaddr: VirtAddr,
+        size: usize,
+        flags: super::embedded_loader::SegFlags,
+    ) -> AxResult<()> {
+        self.0.populate_area(vaddr, size, seg_to_mapping_flags(flags))
+    }
 
-    let auxv = elf_parser
-        .aux_vector(PAGE_SIZE_4K, None)
-        .collect::<Vec<_>>();
+    fn write_mem(&mut self, vaddr: VirtAddr, data: &[u8]) -> AxResult<()> {
+        self.0.write(vaddr, data).map(|_| ())
+    }
+}
 
-    let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
-    let ustack_size = crate::config::USER_STACK_SIZE;
-    let ustack_start = ustack_top - ustack_size;
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
+))]
+fn seg_to_mapping_flags(flags: super::embedded_loader::SegFlags) -> MappingFlags {
+    let mut mapping_flags = MappingFlags::USER;
+    if flags.read {
+        mapping_flags |= MappingFlags::READ;
+    }
+    if flags.write {
+        mapping_flags |= MappingFlags::WRITE;
+    }
+    if flags.execute {
+        mapping_flags |= MappingFlags::EXECUTE;
+    }
+    mapping_flags
+}
 
-    uspace.map(
-        ustack_start,
-        ustack_size,
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-        false,
-        Backend::new_alloc(ustack_start, PageSize::Size4K),
-    )?;
-
-    let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
-    let user_sp = ustack_top - stack_data.len();
-    let user_sp_aligned = user_sp.align_down_4k();
-    uspace.populate_area(
-        user_sp_aligned,
-        (ustack_top - user_sp_aligned).align_up_4k(),
-        MappingFlags::READ | MappingFlags::WRITE,
-    )?;
-    uspace.write(user_sp, stack_data.as_slice())?;
-
-    let heap_start = VirtAddr::from_usize(crate::config::USER_HEAP_BASE);
-    let heap_size = crate::config::USER_HEAP_SIZE;
-    uspace.map(
-        heap_start,
-        heap_size,
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-        true,
-        Backend::new_alloc(heap_start, PageSize::Size4K),
-    )?;
-
-    Ok((entry, user_sp))
+/// Load an embedded static ET_EXEC image through the production embedded
+/// loader over a real [`AddrSpace`]. Shared by the D1 eager path and the
+/// K3 stdio entry (MS17 Iteration 002).
+#[cfg(any(
+    feature = "lichee-d1-userbench",
+    feature = "lichee-d1-fullbench",
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
+))]
+pub(crate) fn load_embedded_elf_into_aspace(
+    uspace: &mut AddrSpace,
+    elf_data: &[u8],
+    args: &[String],
+    envs: &[String],
+) -> AxResult<(VirtAddr, VirtAddr)> {
+    let params = super::embedded_loader::ElfLoadParams {
+        user_space_base: USER_SPACE_BASE,
+        user_stack_top: crate::config::USER_STACK_TOP,
+        user_stack_size: crate::config::USER_STACK_SIZE,
+        user_heap_base: crate::config::USER_HEAP_BASE,
+        user_heap_size: crate::config::USER_HEAP_SIZE,
+    };
+    let mut backend = AddrSpaceBackend(uspace);
+    let loaded = super::embedded_loader::load_elf_image(&mut backend, elf_data, &params, args, envs)?;
+    Ok((loaded.entry, loaded.user_sp))
 }
 
 /// Load an embedded ELF (from a byte slice) into the user address space.

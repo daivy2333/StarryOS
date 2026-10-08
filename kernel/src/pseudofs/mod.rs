@@ -14,14 +14,16 @@ use axerrno::LinuxResult;
 #[cfg(any(
     feature = "lichee-d1-userbench",
     feature = "lichee-d1-fullbench",
-    feature = "lichee-d1-fullbench-command"
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
 ))]
 use axfs::ROOT_FS_CONTEXT;
 use axfs::{FS_CONTEXT, FsContext};
 #[cfg(any(
     feature = "lichee-d1-userbench",
     feature = "lichee-d1-fullbench",
-    feature = "lichee-d1-fullbench-command"
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
 ))]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
@@ -64,7 +66,8 @@ const DIR_PERMISSION: NodePermission = NodePermission::from_bits_truncate(0o755)
 #[cfg(any(
     feature = "lichee-d1-userbench",
     feature = "lichee-d1-fullbench",
-    feature = "lichee-d1-fullbench-command"
+    feature = "lichee-d1-fullbench-command",
+    feature = "k3-stdio"
 ))]
 pub fn init_memory_root() {
     let fs = MemoryFs::new();

@@ -1,0 +1,20 @@
+[package]
+name = "k3-embedded-user-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# MS17 Iteration 002 host package (task T6): the production embedded-ELF
+# loader and the stdio publication contract run on the host with fakes
+# replacing only the map/populate/write backend and the stdio open boundary
+# (Task Contract T6). The package is excluded from the root workspace (same
+# pattern as k3-polling-net-host). Command:
+#   env RUSTFLAGS='-C linker=<repo>/scripts/cc-nopie.sh' cargo test \
+#     --manifest-path tests/k3-embedded-user-host/Cargo.toml --offline \
+#     -- --test-threads=1
+
+[dependencies]
+axerrno = "0.2"
+kernel-elf-parser = "0.3.4"
+memory_addr = "0.4"
+xmas-elf = "0.9"

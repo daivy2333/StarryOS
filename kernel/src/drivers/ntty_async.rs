@@ -22,14 +22,19 @@ lazy_static! {
         TtyConfig {
             reader: {
                 // SAFETY: ASYNC_TTY is constructed exactly once via lazy_static.
-                // No other code constructs a raw reader for this driver. The
-                // startup benchmark and UART initialization complete before TTY
-                // init, and no second raw reader is constructed in any feature
-                // path (QEMU default / qemu,smp / lichee-d1-async-uart). The
-                // reader is subsequently moved into the unique tty-reader task
-                // via ProcessMode::External and is never shared or cloned.
+                // No other code constructs a raw reader for this driver on the
+                // boot path that reaches this point. The reader is subsequently
+                // moved into the unique tty-reader task via ProcessMode::External
+                // and is never shared or cloned.
                 //
-                // This upholds the SPSC single-consumer contract of RingBufRx.
+                // K3 (MS17 Iteration 002): the k3-uart data-plane
+                // qualification payload owns a leaked raw reader and never
+                // touches ASYNC_TTY, while the k3-stdio boot path constructs
+                // ASYNC_TTY after the copiers start and runs no payload
+                // reader. The two boot paths are mutually exclusive
+                // (`k3-stdio` selects its own entry branch), so exactly one
+                // RX consumer exists per boot. This upholds the SPSC
+                // single-consumer contract of RingBufRx.
                 unsafe { AsyncUartReader::new(uart_init::driver()) }
             },
             writer: {

@@ -53,20 +53,48 @@ mod critical_section_policy;
     all(feature = "k3", not(feature = "k3-async-uart")),
 )))]
 mod drivers;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
+// MS17 Iteration 002 (T5 ⑦): the k3-uart data-plane shape opens the
+// tty/userland tree so ASYNC_TTY, pseudofs and the tty write impls compile
+// for K3; the tty is only CONSTRUCTED on the k3-stdio boot path, where the
+// qualification payload's raw reader does not run (single-consumer
+// argument lives on the boot-path mutual exclusion).
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    all(feature = "k3", not(feature = "k3-uart")),
+)))]
 mod file;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    all(feature = "k3", not(feature = "k3-uart")),
+)))]
 mod mm;
 pub mod platform;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    all(feature = "k3", not(feature = "k3-uart")),
+)))]
 mod pseudofs;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    all(feature = "k3", not(feature = "k3-uart")),
+)))]
 mod syscall;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    all(feature = "k3", not(feature = "k3-uart")),
+)))]
 mod task;
-#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1-smoke",
+    feature = "lichee-d1-kbench",
+    all(feature = "k3", not(feature = "k3-uart")),
+)))]
 mod time;
-
 // Critical section implementation for embassy-sync AtomicWaker.
 //
 // IRQ restore uses the `critical-section` crate's official `set_impl!` +

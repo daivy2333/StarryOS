@@ -1,0 +1,23 @@
+Boot at 1970-01-01 00:00:25.372287333 UTC
+
+[k3:irq] init=global begin
+[k3:irq] probe domaincfg=0x80000004 smsicfg=0x0/0x0 mmsicfg=0x0/0x0 srcfg1=0x0->0x1
+[k3:irq] msicfg written=0xe0400/0x80604000 readback=0x0/0x0 readback-refused (delivery test adjudicates)
+[k3:irq] domaincfg enabled=0x104 readback=0x80000104
+[k3:irq] init=global done
+[k3:irq] init=percpu begin
+[k3:irq] init=percpu done
+[UART INIT] K3 UART42 activated (notifications masked; copiers arm next)
+[UART INIT] async UART hardware initialized (copiers not started yet)
+[UART INIT] async UART copiers started (rx hart=0 tx hart=0)
+[ms17] mode=k3-shell begin tty=live memory-root=live irq=42
+[shell] k3 minimal interactive shell, 'help' lists commands
+sh> ls ./
+         [shell] unknown command: ls
+sh> helo^Hp^H^H
+               [shell] unknown command: helop
+sh> help
+        [shell] commands: help | echo <text> | sleep <ms 0..60000> | exit [code 0..255]
+sh> ^C[ms17] stdio stage=exit join=0
+[ms17] stdio stage=drain done (TxCompletion four conditions)
+^C^C

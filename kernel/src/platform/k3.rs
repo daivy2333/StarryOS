@@ -428,19 +428,19 @@ pub fn run_uart_port_bringup() -> ! {
 
 /// Long-line acceptance limit for the qualification echo (the payload's
 /// bounded accumulation; the 64 KiB RX ring sits far above it).
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart", not(feature = "k3-stdio")))]
 const PLANE_LINE_LIMIT: usize = 512;
 
 /// TX Full burst size: one full 64 KiB TX ring plus headroom. The wire
 /// drains at ~11.5 KiB/s (115200 8N1) while the payload pushes at memory
 /// speed, so the ring fills and the short-writes (the Full witness) are
 /// guaranteed long before the burst completes.
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart", not(feature = "k3-stdio")))]
 const PLANE_TX_BURST_BYTES: usize = 72 * 1024;
 
 /// Payload line predicate: CR, LF or CRLF terminates; the accumulation also
 /// completes at [`PLANE_LINE_LIMIT`].
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart", not(feature = "k3-stdio")))]
 fn plane_line_complete(acc: &[u8]) -> bool {
     matches!(acc.last(), Some(b'\n') | Some(b'\r')) || acc.len() >= PLANE_LINE_LIMIT
 }
@@ -456,7 +456,11 @@ fn plane_line_complete(acc: &[u8]) -> bool {
 /// timer hook), a 10 s quiet window with post-quiet input, and the
 /// error-class counters. The kernel never judges PASS; reset returns to the
 /// stock system.
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+#[cfg(all(
+    target_arch = "riscv64",
+    feature = "k3-uart",
+    not(feature = "k3-stdio")
+))]
 pub fn run_uart_data_plane() -> ! {
     use core::future::poll_fn;
     use core::sync::atomic::Ordering;
@@ -471,7 +475,9 @@ pub fn run_uart_data_plane() -> ! {
 
     use crate::drivers::k3_uart;
     use crate::drivers::k3_uart_core::ActivateError;
-    use crate::drivers::uart_init::{ArceOsDriver, ArceOsReader, ArceOsWriter, RawArceOsWriter, driver};
+    use crate::drivers::uart_init::{
+        ArceOsReader, ArceOsWriter, RawArceOsWriter, driver, wait_tx_drain,
+    };
 
     /// Reads one line into `acc` through the ring reader with the
     /// check → register → recheck discipline; completes on CR/LF or at the
@@ -505,30 +511,6 @@ pub fn run_uart_data_plane() -> ! {
         .await
     }
 
-    /// Four-condition TX drain wait (the device_ops `flush` semantics driven
-    /// straight off the driver): completes only on
-    /// `ring_empty && !copier_active && staged_bytes == 0 && transmitter_empty`.
-    /// On K3 the final TEMT wait rides the native 1 ms timer hook.
-    async fn wait_tx_drain(drv: &ArceOsDriver) {
-        poll_fn(|cx| {
-            let c = drv.tx_completion();
-            if c.is_drained() {
-                return Poll::Ready(());
-            }
-            if !c.ring_empty || c.copier_active || c.staged_bytes > 0 {
-                drv.tx.register_waker(cx.waker());
-            }
-            uart_16550::async_::isr::DRAIN_WAKER.register(cx.waker());
-            let c2 = drv.tx_completion();
-            if c2.is_drained() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-    }
-
     /// LF → CRLF：数据面 writer 输出的是裸字节流（不经过 diag_line 的翻译
     /// 层），终端需要 CR 才会回到行首，否则出现阶梯状显示（板测实测发现，
     /// Iteration 001 Cycle 内修复）。
@@ -553,7 +535,7 @@ pub fn run_uart_data_plane() -> ! {
     let reader: &'static mut ArceOsReader = Box::leak(Box::new(unsafe {
         uart_16550::async_::device_ops::AsyncUartReader::new(driver())
     }));
-    let mut writer = ArceOsWriter::new(RawArceOsWriter(unsafe {
+    let writer = ArceOsWriter::new(RawArceOsWriter(unsafe {
         uart_16550::async_::device_ops::AsyncUartWriter::new(driver())
     }));
 

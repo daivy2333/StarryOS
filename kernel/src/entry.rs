@@ -30,6 +30,21 @@ use {
     axtask::{AxTaskExt, spawn_task},
     starry_process::{Pid, Process},
 };
+// ── K3 stdio userland imports (MS17 Iteration 002) ───────────────────
+#[cfg(all(target_arch = "riscv64", feature = "k3-stdio"))]
+use {
+    crate::{
+        drivers::ASYNC_TTY,
+        file::FD_TABLE,
+        mm::{copy_from_kernel, load_embedded_elf_into_aspace, new_user_aspace_empty},
+        pseudofs,
+        task::{ProcessData, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    },
+    axhal::uspace::UserContext,
+    axsync::Mutex,
+    axtask::{AxTaskExt, spawn_task},
+    starry_process::{Pid, Process},
+};
 // ── QEMU imports (no D1 and no K3 feature) ───────────────────────────
 #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
 use {
@@ -87,7 +102,15 @@ pub fn init(args: &[String], envs: &[String]) {
     }
 
     // ── K3 async UART data-plane mode (MS17 Iteration 001): port + copiers + rings ──
-    #[cfg(all(target_arch = "riscv64", feature = "k3-async-uart", feature = "k3-uart"))]
+    // The qualification payload owns the sole raw reader/writer of this
+    // boot; ASYNC_TTY is never constructed here (single-consumer argument,
+    // see ntty_async). k3-stdio selects its own boot path instead.
+    #[cfg(all(
+        target_arch = "riscv64",
+        feature = "k3-async-uart",
+        feature = "k3-uart",
+        not(feature = "k3-stdio")
+    ))]
     {
         let _ = (args, envs);
         uart_init::init_uart_hardware();
@@ -95,6 +118,133 @@ pub fn init(args: &[String], envs: &[String]) {
         // benchmark in this mode) ran before the copiers start.
         unsafe { uart_init::start_copiers() };
         crate::platform::k3::run_uart_data_plane();
+    }
+
+    // ── K3 stdio userland (MS17 Iteration 002): tty + embedded probe ──
+    // Boot order: copiers start first, then the memory root mounts (the
+    // devfs console node construction is the ASYNC_TTY construction point,
+    // making the tty-reader the sole RX consumer), then the embedded probe
+    // loads and spawns with stdio. Everything fallible happens before the
+    // process commit point (`Process::new_init`).
+    #[cfg(all(target_arch = "riscv64", feature = "k3-stdio"))]
+    {
+        use alloc::format;
+        use core::time::Duration;
+
+        use axtask::future::{block_on, timeout};
+
+        use crate::{drivers::k3_uart, file::publish_stdio};
+
+        let _ = (args, envs);
+        let diag = |line: &str| k3_uart::diag_line(line);
+
+        uart_init::init_uart_hardware();
+        // SAFETY: this boot path runs once; no other ring producer (no
+        // benchmark in this mode) ran before the copiers start.
+        unsafe { uart_init::start_copiers() };
+
+        pseudofs::init_memory_root();
+        pseudofs::mount_all().expect("Failed to mount pseudofs");
+        spawn_alarm_task();
+
+        // Embedded payload selection: the k3-shell shape embeds the
+        // minimal interactive shell; plain k3-stdio keeps the
+        // Iteration 002 probe. cfg-stripped arms never touch the other
+        // ELF file, so each shape builds without the sibling artifact.
+        #[cfg(feature = "k3-shell")]
+        let payload_name = "k3-shell";
+        #[cfg(not(feature = "k3-shell"))]
+        let payload_name = "k3_stdio_probe";
+
+        diag(&format!("[ms17] mode={payload_name} begin tty=live memory-root=live irq=42"));
+
+        // Recoverable phase (before the commit point): an open or load
+        // failure drops its objects and nothing is published.
+        let stdio_files = crate::file::open_stdio_files()
+            .unwrap_or_else(|e| panic!("[ms17] stdio fault stage=stdio-open err={e:?}"));
+
+        #[repr(align(8))]
+        struct AlignedBytes<const N: usize>([u8; N]);
+
+        #[cfg(feature = "k3-shell")]
+        const PAYLOAD_ELF_LEN: usize = include_bytes!("../resources/k3-shell.elf").len();
+        #[cfg(not(feature = "k3-shell"))]
+        const PAYLOAD_ELF_LEN: usize = include_bytes!("../resources/k3_stdio_probe.elf").len();
+        #[cfg(feature = "k3-shell")]
+        static EMBEDDED_PAYLOAD: AlignedBytes<PAYLOAD_ELF_LEN> =
+            AlignedBytes(*include_bytes!("../resources/k3-shell.elf"));
+        #[cfg(not(feature = "k3-shell"))]
+        static EMBEDDED_PAYLOAD: AlignedBytes<PAYLOAD_ELF_LEN> =
+            AlignedBytes(*include_bytes!("../resources/k3_stdio_probe.elf"));
+
+        let mut uspace = new_user_aspace_empty()
+            .and_then(|mut it| {
+                copy_from_kernel(&mut it)?;
+                Ok(it)
+            })
+            .expect("Failed to create user address space");
+
+        let payload_args = alloc::vec![String::from(payload_name)];
+        let (entry_vaddr, ustack_top) =
+            load_embedded_elf_into_aspace(&mut uspace, &EMBEDDED_PAYLOAD.0, &payload_args, &[])
+                .unwrap_or_else(|e| panic!("[ms17] stdio fault stage=load err={e:?}"));
+
+        // Commit point: from here on the process exists; invariant failures
+        // terminate to reset (no rollback of new_init is attempted).
+        let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
+        let mut task = new_user_task(payload_name, uctx, 0);
+        task.ctx_mut().set_page_table_root(uspace.page_table_root());
+
+        let pid = task.id().as_u64() as Pid;
+        let proc = Process::new_init(pid);
+        proc.add_thread(pid);
+        ASYNC_TTY.bind_to(&proc).expect("Failed to bind async tty");
+
+        let proc = ProcessData::new(
+            proc,
+            String::from(payload_name),
+            Arc::new(payload_args),
+            Arc::new(Mutex::new(uspace)),
+            Arc::default(),
+            None,
+        );
+
+        {
+            let mut scope = proc.scope.write();
+            let mut table_scope = FD_TABLE.scope_mut(&mut scope);
+            let mut table = table_scope.write();
+            let files = stdio_files;
+            publish_stdio(&mut *table, &mut |read| {
+                if read {
+                    Ok(files.input.clone())
+                } else {
+                    Ok(files.output.clone())
+                }
+            })
+            .expect("Failed to publish stdio");
+        }
+
+        let thr = Thread::new(pid, proc);
+        *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
+
+        let task = spawn_task(task);
+        add_task_to_table(&task);
+
+        let exit_code = task.join();
+        diag(&format!("[ms17] stdio stage=exit join={exit_code:?}"));
+
+        // Physical drain: the four TxCompletion conditions; on K3 the final
+        // TEMT wait rides the native 1 ms timer hook.
+        match block_on(timeout(
+            Some(Duration::from_secs(30)),
+            uart_init::wait_tx_drain(&uart_init::driver()),
+        )) {
+            Ok(()) => diag("[ms17] stdio stage=drain done (TxCompletion four conditions)"),
+            Err(_) => diag("[ms17] stdio fault stage=drain deadline=30s"),
+        }
+        loop {
+            riscv::asm::wfi();
+        }
     }
 
     // ── K3 async UART raw mode (MS17 Iteration 000): timer proof + raw PXA ──

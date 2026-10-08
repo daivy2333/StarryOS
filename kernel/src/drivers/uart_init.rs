@@ -14,11 +14,10 @@
 //! - UartPort: 硬件访问抽象
 
 use alloc::sync::Arc;
-#[cfg(not(any(
-    feature = "lichee-d1-smoke",
-    feature = "lichee-d1-kbench",
-    feature = "k3-uart"
-)))]
+// TtyWrite/TtyWriteReady reach the K3 data plane from Iteration 002 (T5 ⑦):
+// the ArceOsWriter ring producer is shared by the payload's direct push and
+// the tty write path, so the impls compile for every async shape.
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 use core::task::Waker;
 use core::{
     ptr::{NonNull, addr_of_mut},
@@ -30,11 +29,7 @@ use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use lazy_static::lazy_static;
 use memory_addr::VirtAddr;
 use spin::Once;
-#[cfg(not(any(
-    feature = "lichee-d1-smoke",
-    feature = "lichee-d1-kbench",
-    feature = "k3-uart"
-)))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 use uart_16550::TtyWrite;
 #[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 use uart_16550::async_::device_ops::AsyncUartWriter;
@@ -59,11 +54,7 @@ use super::serialized_writer::SerializedWriter;
 // ── D1 DW APB UART path ──────────────────────────────────────────────
 #[cfg(feature = "lichee-d1-async-uart")]
 use crate::drivers::d1_uart::{ArceOsD1UartPort, d1_uart_isr_handler};
-#[cfg(not(any(
-    feature = "lichee-d1-smoke",
-    feature = "lichee-d1-kbench",
-    feature = "k3-uart"
-)))]
+#[cfg(not(any(feature = "lichee-d1-smoke", feature = "lichee-d1-kbench")))]
 use crate::pseudofs::dev::tty::terminal::ldisc::TtyWriteReady;
 use crate::{
     drivers::{
@@ -249,8 +240,7 @@ impl ArceOsWriter {
 
 #[cfg(not(any(
     feature = "lichee-d1-smoke",
-    feature = "lichee-d1-kbench",
-    feature = "k3-uart"
+    feature = "lichee-d1-kbench"
 )))]
 impl TtyWrite for ArceOsWriter {
     fn write(&self, buf: &[u8]) -> usize {
@@ -260,8 +250,7 @@ impl TtyWrite for ArceOsWriter {
 
 #[cfg(not(any(
     feature = "lichee-d1-smoke",
-    feature = "lichee-d1-kbench",
-    feature = "k3-uart"
+    feature = "lichee-d1-kbench"
 )))]
 impl TtyWriteReady for ArceOsWriter {
     fn waits_for_write_completion(&self) -> bool {
@@ -327,6 +316,36 @@ pub(crate) fn singleton_mask_for(hart: usize) -> axtask::AxCpuMask {
 
 pub fn driver() -> Arc<ArceOsDriver> {
     DRIVER.get().expect("UART driver not initialized").clone()
+}
+
+/// Four-condition TX drain wait (the device_ops `flush` semantics driven
+/// straight off the driver): completes only on
+/// `ring_empty && !copier_active && staged_bytes == 0 && transmitter_empty`.
+/// On K3 the final TEMT wait rides the native 1 ms timer hook. Shared by
+/// the data-plane qualification payload and the k3-stdio post-exit drain
+/// (MS17 Iteration 002).
+#[cfg(all(target_arch = "riscv64", feature = "k3-uart"))]
+pub async fn wait_tx_drain(drv: &ArceOsDriver) {
+    use core::future::poll_fn;
+    use core::task::Poll;
+
+    poll_fn(|cx| {
+        let c = drv.tx_completion();
+        if c.is_drained() {
+            return Poll::Ready(());
+        }
+        if !c.ring_empty || c.copier_active || c.staged_bytes > 0 {
+            drv.tx.register_waker(cx.waker());
+        }
+        uart_16550::async_::isr::DRAIN_WAKER.register(cx.waker());
+        let c2 = drv.tx_completion();
+        if c2.is_drained() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
 }
 
 /// Returns the saved handle of the started copier for `dir`, if it was started.

@@ -11,6 +11,7 @@ exclude = [
     "crates/uart_16550",
     "crates/virtio-drivers",
     "tests/k3-polling-net-host",
+    "tests/k3-embedded-user-host",
 ]
 
 [workspace.package]
@@ -156,9 +157,21 @@ k3-uart-port-test = ["k3-async-uart", "starry-kernel/k3-uart-port-test"]
 
 # MS17 Iteration 001: K3 async UART data-plane mode (`make k3-uart`) —
 # implies the raw-port async mode and opens the copier/ring data plane
-# (uart_init K3 path over the Iteration 000 port). Single-hart; tty and
-# userland arrive with Iterations 002+.
-k3-uart = ["k3-async-uart", "starry-kernel/k3-uart"]
+# (uart_init K3 path over the Iteration 000 port). Single-hart. Iteration
+# 002 opens the tty/userland tree in this shape; `k3-stdio` (T6) selects
+# the embedded stdio probe boot path over it.
+k3-uart = ["k3-async-uart", "axfeat/paging", "starry-kernel/k3-uart"]
+
+# MS17 Iteration 002: K3 stdio userland shape (`make k3-stdio`) — the tty
+# single-consumer boot path: copiers start, the memory root mounts
+# (constructing ASYNC_TTY), the embedded probe is loaded and spawned with
+# stdio, and the kernel physically drains after exit.
+k3-stdio = ["k3-uart", "axfeat/paging", "starry-kernel/k3-stdio"]
+
+# MS17 Iteration 003: K3 minimal interactive shell shape (`make k3-shell`) —
+# implies the k3-stdio tty/userland shape and swaps the embedded payload to
+# the minimal shell (help/echo/sleep/exit); single-hart only.
+k3-shell = ["k3-stdio", "starry-kernel/k3-shell"]
 
 [[bin]]
 name = "starryos"

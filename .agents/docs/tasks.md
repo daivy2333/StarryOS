@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-10-06 | 路线规划更新: 2026-10-06 | 分支: k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I19；MS01-MS11 与 MS16 已归档。
+> 任务状态最后同步: 2026-10-08 | 路线规划更新: 2026-10-06 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I19；MS01-MS11、MS16 与 MS17 已归档。
 
 ---
 
@@ -9,7 +9,7 @@
 
 每个 milestone 只引入一个主要调试变量。执行前必须通过 OpenSpec Plan 建立 BDD、RTM、测试见证和获批 change。完成状态只依据对应 change 的新鲜证据更新。
 
-NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。当前排期为 MS12→MS13→MS17→MS14，MS14 同时验收网卡与 UART 多 hart 异步行为。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
+NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。当前排期为 MS12→MS13→MS14（MS17 串口单 hart 基线已于 2026-10-08 验收），MS14 同时验收网卡与 UART 多 hart 异步行为。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
 
 | ID | Milestone | 交付范围 | 验证 Gate | 前置 | 状态 |
 |---|---|---|---|---|---|
@@ -29,7 +29,7 @@ NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任
 | <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | 待执行（MS12 计划已批准，首轮 Cycle ready；当前轮先完成 IRQ/timer 接缝） |
 | <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ⏳ 等待 T20 |
 | <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ⏳ 等待 T21 |
-| <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ⏳ 等待 MS13 与 MS17 |
+| <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ⏳ 等待 MS13（MS17 已于 2026-10-08 验收） |
 | <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ⏳ 等待 T23 |
 | <!-- T25 --> T25 | 已转为 I19 | 不再作为执行任务；方向见 `.agents/memory/improvements.md` I19 | 不参与当前路线完成判定 | 不适用 | superseded — 2026-10-06 用户批准退出路线 |
 
@@ -209,7 +209,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 
 ### MS17：K3 单 hart 异步串口与交互 shell 基线
 
-- Status: planned
+- Status: completed — 2026-10-08；用户审计接受（原话"工作被接受"）。交付结论限于 CoM260 Kit 单 hart：runtime timer/AIA 底座（独立 timer handler 槽、set_timer(0) 首 tick、与 UART42 隔离）、PXA UART 异步 port（115200 8N1、三步 FCR PXAR8、Errata20 序、唯一 owner 激活）、完整 copier 数据面（64KiB rings、check-register-arm-recheck、wrap/Full/drop 恢复、四条件物理 drain 与 1 ms timer hook）、tty canonical 输入契约（空格/tab、ERASE/KILL、1024B 行界整行 discard、EOF 0-read、readiness）、内存根内嵌用户态 stdio（ET_EXEC 静态 ELF、失败分层未发布、argv/EAGAIN/ppoll/nanosleep/exit 板测）与最小交互 shell（help/echo/sleep/exit、异常输入恢复、B7 两轮板测全场景 + SIGINT 对照 + R68 复位）；native：crate 74/74、tty 11/11 + write 6、shell 20/20、embedded-user-host 9/9；受影响构建门 k3-stdio/k3/build/host-test 全过，`make k3-shell` 为交付镜像形态。结论不含 GMAC 数据面（MS12/MS13）、多 hart（MS14）、存储/rootfs（MS18）与性能优化（I19）。
 - Outcome: CoM260 Kit 上 StarryOS 具备首个可交互用户面：串口异步 RX/TX 接通，console 可输入命令并得到输出，timer 超时/调度唤醒在 K3 生效，R68 RAM 启动环内可复现。
 - Rationale: 交互性是与 NIC 数据面正交的独立故障域（IRQ 扩展、UART RX、tty/用户态）；R74 探索证明最小路径零存储依赖（用户程序内嵌内核镜像），PXA UART/AIA 机制按 M42 从 tgoskits 默认采信，异步 UART 契约沿用本仓 QEMU/D1 已验证实现。
 - Dependencies: MS10；排期在 MS12、MS13 完成之后，优先复用 MS12 已接通的 timer/task 底座，不新增对网络恢复语义的技术依赖
@@ -219,7 +219,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 - Verification boundary: 真板 UART RX/TX、等待唤醒与交互直接观察 + host 生产路径测试；普通启动日志不作为异步 UART 验收；单 hart 证据（SMP 属 MS14）。
 - Diagnostic boundary: 失败限于 AIA 底座扩展、UART RX/TX 驱动、tty/用户态 spawn 或内嵌程序载体。
 - Split signals: 存储提前进入范围；或 UART 交互与用户态进程面各自独立受阻。
-- Related changes: None
+- Related changes: `ms17-com260-kit-async-uart-interactive-shell`（已归档于 `openspec/changes/archive/2026-10-08-ms17-com260-kit-async-uart-interactive-shell/`；Iteration 000–003 全部 accepted，T1–T8 闭合；行为规格已合并为 `openspec/specs/k3-com260-kit-async-uart-interactive-shell/`）
 
 ### MS14：K3 多 hart 网卡与串口异步化最终验收
 
@@ -274,6 +274,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-`ms12-com260-kit-async-bidirectional-data-plane`：需求、设计、三轮 Map 与首轮 Cycle 已于 2026-10-06 获批；当前 `iterations/000-initial/000-initial.md` 为 ready，Act/Review pending，7 项实施任务未开始。全量状态以该 change 产物为准。
+`ms12-com260-kit-async-bidirectional-data-plane`：需求、设计、三轮 Map 与首轮 Cycle 已于 2026-10-06 获批；首轮 ready 状态保留，恢复执行前由 Plan 消费 MS17 已 accepted 的共用底座结果并复核执行契约（交接指针已写入其 README/design/tasks）。全量状态以该 change 产物为准。
 
-当前优先顺序为 MS12→MS13→MS17→MS14；MS14 等待网络恢复与串口单 hart 两条基线验收。MS11 已完成并归档，详情保留在 MS11 条目。
+当前优先顺序为 MS12→MS13→MS14；MS17 串口单 hart 基线已于 2026-10-08 完成并归档，MS14 剩余前置为 MS12→MS13 网络恢复基线。MS11、MS17 详情保留在各自条目。

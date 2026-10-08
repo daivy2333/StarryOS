@@ -6,6 +6,7 @@ mod net;
 mod pidfd;
 mod pipe;
 pub mod signalfd;
+mod stdio;
 
 use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
@@ -28,6 +29,7 @@ pub use self::{
     pidfd::PidFd,
     pipe::Pipe,
 };
+pub use self::stdio::{StdioTable, publish_stdio};
 use crate::task::{AX_FILE_LIMIT, AsThread};
 
 #[derive(Debug, Clone, Copy)]
@@ -222,35 +224,52 @@ pub fn close_file_like(fd: c_int) -> AxResult {
     Ok(())
 }
 
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
-    assert_eq!(fd_table.count(), 0);
+impl StdioTable for FlattenObjects<FileDescriptor, AX_FILE_LIMIT> {
+    type File = Arc<File>;
+
+    fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    fn add(&mut self, file: Arc<File>) -> AxResult<()> {
+        // The inherent FlattenObjects::add takes precedence and returns
+        // Err(value) when the table is full — identical to the original
+        // add_stdio failure mapping.
+        self.add(FileDescriptor {
+            inner: file,
+            cloexec: false,
+        })
+        .map(|_| ())
+        .map_err(|_| AxError::TooManyOpenFiles)
+    }
+}
+
+/// Open one `/dev/console` endpoint for the stdio publication.
+fn open_console(read: bool) -> AxResult<Arc<File>> {
     let cx = FS_CONTEXT.lock();
-    let open = |options: &mut OpenOptions| {
-        AxResult::Ok(Arc::new(File::new(
-            options.open(&cx, "/dev/console")?.into_file()?,
-        )))
-    };
+    let file = OpenOptions::new()
+        .read(read)
+        .write(!read)
+        .open(&cx, "/dev/console")?
+        .into_file()?;
+    Ok(Arc::new(File::new(file)))
+}
 
-    let tty_in = open(OpenOptions::new().read(true).write(false))?;
-    let tty_out = open(OpenOptions::new().read(false).write(true))?;
-    fd_table
-        .add(FileDescriptor {
-            inner: tty_in,
-            cloexec: false,
-        })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
-    fd_table
-        .add(FileDescriptor {
-            inner: tty_out.clone(),
-            cloexec: false,
-        })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
-    fd_table
-        .add(FileDescriptor {
-            inner: tty_out,
-            cloexec: false,
-        })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+/// The two pre-opened stdio endpoints (K3 stdio path, MS17 T6): opened
+/// before the process commit point so an open failure leaves nothing
+/// published; `publish_stdio` replays them through its open boundary.
+pub struct StdioFiles {
+    pub input: Arc<File>,
+    pub output: Arc<File>,
+}
 
-    Ok(())
+pub fn open_stdio_files() -> AxResult<StdioFiles> {
+    Ok(StdioFiles {
+        input: open_console(true)?,
+        output: open_console(false)?,
+    })
+}
+
+pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
+    publish_stdio(fd_table, &mut |read| open_console(read))
 }

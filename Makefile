@@ -347,6 +347,35 @@ k3-uart:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-uart MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
 	$(MAKE) --no-print-directory k3-fit
 
+# MS17 Iteration 002: K3 stdio userland image. The k3-uart tty-capable
+# shape plus the embedded static probe spawned on the memory root with
+# stdio; single-hart only (multi-hart async I/O is MS14).
+k3-stdio: k3-stdio-elf
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-stdio is a single-hart qualification mode; SMP>1 is unsupported (see MS17/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-stdio MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
+	$(MAKE) --no-print-directory k3-fit
+
+# Embedded static stdio probe (MS17 Iteration 002, task T6): readelf gate —
+# ET_EXEC, RISC-V, no INTERP, no relocations.
+k3-stdio-elf: tests/k3_stdio_probe.c
+	$(BENCH_CC) $(BENCH_CFLAGS) -o kernel/resources/k3_stdio_probe.elf $<
+
+# MS17 Iteration 003: K3 minimal interactive shell image. The k3-stdio
+# tty/userland shape with the embedded static shell (help/echo/sleep/exit)
+# swapped in by the k3-shell feature; single-hart only (multi-hart async
+# I/O is MS14).
+k3-shell: k3-shell-elf
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-shell is a single-hart qualification mode; SMP>1 is unsupported (see MS17/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-shell MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
+	$(MAKE) --no-print-directory k3-fit
+
+# Embedded static minimal shell (MS17 Iteration 003, task T7): readelf
+# gate — ET_EXEC, RISC-V, no INTERP, no relocations.
+k3-shell-elf: kernel/resources/k3-shell.c
+	$(BENCH_CC) $(BENCH_CFLAGS) -o kernel/resources/k3-shell.elf $<
+
 lichee:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=lichee-d1 MYPLAT=axplat-riscv64-lichee-d1 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-lichee-d1/axconfig.toml MEM=512M BUS=mmio DWARF=n build
 	@echo "Packing Android boot image (smoke)..."
@@ -399,4 +428,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-uart-port k3-uart
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf

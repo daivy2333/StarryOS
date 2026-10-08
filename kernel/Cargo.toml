@@ -21,8 +21,19 @@ k3-uart-port-test = ["k3-async-uart"]
 # MS17 Iteration 001: K3 async UART data-plane mode — opens uart_init/
 # os_arceos/serialized_writer/placement over the Iteration 000 port
 # (k3_uart/k3_uart_core stay included). Telemetry counts the ring-full drops
-# the qualification payload reports. No tty/userland yet.
-k3-uart = ["k3-async-uart", "uart_16550/telemetry"]
+# the qualification payload reports. Iteration 002 (T5 ⑦) additionally opens
+# the tty/userland tree (axfs memory root, pseudofs/tty, task-ext) so
+# ASYNC_TTY compiles for K3; the qualification payload keeps its raw
+# reader/writer owner semantics and never constructs the tty.
+k3-uart = ["k3-async-uart", "uart_16550/telemetry", "dep:axfs", "axfeat/paging", "axfeat/task-ext"]
+# MS17 Iteration 002 (T6): K3 stdio userland shape (`make k3-stdio`) —
+# implies the k3-uart data plane (now tty-capable) and selects the embedded
+# probe + memory-root + spawn boot path in entry.rs.
+k3-stdio = ["k3-uart"]
+# MS17 Iteration 003 (T7): K3 minimal interactive shell shape (`make
+# k3-shell`) — implies k3-stdio; entry.rs swaps the embedded ELF and
+# argv[0] to the shell payload over the same boot sequence.
+k3-shell = ["k3-stdio"]
 # K3 smoltcp polling Device/session (MS11 Iteration 002): implied by `k3`;
 # keeps the raw-GMAC harness and other platforms free of the smoltcp edge.
 k3-polling-net = ["dep:smoltcp"]

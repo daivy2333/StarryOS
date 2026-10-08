@@ -2,7 +2,7 @@
 
 需求批准：2026-10-06，用户原话“批准”；Gate1 PASS。计划批准：2026-10-06，用户原话“批准当前的工作”；Gate2 PASS，首轮Cycle为ready，所有实施项未开始。逻辑任务用T1–T7；checkbox编号与其一一对应。后两轮只作Map，不在本次创建Cycle或授权执行。路线调整不改变本计划的任务契约与验收。
 
-当前排期：2026-10-06 用户要求先规划并完成 MS17。本计划保留，原首轮暂停执行；MS17 accepted 后，由 Plan 消费实际共用底座结果并复核执行契约。timer/IRQ/feature 或当前基线变化时创建 replan Cycle，不改写原首轮、不重复实现已验收底座，也不删减原验收。当前尚未产生新的 MS17 实现基线。
+当前排期：2026-10-06 用户要求先规划并完成 MS17。本计划保留，原首轮暂停执行；MS17 accepted 后，由 Plan 消费实际共用底座结果并复核执行契约。timer/IRQ/feature 或当前基线变化时创建 replan Cycle，不改写原首轮、不重复实现已验收底座，也不删减原验收。交接指针：MS17 已在 K3 上 accepted 交付 runtime timer/AIA 底座、PXA UART 异步 port、copier 数据面与物理 drain、tty canonical 与内存根内嵌用户态 stdio（各 Iteration 状态见 [../ms17-com260-kit-async-uart-interactive-shell/tasks.md](../ms17-com260-kit-async-uart-interactive-shell/tasks.md)）；本计划 T1 恢复时其 timer/IRQ/feature 接缝以该底座的 accepted 结论为输入，GMAC/网络 queue/socket 面仍全部归本计划。
 
 ## 1. Runtime 与真实 DMA IRQ（Iteration 000）
 

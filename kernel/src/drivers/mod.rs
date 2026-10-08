@@ -12,10 +12,11 @@
 
 // MS17 Iteration 000: the K3 async UART low-level mode opens `drivers` for
 // the raw PXA port; MS17 Iteration 001 (`k3-uart`) additionally opens the
-// copier/ring data-plane tree below for K3. The raw-only mode
+// copier/ring data-plane tree below for K3, and Iteration 002 (T5 ⑦) opens
+// the tty singleton for the riscv64 k3-uart shape. The raw-only mode
 // (`k3-async-uart` without `k3-uart`) still keeps that tree out; modules
 // marked `k3 exclusion` stay out of every K3 async shape (rings/copiers
-// beyond the data plane, tty, axnet/net probes).
+// beyond the data plane, axnet/net probes).
 #[cfg(all(feature = "k3", feature = "k3-async-uart"))]
 pub mod k3_uart;
 #[cfg(all(feature = "k3", feature = "k3-async-uart"))]
@@ -38,7 +39,11 @@ pub(crate) mod net_wake_witness_logic;
 #[cfg(not(any(
     feature = "lichee-d1-smoke",
     feature = "lichee-d1-kbench",
-    all(feature = "k3", feature = "k3-async-uart"),
+    all(
+        feature = "k3",
+        feature = "k3-async-uart",
+        not(all(target_arch = "riscv64", feature = "k3-uart")),
+    ),
 )))]
 pub mod ntty_async;
 #[cfg(not(all(feature = "k3-async-uart", not(feature = "k3-uart"))))]
@@ -62,13 +67,21 @@ pub(crate) mod virtio_net_irq_logic;
 #[cfg(not(any(
     feature = "lichee-d1-smoke",
     feature = "lichee-d1-kbench",
-    all(feature = "k3", feature = "k3-async-uart"),
+    all(
+        feature = "k3",
+        feature = "k3-async-uart",
+        not(all(target_arch = "riscv64", feature = "k3-uart")),
+    ),
 )))]
 pub use ntty_async::ASYNC_TTY;
 #[cfg(not(any(
     feature = "lichee-d1-smoke",
     feature = "lichee-d1-kbench",
-    all(feature = "k3", feature = "k3-async-uart"),
+    all(
+        feature = "k3",
+        feature = "k3-async-uart",
+        not(all(target_arch = "riscv64", feature = "k3-uart")),
+    ),
 )))]
 pub type AsyncTty =
     crate::pseudofs::dev::tty::Tty<uart_init::ArceOsReader, uart_init::ArceOsWriter>;

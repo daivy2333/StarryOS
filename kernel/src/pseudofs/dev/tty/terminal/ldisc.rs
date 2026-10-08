@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     cell::UnsafeCell,
     future::poll_fn,
@@ -12,7 +12,7 @@ use axerrno::{AxError, AxResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use axtask::future::{block_on, poll_io};
 use linux_raw_sys::general::{
-    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VERASE, VKILL, VMIN, VTIME,
+    ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, VEOF, VEOL, VEOL2, VERASE, VKILL, VMIN, VTIME,
 };
 use ringbuf::{
     CachingCons, CachingProd,
@@ -20,7 +20,14 @@ use ringbuf::{
 };
 use starry_signal::SignalInfo;
 
-use super::{Terminal, termios::Termios2};
+use super::{
+    Terminal,
+    canonical::{
+        CanonicalEvents, CanonicalInput, CanonicalSpec, LineSink, POLL_INPUT_BUDGET, ReadOutcome,
+        readable, resolve_read,
+    },
+    termios::Termios2,
+};
 use crate::task::send_signal_to_process_group;
 
 const BUF_SIZE: usize = 256;
@@ -96,40 +103,46 @@ struct InputReader<R, W> {
     read_buf: [u8; BUF_SIZE],
     read_range: Range<usize>,
 
-    line_buf: Vec<u8>,
-    line_read: Option<usize>,
+    canon: CanonicalInput,
+    events: Arc<CanonicalEvents>,
     clear_line_buf: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
-    pub fn poll(&mut self) -> bool {
+    /// Process one bounded input batch. `budget` counts the remaining
+    /// input bytes this task wake may consume (T5 ⑤); delivery of an
+    /// already-completed line does not consume budget. Returns whether
+    /// anything progressed (input consumed or line bytes delivered).
+    pub fn poll(&mut self, budget: &mut usize) -> bool {
         if self.clear_line_buf.swap(false, Ordering::Relaxed) {
-            self.line_buf.clear();
+            self.canon.clear();
+            self.events.clear();
         }
-        if self.read_range.is_empty() {
+        let mut progress = self.canon.flush_pending(&mut RingSink(&mut self.buf_tx));
+        if self.read_range.is_empty() && *budget > 0 {
             let read = self.reader.read(&mut self.read_buf);
             self.read_range = 0..read;
         }
         let term = self.terminal.load_termios();
-        let mut sent = 0;
+        let spec = canonical_spec(&term);
         loop {
-            if let Some(offset) = &mut self.line_read {
-                let read = self.buf_tx.push_slice(&self.line_buf[*offset..]);
-                if read == 0 {
+            if self.canon.has_pending_delivery() {
+                if self.canon.flush_pending(&mut RingSink(&mut self.buf_tx)) {
+                    progress = true;
+                }
+                if self.canon.has_pending_delivery() {
+                    // Still backpressured: new input waits unread in
+                    // read_range — only one line is in flight, exactly like
+                    // the pre-extraction discipline (no on_char while a
+                    // line is delivering).
                     break;
                 }
-                sent += read;
-                *offset += read;
-                if *offset == self.line_buf.len() {
-                    self.line_read = None;
-                    self.line_buf.clear();
-                }
-                continue;
             }
-            if self.buf_tx.is_full() || self.read_range.is_empty() {
+            if self.buf_tx.is_full() || self.read_range.is_empty() || *budget == 0 {
                 break;
             }
             let mut ch = self.read_buf[self.read_range.start];
             self.read_range.start += 1;
+            *budget -= 1;
 
             if ch == b'\r' {
                 if term.has_iflag(IGNCR) {
@@ -147,37 +160,14 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
             }
             if !term.canonical() {
                 self.buf_tx.try_push(ch).unwrap();
-                sent += 1;
+                progress = true;
                 continue;
             }
 
-            // Canonical mode
-            if term.has_lflag(ECHOK) && ch == term.special_char(VKILL) {
-                self.line_buf.clear();
-                continue;
-            }
-            if ch == term.special_char(VERASE) {
-                self.line_buf.pop();
-                continue;
-            }
-
-            if term.is_eol(ch) || ch == term.special_char(VEOF) {
-                if ch != term.special_char(VEOF) {
-                    self.line_buf.push(ch);
-                }
-                if !self.line_buf.is_empty() {
-                    self.line_read = Some(0);
-                }
-                continue;
-            }
-
-            if ch.is_ascii_graphic() {
-                self.line_buf.push(ch);
-                continue;
-            }
+            self.canon.on_char(&spec, ch, &self.events);
         }
 
-        sent > 0
+        progress
     }
 
     fn check_send_signal(&self, term: &Termios2, ch: u8) {
@@ -220,6 +210,28 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
     }
 }
 
+/// [`LineSink`] adapter over the SPSC input queue producer.
+struct RingSink<'a>(&'a mut CachingProd<ReadBuf>);
+
+impl LineSink for RingSink<'_> {
+    fn push(&mut self, data: &[u8]) -> usize {
+        self.0.push_slice(data)
+    }
+}
+
+/// Map the live termios onto the canonical classifier inputs.
+fn canonical_spec(term: &Termios2) -> CanonicalSpec {
+    CanonicalSpec {
+        erase: term.special_char(VERASE),
+        kill: term.special_char(VKILL),
+        eof: term.special_char(VEOF),
+        eol: term.special_char(VEOL),
+        eol2: term.special_char(VEOL2),
+        iexten: term.contains_iexten(),
+        echok: term.has_lflag(ECHOK),
+    }
+}
+
 struct SimpleReader<R> {
     reader: R,
     read_buf: [u8; BUF_SIZE],
@@ -255,6 +267,7 @@ pub struct LineDiscipline<R, W> {
     buf_rx: UnsafeCell<CachingCons<ReadBuf>>,
     poll_tx: Arc<PollSet>,
     clear_line_buf: Arc<AtomicBool>,
+    events: Arc<CanonicalEvents>,
     processor: Processor<R>,
     _phantom: PhantomData<W>,
 }
@@ -279,6 +292,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
         let clear_line_buf = Arc::new(AtomicBool::new(false));
+        let events = Arc::new(CanonicalEvents::new());
         let mut reader = InputReader {
             terminal: terminal.clone(),
 
@@ -289,8 +303,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             read_buf: [0; BUF_SIZE],
             read_range: 0..0,
 
-            line_buf: Vec::new(),
-            line_read: None,
+            canon: CanonicalInput::new(),
+            events: events.clone(),
             clear_line_buf: clear_line_buf.clone(),
         };
 
@@ -304,13 +318,23 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                         let poll_tx = poll_tx.clone();
                         move || {
                             block_on(poll_fn(|cx| {
-                                while reader.poll() {
+                                // T5 ⑤: bounded per-wake input budget shared
+                                // by both drain passes.
+                                let mut budget = POLL_INPUT_BUDGET;
+                                while reader.poll(&mut budget) {
                                     poll_rx.wake();
                                 }
                                 poll_tx.register(cx.waker());
                                 register(cx.waker().clone());
-                                while reader.poll() {
+                                while reader.poll(&mut budget) {
                                     poll_rx.wake();
+                                }
+                                if budget == 0 {
+                                    // The budget ran out with input likely
+                                    // still queued behind it; requeue so the
+                                    // burst continues instead of waiting for
+                                    // an IRQ that already fired.
+                                    cx.waker().wake_by_ref();
                                 }
                                 Poll::Pending
                             }))
@@ -337,6 +361,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             buf_rx: UnsafeCell::new(buf_rx),
             poll_tx,
             clear_line_buf,
+            events,
             processor,
             _phantom: PhantomData,
         }
@@ -356,13 +381,14 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     pub fn drain_input(&self) {
         self.buf_rx().clear();
         self.clear_line_buf.store(true, Ordering::Relaxed);
+        self.events.clear();
     }
 
     pub fn poll_read(&mut self) -> bool {
         if let Processor::None(reader, _) = &mut self.processor {
             reader.poll();
         }
-        !self.buf_rx().is_empty()
+        readable(self.buf_rx().is_empty(), &self.events)
     }
 
     pub fn register_rx_waker(&self, waker: &Waker) {
@@ -433,12 +459,21 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             _ => unreachable!(),
         };
         let pollable = WaitPollable(set);
+        let events = self.events.clone();
         block_on(poll_io(&pollable, IoEvents::IN, nonblocking, || {
             total_read += self.buf_rx().pop_slice(&mut buf[total_read..]);
             self.poll_tx.wake();
-            (total_read >= vmin)
-                .then_some(total_read)
-                .ok_or(AxError::WouldBlock)
+            if total_read >= vmin {
+                return Ok(total_read);
+            }
+            // Not enough queued data yet (canonical vmin is 1, so this is
+            // popped == 0 here); a latched event resolves the read instead
+            // of blocking. Raw mode never latches events.
+            match resolve_read(0, &events) {
+                ReadOutcome::Eof => Ok(0),
+                ReadOutcome::InvalidInput => Err(AxError::InvalidInput),
+                _ => Err(AxError::WouldBlock),
+            }
         }))
     }
 }
