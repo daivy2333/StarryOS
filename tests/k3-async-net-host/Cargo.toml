@@ -1,0 +1,55 @@
+[package]
+name = "k3-async-net-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# MS12 Iteration 001 host package (tasks 2.1–2.3): the production K3
+# NetDriver adapter (`k3_gmac::adapter`) and the Service-level queue-owner
+# tests run against a fake board. The package is excluded from the root
+# workspace; its feature mirrors the kernel's `k3-async-net` gate so
+# `k3_gmac::adapter` compiles as a child of the included `k3_gmac` module,
+# exactly like kernel k3-async builds. The plain rustc harness
+# (`tests/k3-gmac-host-harness.rs`) compiles the same `k3_gmac` sources
+# without any cargo feature, so the gated adapter module is excluded there
+# and the 31 harness tests stay GREEN unchanged.
+[features]
+default = ["k3-async-net"]
+k3-async-net = []
+# Declared-but-off mirrors: the included `k3_gmac` tree also gates on the
+# kernel `k3` platform switch; declaring (never enabling) keeps cargo's cfg
+# check quiet while both kernel-only trees stay excluded here.
+k3 = []
+k3-polling-net = []
+
+[dependencies]
+axdriver_net = { path = "../../crates/axdriver_net" }
+axerrno = "0.2"
+memory_addr = "0.4"
+# Service-level tests (task T4) drive the production adapter through the
+# public axnet surface on a host axtask scheduler. `dyn` unifies into the
+# axnet build so `AxNetDevice` is `Box<dyn NetDriverOps>`.
+axdriver = { version = "=0.3.0-preview.2", features = ["dyn", "net"] }
+# `queue-diagnostics` opens the flush/hold control surface for the T5
+# production-adapter flush tests.
+axnet = { path = "../../crates/axnet", package = "axnet-ng", features = [
+    "queue-diagnostics",
+] }
+# `test` = percpu sp-naive: the same switch axtask's own host tests use,
+# making `init_scheduler` work inside PIE test binaries.
+axtask = { path = "../../crates/axtask", features = ["irq", "multitask", "test"] }
+# Host builds need a critical-section implementation for axnet's
+# `embassy-sync` AtomicWaker (the kernel build supplies its own).
+critical-section = { version = "1.2", features = ["std"] }
+# `IoEvents` for the payload's `poll_io` waits (same 0.1 axnet resolves).
+axpoll = "0.1"
+# Same major the workspace-excluded axdriver_net resolves to on host; the
+# adapter only uses the plain `Mutex` API shared by 0.9/0.10.
+spin = "0.9"
+
+# The axnet component (workspace-excluded) patches the same two crates to
+# the workspace-local copies; the patch table does not travel across
+# package roots, so this package mirrors it.
+[patch.crates-io]
+axdriver_net = { path = "../../crates/axdriver_net" }
+axtask = { path = "../../crates/axtask" }

@@ -34,6 +34,14 @@ pub mod regs;
 #[cfg(feature = "k3-polling-net")]
 pub mod polling_net;
 
+/// K3 `axdriver_net` NetDriver adapter (MS12 Iteration 001, task T3).
+/// Compiled only where the kernel `k3-async-net` feature or the host
+/// async-net package is active — both bind `axdriver_net`. The plain rustc
+/// harnesses compile this module tree without any cargo feature, so the
+/// gated module is excluded there and the 31 harness tests stay unchanged.
+#[cfg(feature = "k3-async-net")]
+pub mod adapter;
+
 #[cfg(feature = "k3")]
 use axplat_riscv64_k3::dma;
 #[cfg(not(feature = "k3"))]
@@ -57,19 +65,19 @@ use dma::{
 };
 
 pub use desc::{
-    decode_rx, RxDrop, RxCompletion, RDES3_BUF1V, RDES3_CTXT, RDES3_ES, RDES3_FD,
+    decode_rx, RxDrop, RxCompletion, RDES3_BUF1V, RDES3_CTXT, RDES3_ES, RDES3_FD, RDES3_IOC,
     RDES3_LD, RDES3_LEN_MASK, RDES3_OWN, TDES2_IOC, TDES2_LEN_MASK, TDES3_ES, TDES3_FD,
     TDES3_LD, TDES3_LEN_MASK, TDES3_OWN,
 };
 pub use regs::{
-    DMA_CHAN_CTL, DMA_CHAN_IRQ_EN, DMA_CHAN_STATUS, DMA_RX_CTL, DMA_RX_CTL_PBL_8,
-    DMA_RX_CTL_RBSZ_2048, DMA_RX_CTL_SR, DMA_RX_DESC_HL, DMA_RX_DESC_LL, DMA_RX_RINGLEN,
-    DMA_STATUS_FBE, DMA_STATUS_RBU, DMA_STATUS_RI, DMA_STATUS_TBU, DMA_STATUS_TI,
-    DMA_SYS_BUS_MODE, DMA_TX_CTL, DMA_TX_CTL_OSP, DMA_TX_CTL_PBL_8, DMA_TX_CTL_ST,
-    DMA_TX_DESC_HL, DMA_TX_DESC_LL, DMA_TX_RINGLEN, DMA_TX_TAIL,
-    MAC_ADDR0_HIGH, MAC_ADDR0_LOW, MAC_CONFIG, MAC_CONFIG_DM, MAC_CONFIG_FES, MAC_CONFIG_PS,
-    MAC_CONFIG_RE, MAC_CONFIG_TE, MAC_HW_FEATURE1, MAC_PKT_FILTER, MAC_RXQ0_MAP, MAC_RXQ0_MAP_CH0,
-    MAC_FILTER_PR, MTL_RXQ0_OP, MTL_TXQ0_OP,
+    DMA_CHAN_CTL, DMA_CHAN_IRQ_EN, DMA_CHAN_STATUS, DMA_IRQ_EN_DEFAULT, DMA_IRQ_EN_RX_ONLY,
+    DMA_RX_CTL, DMA_RX_CTL_PBL_8, DMA_RX_CTL_RBSZ_2048, DMA_RX_CTL_SR, DMA_RX_DESC_HL,
+    DMA_RX_DESC_LL, DMA_RX_RINGLEN, DMA_STATUS_AIS, DMA_STATUS_BIT10, DMA_STATUS_FBE,
+    DMA_STATUS_NIS, DMA_STATUS_RBU, DMA_STATUS_RI, DMA_STATUS_TBU, DMA_STATUS_TI,
+    DMA_SYS_BUS_MODE, DMA_TX_CTL, DMA_TX_CTL_OSP, DMA_TX_CTL_PBL_8, DMA_TX_CTL_ST, DMA_TX_DESC_HL,
+    DMA_TX_DESC_LL, DMA_TX_RINGLEN, DMA_TX_TAIL, MAC_ADDR0_HIGH, MAC_ADDR0_LOW, MAC_CONFIG,
+    MAC_CONFIG_DM, MAC_CONFIG_FES, MAC_CONFIG_PS, MAC_CONFIG_RE, MAC_CONFIG_TE, MAC_HW_FEATURE1,
+    MAC_PKT_FILTER, MAC_RXQ0_MAP, MAC_RXQ0_MAP_CH0, MAC_FILTER_PR, MTL_RXQ0_OP, MTL_TXQ0_OP,
 };
 pub use regs::DMA_RX_TAIL as RX_TAIL_OFF;
 
@@ -259,6 +267,23 @@ pub struct Gmac<B: ArenaBacking> {
     state: GmacState,
     link: Option<LinkConfig>,
     cancel_requested: bool,
+    /// MS12 async (IOC) mode: descriptor publishes raise the completion
+    /// interrupt (RX des3 bit30 / TX des2 IOC) and [`Self::arm_notify`]
+    /// opens the device notification. The polling constructor keeps the
+    /// MS11 behavior (IOC=0, IRQ_EN=0).
+    async_notify: bool,
+}
+
+/// Read-only arm-recheck observation (MS12 task T2): which ring heads hold
+/// visible work. Produced by [`Gmac::check_completions`] without reclaiming
+/// or advancing anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompletionHint {
+    /// RX head descriptor is completed (OWN=0): a frame or classified drop
+    /// awaits the owner.
+    pub rx_ready: bool,
+    /// TX head descriptor is completed under a live owner (`tx_inflight > 0`).
+    pub tx_ready: bool,
 }
 
 impl<B: ArenaBacking> Gmac<B> {
@@ -277,7 +302,18 @@ impl<B: ArenaBacking> Gmac<B> {
             state: GmacState::Uninit,
             link: None,
             cancel_requested: false,
+            async_notify: false,
         })
+    }
+
+    /// MS12 async constructor: same layout validation, but descriptor
+    /// publishes carry the completion IOC bits and the notification can be
+    /// armed through [`Self::arm_notify`]. The notification itself stays
+    /// closed until the arm call (init writes IRQ_EN = 0).
+    pub fn new_async(arena: ArenaGuard<B>) -> Result<Self, DmaAddressError> {
+        let mut g = Gmac::new(arena)?;
+        g.async_notify = true;
+        Ok(g)
     }
 
     /// Current lifecycle state.
@@ -508,7 +544,11 @@ impl<B: ArenaBacking> Gmac<B> {
         write_desc_word(desc_va, 0, addr_lo32(buf_pa));
         write_desc_word(desc_va, 1, addr_hi32(buf_pa));
         write_desc_word(desc_va, 2, 0);
-        write_desc_word(desc_va, 3, RDES3_BUF1V);
+        // MS12 async mode: the publish-time RX IOC bit rides word3 bit30 (a
+        // normal completion writes the same bit back as CTXT=0, so the
+        // decode contract is unchanged). Polling keeps it clear.
+        let rx_flags = if self.async_notify { RDES3_IOC } else { 0 };
+        write_desc_word(desc_va, 3, RDES3_BUF1V | rx_flags);
 
         // Checkpoint: bounded step + cancellation, both before the publish.
         if env.now_nanos() >= deadline {
@@ -519,7 +559,7 @@ impl<B: ArenaBacking> Gmac<B> {
         }
 
         env.fence_rw();
-        write_desc_word(desc_va, 3, RDES3_BUF1V | RDES3_OWN);
+        write_desc_word(desc_va, 3, RDES3_BUF1V | rx_flags | RDES3_OWN);
         env.fence_rw();
         check_cache_range(self.layout.base_va(), desc_va, DESC_BYTES).map_err(GmacError::Address)?;
         env.cache_clean(desc_va, DESC_BYTES);
@@ -727,10 +767,12 @@ impl<B: ArenaBacking> Gmac<B> {
             .map_err(|e| TxSubmitError::Driver(GmacError::Address(e)))?;
         env.cache_clean(buf_va, block_round_up(pub_len));
 
-        // Descriptor fields without OWN (IOC stays clear, no CIC).
+        // Descriptor fields without OWN. MS12 async mode raises the TX
+        // completion interrupt (des2 IOC, R69 bit31); polling keeps it clear.
+        let tx_ctrl = (pub_len as u32) & TDES2_LEN_MASK | if self.async_notify { TDES2_IOC } else { 0 };
         write_desc_word(desc_va, 0, addr_lo32(buf_pa));
         write_desc_word(desc_va, 1, addr_hi32(buf_pa));
-        write_desc_word(desc_va, 2, (pub_len as u32) & TDES2_LEN_MASK);
+        write_desc_word(desc_va, 2, tx_ctrl);
         write_desc_word(desc_va, 3, TDES3_FD | TDES3_LD | ((pub_len as u32) & TDES3_LEN_MASK));
 
         // Checkpoint: bounded step + cancellation, both before the publish.
@@ -857,6 +899,111 @@ impl<B: ArenaBacking> Gmac<B> {
             }
         }
         Ok(TxPoll::Idle)
+    }
+
+    // -----------------------------------------------------------------------
+    // MS12 Iteration 000: async (IOC) notification and read-only recheck
+    // -----------------------------------------------------------------------
+
+    /// Live TX descriptor count (the recheck's live-owner condition).
+    pub fn tx_inflight(&self) -> usize {
+        self.tx_inflight
+    }
+
+    /// Opens the device completion notification (IRQ_EN). `tx` selects the
+    /// TI completion bit; the NIS/AIS summaries and FBE are always in the
+    /// word. Polling-mode drivers keep the device silent: the call is a
+    /// no-op there, preserving the MS11 behavior under any accidental use.
+    pub fn arm_notify<E: GmacEnv>(&self, env: &mut E, tx: bool) {
+        if !self.async_notify {
+            return;
+        }
+        let word = if tx { DMA_IRQ_EN_DEFAULT } else { DMA_IRQ_EN_RX_ONLY };
+        env.reg_write(regs::DMA_CHAN_IRQ_EN, word);
+    }
+
+    /// Closes the device notification (IRQ_EN = 0): the session end and the
+    /// faulted-owner bounded stop land here or in the ISR.
+    pub fn mask_notify<E: GmacEnv>(&self, env: &mut E) {
+        env.reg_write(regs::DMA_CHAN_IRQ_EN, 0);
+    }
+
+    /// One read-only arm-recheck step (MS12 task T2): fence → invalidate →
+    /// fence over the RX head and — under a live owner — the TX head
+    /// descriptor, then a status re-check. Reports which heads hold visible
+    /// work; it never reclaims and never advances a head.
+    pub fn check_completions<E: GmacEnv>(
+        &mut self,
+        env: &mut E,
+    ) -> Result<CompletionHint, GmacError> {
+        match self.state {
+            GmacState::Running => {}
+            GmacState::Faulted { raw_status } => return Err(GmacError::Fault { raw_status }),
+            GmacState::Stopped { .. } => {
+                return Err(GmacError::Cancelled { phase: Phase::Poll, after_publish: true })
+            }
+            GmacState::Uninit => return Err(GmacError::Fault { raw_status: 0 }),
+        }
+        env.fence_rw();
+        let rx_desc = self.layout.rx_desc_va(self.rx_head).map_err(GmacError::Address)?;
+        env.cache_invalidate(rx_desc, DESC_BYTES);
+        env.fence_rw();
+        let rx_ready = read_desc_word(rx_desc, 3) & RDES3_OWN == 0;
+        // Unused TX slots read OWN=0: without a live owner that is never a
+        // completion.
+        let mut tx_ready = false;
+        if self.tx_inflight > 0 {
+            env.fence_rw();
+            let tx_desc = self.layout.tx_desc_va(self.tx_head).map_err(GmacError::Address)?;
+            env.cache_invalidate(tx_desc, DESC_BYTES);
+            env.fence_rw();
+            tx_ready = read_desc_word(tx_desc, 3) & TDES3_OWN == 0;
+        }
+        // Status re-check: a fatal that surfaced after the last owner round
+        // folds into the driver state exactly like the polls do.
+        let status = env.reg_read(regs::DMA_CHAN_STATUS);
+        if status & regs::DMA_STATUS_FBE != 0 {
+            self.bounded_stop(env);
+            self.stop_tx(env);
+            self.state = GmacState::Faulted { raw_status: status };
+            env.reg_write(regs::DMA_CHAN_STATUS, status & STATUS_CONSUMED_MASK);
+            return Err(GmacError::Fault { raw_status: status });
+        }
+        Ok(CompletionHint { rx_ready, tx_ready })
+    }
+
+    /// Read-only head words for the failure snapshot: fence → invalidate →
+    /// fence → volatile read of both ring heads. No state change; a layout
+    /// error (unreachable after the checked construction) reads as zero.
+    pub fn diag_head_words<E: GmacEnv>(&mut self, env: &mut E) -> (u32, u32) {
+        let mut words = (0u32, 0u32);
+        if let Ok(desc) = self.layout.rx_desc_va(self.rx_head) {
+            env.fence_rw();
+            env.cache_invalidate(desc, DESC_BYTES);
+            env.fence_rw();
+            words.0 = read_desc_word(desc, 3);
+        }
+        if let Ok(desc) = self.layout.tx_desc_va(self.tx_head) {
+            env.fence_rw();
+            env.cache_invalidate(desc, DESC_BYTES);
+            env.fence_rw();
+            words.1 = read_desc_word(desc, 3);
+        }
+        words
+    }
+
+    /// Folds the ISR's pre-ack fatal latch into the driver state (MS12 task
+    /// T2): the faulted owner runs the bounded stop (notify masked, RE/ST
+    /// cleared) and every later poll/query/submit propagates the fault. No
+    /// reset, no new submit, no OWN clear; the published backing is
+    /// retained.
+    pub fn latch_fault<E: GmacEnv>(&mut self, env: &mut E, raw_status: u32) {
+        if matches!(self.state, GmacState::Faulted { .. }) {
+            return;
+        }
+        self.bounded_stop(env);
+        self.stop_tx(env);
+        self.state = GmacState::Faulted { raw_status };
     }
 }
 // ---------------------------------------------------------------------------

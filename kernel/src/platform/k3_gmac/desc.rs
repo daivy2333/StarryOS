@@ -14,6 +14,12 @@
 
 /// RX descriptor word 3: ownership (1 = device-owned). Written last.
 pub const RDES3_OWN: u32 = 1 << 31;
+/// RX descriptor word 3 bit30: interrupt-on-completion when PUBLISHED by
+/// software; the same bit reads back as CTXT on the device's completion
+/// writeback (which is 0 for every normal descriptor). MS12 async mode sets
+/// it at publish time only; the completion decode keeps rejecting CTXT != 0
+/// (the IOC value never bypasses [`decode_rx`]).
+pub const RDES3_IOC: u32 = 1 << 30;
 /// RX descriptor word 3: context descriptor marker (legal completions: 0).
 pub const RDES3_CTXT: u32 = 1 << 30;
 /// RX descriptor word 3: first descriptor of the frame.

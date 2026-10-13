@@ -1109,13 +1109,13 @@ fn read_v3_ledger_and_lease(service: &mut Service) -> V3LedgerAndLease {
     let target = service.v3_flush_target();
     let counters = service.v3_flush_counters();
     let drops = service.v3_drop_reasons();
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     let lease = (
         service.diag_hold_mode(),
         service.diag_lease_expiry(),
         service.diag_auto_release_failure(),
     );
-    #[cfg(not(feature = "qemu-diagnostics"))]
+    #[cfg(not(feature = "queue-diagnostics"))]
     let lease = (0u64, 0u64, 0u64);
     (
         ledger, tx_ledger, target, counters, drops, lease.0, lease.1, lease.2,
@@ -1125,9 +1125,9 @@ fn read_v3_ledger_and_lease(service: &mut Service) -> V3LedgerAndLease {
 /// Pre-init fallback: a missing Service reports zeros, never a synthetic
 /// lease tuple that could be mistaken for a committed no-hold.
 fn default_v3_ledger_and_lease() -> V3LedgerAndLease {
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     let hold_none = crate::diag::HOLD_NONE;
-    #[cfg(not(feature = "qemu-diagnostics"))]
+    #[cfg(not(feature = "queue-diagnostics"))]
     let hold_none = 0u64;
     (
         crate::device::SlotLedger::default(),
@@ -1344,7 +1344,7 @@ impl ServiceAccess {
 /// execute this path, so Busy / validation-error / success event ordering is
 /// witnessed once. A missing global Service is `BadState`; a held Service is
 /// `ResourceBusy` and changes neither state nor event generation.
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 pub(crate) fn diagnostic_control_shared(
     service: ServiceAccess,
     notify: &QueueEvent,
@@ -1417,16 +1417,16 @@ pub(crate) struct RxRxFuture {
     /// sleeping on. The timer is wake-only: it carries no generation, so a
     /// stale wake costs at most one bounded poll and the current Service
     /// lease decides whether to remain held and which deadline is rearmed.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     lease_deadline: Option<u64>,
     /// Task 5.2 (Iteration 006): per-test fixture clock shared with the
     /// injected Service. `lease_deadline` decisions read this when attached;
     /// production never sets it (wall clock).
-    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    #[cfg(all(test, feature = "queue-diagnostics"))]
     diag_test_clock: Option<crate::diag::DiagTestClock>,
     /// C4: axtask timer that wakes the queue owner at `lease_deadline`.
     /// Production only; host tests drive the fake clock and re-poll instead.
-    #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+    #[cfg(all(feature = "queue-diagnostics", not(test)))]
     lease_timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     /// Task 2.2: in-progress staged device recovery driven by this resident
     /// owner. `None` means the data plane is not recovering. When `Some`, the
@@ -1519,7 +1519,7 @@ enum RoundOutcome {
     /// The held stage's completion must not drive the arm/recheck protocol
     /// (it would retry forever); the only exits are the lease timer or an
     /// explicit Release publishing queue work.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     SleepUntil(u64),
     /// Terminal queue/device fault.
     Fault(DevError),
@@ -1557,9 +1557,9 @@ impl RxRxFuture {
         // round under the Service guard; an expired lease auto-releases and
         // counts a failure. No lease generation exists, so no identity can
         // exhaust and no reachable Hold is ever permanent.
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let hold = service.diag_hold_tick();
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let hold = 0u64;
 
         // QEMU-only layered round tracing (Cycle 002): phase prints only on
@@ -1581,9 +1581,9 @@ impl RxRxFuture {
         // Stage 1: TX completion reclaim (≤32). Releasing a completion
         // frees a driver buffer and its live ticket.
         let mut reclaimed = 0usize;
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let reclaim_held = hold == crate::diag::HOLD_RECLAIM;
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let reclaim_held = false;
         if !reclaim_held {
             loop {
@@ -1677,9 +1677,9 @@ impl RxRxFuture {
         }
         let mut submitted = 0usize;
         let mut submit_full = false;
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let submit_held = hold == crate::diag::HOLD_SUBMIT;
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let submit_held = false;
         if !submit_held {
             loop {
@@ -1742,9 +1742,9 @@ impl RxRxFuture {
                 round_n, submitted, submit_full
             );
         }
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let hold_active = hold != crate::diag::HOLD_NONE;
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let hold_active = false;
         let pending = match service.completion_pending_both_target() {
             Ok(pending) => pending,
@@ -1830,12 +1830,12 @@ impl RxRxFuture {
             // the release and failure counter. The expiry comes from the
             // committed Service lease under the same guard, so it is always
             // the deadline of the lease that armed it.
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             {
                 let expiry = service.diag_lease_expiry();
                 RoundOutcome::SleepUntil(expiry)
             }
-            #[cfg(not(feature = "qemu-diagnostics"))]
+            #[cfg(not(feature = "queue-diagnostics"))]
             {
                 let _ = hold;
                 RoundOutcome::RegisterRecheck
@@ -1945,6 +1945,10 @@ impl RxRxFuture {
         let mut link_change = false;
         if causes.config || self.initial_link_pending {
             let link_step = service.link_policy_step_target();
+            // MS12 task T1: the QEMU-only link-step diagnostic is defined under
+            // `qemu-diagnostics`; the ordinary (real-board) build must not
+            // reference it.
+            #[cfg(feature = "qemu-diagnostics")]
             net_link_step_diag(&link_step);
             match link_step {
                 LinkStep::Again => {
@@ -1965,7 +1969,7 @@ impl RxRxFuture {
         }
         let outcome = self.service_round(&mut service);
         let socket_epoch_wake = service.take_socket_epoch_wake();
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let waiting_lease_expiry = if matches!(&outcome, RoundOutcome::WaitSpace(_)) {
             service.diag_lease_expiry()
         } else {
@@ -1983,14 +1987,14 @@ impl RxRxFuture {
             RoundOutcome::SelfWakeYield => {
                 // Not a lease sleep: cancel any stale deadline so an explicit
                 // Release invalidates the old timer (RW-1).
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 self.cancel_lease_deadline();
                 self.cancel_data_stage_timer();
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
             RoundOutcome::WaitSpace(SpaceDecision::Retry) => {
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 self.cancel_lease_deadline();
                 self.cancel_data_stage_timer();
                 cx.waker().wake_by_ref();
@@ -2002,13 +2006,13 @@ impl RxRxFuture {
                 // auto-releases without an external NIC event. A 0 deadline
                 // (no hold) cancels any stale one. The expiry is read from
                 // the committed Service lease while the guard is still held.
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 self.arm_lease_deadline(cx, waiting_lease_expiry);
                 self.arm_data_stage_timer(cx);
                 Poll::Pending
             }
             RoundOutcome::RegisterRecheck => {
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 self.cancel_lease_deadline();
                 let poll = self.poll_register_recheck(cx);
                 if poll.is_pending() {
@@ -2016,7 +2020,7 @@ impl RxRxFuture {
                 }
                 poll
             }
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             RoundOutcome::SleepUntil(deadline) => {
                 self.arm_lease_deadline(cx, deadline);
                 // Find 4: keep a concurrent data-stage deadline armed so a held
@@ -2593,7 +2597,7 @@ impl RxRxFuture {
 
     /// The clock used for lease-deadline decisions: the attached per-test
     /// fixture clock when present, else `diag::diag_now()`.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     fn diag_now(&self) -> u64 {
         #[cfg(test)]
         {
@@ -2605,7 +2609,7 @@ impl RxRxFuture {
     }
 
     /// C4: cancels any armed lease deadline and its timer.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     fn cancel_lease_deadline(&mut self) {
         self.lease_deadline = None;
         self.cancel_lease_timer();
@@ -2625,7 +2629,7 @@ impl RxRxFuture {
     /// timer carries no lease generation: a stale wake costs at most one
     /// bounded poll, and the current Service lease decides at poll time
     /// whether to remain held and which deadline to rearm.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     fn arm_lease_deadline(&mut self, cx: &mut Context<'_>, deadline: u64) {
         if deadline == 0 || self.diag_now() >= deadline {
             self.lease_deadline = None;
@@ -2640,13 +2644,13 @@ impl RxRxFuture {
     }
 
     /// RW-1: drops any previously armed lease timer, cancelling it.
-    #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+    #[cfg(all(feature = "queue-diagnostics", not(test)))]
     fn cancel_lease_timer(&mut self) {
         self.lease_timer = None;
     }
 
     /// Host-test counterpart: there is no axtask timer to cancel.
-    #[cfg(all(feature = "qemu-diagnostics", test))]
+    #[cfg(all(feature = "queue-diagnostics", test))]
     fn cancel_lease_timer(&mut self) {}
 
     /// Drops any armed recovery-deadline timer (Task 2.2). Host tests drive
@@ -2783,7 +2787,7 @@ impl RxRxFuture {
     }
 
     /// RW-1: registers an axtask timer that wakes the owner at `deadline`.
-    #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+    #[cfg(all(feature = "queue-diagnostics", not(test)))]
     fn arm_lease_timer(&mut self, cx: &mut Context<'_>, deadline: u64) {
         use axhal::time::TimeValue;
         use axtask::future::sleep_until;
@@ -2800,7 +2804,7 @@ impl RxRxFuture {
     }
 
     /// Host-test counterpart: the fake clock drives the wake instead.
-    #[cfg(all(feature = "qemu-diagnostics", test))]
+    #[cfg(all(feature = "queue-diagnostics", test))]
     fn arm_lease_timer(&mut self, _cx: &mut Context<'_>, _deadline: u64) {}
 
     /// C4: if an armed lease deadline has elapsed, clear it and self-wake
@@ -2812,7 +2816,7 @@ impl RxRxFuture {
     /// and the current Service lease decides at poll time whether to remain
     /// held and which deadline to rearm. The newer control already published
     /// queue work, so the owner was or will be woken anyway.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     fn lease_deadline_elapsed(&mut self, cx: &mut Context<'_>) {
         let Some(deadline) = self.lease_deadline else {
             return;
@@ -2939,7 +2943,7 @@ impl Future for RxRxFuture {
         // RW-1: an elapsed lease deadline clears itself and self-wakes so the
         // round below runs and `diag_hold_tick` auto-releases the expired
         // hold. The wake is observable by a counting waker in host tests.
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         this.lease_deadline_elapsed(cx);
         match this.lifecycle.load() {
             RxTaskLifecycle::Spawned => this.poll_first(cx),
@@ -2980,11 +2984,11 @@ fn spawn_rx_task() {
                 telemetry: &RX_TELEMETRY,
                 hart_source: crate::hart_counter::HartSource::System,
                 fault_sink: &crate::SOCKET_SET,
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 lease_deadline: None,
-                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                #[cfg(all(test, feature = "queue-diagnostics"))]
                 diag_test_clock: None,
-                #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+                #[cfg(all(feature = "queue-diagnostics", not(test)))]
                 lease_timer: None,
                 recovery: None,
                 recovery_deadline: None,
@@ -3014,11 +3018,11 @@ fn spawn_rx_task_affinity(mask: AxCpuMask) -> Option<AxTaskRef> {
                 telemetry: &RX_TELEMETRY,
                 hart_source: crate::hart_counter::HartSource::System,
                 fault_sink: &crate::SOCKET_SET,
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 lease_deadline: None,
-                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                #[cfg(all(test, feature = "queue-diagnostics"))]
                 diag_test_clock: None,
-                #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+                #[cfg(all(feature = "queue-diagnostics", not(test)))]
                 lease_timer: None,
                 recovery: None,
                 recovery_deadline: None,
@@ -5402,7 +5406,7 @@ mod tests {
     /// capacity, matching the production relation (both `MS05_QS = 64`), so a full
     /// 32-submit round budget drains exactly to capacity without a pending slot to
     /// force a real `Again`.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[derive(Default)]
     struct LedgerCounters {
         capacity: AtomicUsize,
@@ -5413,13 +5417,13 @@ mod tests {
         again_calls: AtomicUsize,
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     struct LedgerDevice {
         counters: Arc<LedgerCounters>,
         control: Option<ScriptedControl>,
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     impl Device for LedgerDevice {
         fn name(&self) -> &str {
             "ledger"
@@ -5506,7 +5510,7 @@ mod tests {
 
     /// Builds a leaked Service wrapping a [`LedgerDevice`], returning the
     /// Service mutex, the shared counters handle and the control stats.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     fn leaked_service_ledger(
         capacity: usize,
         with_control: bool,
@@ -5570,11 +5574,11 @@ mod tests {
                 crate::hart_counter::HartSource::Injected,
             ),
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             lease_deadline: None,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            #[cfg(all(test, feature = "queue-diagnostics"))]
             diag_test_clock: None,
-            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            #[cfg(all(feature = "queue-diagnostics", not(test)))]
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
@@ -5604,11 +5608,11 @@ mod tests {
             telemetry,
             hart_source: crate::hart_counter::HartSource::System,
             fault_sink: Box::leak(Box::new(SocketSetWrapper::new())),
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             lease_deadline: None,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            #[cfg(all(test, feature = "queue-diagnostics"))]
             diag_test_clock: None,
-            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            #[cfg(all(feature = "queue-diagnostics", not(test)))]
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
@@ -5633,7 +5637,7 @@ mod tests {
         (res, count.load(Ordering::Relaxed))
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn reclaim_hold_drains_to_real_driver_full_without_observing_again() {
         // Repair 6.2-R4 diagnostic witness. The TX-slot capacity equals the
@@ -5797,11 +5801,11 @@ mod tests {
             telemetry,
             hart_source: crate::hart_counter::HartSource::System,
             fault_sink: &crate::SOCKET_SET,
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             lease_deadline: None,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            #[cfg(all(test, feature = "queue-diagnostics"))]
             diag_test_clock: None,
-            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            #[cfg(all(feature = "queue-diagnostics", not(test)))]
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
@@ -6091,11 +6095,11 @@ stack_progress_pending: false,
                 telemetry: &RX_TELEMETRY,
                 hart_source: crate::hart_counter::HartSource::System,
                 fault_sink: &crate::SOCKET_SET,
-                #[cfg(feature = "qemu-diagnostics")]
+                #[cfg(feature = "queue-diagnostics")]
                 lease_deadline: None,
-                #[cfg(all(test, feature = "qemu-diagnostics"))]
+                #[cfg(all(test, feature = "queue-diagnostics"))]
                 diag_test_clock: None,
-                #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+                #[cfg(all(feature = "queue-diagnostics", not(test)))]
                 lease_timer: None,
                 recovery: None,
                 recovery_deadline: None,
@@ -6267,7 +6271,7 @@ stack_progress_pending: false,
 
     // ---- RW-2: ownership-invariant counting and real V3 ledger ----
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn reclaim_ownership_fault_increments_invariant_and_keeps_fault() {
         // A reclaim of an unknown cookie is a terminal cookie→ticket drift.
@@ -6303,7 +6307,7 @@ stack_progress_pending: false,
         );
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn successful_reclaim_never_counts_ownership_invariant() {
         // A well-formed reclaim (matching ticket) is not an ownership drift:
@@ -6523,11 +6527,11 @@ stack_progress_pending: false,
             telemetry,
             hart_source: crate::hart_counter::HartSource::System,
             fault_sink: sink,
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             lease_deadline: None,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            #[cfg(all(test, feature = "queue-diagnostics"))]
             diag_test_clock: None,
-            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            #[cfg(all(feature = "queue-diagnostics", not(test)))]
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
@@ -6595,11 +6599,11 @@ stack_progress_pending: false,
             telemetry,
             hart_source: crate::hart_counter::HartSource::System,
             fault_sink: &crate::SOCKET_SET,
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             lease_deadline: None,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            #[cfg(all(test, feature = "queue-diagnostics"))]
             diag_test_clock: None,
-            #[cfg(all(feature = "qemu-diagnostics", not(test)))]
+            #[cfg(all(feature = "queue-diagnostics", not(test)))]
             lease_timer: None,
             recovery: None,
             recovery_deadline: None,
@@ -6826,7 +6830,7 @@ stack_progress_pending: false,
 
     // ── Task 4.3: QEMU diagnostic holds pause exactly one stage ─────────
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn hold_submit_pauses_submit_stage_but_not_reclaim_or_rx() {
         // The QEMU diagnostic lease is Service-owned; a hold committed under
@@ -6877,7 +6881,7 @@ stack_progress_pending: false,
         }
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn hold_reclaim_pauses_reclaim_stage_and_again_still_backpressures() {
         // The QEMU diagnostic lease is Service-owned; a hold committed under
@@ -6953,7 +6957,7 @@ stack_progress_pending: false,
         }))
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn diagnostic_control_shared_path_is_bounded_and_publishes_after_unlock() {
         // T4.4-R1: the production `diagnostic_control` entry and this test
@@ -7063,7 +7067,7 @@ stack_progress_pending: false,
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn v3_shared_snapshot_path_returns_only_committed_tuples_under_control_and_tick() {
         // T4.4-R2: the public `rx_snapshot_v3` and this test share
@@ -7122,7 +7126,7 @@ stack_progress_pending: false,
         assert_eq!(snap.auto_release_failure, 1);
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn diagnostic_control_public_entry_delegates_to_shared_path_in_source() {
         // T4.4-R1 source guard: the production control entry must delegate to
@@ -7177,7 +7181,7 @@ stack_progress_pending: false,
     /// Task 5.2 (Iteration 006): per-test fixture clock attached to both the
     /// injected Service and the future it drives, so lease-deadline decisions
     /// never share process-global `TEST_NOW` across parallel tests.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     fn fixture_clock(
         mutex: &'static spin::Mutex<Service>,
         fut: &mut RxRxFuture,
@@ -7190,7 +7194,7 @@ stack_progress_pending: false,
         clock
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn hold_submit_lease_deadline_wakes_and_auto_releases_exactly_once() {
         // Fake clock at T0: commit a 100 ms submit hold. Without an external
@@ -7245,7 +7249,7 @@ stack_progress_pending: false,
         assert!(mutex.try_lock().is_some());
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn held_reclaim_visible_tx_completion_does_not_busy_loop_before_deadline() {
         let t0 = 1_000_000_000_000u64;
@@ -7289,7 +7293,7 @@ stack_progress_pending: false,
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_NONE);
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn explicit_release_invalidates_stale_deadline_and_new_lease_is_not_released() {
         let t0 = 1_000_000_000_000u64;
@@ -8890,7 +8894,7 @@ stack_progress_pending: false,
         assert_eq!(sheet.generation.load(Ordering::Relaxed) & 1, 0, "even");
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn submit_hold_does_not_shield_its_own_data_deadline() {
         // A1 / Finding 4: a diagnostic submit hold with a lease longer than the
@@ -8939,7 +8943,7 @@ stack_progress_pending: false,
         assert_eq!(mutex.lock().diag_hold_mode(), crate::diag::HOLD_SUBMIT);
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn reclaim_hold_does_not_shield_its_own_data_deadline() {
         // A3 / Finding 4: a diagnostic reclaim hold with a lease longer than the

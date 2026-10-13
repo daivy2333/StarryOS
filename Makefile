@@ -329,6 +329,29 @@ k3-fit:
 	mkimage -f tools/starry-k3.its StarryOS_riscv64-k3.fit
 	@dumpimage -l StarryOS_riscv64-k3.fit
 
+# MS12 Iteration 000 (001-replan): K3 async GMAC data-plane image. The raw
+# session reuses stages 1–10 of the polling path and then selects the IRQ
+# entry; stages 11–13 stay compiled but are not entered. Single-hart only
+# (multi-hart async I/O is MS14); the network mode never combines with the
+# UART/shell/rootfs shapes (kernel guard). Same adjudicated MEM/PLAT_CONFIG
+# window as `make k3`; IP/GW name the board (192.168.137.2) and the PC peer
+# (192.168.137.1) for the axconfig net block.
+k3-async:
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-async is a single-hart qualification mode; SMP>1 is unsupported (see MS12/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-async-net MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 IP=192.168.137.2 GW=192.168.137.1 build
+	$(MAKE) --no-print-directory k3-fit
+
+# MS12 Iteration 001 (T5): K3 capacity/flush diagnostics probe image — the
+# Service data plane plus the queue-diagnostics surface and the payload.
+# Same parameters and FIT as k3-async; built LAST in a verification round so
+# a later `make k3` cannot overwrite the board image (Migration Plan).
+k3-async-probe:
+	@if [ -n "$(SMP)" ] && [ $(SMP) -gt 1 ]; then \
+		echo "ERROR: k3-async-probe is a single-hart qualification mode; SMP>1 is unsupported (see MS12/MS14 boundary)"; exit 1; fi
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-net-diagnostics MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 IP=192.168.137.2 GW=192.168.137.1 build
+	$(MAKE) --no-print-directory k3-fit
+
 # MS17 Iteration 000: K3 raw UART port qualification image. Single-hart only:
 # multi-hart async I/O is a later milestone (MS14) and must not silently
 # build this mode. Same adjudicated MEM/PLAT_CONFIG window as `make k3`.
@@ -448,4 +471,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf k3-rootfs k3-rootfs-fit
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-async k3-async-probe k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf k3-rootfs k3-rootfs-fit

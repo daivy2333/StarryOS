@@ -50,7 +50,7 @@ None。MS10/MS11 与 QEMU 已验收域作为基线保留；新增目标后端能
 3. **验证环境**：沿 R68 的 CoM260 Kit RAM FIT 启动和 PC 直连拓扑；板测由操作者执行，host/build 与适用的自动检查由 agent 执行。Wireshark 按既有用户原话“Wireshark不做，后续也不用做”永久豁免，使用 PC 原生网络输出与板上目标状态。历史 ping 数量和 reset 描述豁免不自动延续为本 change 的通过条件；最短板测步骤与新验收数量在 Phase 2 明确。
 4. **故障与压力边界**：覆盖确定性 wake 竞态、Full→恢复、最后完成、wrap、预算边界、空闲与稳定 fault；host 测试用真实生产路径和已有框架内的设备/时钟模拟，真板只用安全可达的压力和直接观察。设备 fatal/DMA stop 不做危险物理注错；不要求真板 runtime reset/link-flap 恢复、SMP、soak 或性能门槛。
 
-Gate 1 已通过；需求没有简化或新增豁免。Gate 2 已于 2026-10-06 获用户批准，见 User Decision；本次路线调整不改变 MS12 的需求、任务契约或验收。
+Gate 1 已通过；需求没有简化或新增豁免。原计划 Gate 2 已于 2026-10-06 获用户批准，见 User Decision；2026-10-08 根据新基线修订执行契约，需求与验收保留，用户原话“批准”，修订计划 Gate 2 PASS。
 
 ## Scenario Sketch
 
@@ -95,7 +95,29 @@ Gate 1 已通过；需求没有简化或新增豁免。Gate 2 已于 2026-10-06 
 - Gate 1 后已直接读取 R69 的 `others/Rt-Async-AMP/tgoskits/drivers/ax-driver/src/net/k3_gmac/` IRQ/queue/regs/desc、AIA 接缝，以及本仓 runtime/traits/queue/stack。资料实际使用与当前基线见 design；具体寄存器用法按 M42 默认采信并留来源。
 - `openspec/config.yaml` 的 `net-k3`/`.claude/docs/SNAPSHOT.md` 是过时上下文；本 change 以已读当前权威文档为准，不在本任务中修订配置。
 
-## Phase and Gate Status
+## 当前恢复规划（2026-10-08）
+
+用户指令：“复核当前已经规划的那个ms，因为中途去把串口和shell实施完了，有相当多可以复用的经验和设施，整理然后更新更好的计划，要求符合各种规范”；补充：“遵守规范，不做多余的身份验收工作”，并询问以shell路径直接适配还是先保持分层板测、稳定后合并镜像。
+
+本次按后者整理执行计划：在当前已具备shell的同一代码基线上复用timer/AIA/task/critical-section，先以独立网络内核任务证明GMACIRQ→queue→stack/socket；网卡单hart稳定后，后续组合阶段统一UART/网络/shell启动，先检查共同运行再多hart。没有新增shell需求、rootfs前置或里程碑。该顺序与修订契约已于2026-10-08获用户批准。
+
+场景缺口重新扫描：Happy（复用timer后rawIRQ、容量/flush、四协议）；Sad（普通feature链接/初始化、fatal/unknown、postpublish错误）；Edge（注册/arm/Pending最后事件、wrap、各级Full与quiet后新流量）；timeout/cancel（绝对deadline、取消不释放device owner、失败快照仍可取得）；兼容（普通K3、shell/UART/rootfs模式隔离、QEMU/D1、单hart拒绝）。原S1–S20草图全部保留，没有新场景缺口、Missing或Simplified。真板未知仍是待执行验收；host或shell不会替代。
+
+| 本次Phase/Step | 状态 | 结论/下一边界 |
+|---|---|---|
+| 场景适用性与范围扫描 | completed | R1–R7/S1–S20完整保持，Gate1沿用批准 |
+| 已验收输入整理与实码补查 | completed | timer/AIA/调度采信；网络IOC/通知/owner仍缺，具体事实在最新Cycle |
+| design/tasks/RTM/Map修订 | completed | T1消除重复timer实现；三轮、7任务唯一归属，最新Cycle自包含 |
+| 结构检查与完整diff审查 | completed | 本次结果见下方Plan Validation；只证明计划结构与一致性 |
+| Gate2 | PASS | 2026-10-08用户原话“批准”；001-replan为ready |
+| 实施/板测、Recorder、全局状态/收尾 | SKIPPED | 只授权复核规划，不修改产品代码或跨阶段 |
+
+最新Cycle：`iterations/000-initial/001-replan.md`；父Cycle只更新Plan Review，Plan Context与Act Response冻结。后继逻辑Iteration仍仅Map；Evidence=none，不创建占位目录。技术规格与R1–R7验收没有变化；命令/原生结果与实际状态判定，不新增身份、时间或日志判定器。
+
+## 历史 Phase and Gate Status（2026-10-06）
+
+下列批准、阻塞与现场描述只记录当时过程；当前执行入口、批准状态与恢复边界以上节及最新Cycle为准，不沿用“MS17尚未实施”或全局写入未完成作为当前现场。
+
 
 | Phase/Step | 状态 | 依据/下一边界 |
 |---|---|---|
@@ -112,6 +134,12 @@ Gate 1 已通过；需求没有简化或新增豁免。Gate 2 已于 2026-10-06 
 Persisted Evidence：本次不创建 Evidence；后续默认 `none`，除非具体 Acceptance 满足公共规则白名单和必要性。
 
 ## User Decision
+
+### 修订计划批准（2026-10-08）
+
+用户原话：“批准”。接受本次复用方案、独立网卡单hart板测后再组合与多hart的顺序、三轮Map及 `001-replan` 执行契约。Gate2 PASS，最新Cycle改为ready；本次只登记批准，不改写Task Contracts、Acceptance、Verification或历史Cycle，不实施产品代码、不调用Act/Maintainer。全部7项实施任务仍未开始。
+
+批准登记检查：`openspec validate ms12-com260-kit-async-bidirectional-data-plane --strict --no-interactive` 输出 `Change 'ms12-com260-kit-async-bidirectional-data-plane' is valid`，exit 0；`git diff --check` 无诊断，exit 0；新增 Cycle 的原生 no-index 空白检查无诊断，exit 1 仅表示新增内容。仅更新批准记录、Gate2与draft→ready状态，未变更实施契约，沿用本次已通过的调查与结构检查。
 
 ### 当前执行顺序（2026-10-06）
 
@@ -150,3 +178,12 @@ MS17 尚未实施，不提前把其计划当作当前基线，也不提前删除
 - SKIPPED：产品实施、板测、Recorder、归档；本次只执行获批的文档调整，不增加实施授权或测试豁免。
 - 验证：`openspec validate ms12-com260-kit-async-bidirectional-data-plane --strict --no-interactive` → `Change 'ms12-com260-kit-async-bidirectional-data-plane' is valid`，exit0；`openspec status --change ms12-com260-kit-async-bidirectional-data-plane` → `Progress: 4/4 artifacts complete`，exit0。只证明规划结构，不代表产品已实施。
 - 补丁预检查：`git apply --check --whitespace=error /tmp/starryos-ms14-roadmap-update.patch`，无诊断，exit0；证明补丁匹配当前文件且无空白错误，不表示已应用。
+
+## 本次 Plan Validation（2026-10-08）
+
+- `openspec validate ms12-com260-kit-async-bidirectional-data-plane --strict --no-interactive`：`Change 'ms12-com260-kit-async-bidirectional-data-plane' is valid`，exit 0。
+- `openspec status --change ms12-com260-kit-async-bidirectional-data-plane`：`Progress: 4/4 artifacts complete`；proposal/specs/design/tasks 齐全，exit 0。结构齐全不等于 Gate 2 获批或实施完成。
+- `git diff --check`：无诊断，exit 0。新增 Cycle 使用原生 `git diff --no-index --check -- /dev/null openspec/changes/ms12-com260-kit-async-bidirectional-data-plane/iterations/000-initial/001-replan.md`，无空白诊断；exit 1 表示新增内容存在。
+- 独立阅读全部修改 diff 和新增 Cycle：R1–R7/S1–S20 未裁剪，T1–T7 均未勾选且每项只归属一个 Iteration；三轮依赖保持，后两轮未预创建目录。父 Cycle 只修改 Plan Review，结果为 `replan-required`；新 Cycle 自包含、draft，Act/Review pending，Gate 2 仅等待修订计划审计，Evidence=none。
+- 调查阶段原生只读 `git diff aca5dfe9..HEAD -- crates/axnet/src/async_rx.rs kernel/src/platform/k3_gmac kernel/src/platform/k3_network_probe.rs kernel/src/platform/k3_device_irq_probe.rs` 无输出、exit 0；timer/IRQ/critical-section/future 对 MS17 验收基线的定向 diff 同样无差异。原真实 RED/GREEN 的覆盖未变化，结论及适用边界写入新 Cycle，未重复运行产品测试。
+- 本次仅六份 change Markdown 发生变化；未修改产品代码、增量规格、全局状态、Runbook、Issue 或已归档产物，未新增判定工具或 Evidence 目录。不声明新的板测结论。

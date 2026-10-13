@@ -342,8 +342,9 @@ pub enum Stage12Outcome {
 
 /// The standard stage 12 ARP request frame: who-has 192.168.137.1 tell
 /// 192.168.137.2, software-built, 42 bytes zero-padded to 60 (the MAC
-/// generates the FCS on transmit).
-fn stage12_arp_request() -> [u8; 60] {
+/// generates the FCS on transmit). MS12's raw session reuses this exact
+/// frame (shared binding, 001-replan T2).
+pub fn stage12_arp_request() -> [u8; 60] {
     let mut f = [0u8; 60];
     f[0..6].copy_from_slice(&[0xff; 6]); // dst: broadcast
     f[6..12].copy_from_slice(&[0x02, 0x00, 0x00, 0x00, 0x26, 0x01]); // src
@@ -773,8 +774,16 @@ mod board {
     /// Kernel-side arena backing: one contiguous zeroed `GlobalPage` span.
     /// `Drop` would return the pages to the allocator, but the guard retains
     /// them after the publish point — device-owned storage is never
-    /// released until external reset.
+    /// released until external reset. The field stays private; MS12's raw
+    /// session constructs it through [`BoardBacking::new`].
     pub struct BoardBacking(GlobalPage);
+
+    impl BoardBacking {
+        /// Wraps a freshly allocated (zeroed) arena page span.
+        pub fn new(page: GlobalPage) -> Self {
+            BoardBacking(page)
+        }
+    }
 
     impl ArenaBacking for BoardBacking {
         fn base_va(&self) -> usize {
@@ -889,3 +898,7 @@ pub use board::run_k3_stage11;
 pub use board::run_k3_stage12;
 #[cfg(all(feature = "k3", target_arch = "riscv64"))]
 pub use board::run_k3_stage13;
+/// MS12 (001-replan T2): the async raw session allocates its own exclusive
+/// arena over the same kernel-side backing (shared binding, not a copy).
+#[cfg(all(feature = "k3", target_arch = "riscv64"))]
+pub use board::BoardBacking;

@@ -1,4 +1,4 @@
-//! QEMU-only bounded pressure controls (D9): constants and clock.
+//! Bounded pressure controls (D9): constants and clock.
 //!
 //! The deterministic submit/reclaim hold state lives in
 //! [`crate::service::Service`] under the Service guard: a hold pauses exactly
@@ -6,10 +6,11 @@
 //! or completions. A lease expiry auto-releases the hold and counts a failure;
 //! an explicit release also resumes the queue but does not count a failure.
 //!
-//! This module is compiled only when the private `qemu-diagnostics` feature
-//! is enabled (propagated exclusively from `starry-kernel/qemu`); ordinary
-//! axnet and D1 builds never contain these entry points. It keeps the
-//! constants, the wall clock and the host-test fake clock. There is no
+//! This module is compiled only when the private `queue-diagnostics`
+//! feature is enabled (propagated from `starry-kernel/k3-net-diagnostics`
+//! for the K3 probe builds and implied by `qemu-diagnostics`); ordinary
+//! axnet builds never contain these entry points. It keeps the constants,
+//! the wall clock and the host-test fake clock. There is no
 //! independent lease generation or global diagnostic state: the lease is a
 //! committed part of the Service, so no identity can exhaust and every
 //! reachable Hold is releasable.

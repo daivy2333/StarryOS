@@ -39,6 +39,22 @@ compile_error!(
      with it"
 );
 
+// MS12 Iteration 000: the K3 async GMAC mode is a single-hart qualification
+// shape (multi-hart async I/O is MS14) with its own boot path; the UART-mode
+// shapes derive from `k3-async-uart`, so rejecting that feature rejects every
+// derived combination (k3-uart/k3-stdio/k3-shell/k3-uart-port-test/k3-rootfs).
+#[cfg(all(feature = "k3-async-net", feature = "smp"))]
+compile_error!(
+    "k3-async-net is a single-hart qualification mode; the `smp` feature cannot be combined \
+     with it"
+);
+
+#[cfg(all(feature = "k3-async-net", feature = "k3-async-uart"))]
+compile_error!(
+    "k3-async-net and k3-async-uart (and every shape derived from it) are mutually exclusive; \
+     select exactly one K3 boot mode"
+);
+
 // MS18 Iteration 000: the K3 RAM-rootfs shape is its own boot path — it
 // mounts the ext4 root instead of the memory root and never constructs the
 // embedded-payload stdio tree, while the stdio/shell/raw-port shapes mount

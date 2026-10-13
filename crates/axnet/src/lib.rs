@@ -20,7 +20,7 @@ extern crate alloc;
 mod async_rx;
 mod consts;
 mod device;
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 mod diag;
 mod flush;
 mod general;
@@ -176,7 +176,7 @@ pub fn poll_interfaces() {
     LISTEN_TABLE.drain_accept_wakes();
 }
 
-/// Applies a QEMU-only bounded pressure control (D9).
+/// Applies a bounded pressure control (D9).
 ///
 /// `op` is `HoldTxSubmit=1`, `HoldTxReclaim=2` (lease 1..=2000 ms) or
 /// `Release=3` (lease 0). The control acquires the Service with one
@@ -185,10 +185,79 @@ pub fn poll_interfaces() {
 /// publishing an event. On success it commits the lease under the guard,
 /// drops the guard, then publishes exactly one queue-work event so the sole
 /// owner pauses (or resumes) the matching stage.
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 pub fn diagnostic_control(op: u64, lease_ms: u64) -> axdriver::prelude::DevResult {
     use crate::async_rx::{QUEUE_EVENT, ServiceAccess, diagnostic_control_shared};
     diagnostic_control_shared(ServiceAccess::Global, &QUEUE_EVENT, op, lease_ms)
+}
+
+/// Observable facts of one diagnostic enqueue (MS12 Iteration 001 T5).
+///
+/// Every field is read from an existing ledger under the Service guard —
+/// the fixed slot/ticket ledger and the driver's real TX resource ledger —
+/// never synthesized from software capacities.
+#[cfg(feature = "queue-diagnostics")]
+pub struct DiagnosticEnqueueReport {
+    /// The frame took a TX slot (its ticket is live until reclaim).
+    pub accepted: bool,
+    /// Fixed TX slot occupancy after this call.
+    pub tx_slot_occupancy: u64,
+    /// Fixed TX slot high-water mark.
+    pub tx_slot_high_water: u64,
+    /// Fixed TX slot full events (the 64/65 boundary counter).
+    pub tx_slot_full: u64,
+    /// Fixed RX slot occupancy.
+    pub rx_slot_occupancy: u64,
+    /// Live TX tickets (queued + device-owned).
+    pub tickets_live: u64,
+    /// Driver TX buffers available / in flight, when observable.
+    pub tx_buffer_available: Option<u64>,
+    pub tx_buffer_inflight: Option<u64>,
+    /// Driver TX descriptors available / in flight, when observable.
+    pub tx_descriptor_available: Option<u64>,
+    pub tx_descriptor_inflight: Option<u64>,
+    /// Legal OWN=0 completions the driver has synchronously observed.
+    pub completions_seen: Option<u64>,
+}
+
+/// Diagnostic minimal complete-frame enqueue (MS12 Iteration 001 T5).
+///
+/// One frame per call into the target's fixed TX slot storage through the
+/// device's own checked-ticket path, the ledgers read under the same guard,
+/// then exactly one software nudge after the guard drops so the owner
+/// submits it. Never injects a ticket, never modifies a descriptor, never
+/// fabricates a completion.
+#[cfg(feature = "queue-diagnostics")]
+pub fn diagnostic_enqueue_frame(
+    dst: [u8; 6],
+    ethertype: u16,
+    payload: &[u8],
+) -> axdriver::prelude::DevResult<DiagnosticEnqueueReport> {
+    let mut service = get_service();
+    let accepted = match service.diagnostic_enqueue_target(dst, ethertype, payload) {
+        Ok(()) => true,
+        Err(axdriver::prelude::DevError::Again) => false,
+        Err(e) => return Err(e),
+    };
+    // The ledgers report even on a refused frame: the boundary observation
+    // is exactly what the payload prints.
+    let slot = service.v3_slot_ledger();
+    let tx_ledger = service.v3_tx_resource_ledger();
+    drop(service);
+    async_rx::software_nudge();
+    Ok(DiagnosticEnqueueReport {
+        accepted,
+        tx_slot_occupancy: slot.tx_occupancy,
+        tx_slot_high_water: slot.tx_high_water,
+        tx_slot_full: slot.tx_full,
+        rx_slot_occupancy: slot.rx_occupancy,
+        tickets_live: slot.live,
+        tx_buffer_available: tx_ledger.map(|l| l.buffer_available),
+        tx_buffer_inflight: tx_ledger.map(|l| l.buffer_inflight),
+        tx_descriptor_available: tx_ledger.map(|l| l.descriptor_available),
+        tx_descriptor_inflight: tx_ledger.map(|l| l.descriptor_inflight),
+        completions_seen: tx_ledger.map(|l| l.completions_seen),
+    })
 }
 
 /// Queues one reset request for the unique resident queue owner.
@@ -201,7 +270,7 @@ pub fn recovery_reset_request() -> axdriver::prelude::DevResult {
 ///
 /// The kernel ioctl wraps this in a fixed deadline; dropping the future
 /// clears the waiter without changing packet ownership.
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 pub fn flush() -> axdriver::prelude::DevResult<flush::FlushFuture> {
     use crate::async_rx::ServiceAccess;
     flush::flush_new(ServiceAccess::Global)

@@ -224,6 +224,22 @@ pub trait Device: Send + Sync {
         Ok(())
     }
 
+    /// Diagnostic minimal complete-frame enqueue (MS12 Iteration 001 T5).
+    ///
+    /// One frame per call through the device's own complete-frame slot
+    /// enqueue (the checked-ticket path), never a direct ticket injection,
+    /// descriptor write or completion forgery. Default: unsupported (only
+    /// the Ethernet target owns slot storage).
+    #[cfg(feature = "queue-diagnostics")]
+    fn diagnostic_enqueue_complete_frame(
+        &mut self,
+        _dst: [u8; 6],
+        _ethertype: u16,
+        _payload: &[u8],
+    ) -> DevResult {
+        Err(DevError::Unsupported)
+    }
+
     /// Advances the raw→RX-slot copy by at most one frame (queue task only).
     ///
     /// Reaps at most one raw completion, copies it into the fixed RX slot and

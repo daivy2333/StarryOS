@@ -1,28 +1,25 @@
 ## Context
 
-需求与场景见 [proposal.md](proposal.md)。调查基线为 `k3` 分支 `aca5dfe9`；本次仅新增规划目录。以下事实来自实际代码，不能用旧参考仓库中的 StarryOS 状态替代。
+本变更将K3已验收轮询GMAC接入既有异步queue/stack，R1–R7/S1–S20保持。2026-10-08重新调查基线为`k3` @ `cdf94713`，开始时工作树干净；本次只改规划文档。当前自包含实现事实与验证契约在[001-replan](iterations/000-initial/001-replan.md)，原000-initial保留历史现场，不再作为恢复入口。
 
-| 当前接缝 | 已确认的行为与影响 |
+| 当前接缝 | 已确认行为与计划差异 |
 |---|---|
-| `kernel/src/entry.rs::init` → `platform/k3.rs::run_first_byte_park` | K3 经过 stage1–13 后 park；未初始化 axnet Service，也未启动网络常驻任务 |
-| axruntime `rust_main` / `init_interrupt` | 已初始化 allocator、axtask scheduler，并尝试注册 timer handler；handler 重设 SBI deadline、调用 `axtask::on_timer_tick`。无需引入 executor 或重新初始化 scheduler |
-| `axplat-riscv64-k3/src/irq.rs`、`time.rs` | AIA 只接 external vector；timer 注册被固定路由拒绝，STIE 关闭，`init_percpu` 未启动 SBI timer；网络 deadline 尚不能唤醒任务 |
-| `platform/k3_gmac/mod.rs::Gmac` | 独占 18 页 DMA arena；16 RX/16 TX descriptor，各 64 B，buffer 2048 B；RX/TX 单步轮询与有界错误已实现，IRQ_EN=0，IOC 未启用 |
-| GMAC `poll_rx` / `try_submit` / `poll_tx` | 读取并 W1C 消费 DMA status；异步 ISR 提前 ack 后必须保留 fatal 原始 cause，不能让后续读取零值掩盖故障 |
-| `axdriver_net` traits 与 `NetBufPool` | 已有双向 queue control、cookie submit/reclaim、真实 TX resource ledger；原生固定 pool 可回收 `NetBufPtr`；不必新增公共 queue 协议 |
-| axdriver `structs/{mod,dyn}.rs` | 已有 `AxDeviceContainer::from_one` 与 `Box<dyn NetDriverOps>`；K3 可手工传入设备，不需要 vendor axdriver 或修改 probe framework |
-| axdriver `dyn_drivers/{mod,pci}.rs` / axruntime `klib.rs` | dyn注册的PCI回调引用axklib mem_iomap；实现通常由runtime paging提供。K3当前不启用paging，需一个K3限定的原生ABI拒绝入口满足链接；不必接入动态MM或PCI |
-| `axnet::init_network` | 只建立 Service/Router/EthernetDevice，不再自动 spawn；IP/GW 来自编译环境 `AX_IP`/`AX_GW` |
-| `async_rx.rs::RxRxFuture` | 三阶段 budget 均为 32；注册、重臂双方 queue、generation 重查已有实现；无 recovery control 的 fatal 走稳定 Faulted 路径 |
-| `device/ethernet.rs` / `fixed_queue.rs` / `flush.rs` | 64 RX/64 TX slots、固定 ticket tracker、cookie 校验、目标集合 C4 flush 与单 waiter 已存在；不得重写一套 K3 slots/flush |
-| `stack_runner.rs` / `tcp.rs` / `udp.rs` | 独立 stack runner、协议 timer、socket mutation wake 与 `SocketOps`/`Pollable` 已存在；`irq_num=Some(133)` 且 owner Active 后关闭 polling fallback |
+| 平台`irq.rs/time.rs/timer_irq.rs` | 串口交付已实现独立timer槽、CAS/STIE/完整vector分派与SBI set_timer(0)，8项native与真实sleep通过；复用，取消重新实现/新增timer harness工作 |
+| `entry.rs::init`、`lib.rs`模式cfg | K3现有polling、raw UART、copier、stdio/shell、rootfs分支；网络新增独立feature，保持仅platform/kernel-task形态，不放开tty/userland；拒绝UART派生/smp/vf2组合，已有qemu/D1 guard复用 |
+| `k3.rs::run_first_byte_park` | 网络共用stage1–10健康前置，正常stage10后进入异步分支；旧stage11–13只在polling形态执行，不与新owner共存 |
+| AIA、`axtask::future`、共享critical-section | 已有source133路由、原子stopei、IRQ hook、scheduler、timeout与restore-state纪律；不重复初始化，不扩表，不借UART硬件锁 |
+| `Gmac`、BoardBacking、K3Env | 18页arena/16RX/16TX、tail/cache/deadline/retain保持；当前IOC/IRQ_EN=0。新增异步通知模式、pre-ack fatal保存、任务重臂重查，并精准复用原GlobalPage/CBO绑定 |
+| 普通axnet cfg | `net_link_step_diag`定义仍仅QEMU，调用仍无cfg；原exit101与event窗口3项GREEN继续适用，必要修复留T1 |
+| dyn链接 | axdriver注册PCI回调仍引用iomap，runtime只在paging提供klib；网络不启paging，保留限定Unsupported shim，不能因rootfs dyn已链接就假定非paging同样可链接 |
+| 构建/板测载荷 | 网络用现有K3 FIT与内核任务直接板测，模式从真实行为输出识别；没有字符串数、mtime、身份字段或专用判定器 |
 
 ### Current-State Evidence
 
-- 2026-10-06 实跑：`env RUSTFLAGS='-C linker=/home/daivy/projects/serial/work/StarryOS/scripts/cc-nopie.sh' cargo test --manifest-path crates/axnet/Cargo.toml --locked --offline --lib async_rx::tests::event_before_register_is_caught_by_arm_recheck -- --exact --test-threads=1`，exit **101**：`error[E0425]: cannot find function net_link_step_diag in this scope`，`src/async_rx.rs:1948`。调用未加 cfg，定义仅在 `qemu-diagnostics` 下编译。修复是 K3 非 QEMU 接入的必要前置，限于该诊断调用的 feature 隔离。
-- 同日实跑：上述命令改为 `--features qemu-diagnostics async_rx::tests::event_ -- --test-threads=1`，exit **0**：`event_after_arm_wakes_sleep_decision`、`event_before_register_is_caught_by_arm_recheck`、`event_during_register_window_retries` 均 `ok`；`3 passed; 0 failed; 511 filtered out`。只证明这三个既有窗口行为，不证明 GMAC 适配。
-- MS11 最终 accepted Cycle（`archive/2026-10-06-ms11-com260-kit-polling-bidirectional-network-baseline/iterations/002-protocol-exchange/000-initial.md`）仍覆盖未变化的 GMAC/DMA 与 polling session：host 17 项及 GMAC 21 项通过，`make k3`、`make build`、`make lichee` 成功；真板四协议和 RAM reset 路径通过。直接采信，不重跑以增加信心。
-- MS08 历史 ordinary axnet GREEN 已被上述当前编译失败推翻，不作为本轮普通 feature 通过证据。R57 Issue 有 STALE 注记，现代码有独立 fixture；本轮使用原生单线程测试，不沿用历史无限重复/重试口径。
+- 本次只读`git status --short --branch`：`k3...origin/k3 [ahead 13]`，无文件条目；`git rev-parse --short HEAD`：`cdf94713`，exit0。只定位调查现场。
+- `git diff aca5dfe9..HEAD -- crates/axnet/src/async_rx.rs kernel/src/platform/k3_gmac kernel/src/platform/k3_network_probe.rs kernel/src/platform/k3_device_irq_probe.rs` 无输出、exit0。原普通axnetexit101、diagnostics事件窗口3/3、轮询GMAC21项与polling-net-host17项的真实运行结论直接采信；实施改变覆盖表面后补对应GREEN/回归。
+- `git diff f93c03f6..HEAD -- crates/axplat-riscv64-k3/src/irq.rs crates/axplat-riscv64-k3/src/time.rs crates/axplat-riscv64-k3/src/timer_irq.rs tests/k3-timer-host-harness.rs` 无输出、exit0；同区间critical-section/axtask future检查无差异。串口000最终accepted结果保留timer8/8、B2真实sleep与timeout；串口003最终accepted保留shell20/20、K3/stdio/shell/QEMU构建与host-test exit0。
+- rootfs `archive/2026-10-08-ms18-com260-kit-standard-shell-rootfs/iterations/001-standard-shell/001-replan.md`最终accepted：2026-10-08 shell/stdio/`make ARCH=riscv64 SMP=1 build` exit0；RAM预留窗与DTB搬移为rootfs模式事实，本网络不复用其特有内存布局。
+- 原ordinary编译错误与本次实码一致；不是timer问题。范围外VF2旧失败本次未重现，不新增缺陷结论。新网络IRQ/slot/flush/socket依然没有真板运行结论。
 
 ### References actually consumed
 
@@ -40,21 +37,23 @@ R66 的资料路线、R71 的分析、R61/R72 的 `docs/network/k3-gmac-dma-irq.
 
 ## Decisions
 
-### D1：以 feature 接通既有单 hart runtime
+### D1：复用已交付 runtime，保持分层入口
 
-新增根和 kernel 的 `k3-async-net`，蕴含 `k3`；仅该分支开启平台 `runtime-irq`、kernel axdriver/net/dyn 与 axnet。不启用 `axruntime/net-ng` 自动 probe/init，kernel 在完成板级前置后手工传入已准备好的 GMAC。新增 `make k3-async`，复用 k3 build/FIT，固定 `SMP=1`、原 RAM 配置、`AX_IP=192.168.137.2`、`AX_GW=192.168.137.1`；保留 `make k3` 的 polling 路径。叠加其他平台或 SMP 不作为受支持组合，使用项目已有配置拒绝方式给出明确错误。
+根与kernel新增 `k3-async-net`，蕴含k3；根选现有平台runtime-irq，kernel开axdriver/net/dyn与axnet。不选uart-irq/k3-async-uart，不开axruntime/net-ng自动probe、paging、tty/userland或rootfs。`make k3-async`复用k3参数与k3-fit，SMP1、LOGoff、AX_IP=.2/AX_GW=.1；Make拒绝SMP>1，kernel拒绝smp/vf2与任何UART派生组合，平台已有qemu/D1guard保持。
 
-平台 timer 用独立原子 handler 槽保存完整 trap vector `0x8000000000000005`，不索引 `HandlerTable<512>`，不经 APLIC。register 成功才开放 STIE；重复 register 不覆盖；unregister 先 mask STIE 再清 handler。`time::init_percpu` 在 runtime feature 下调用 SBI `set_timer(0)`，触发已安装 axruntime handler 后由其维护 tick。SSIE 保持关闭。timer dispatch 调用 handler 并返回该 vector，让原生 axhal hook 保持原语义；external/AIA 路径不变。
+timer独立槽、首次set_timer(0)、24MHz换算、scheduler/tick与critical-section全部复用，不再修改或新增第二实现。网络真实sleep在raw板测中交叉观察；tick不得发布completion work。已有shell使用同一底座，但先保留独立网络内核载荷，把设备bring-up与用户交互故障分开定位。
 
-`axdriver/dyn`的注册PCI回调依赖原生符号`__axklib_0_3_mem_iomap`；K3未启用runtime paging，kernel `axfeat/uspace`也不蕴含paging。新增仅K3异步分支编译的最小兼容入口，签名与现有axnet host ABI见证一致：`unsafe extern "Rust" fn( memory_addr::PhysAddr, usize ) -> axerrno::AxResult<memory_addr::VirtAddr>`，返回Unsupported。实际GMAC复用既有identity MMIO与DMA映射，不调用该入口。不开paging/plat-dyn/probe_all_devices，不复制host stub到其他平台；原生目标link为见证，不另造ABI资格工具。替代启用paging会引入本轮不需要的地址空间初始化。
+dyn注册PCI回调仍引用`__axklib_0_3_mem_iomap`，runtime只在paging提供Klib；本网络保持静态boot映射，新增仅网络feature编译的最小Unsupported入口（memory_addr0.4/axerrno0.2原有类型，unsafe extern Rust），实际GMAC不调用它。原生链接即判定；不造ABI检查工具。不因shell/rootfs已经启paging就把它扩成网络前置。
 
-理由：scheduler 已存在，缺口是 timer trap。替代：第二 executor、复制 timer wheel、改 axruntime 全局初始化，均没有必要。周期 scheduler tick 可以存在；它不得周期发布 GMAC queue/stack work。
+网卡单hartqueue/stack与恢复稳定后，后续组合阶段统一启动UARTcopier、NICqueue、stack runner和shell，先检查共同运行再推进多hart。按设备保持唯一owner、分开的等待/完成语义；不把两个完整boot函数串接、不再次初始化runtime。此为后续边界说明，不增加本变更的shell验收或提前授权集成实现。
+
+替代：直接以shell/rootfs会话作为GMAC首轮门槛，会把tty/loader/应用进程加入本次诊断范围；重新做runtime会重复已验收底座。采用当前代码基线与独立板测入口即可覆盖本轮目标。
 
 ### D2：ISR 与 descriptor owner 分开
 
 GMAC 低层增加显式异步 notification 模式；默认 polling 模式保持原样。配置 IOC 的同时仍按原 cache/fence 和 OWN-last 顺序发布；不对已提交 OWN descriptor 就地补 IOC。
 
-ISR 使用固定 MMIO、静态原子 cause/fault 状态和既有唤醒入口，不取得 Service/Gmac/arena 锁，不碰 descriptor、不分配、不输出串口、不跑协议。先读并保存原 cause，设备侧 suppress 本 channel 通知，W1C 只写已观察且认识的 cause/summary 位，分类后发布事件。fatal 原始 status 先 latch 后 ack，直到外部 reset 保留；未知/零 cause 计数，未知有效 channel cause 使设备通知关闭并进入稳定错误，零 cause 不伪造完成。
+ISR 使用固定 MMIO、静态原子 cause/fault 状态和既有唤醒入口，不取得 Service/Gmac/arena 锁，不碰 descriptor、不分配、不输出串口、不跑协议。先读并保存原 cause，设备侧 suppress 本 channel 通知，W1C 只写已观察且认识的 cause/summary 位，分类后发布事件。fatal 原始 status 先 latch 后 ack，直到外部 reset 保留；未知/零 cause 计数，未知有效 channel cause 使设备通知关闭并进入稳定错误。RI/TI及稳定fatal/有效unknown都发布一次工作提示，使错误等待者也能恢复；zero不发布工作，不伪造完成。
 
 任务 suppress/arm 的 IRQ_EN RMW 在现有 single-hart IRQ-save 临界区内完成；请求 BOTH 必须一次整体提交。正常 enable 使用 R69 的 `0xD041`，directions mask 保留 summary/fatal 所需位。APLIC/IMSIC source133/EIE 保持开启，不以 EIE mask 压制 completion。arm 后 fence，invalidate/fence/read 当前 RX head OWN 与有 live owner 的 TX head OWN，再查 latch/raw fatal；completion_pending 不推进 head、不回收。仅有 cause hint 不能报完成；空 RX ring 或零 TX inflight 必须为 NONE。现有 QueueEvent generation 负责 register 前后窗口，descriptor 重查负责 ack/masked 窗口；各自职责无需新增事件协议。
 
@@ -100,7 +99,7 @@ hold 使用200ms lease，显式 release，不到1s data deadline；auto-release 
 
 后两轮精确动作随前轮 accepted 基线展开，设计约束已确定：200ms hold，64/65slots、16/17driver resources；最终60s socket窗口，PC先一包暖邻居（不计验收），随后 ping10/10、UDP一次 `ms12-udp` 全字节echo、TCP一次 `ms12-tcp` 全字节echo及正常EOF。payload TCP主动正常关闭；不把单次recv保证为完整TCP数据，PC读至8字节再检查EOF。quiet窗口2s：无新增cause且无到期协议timer时queue/stack polls与selfwake不持续增加，再一包恢复。若PC背景流量或协议timer到期，窗口不满足前提，报告该观察，不能标PASS。
 
-全程使用R68 RAM FIT路线，1152008N1无流控、PC .1/24、板 .2/24、MAC02:00:00:00:26:01、UDP26001/TCP26002。Wireshark按用户原话永久豁免；没有新的计数/reset豁免。Evidence默认none，原生命令与每项≤20行决定性结果写Act Response。板测提交用户前先完成该轮agent可执行测试和build；未执行板测不算通过。
+全程使用R68 RAM FIT路线，1152008N1无流控、PC .1/24、板 .2/24、MAC02:00:00:00:26:01、UDP26001/TCP26002。Wireshark按用户原话永久豁免；没有新的计数/reset豁免。Evidence默认none，原生命令与每项≤20行决定性结果写Act Response。正常和失败路径均在任务上下文报告有界pre-ack cause/claim/owner/deadline/同步后OWN状态，累计由任务持有以避免超时取消丢失诊断；不以第二次破坏性读补快照。板测提交用户前先完成该轮agent可执行测试和build；未执行板测不算通过。
 
 ## Verification mapping
 
@@ -116,7 +115,7 @@ hold 使用200ms lease，显式 release，不到1s data deadline；auto-release 
 | S13–S15 | local stack/socket fixture三源wake与quiet；真板四协议、EOF及2squiet→新IRQ | 002 |
 | S16–S18 | 原Gmacfake init/reset/deadline + adapterpostpublish故障与Backing drop witness；真板报告阶段并外部reset回原系统 | 000–002 |
 | S19 | 产品native snapshot和Cargo原生结果；无新增判定层 | 全部 |
-| S20 | 独立features测试、K3polling受影响host回归，make k3/build/lichee；旧VF2与host-test既有失败单列 | 全部 |
+| S20 | 独立features测试、K3polling受影响host回归，make k3/build/lichee；VF2既有失败按影响范围单列，host-test采信较新的accepted通过结论 | 全部 |
 
 ## Risks / Trade-offs
 
@@ -132,8 +131,18 @@ hold 使用200ms lease，显式 release，不到1s data deadline；auto-release 
 
 新增K3异步feature与make入口；原K3polling及其他平台选择保持。每轮按host→build→RAM真板推进，仅accepted后展开下一轮。各K3构建共用FIT文件名，先完成旧入口/其他平台build回归，再最后构建该轮待测异步入口，避免随后make k3覆盖镜像；不增加身份校验。最终正常异步路径使用既有queue/stack，首轮raw工作负载仅保留在诊断路径以检查底层，不与网络owner共存。失败停止新增工作、保留owner，RESET回原系统；不saveenv、不刷写、不修改参考仓库。
 
-Gate2没有需用户决定的实质技术未知项；硬件待执行结果是验收项。用户已于2026-10-06以“批准当前的工作”批准本设计、三轮Map和首轮执行契约；批准状态见proposal User Decision。
+技术规划已闭合，无新增需求简化或实质技术未知项。Gate1沿用已批准范围；2026-10-08用户原话“批准”，Gate2 PASS，最新Cycle ready；设计、任务契约与验收不变，尚未进入实施。
 
-2026-10-06 后续排期调整：先完成 MS17，保留本网络设计与全部验收。timer/IRQ/task 共用底座由 MS17 优先承担；本设计的底座目标语义仍有效，MS17 实际 accepted 后才决定 T1 中哪些实现和测试已满足。后续当前代码/验证契约变化由 Plan 生成适用 replan Cycle，不能改写原 Plan Context 或把未运行的 MS17 计划作为 GREEN。
+## Reuse and boundaries（2026-10-08）
 
-2026-10-07 MS17 交接指针：MS17 已在 K3 上交付并验收共用底座（runtime timer/AIA、PXA UART 异步 port、copier 数据面与物理 drain、tty canonical、内存根内嵌用户态 stdio；各 Iteration 的 accepted 状态见 [../ms17-com260-kit-async-uart-interactive-shell/tasks.md](../ms17-com260-kit-async-uart-interactive-shell/tasks.md)）。T1 恢复时由 Plan 以这些 accepted 结论为输入逐项复核其 timer/IRQ/feature 接缝；本设计的 GMAC、queue、socket 与恢复语义不因之交变。
+| 已有交付或经验 | 本计划用法 | 不适用边界 |
+|---|---|---|
+| timer/AIA、IRQ hook、task future、critical-section | 复用实码与accepted运行结果，仅补网络feature接入 | 串口IRQ/sleep不证明GMAC RI/TI或descriptor完成 |
+| copier的check-register-arm-recheck | 网络沿用现有QueueEvent+descriptor重查，并补目标生产fixture | 不复制UART字节ring或TEMT drain；NIC使用packet/cookie/C4 |
+| shell多模式boot cfg、内核诊断与静态载荷组织 | 复用单入口/互斥方式，网络直接内核任务诊断 | 不新增shell命令、userload、网络syscall或rootfs依赖 |
+| 串口失败后acc不可见的排障经验 | 计数与owner由raw任务持有，timeout后仍有有限快照 | 不复制UARTFCR/Errata/IIR/SETIP假设，不新增软件IRQ资格流程 |
+| shell结束drain与owner保持 | 保留网络的cancel仅结束等待、device-owned backing保留 | 串口drain不替代TX C4，reset回原系统不证明DMA停止 |
+| shell/rootfs构建与镜像选择经验 | 网络目标build后立即按原ITS打包；待测FIT最后生成 | 不增加strings/mtime/hash/run-id/manifest/validator验收 |
+| rootfs OOM/预留布局经验 | 识别rootfs特有内存约束，网络保持原非rootfs布局 | 不把Issue旧状态作为当前代码约束，不维护Issue或引入存储 |
+
+本次仅更新本变更的计划产物；旧Cycle Plan Context/Act Response、已归档串口/rootfs产物和全局状态不改写。三轮依赖与诊断边界保持，最新执行入口为001-replan。

@@ -1865,3 +1865,431 @@ fn raw_tx_sequence_requires_rx_and_bounds_wait() {
         "stage12 retains the published backing until external reset"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests — MS12 Iteration 000 (001-replan) task T2: async IOC publish, the
+// source-133 ISR core and the deferred-owner arm/recheck protocol.
+//
+// The IRQ board fake is a process-global static because the production ISR
+// is a bare `fn()`. The tests that drive it serialize on IRQ_TEST_LOCK, so
+// the harness stays correct under the default `make host-test` parallelism
+// as well as the single-threaded V2 invocation.
+// ---------------------------------------------------------------------------
+
+#[path = "../kernel/src/platform/k3_async_net.rs"]
+mod k3_async_net;
+
+use std::cell::UnsafeCell;
+
+use k3_async_net::IrqAccess;
+use k3_gmac::regs::{
+    DMA_IRQ_EN_DEFAULT, DMA_STATUS_AIS, DMA_STATUS_BIT10, DMA_STATUS_NIS, DMA_STATUS_TI,
+    DMA_STATUS_TBU,
+};
+use k3_gmac::{RDES3_BUF1V, RDES3_IOC, TDES2_IOC};
+
+/// Serializes every test that drives the shared IRQ board fake (poisoning
+/// is ignored: a failed test must not fail its siblings).
+static IRQ_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn irq_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    IRQ_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+struct FakeIrqBoard {
+    /// GMAC base-relative register file (IRQ-context bare fns need a static).
+    regs: UnsafeCell<std::collections::BTreeMap<u32, u32>>,
+    writes: UnsafeCell<Vec<(u32, u32)>>,
+    publishes: std::sync::atomic::AtomicU64,
+}
+
+// SAFETY: single-threaded harness (--test-threads=1); every access goes
+// through the bare fns below.
+unsafe impl Sync for FakeIrqBoard {}
+
+impl FakeIrqBoard {
+    const fn new() -> Self {
+        FakeIrqBoard {
+            regs: UnsafeCell::new(std::collections::BTreeMap::new()),
+            writes: UnsafeCell::new(Vec::new()),
+            publishes: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        // SAFETY: single-threaded harness.
+        unsafe {
+            (*self.regs.get()).clear();
+            (*self.writes.get()).clear();
+        }
+        self.publishes.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn read(&self, off: u32) -> u32 {
+        // SAFETY: single-threaded harness.
+        unsafe { (*self.regs.get()).get(&off).copied().unwrap_or(0) }
+    }
+
+    fn write(&self, off: u32, v: u32) {
+        // SAFETY: single-threaded harness.
+        unsafe {
+            (*self.regs.get()).insert(off, v);
+            (*self.writes.get()).push((off, v));
+        }
+    }
+
+    /// Sets a register WITHOUT recording it: fixture pre-state, not a
+    /// handler-produced write.
+    fn set_quiet(&self, off: u32, v: u32) {
+        // SAFETY: single-threaded harness.
+        unsafe {
+            (*self.regs.get()).insert(off, v);
+        }
+    }
+
+    fn writes_snapshot(&self) -> Vec<(u32, u32)> {
+        // SAFETY: single-threaded harness.
+        unsafe { (*self.writes.get()).clone() }
+    }
+}
+
+static IRQ_BOARD: FakeIrqBoard = FakeIrqBoard::new();
+
+fn irq_reg_read(off: u32) -> u32 {
+    IRQ_BOARD.read(off)
+}
+
+fn irq_reg_write(off: u32, v: u32) {
+    IRQ_BOARD.write(off, v)
+}
+
+fn irq_publish_work() {
+    IRQ_BOARD.publishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+static HOST_IRQ_ACCESS: IrqAccess = IrqAccess {
+    reg_read: irq_reg_read,
+    reg_write: irq_reg_write,
+    publish_work: irq_publish_work,
+};
+
+/// Resets the IRQ board + handler state and arms the fake access with one
+/// raw STATUS value (the device's pre-ack view).
+fn arm_irq_board(status: u32) {
+    IRQ_BOARD.reset();
+    IRQ_BOARD.set_quiet(DMA_CHAN_STATUS, status);
+    k3_async_net::reset_irq_state();
+    k3_async_net::arm_irq_access(&HOST_IRQ_ACCESS);
+}
+
+fn publishes() -> u64 {
+    IRQ_BOARD.publishes.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Async-mode happy init over a fresh env (IOC mode, notify closed).
+fn init_async() -> (
+    Gmac<TestBacking>,
+    FakeEnv,
+    &'static mut [u8; ARENA_BYTES],
+) {
+    let (mut env, slice) = FakeEnv::new();
+    env.set_phy_link_1000fd();
+    let guard = ArenaGuard::new(TestBacking { arena_va: env.arena_va, arena_pa: env.arena_pa });
+    let mut g = Gmac::new_async(guard).expect("fresh arena layout must pass");
+    g.init_rx(&mut env).expect("async init");
+    g.enable_tx(&mut env);
+    (g, env, slice)
+}
+
+/// The async publish keeps IOC set and OWN last; init leaves the device
+/// notification closed (the TX IOC witness lives in the next test).
+#[test]
+fn async_ioc_bits_published_own_last() {
+    let (_g, env, arena) = init_async();
+    assert_eq!(
+        env.regs.get(&DMA_CHAN_IRQ_EN),
+        Some(&0),
+        "init establishes IOC mode with the notification closed"
+    );
+    assert_eq!(
+        desc_word(&arena, &env, 0, 3),
+        RDES3_IOC | RDES3_OWN | RDES3_BUF1V,
+        "async refill publishes the RX IOC bit with OWN as the final word"
+    );
+}
+
+#[test]
+fn async_ioc_tx_word2_and_polling_keeps_clear() {
+    let (mut g, mut env, arena) = init_async();
+    let frame = [0x11u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { slot }) => assert_eq!(slot, 0),
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    assert_eq!(
+        tx_desc_word(&arena, 0, 2),
+        60 | TDES2_IOC,
+        "async TX submit raises the completion interrupt (des2 IOC)"
+    );
+
+    // The polling constructor keeps both IOC bits clear (MS11 behavior).
+    let (mut penv, parena) = FakeEnv::new();
+    penv.set_phy_link_1000fd();
+    let guard =
+        ArenaGuard::new(TestBacking { arena_va: penv.arena_va, arena_pa: penv.arena_pa });
+    let mut p = Gmac::new(guard).expect("layout");
+    p.init_rx(&mut penv).expect("polling init");
+    p.enable_tx(&mut penv);
+    assert_eq!(
+        desc_word(&parena, &penv, 0, 3),
+        RDES3_OWN | RDES3_BUF1V,
+        "polling RX publish keeps IOC clear"
+    );
+    match p.try_submit(&mut penv, &frame) {
+        Ok(TxSubmit::Submitted { .. }) => {}
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    assert_eq!(tx_desc_word(&parena, 0, 2), 60, "polling TX submit keeps IOC clear");
+}
+
+/// Combined cause: the handler saves the full pre-ack raw, latches the fatal
+/// before the ack, suppresses the device, W1Cs exactly the observed known
+/// bits/summaries and publishes exactly one work hint.
+#[test]
+fn irq_pre_ack_raw_fatal_w1c_and_work_hint() {
+    let _irq = irq_test_guard();
+    let raw = DMA_STATUS_FBE | DMA_STATUS_RI | DMA_STATUS_TI | DMA_STATUS_NIS | DMA_STATUS_AIS;
+    arm_irq_board(raw);
+    k3_async_net::gmac133_handler();
+    assert_eq!(k3_async_net::irq_last_raw(), raw, "pre-ack raw kept whole");
+    assert!(k3_async_net::irq_fatal(), "fatal latched before the ack");
+    assert!(k3_async_net::irq_faulted());
+    assert_eq!(
+        k3_async_net::irq_counts(),
+        (1, 1, 1, 0),
+        "RI/TI/abnormal counted once each from the combined raw; no spurious"
+    );
+    let known = raw & k3_async_net::KNOWN_STATUS_MASK;
+    assert_eq!(
+        IRQ_BOARD.writes_snapshot(),
+        vec![(DMA_CHAN_IRQ_EN, 0), (DMA_CHAN_STATUS, known)],
+        "fatal suppresses the device notify, then W1Cs exactly the observed known bits"
+    );
+    assert_eq!(publishes(), 1, "the fatal publishes one work hint for the waiter");
+}
+
+/// Zero status: counted as spurious only — no W1C, no mask, no work hint.
+#[test]
+fn irq_zero_status_counts_spurious_without_work() {
+    let _irq = irq_test_guard();
+    arm_irq_board(0);
+    k3_async_net::gmac133_handler();
+    assert_eq!(k3_async_net::irq_counts(), (0, 0, 0, 1));
+    assert!(
+        IRQ_BOARD.writes_snapshot().is_empty(),
+        "zero cause never writes the device"
+    );
+    assert_eq!(publishes(), 0, "zero fabricates no work");
+    assert!(!k3_async_net::irq_faulted());
+}
+
+/// An unknown effective channel cause is a stable fault: mask the device,
+/// W1C only the known bits and publish once so the waiter sees the error.
+#[test]
+fn irq_unknown_cause_masks_and_faults() {
+    let _irq = irq_test_guard();
+    const UNKNOWN: u32 = 1 << 21;
+    let raw = DMA_STATUS_RI | DMA_STATUS_NIS | UNKNOWN;
+    arm_irq_board(raw);
+    k3_async_net::gmac133_handler();
+    assert!(k3_async_net::irq_faulted(), "unknown effective cause is a stable fault");
+    assert!(!k3_async_net::irq_fatal());
+    assert_eq!(k3_async_net::irq_last_raw(), raw);
+    let writes = IRQ_BOARD.writes_snapshot();
+    assert_eq!(
+        writes[0],
+        (DMA_CHAN_IRQ_EN, 0),
+        "unknown cause masks the device notify (storm stop)"
+    );
+    assert_eq!(
+        writes[1],
+        (DMA_CHAN_STATUS, raw & k3_async_net::KNOWN_STATUS_MASK),
+        "only the observed known bits are W1C'd; unknown bits stay observable"
+    );
+    assert_eq!(publishes(), 1, "the unknown fault publishes one work hint");
+}
+
+/// The board-adjudicated routine TX-completion shape (V4 run 2 raw `0x8405`):
+/// TI + TBU + NIS + bit10 — classified as known, no fault, and bit10 rides
+/// the W1C exactly like the named causes.
+#[test]
+fn irq_bit10_companion_is_benign() {
+    let raw = DMA_STATUS_TI | DMA_STATUS_TBU | DMA_STATUS_NIS | DMA_STATUS_BIT10;
+    arm_irq_board(raw);
+    k3_async_net::gmac133_handler();
+    assert_eq!(k3_async_net::irq_last_raw(), raw, "pre-ack raw kept whole");
+    assert!(!k3_async_net::irq_faulted(), "bit10 is a known benign companion");
+    assert_eq!(k3_async_net::irq_counts(), (0, 1, 1, 0), "TI counted, TBU counts abnormal");
+    assert_eq!(
+        IRQ_BOARD.writes_snapshot(),
+        vec![(DMA_CHAN_STATUS, raw)],
+        "no suppress; the W1C covers the observed known bits including bit10"
+    );
+    assert_eq!(publishes(), 1);
+}
+
+/// The IRQ context touches only the GMAC register window: the arena stays
+/// byte-identical across a handler run and every write targets a known
+/// register (no descriptor, cache, lock or console surface exists on the
+/// IRQ access table).
+#[test]
+fn irq_handler_touches_only_gmac_registers() {
+    let _irq = irq_test_guard();
+    arm_irq_board(DMA_STATUS_TI | DMA_STATUS_NIS);
+    let (_env, arena) = FakeEnv::new();
+    k3_async_net::gmac133_handler();
+    assert!(
+        arena.iter().all(|&b| b == 0),
+        "the handler never touches descriptor or buffer memory"
+    );
+    let offs: Vec<u32> = IRQ_BOARD.writes_snapshot().iter().map(|(o, _)| *o).collect();
+    assert!(
+        offs.iter().all(|o| *o == DMA_CHAN_IRQ_EN || *o == DMA_CHAN_STATUS),
+        "handler writes target only IRQ_EN/STATUS: {offs:?}"
+    );
+    assert_eq!(publishes(), 1);
+}
+
+/// The pre-ack fatal latch folds into the driver: after the ack cleared the
+/// STATUS word, every later poll/query still reports the fault, no new
+/// submit is accepted, the bounded stop masks the notify and the published
+/// backing stays retained.
+#[test]
+fn fatal_after_ack_queries_error_and_submit_refused() {
+    let _irq = irq_test_guard();
+    arm_irq_board(DMA_STATUS_FBE | DMA_STATUS_NIS | DMA_STATUS_AIS);
+    k3_async_net::gmac133_handler();
+    let (mut g, mut env, _arena) = init_async();
+    g.arm_notify(&mut env, true);
+    assert_eq!(
+        env.regs.get(&DMA_CHAN_IRQ_EN),
+        Some(&DMA_IRQ_EN_DEFAULT),
+        "the both-direction arm word is 0xD041"
+    );
+    let frame = [0x22u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { .. }) => {}
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    // Fold the pre-ack fatal latch into the driver (the session's step).
+    g.latch_fault(&mut env, k3_async_net::irq_last_raw());
+    let mut scratch = [0u8; 1514];
+    assert!(matches!(
+        g.poll_rx(&mut env, &mut scratch),
+        Err(GmacError::Fault { .. })
+    ));
+    assert!(matches!(g.poll_tx(&mut env), Err(GmacError::Fault { .. })));
+    assert!(matches!(g.check_completions(&mut env), Err(GmacError::Fault { .. })));
+    assert!(matches!(
+        g.try_submit(&mut env, &frame),
+        Err(TxSubmitError::Driver(GmacError::Fault { .. }))
+    ));
+    assert_eq!(
+        env.regs.get(&DMA_CHAN_IRQ_EN),
+        Some(&0),
+        "the folded fault runs the bounded stop (notify masked)"
+    );
+    assert!(g.is_published(), "the faulted owner retains the published backing");
+}
+
+/// The read-only arm-recheck: descriptor work before, during and after the
+/// arm is caught without reclaiming or advancing a head; an empty TX
+/// direction (unused OWN=0 slots) never reports work.
+#[test]
+fn async_check_completions_windows_no_false_work() {
+    let (mut g, mut env, mut arena) = init_async();
+
+    // Quiescent after init: nothing ready.
+    let hint = g.check_completions(&mut env).expect("quiescent check");
+    assert!(!hint.rx_ready && !hint.tx_ready);
+
+    // Before-arm window: the completion already landed on RX head slot 0.
+    hw_complete(&mut arena, 0, 70, &[0x5Au8; 66]);
+    let hint = g.check_completions(&mut env).expect("rx-ready check");
+    assert!(hint.rx_ready && !hint.tx_ready, "before-arm completion is work, not sleep");
+
+    // Reclaim it through the owner path; the head advances (read-only check
+    // never advances anything itself).
+    let mut scratch = [0u8; 1514];
+    match g.poll_rx(&mut env, &mut scratch).expect("reclaim") {
+        RxPoll::Frame { len, .. } => assert_eq!(len, 66),
+        other => panic!("expected Frame, got {other:?}"),
+    }
+    let hint = g.check_completions(&mut env).expect("quiescent again");
+    assert!(!hint.rx_ready && !hint.tx_ready);
+
+    // Empty TX: every unused slot reads OWN=0, but with no live owner that
+    // is not a completion.
+    let hint = g.check_completions(&mut env).expect("empty-tx check");
+    assert!(!hint.tx_ready, "no live TX owner: unused OWN=0 is not work");
+
+    // TX submit → pending (OWN set, live owner) → device completes it →
+    // during/after-arm window reports tx work.
+    let frame = [0x33u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { slot }) => assert_eq!(slot, 0),
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    let hint = g.check_completions(&mut env).expect("tx pending check");
+    assert!(!hint.tx_ready, "an in-flight descriptor is pending, not work");
+    set_tx_desc_word(&mut arena, 0, 3, k3_gmac::TDES3_FD | k3_gmac::TDES3_LD | 60);
+    let hint = g.check_completions(&mut env).expect("tx-ready check");
+    assert!(hint.tx_ready, "the completed TX head with a live owner is work");
+    // Ring wrap: the RX head wrapped past slot 15 keeps reporting only real
+    // completions (slot 1 is still device-owned here).
+    let hint = g.check_completions(&mut env).expect("wrap check");
+    assert!(!hint.rx_ready, "device-owned head after wrap is idle, not work");
+}
+
+/// The pure wait decision: fault first, then descriptor work, then the
+/// event generation observed since the caller's snapshot (the window that
+/// closes event-before/during/after-arm and the pre-Pending publish).
+#[test]
+fn raw_wait_decision_prefers_fault_then_descriptors_then_events() {
+    use k3_async_net::{raw_wait_decision, RawWaitDecision};
+    let _irq = irq_test_guard();
+
+    assert_eq!(raw_wait_decision(true, 0, false, false), RawWaitDecision::Fault);
+    assert_eq!(raw_wait_decision(false, 0, true, false), RawWaitDecision::Work);
+    assert_eq!(raw_wait_decision(false, 0, false, true), RawWaitDecision::Work);
+    // Sleep requires a FRESH generation snapshot: the decision reads the
+    // global counter, so the quiescent case compares against it directly.
+    let baseline = k3_async_net::irq_work_gen();
+    assert_eq!(
+        raw_wait_decision(false, baseline, false, false),
+        RawWaitDecision::Sleep,
+        "nothing new since a fresh snapshot: the waiter may pend"
+    );
+    assert_eq!(
+        raw_wait_decision(false, baseline.wrapping_sub(1), false, false),
+        RawWaitDecision::Work,
+        "a stale snapshot with a moved generation reports work"
+    );
+
+    // Event published while the descriptor surface stayed quiet: a stale
+    // generation snapshot reports work, a fresh one sleeps.
+    arm_irq_board(DMA_STATUS_TI | DMA_STATUS_NIS);
+    k3_async_net::gmac133_handler();
+    let work_gen = k3_async_net::irq_work_gen();
+    assert_eq!(work_gen, 1);
+    assert_eq!(
+        raw_wait_decision(false, work_gen - 1, false, false),
+        RawWaitDecision::Work,
+        "event-before-register window closes through the generation recheck"
+    );
+    assert_eq!(
+        raw_wait_decision(false, work_gen, false, false),
+        RawWaitDecision::Sleep,
+        "nothing new since the snapshot: the waiter may pend"
+    );
+}

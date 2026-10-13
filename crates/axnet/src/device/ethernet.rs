@@ -743,6 +743,28 @@ impl Device for EthernetDevice {
         Ok(())
     }
 
+    #[cfg(feature = "queue-diagnostics")]
+    fn diagnostic_enqueue_complete_frame(
+        &mut self,
+        dst: [u8; 6],
+        ethertype: u16,
+        payload: &[u8],
+    ) -> DevResult {
+        // The same complete-frame slot enqueue the dormant `send` path uses:
+        // preflight, one checked ticket, one slot fill. Nothing else.
+        match self.emit_frame(
+            EthernetAddress(dst),
+            payload.len(),
+            |buf| buf.copy_from_slice(payload),
+            EthernetProtocol::Unknown(ethertype.into()),
+        ) {
+            TxOutcome::Accepted { .. } => Ok(()),
+            TxOutcome::Full => Err(DevError::Again),
+            TxOutcome::Dropped(_) => Err(DevError::InvalidParam),
+            TxOutcome::Fault(err) => Err(err),
+        }
+    }
+
     fn rx_copy_one(&mut self) -> RxCopyStep {
         // A full RX slot never reaps a raw completion: no frame is dropped.
         if self.rx_slots.is_full() {

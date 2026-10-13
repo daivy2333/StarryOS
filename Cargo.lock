@@ -3130,6 +3130,7 @@ dependencies = [
  "axdisplay",
  "axdriver",
  "axdriver_block",
+ "axdriver_net",
  "axerrno 0.2.2",
  "axfeat",
  "axfs-ng",

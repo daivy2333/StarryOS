@@ -204,18 +204,18 @@ pub struct Service {
     /// Service-owned QEMU diagnostic lease (D9): the committed hold mode.
     /// `HOLD_NONE` means no hold. Only the `qemu-diagnostics` feature build
     /// carries this state; ordinary axnet and D1 expose no control entry.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     diag_hold_mode: u64,
     /// Service-owned lease expiry deadline in wall nanoseconds (0 = no hold).
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     diag_lease_expiry_nanos: u64,
     /// Service-owned count of lease-expiry auto-releases (saturating,
     /// monotonic telemetry; not a synchronization primitive).
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     diag_auto_release_failure: u64,
     /// Task 5.2 (Iteration 006): per-test fixture clock. `diag_hold_tick`
     /// reads this when attached; production never sets it (wall clock).
-    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    #[cfg(all(test, feature = "queue-diagnostics"))]
     diag_test_clock: Option<crate::diag::DiagTestClock>,
     /// Test-only local listener table so a full-chain witness can run
     /// `stack_round` against a caller-owned `ListenTable` whose hidden
@@ -276,13 +276,13 @@ impl Service {
             flush_error: 0,
             flush_busy: 0,
             flush_cancel: 0,
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             diag_hold_mode: crate::diag::HOLD_NONE,
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             diag_lease_expiry_nanos: 0,
-            #[cfg(feature = "qemu-diagnostics")]
+            #[cfg(feature = "queue-diagnostics")]
             diag_auto_release_failure: 0,
-            #[cfg(all(test, feature = "qemu-diagnostics"))]
+            #[cfg(all(test, feature = "queue-diagnostics"))]
             diag_test_clock: None,
             #[cfg(test)]
             listen_table: &*crate::LISTEN_TABLE,
@@ -344,7 +344,7 @@ impl Service {
     /// Task 5.2 (Iteration 006): attaches a per-test fixture clock so this
     /// Service's lease deadline reads the fixture's time instead of the
     /// process-global `diag::diag_now()`. Test-only; production never sets it.
-    #[cfg(all(test, feature = "qemu-diagnostics"))]
+    #[cfg(all(test, feature = "queue-diagnostics"))]
     pub(crate) fn attach_test_clock(&mut self, clock: crate::diag::DiagTestClock) {
         self.diag_test_clock = Some(clock);
     }
@@ -676,6 +676,23 @@ impl Service {
 
     fn target_index(&self) -> DevResult<usize> {
         self.target_dev.ok_or(DevError::BadState)
+    }
+
+    /// Diagnostic minimal complete-frame enqueue on the stored target (MS12
+    /// Iteration 001 T5): one frame through the device's own checked-ticket
+    /// slot path, then the slot and driver ledgers read under this same
+    /// guard. Never injects a ticket, never touches a descriptor, never
+    /// fabricates a completion. The caller nudges the owner after dropping
+    /// the guard.
+    #[cfg(feature = "queue-diagnostics")]
+    pub(crate) fn diagnostic_enqueue_target(
+        &mut self,
+        dst: [u8; 6],
+        ethertype: u16,
+        payload: &[u8],
+    ) -> DevResult {
+        let dev = self.target_index()?;
+        self.router.devices[dev].diagnostic_enqueue_complete_frame(dst, ethertype, payload)
     }
 
     /// All-or-nothing bidirectional activation of the stored target (Task
@@ -1380,7 +1397,7 @@ impl Service {
     /// incremented exactly once; no lease generation exists, so no identity
     /// can exhaust and no reachable Hold is ever permanent. The timer is
     /// wake-only, so the queue task's own wake drives this round.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     pub(crate) fn diag_hold_tick(&mut self) -> u64 {
         if self.diag_hold_mode != crate::diag::HOLD_NONE
             && self.diag_lease_expiry_nanos != 0
@@ -1395,7 +1412,7 @@ impl Service {
 
     /// The clock used for lease-deadline decisions: the attached per-test
     /// fixture clock when present, else `diag::diag_now()`.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     pub(crate) fn diag_now(&self) -> u64 {
         #[cfg(test)]
         {
@@ -1413,7 +1430,7 @@ impl Service {
     /// `InvalidParam` and leaves the committed lease untouched. The caller
     /// publishes queue work exactly once after dropping the guard; Busy and
     /// error paths publish none.
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     pub(crate) fn diag_control(&mut self, op: u64, lease_ms: u64, now_nanos: u64) -> DevResult {
         let (mode, expiry) = match op {
             crate::diag::OP_HOLD_TX_SUBMIT | crate::diag::OP_HOLD_TX_RECLAIM
@@ -1439,19 +1456,19 @@ impl Service {
     }
 
     /// Committed diagnostic hold mode (C1/C5: one committed Service state).
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     pub(crate) fn diag_hold_mode(&self) -> u64 {
         self.diag_hold_mode
     }
 
     /// Committed lease expiry deadline in wall nanoseconds (0 = no hold).
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     pub(crate) fn diag_lease_expiry(&self) -> u64 {
         self.diag_lease_expiry_nanos
     }
 
     /// Committed auto-release failure counter (saturating, monotonic).
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     pub(crate) fn diag_auto_release_failure(&self) -> u64 {
         self.diag_auto_release_failure
     }
@@ -2439,7 +2456,7 @@ mod tests {
 
     // ── Iteration 008: Service-owned QEMU diagnostic lease (C1-C6) ─────
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     mod diag {
         use axdriver::prelude::DevError;
 

@@ -159,9 +159,19 @@ pub unsafe fn run_first_byte_park() -> ! {
         // before the pad ack and the foreground prints claim lines. The
         // kernel never judges PASS (task 2.3 adjudicates from this wire).
         let st10 = super::k3_device_irq_probe::run_k3_stage10(|line| console.write_str(line));
-        let st11 = super::k3_network_probe::run_k3_stage11(st10, |line| console.write_str(line));
-        let st12 = super::k3_network_probe::run_k3_stage12(st11, |line| console.write_str(line));
-        super::k3_network_probe::run_k3_stage13(st12, |line| console.write_str(line));
+        // MS12 Iteration 001 (T4): the async-net mode installs the K3
+        // adapter as the only NIC and starts the single queue owner (design
+        // D4); it parks internally. The raw IRQ session stays the
+        // diagnostic-only path and the polling stages 11–13 stay compiled
+        // but are never entered.
+        #[cfg(feature = "k3-async-net")]
+        super::k3_async_net::run_k3_async_net_service(st10, |line| console.write_str(line));
+        #[cfg(not(feature = "k3-async-net"))]
+        {
+            let st11 = super::k3_network_probe::run_k3_stage11(st10, |line| console.write_str(line));
+            let st12 = super::k3_network_probe::run_k3_stage12(st11, |line| console.write_str(line));
+            super::k3_network_probe::run_k3_stage13(st12, |line| console.write_str(line));
+        }
     }
     park();
 }

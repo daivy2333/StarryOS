@@ -180,14 +180,16 @@ PASS：技术调查、契约、追踪与验证计划已闭合；2026-10-06用户
 
 ## Plan Review
 
-- Review Result: pending
+2026-10-08 恢复规划审查：尚未实施，不作实现验收。偏差分类为基线变化与新证据：MS17 已交付并验收 timer/AIA/critical-section、UART 和 shell；原 T1 的 timer 新增契约已不适用于当前代码。普通 axnet cfg 缺陷、GMAC 真实 DMA IRQ 与后续 queue/stack/socket 目标仍未实施。
 
-未进入实施Review；没有后继Cycle/Iteration产物。
+独立读取实际代码及 MS17/MS18 accepted 结果后，采信覆盖未变化的验证；修订 T1、网络启动隔离及 T2 故障可观察性，R1–R7/S1–S20、七项任务和三轮 Map 保持完整。旧 Plan Context 与 Act Response 保留，不将本次调查计为 Acceptance 完成。新的执行契约写入同一 Iteration 的后继 replan Cycle，尚待用户审计批准。
 
 **Next Cycle**
 
-None。
+[001-replan](001-replan.md)，Plan Context=draft、Act Response=pending、Plan Review=pending；本变更仍为 0/7 项实施任务完成。
 
 **Next Iteration**
 
-None；001只在Map，待本轮accepted后由Plan展开。
+None；Map 中 Iteration 001 仍须等待本 Iteration 的最终 Review accepted 后展开。
+
+- Review Result: replan-required

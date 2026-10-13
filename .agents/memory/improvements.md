@@ -222,6 +222,27 @@ I18 在触发条件满足前 MUST 只记录观察与候选方向，不得预先�
 - **THEN** SHOULD 将所需方向提升为独立 change，并将对应已承诺范围标为 promoted
 - **AND** MUST 保持网卡、UART 和组合稳定性验收结果，不以性能收益代替正确性
 
+### Requirement: I20 — K3 shell 用户态网络工具接通
+
+在 K3 的 shell 环境中接通用户态网络工具（ping/wget 等），使"shell 能用 + 网络能用"形成完整可用的交付形态：用户在 shell 提示符下直接操作网络，而非仅经内核侧载荷验证。
+
+**来源**: 2026-10-12 用户方向，原话："shell 里敲 ping/wget 等用户态网络工具这个我们也要做，而且到时候shell能用，网络能用，做了这个才是正常的"
+**状态**: 待评估，未承诺
+**触发条件**: 真板异步网络（MS12/MS13）与 shell 环境均已验收可用，且用户批准提升为独立 change。
+**关联**: MS12 变更明确将其列为范围外（"本变更不增加shell命令、rootfs、用户态网络工具或新的里程碑"），故本方向当前未承诺；MS18 RAM rootfs（动态 BusyBox 载体）；I19 性能优化（正交，互不前置）。
+
+- **基础面**: MS12 交付真板异步数据面 + stack runner + SocketOps/poll readiness；socket syscall/VFS/进程加载沿用 QEMU 已验证实现，K3 用户态 spawn 已由 MS17/MS18 接通。缺口仅在用户态网络工具与其接通（工具选型/编译进 rootfs、可能的 syscall 缺口补齐）。
+- **方向**: 在 RAM rootfs 的 BusyBox（或等价用户态）中接通 ping/wget/nc 等网络工具，经内核 socket 契约使用 MS12+ 异步网络栈，不绕过内核数据面。
+- **通过条件**: shell 提示符下实际执行网络工具并与真板异步网络栈完成交换（如 ping、wget 经由数据面收发），有直接板测见证。
+- **边界**: 不改变 MS12→MS13→MS14 的验收范围与顺序；工具接通不作为 MS14 完成门槛；实施走独立 change 的 BDD/RTM/板测流程。
+
+#### Scenario: 网络与 shell 验收后评估接通
+
+- **WHEN** 真板异步网络与 shell 环境均已验收可用
+- **AND** 用户批准将该方向提升为独立 change
+- **THEN** SHOULD 启动 Plan 评估工具清单、syscall 缺口与 rootfs 集成方式
+- **AND** MUST NOT 把工具接通混入 MS12–MS14 当前验收范围
+
 <!-- arc: ARC-202607251326 --> 4 条目已归档 (I07-I10, 2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 
 <!-- arc: cleanup-uart-documentation-system --> I12 (UART benchmark measurement) archived 2026-07-25. Universal measurement rules migrated to quality-gate-baseline/spec.md:Benchmark measurement methodology.

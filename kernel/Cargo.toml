@@ -16,6 +16,26 @@ k3 = ["dep:axplat-riscv64-k3", "k3-polling-net"]
 # for the raw PXA port only. Platform features (`runtime-irq`, `uart-irq`)
 # are selected at the root crate level.
 k3-async-uart = ["k3"]
+# MS12 Iteration 000 (001-replan): K3 async GMAC data-plane mode — opens the
+# axdriver net/dyn edge and axnet over the polling `k3` tree. The dyn
+# registry's PCI probe callback references the axklib mem_iomap extern; the
+# `k3_klib` module provides the K3-limited Unsupported ABI (paging/plat-dyn/
+# auto-probe stay off, and GMAC never uses dynamic iomap). The `drivers`
+# tree (UART raw/copier/tty) stays excluded: `k3-async-uart` is never
+# selected.
+k3-async-net = [
+    "k3",
+    "dep:axdriver",
+    "axdriver/dyn",
+    "axdriver/net",
+    "dep:axdriver_net",
+    "dep:axnet",
+]
+# MS12 Iteration 001 (task T5): diagnostics probe shape — the Service data
+# plane plus the queue-diagnostics control surface and the capacity/flush
+# payload. Selected only by `make k3-async-probe`; the plain async build
+# never contains a control entry.
+k3-net-diagnostics = ["k3-async-net", "axnet/queue-diagnostics"]
 # MS17 Iteration 000: raw UART port qualification build (`make k3-uart-port`).
 k3-uart-port-test = ["k3-async-uart"]
 # MS17 Iteration 001: K3 async UART data-plane mode — opens uart_init/
@@ -110,6 +130,11 @@ axnet = { workspace = true, optional = true }
 axruntime.workspace = true
 axsync.workspace = true
 axtask.workspace = true
+
+# MS12 Iteration 001 (task T3): the NetDriver trait contracts the K3 GMAC
+# adapter implements. Version unifies with axdriver's own edge; the root
+# patch table redirects it to the workspace-local copy.
+axdriver_net = { version = "0.1.4-preview.3", optional = true }
 
 # K3 AIA observation seam for the stage 9 probe (MS10 task 1.3): the kernel
 # reads the production chip's dispatch diagnostics through this dependency.

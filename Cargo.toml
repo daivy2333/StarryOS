@@ -12,6 +12,7 @@ exclude = [
     "crates/virtio-drivers",
     "tests/k3-polling-net-host",
     "tests/k3-embedded-user-host",
+    "tests/k3-async-net-host",
 ]
 
 [workspace.package]
@@ -148,6 +149,22 @@ k3-async-uart = [
     "axplat-riscv64-k3/runtime-irq",
     "axplat-riscv64-k3/uart-irq",
     "starry-kernel/k3-async-uart",
+]
+
+# MS12 Iteration 000 (001-replan): K3 async GMAC data-plane mode (`make
+# k3-async`) — implies the polling `k3` shape and enables the platform runtime
+# timer slot (`runtime-irq`); the opt-in UART42 route stays off. The kernel
+# opens the axdriver net/dyn edge and axnet; the dyn PCI probe callback is
+# never invoked (the K3-limited `k3_klib` seam only satisfies the link).
+# Single-hart only; mutually exclusive with every UART-mode shape.
+k3-net-diagnostics = [
+    "k3-async-net",
+    "starry-kernel/k3-net-diagnostics",
+]
+k3-async-net = [
+    "k3",
+    "axplat-riscv64-k3/runtime-irq",
+    "starry-kernel/k3-async-net",
 ]
 
 # MS17 Iteration 000: the raw UART port qualification build (`make

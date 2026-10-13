@@ -120,6 +120,34 @@ pub const DMA_STATUS_RI: u32 = 1 << 6;
 pub const DMA_STATUS_TI: u32 = 1 << 0;
 /// Fatal bus error (fault).
 pub const DMA_STATUS_FBE: u32 = 1 << 12;
+/// Normal interrupt summary (RI/TI aggregate; MS12 async arm word includes it).
+pub const DMA_STATUS_NIS: u32 = 1 << 15;
+/// Abnormal interrupt summary (RBU/TBU/FBE aggregate; MS12 async arm word
+/// includes it).
+pub const DMA_STATUS_AIS: u32 = 1 << 14;
+/// Channel status bit 10 (DWMAC 5.10a, this board): observed set alongside
+/// TI/TBU/NIS on a routine first TX completion (board raw `0x8405`, MS12 V4
+/// run 2) with no AIS/FBE. The same-board reference (R69) writes back the
+/// whole status word and classifies only the seven named causes, i.e. it
+/// treats every other bit — this one included — as benign. No semantic name
+/// is asserted; the bit is registered as known-and-benign by position.
+pub const DMA_STATUS_BIT10: u32 = 1 << 10;
+
+/// Per-channel interrupt enable bits (MS12 async arm word, R69 same-board
+/// reference: the ordinary completion mask is `0xD041` — NIS/AIS summaries,
+/// FBE fatal and the RI/TI completion causes).
+pub const DMA_IRQ_EN_NIS: u32 = 1 << 15;
+pub const DMA_IRQ_EN_AIS: u32 = 1 << 14;
+pub const DMA_IRQ_EN_FBE: u32 = 1 << 12;
+pub const DMA_IRQ_EN_RI: u32 = 1 << 6;
+pub const DMA_IRQ_EN_TI: u32 = 1 << 0;
+/// Both-direction completion arm word (`0xD041`). Direction selection only
+/// changes the completion bit (TI), never the summaries or FBE.
+pub const DMA_IRQ_EN_DEFAULT: u32 =
+    DMA_IRQ_EN_NIS | DMA_IRQ_EN_AIS | DMA_IRQ_EN_FBE | DMA_IRQ_EN_RI | DMA_IRQ_EN_TI;
+/// RX-only completion arm word (TI dropped).
+pub const DMA_IRQ_EN_RX_ONLY: u32 =
+    DMA_IRQ_EN_NIS | DMA_IRQ_EN_AIS | DMA_IRQ_EN_FBE | DMA_IRQ_EN_RI;
 
 // ---------------------------------------------------------------------------
 // APMU (board glue base-relative fact, R69: `apmu + 0x3f0`)

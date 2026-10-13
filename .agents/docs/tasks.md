@@ -26,8 +26,8 @@ NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任
 | <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ✅ 完成（MS11；checked 18 页独占 arena、线性 PA/DMA、Zicbom 发布/回收序、高位地址与 4 GiB 环检查，host harness 全绿 + 板测成立） |
 | <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ✅ 完成（MS11；16 slot RX publish/reap/refill/wrap、分类 drop、stage11 真实 ARP RX 与 link-down 有界失败） |
 | <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ✅ 完成（MS11；单次回收 terminal、Full 不覆盖、001-rework doorbell 排他语义修复、stage12 20/20 terminal + 真实 ARP reply） |
-| <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | 待执行（MS12 计划已批准，首轮 Cycle ready；当前轮先完成 IRQ/timer 接缝） |
-| <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ⏳ 等待 T20 |
+| <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | ✅ 完成（MS12；k3-async 双镜像、真实 RI/TI→deferred owner、V4 run3 20 ARP TX 零丢、IoC/owner/slot 契约全过） |
+| <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ✅ 完成（MS12；NetDriver adapter+唯一 owner+64/16 容量+C4 flush，V3 run3 板测全项；真板四协议与 quiet 见 T22 前置 MS12 收口） |
 | <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ⏳ 等待 T21 |
 | <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ⏳ 等待 MS13（MS17 已于 2026-10-08 验收） |
 | <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ⏳ 等待 T23 |
@@ -179,7 +179,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 
 ### MS12：目标后端异步双向数据面
 
-- Status: active — 2026-10-06 计划获批，首轮 Cycle ready；实施未开始
+- Status: completed — 2026-10-13；用户审计接受（原话"工作被接受"）。交付结论限于 CoM260 Kit 单 hart：k3-async/k3-async-probe 独立入口（SMP>1 与 shell 组合拒绝）、GMAC source-133 IOC 底座（arm/recheck/deferred owner，V4 run3 20 ARP TX 真实 RI/TI 零丢）、K3NetAdapter 接入既有 NetDriverOps/queue/stack 契约（64 slot/16 desc 账本、C4 flush、Pending→release→C4，V3 run3 板测全项）、stack runner+socket 载荷（UDP 26001/TCP 26002 echo、主动关闭 EOF）与真板四协议（两轮 ping 10/10、UDP/TCP 全字节、quiet 经沉降相 2 s 逐字节冻结直证、resume 行按用户裁决豁免、SETTLE 修复在案）；host stack_socket 15/15、axnet 三面 482/506/514 采信未变。结论不含真板 reset/link-flap 恢复、DMA quiesce 证明、多 hart 与性能（MS13/MS14/I19 范围）。
 - Outcome: 已验证的 QEMU queue/stack 契约适配到目标控制器异步 RX/TX。
 - Rationale: T20-T21 共享同一真板 IRQ、DMA 和队列适配边界，合并后形成双向 transport parity。
 - Dependencies: MS11
@@ -190,7 +190,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 - Verification boundary: RX/TX burst、queue full、drop、occupancy 和 flush 均可观测。
 - Diagnostic boundary: 失败限制在目标 transport 适配、真板 IRQ/DMA 或既有异步契约回归。
 - Split signals: RX 与 TX 依赖不同硬件能力，且任一方向可独立成为后续稳定前置。
-- Related changes: `ms12-com260-kit-async-bidirectional-data-plane`（7 项任务、3 个 Iteration；当前 `iterations/000-initial/000-initial.md` ready，Act/Review pending）
+- Related changes: `ms12-com260-kit-async-bidirectional-data-plane`（已归档于 `openspec/changes/archive/2026-10-13-ms12-com260-kit-async-bidirectional-data-plane/`；Iteration 000/001/002 全部 accepted，T1–T7 闭合；行为规格已合并为 `openspec/specs/k3-com260-kit-async-network-data-plane/`）
 
 ### MS13：目标板单 CPU/hart 恢复语义
 
@@ -274,6 +274,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-`ms12-com260-kit-async-bidirectional-data-plane`：需求、设计、三轮 Map 与首轮 Cycle 已于 2026-10-06 获批；首轮 ready 状态保留，恢复执行前由 Plan 消费 MS17 已 accepted 的共用底座结果并复核执行契约（交接指针已写入其 README/design/tasks）。全量状态以该 change 产物为准。
+当前无活跃 change（MS12 已于 2026-10-13 完成并归档）。
 
-当前优先顺序为 MS12→MS13→MS14；MS17 串口单 hart 基线与 MS18 RAM rootfs 普通 shell 基线均已于 2026-10-08 完成并归档，MS14 剩余前置为 MS12→MS13 网络恢复基线。MS11、MS17、MS18 详情保留在各自条目。
+当前优先顺序为 MS13→MS14；MS12 网卡单 hart 异步双向数据面与 MS17 串口单 hart 基线均已完成，MS14 剩余前置为 MS13 真板恢复语义基线。MS11、MS12、MS17、MS18 详情保留在各自条目。

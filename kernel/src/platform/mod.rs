@@ -47,6 +47,16 @@ pub mod k3_gmac;
 #[cfg(feature = "k3")]
 pub mod k3_network_probe;
 
+/// MS12 Iteration 000: the K3-limited axklib link seam for the axdriver dyn
+/// registry (fail-closed `mem_iomap`); compiled only for the async-net mode.
+#[cfg(feature = "k3-async-net")]
+pub mod k3_klib;
+
+/// K3 async GMAC raw data plane (MS12 Iteration 000, task T2): the
+/// host-testable source-133 ISR core and the deferred-owner raw session.
+#[cfg(feature = "k3-async-net")]
+pub mod k3_async_net;
+
 #[cfg(all(
     feature = "qemu",
     any(feature = "lichee-d1", feature = "lichee-d1-async-uart")
