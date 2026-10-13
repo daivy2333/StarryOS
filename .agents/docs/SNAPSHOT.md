@@ -1,8 +1,8 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-10-08
-> Revision: `14b26d3e`
+> Updated: 2026-10-13
+> Revision: `5f977f1e`
 > Branch: `k3`
 > Worktree: clean
 
@@ -31,8 +31,8 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 | `crates/uart_16550/` | 本地 UART 驱动实现 |
 | `crates/axfs-ng/` | 本地文件系统组件 |
 | `crates/axplat-riscv64-lichee-d1/` | Lichee RV Dock D1 平台组件 |
-| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09+MS10+MS11+MS17 交付：板级基线 + AIA 中断底座 + GMAC DMA 地址/cache 基础 + runtime timer/UART42 IRQ 路由；MS18 交付：RAM rootfs 承载窗预留/校验 `ram_layout`） |
-| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、MS10 AIA/设备 IRQ 探针 host harness、MS11 GMAC 轮询驱动 host harness 与 k3-polling-net-host Cargo 测试包、MS17 内嵌 stdio/shell 载荷（`k3_stdio_probe.c`、`k3-shell.c`、`k3_shell_test.c`）与 k3-embedded-user-host Cargo 测试包、MS18 RAM-rootfs 布局契约测试（同包 `ram_rootfs.rs`）与 `tools/starry-k3-rootfs.its`、host serial/peer harness 与纯输出 validator |
+| `crates/axplat-riscv64-k3/` | SpacemiT K3（CoM260 Kit）平台组件（MS09+MS10+MS11+MS17 交付：板级基线 + AIA 中断底座 + GMAC DMA 地址/cache 基础 + runtime timer/UART42 IRQ 路由；MS18 交付：RAM rootfs 承载窗预留/校验 `ram_layout`；MS12 交付：`k3-async-net`/`k3-async-probe` 独立入口与 GMAC source-133 IOC 异步底座） |
+| `tests/`、`kernel/tests/`、`scripts/` | 用户态与内核侧测试载荷、MS08 SMP guest probe、MS09 板上采集程序与 MAC/PHY 探针 host harness、MS10 AIA/设备 IRQ 探针 host harness、MS11 GMAC 轮询驱动 host harness 与 k3-polling-net-host Cargo 测试包、MS17 内嵌 stdio/shell 载荷（`k3_stdio_probe.c`、`k3-shell.c`、`k3_shell_test.c`）与 k3-embedded-user-host Cargo 测试包、MS18 RAM-rootfs 布局契约测试（同包 `ram_rootfs.rs`）与 `tools/starry-k3-rootfs.its`、MS12 `k3-async-net-host` 生产 adapter/Service/stack-socket host 测试包、host serial/peer harness 与纯输出 validator |
 | `openspec/`、`.agents/` | 规范、变更、项目记忆、分析和操作文档 |
 
 ## 支持范围与交付形态
@@ -78,12 +78,13 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 - 根 Cargo features 提供 `qemu`、`lichee-d1`、`lichee-d1-async`、`vf2`、`k3` 与 `smp` 等产品组装入口。
 - SpacemiT K3 的单 hart 异步串口与交互 shell 基线（MS17）已交付：`k3-async-uart`/`k3-uart-port`/`k3-uart`/`k3-stdio`/`k3-shell` 模式族（互斥、SMP>1 构建拒绝）沿 R68 RAM/FIT 启动；runtime timer（独立 handler 槽、set_timer(0) 首 tick、与 UART42 隔离）与 PXA UART port（115200 8N1、三步 FCR+PXAR8 触发线、Errata20 序、唯一 owner 激活）接入既有 copier/ring/tty/用户态契约——64KiB rings、check-register-arm-recheck、四条件物理 drain（末字节 TEMT 由 native 1 ms timer hook 推进）、tty canonical（空格/tab、ERASE/KILL、1024B 行界整行 discard、EOF 0-read）与内存根内嵌静态 ELF 用户态（stdio、失败分层未发布）；最小交互 shell（help/echo/sleep/exit、异常输入恢复）B7 板测两轮全场景通过（含 SIGINT 对照与 R68 复位）。本板裁决事实：FCR 触发 00 无 RX 中断推进（须 PXAR8）、APLIC SETIPNUM 对输入已 deassert 的 LevelHigh 源不生效、PXA IIR 对 IER 已掩码 cause 照报且 ISR 以 8-cause 预算收尾、`task.join()` 对 exit_group 恒 0（真实码在 process 层）、VERASE 默认 0x7f 与 Linux 默认一致。结论不含 GMAC 异步数据面（MS12/MS13）、多 hart（MS14）、存储/rootfs（MS18）与性能优化（I19）。
 - SpacemiT K3 的 RAM rootfs 普通 shell 基线（MS18 RAM 部分）已交付：`k3-rootfs` 单 hart 模式按 D1-r1 预留布局（rootfs 承载窗 `[0x240000000,0x250000000)`、DTB 窗 `[0x2ef000000,0x2ef100000)`，post-kernel FREE 区连续性由 host 布局不变量长期承载）从临时加载的 ext4 RAM 镜像挂载根文件系统，经普通 loader 启动动态 BusyBox `/bin/sh`（musl 解释器）并执行文件系统外部命令；启动依赖缺失按层报告无 fallback（range 层板上见证，resolve/load 层 host 契约见证）、命令错误报告与前台 Ctrl-C 取消恢复板测观察、外部 RESET 回官方 Linux 用户实测；k3-rootfs 与 k3-stdio/k3-shell/raw-port 互斥、SMP>1 拒绝、独立 FIT（`StarryOS_riscv64-k3-rootfs.fit`）。本板裁决事实：axruntime 页分配器主区取 `.bss` 后首个 FREE 区，预留窗不得落于该区间（MS18 OOM 根因，host 不变量承载）；U-Boot 在新 DTB 窗装载/就地改写无异常。脚本/管道/重定向、易失写入对照、空闲编辑与 exit 收尾未取得正式见证（用户裁决取消 Iteration 002）；不含真实块设备存储（原 MS18 剩余范围）、GMAC 数据面、多 hart 与性能优化。
+- SpacemiT K3 的单 hart 异步双向网络数据面（MS12）已交付：`k3-async-net`/`k3-async-probe` 独立入口（SMP>1 与 shell 组合拒绝）、GMAC source-133 IOC 底座（注册/重臂/重查协议、deferred owner、fatal latch；V4 run3 真板 20 ARP TX 真实 RI/TI 零丢、外部 RESET 回原系统）、`K3NetAdapter` 接入既有 NetDriverOps/queue/stack 契约（唯一 owner、64 slot/16 descriptor 账本、两级 Full→恢复、C4 flush Pending→release→C4，V3 run3 板测全项）、stack runner + socket 载荷（UDP 26001/TCP 26002 全字节 echo、TCP 主动关闭 EOF）与真板四协议（两轮 ping 10/10、UDP/TCP 全字节回显、quiet 经沉降相后 2 s 计数逐字节冻结直证；孤立 resume 行按用户裁决豁免——唤醒路径由全程逐包真实中断行使）。本板裁决事实：quiet 观察窗前须先经沉降相吸收 TCP 关闭尾流（claim 流静止 500 ms 再开窗），宿主 axhal 无平台后端（`wall_time()≡0`）故 timer wheel 仅真板/QEMU 可验。结论不含真板 reset/link-flap 恢复与 DMA quiesce 证明（MS13）、多 hart（MS14）与性能优化（I19）。
 - 交付物包括可启动内核镜像、平台构建产物，以及配套的内核态和用户态测试载荷。
 
 ## 仓库现场
 
-- 当前 Git 分支为 `k3`，HEAD 为 `14b26d3e`；工作树 clean。
-- `openspec/changes/ms12-com260-kit-async-bidirectional-data-plane/` 为唯一活跃 change（首轮 ready 保留，恢复前由 Plan 消费 MS17 accepted 底座复核契约）；归档目录保留 MS11 轮询网络、MS17 异步串口/交互 shell 与 MS18 RAM rootfs 普通 shell 产物（`archive/2026-10-08-ms18-com260-kit-standard-shell-rootfs/`）。当前行为规格包括 `openspec/specs/k3-com260-kit-polling-network-baseline/`、`openspec/specs/k3-com260-kit-async-uart-interactive-shell/` 与 `openspec/specs/k3-com260-kit-standard-shell-rootfs/`；项目支持范围仍以已验收行为为准。
+- 当前 Git 分支为 `k3`，HEAD 为 `5f977f1e`；工作树 clean。
+- 当前无活跃 change；归档目录最新保留 MS12 异步双向数据面（`archive/2026-10-13-ms12-com260-kit-async-bidirectional-data-plane/`）与 MS11 轮询网络、MS17 异步串口/交互 shell、MS18 RAM rootfs 普通 shell 产物（`archive/2026-10-08-ms18-com260-kit-standard-shell-rootfs/`）。当前行为规格包括 `openspec/specs/k3-com260-kit-async-network-data-plane/`、`k3-com260-kit-polling-network-baseline/`、`k3-com260-kit-async-uart-interactive-shell/` 与 `k3-com260-kit-standard-shell-rootfs/`；项目支持范围仍以已验收行为为准。
 - 已知遗留：vf2 构建入口 pre-existing 失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账；SNAPSHOT 此前记录的 `make host-test` ms04 失败在当前工作区不复现（2026-10-07 host-test exit 0）。
 - 详细里程碑状态见 [`tasks.md`](tasks.md)。
 
