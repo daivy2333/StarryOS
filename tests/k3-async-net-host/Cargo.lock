@@ -480,6 +480,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axlog"
+version = "0.3.0-preview.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45965ea9b795e917fe01be525d69c4ad4d455fe8fa5cd512b2e340aca8ed3ff4"
+dependencies = [
+ "cfg-if",
+ "crate_interface 0.1.4",
+ "kspin",
+ "log",
+]
+
+[[package]]
 name = "axnet-ng"
 version = "0.3.0-preview.2"
 dependencies = [
@@ -1472,6 +1484,7 @@ dependencies = [
  "axdriver",
  "axdriver_net",
  "axerrno 0.2.2",
+ "axlog",
  "axnet-ng",
  "axpoll",
  "axtask",

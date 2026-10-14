@@ -25,6 +25,10 @@ k3-polling-net = []
 [dependencies]
 axdriver_net = { path = "../../crates/axdriver_net" }
 axerrno = "0.2"
+# The included `k3_gmac::adapter` (MS13 A4 diagnostics) logs through axlog
+# like the kernel build does; the host build resolves the same pinned
+# workspace version.
+axlog = "=0.3.0-preview.2"
 memory_addr = "0.4"
 # Service-level tests (task T4) drive the production adapter through the
 # public axnet surface on a host axtask scheduler. `dyn` unifies into the

@@ -930,6 +930,14 @@ impl Device for EthernetDevice {
         self.link_held = held;
     }
 
+    fn discard_old_epoch_rx(&mut self) -> usize {
+        let mut purged = 0usize;
+        while self.rx_slots.pop().is_some() {
+            purged += 1;
+        }
+        purged
+    }
+
     fn tx_device_owned_len(&self) -> u64 {
         self.tx_tickets.device_owned_len() as u64
     }

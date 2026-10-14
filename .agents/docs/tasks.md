@@ -1,6 +1,6 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-10-08 | 路线规划更新: 2026-10-06 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 任务状态最后同步: 2026-10-14 | 路线规划更新: 2026-10-06 | 分支: k3 | grep: `<!-- T{编号} -->`
 > 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I19；MS01-MS11、MS16 与 MS17 已归档。
 
 ---
@@ -9,7 +9,7 @@
 
 每个 milestone 只引入一个主要调试变量。执行前必须通过 OpenSpec Plan 建立 BDD、RTM、测试见证和获批 change。完成状态只依据对应 change 的新鲜证据更新。
 
-NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。当前排期为 MS12→MS13→MS14（MS17 串口单 hart 基线已于 2026-10-08 验收），MS14 同时验收网卡与 UART 多 hart 异步行为。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
+NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。当前排期仅余 MS14（MS12、MS13 网卡基线与 MS17 串口基线均已验收），MS14 同时验收网卡与 UART 多 hart 异步行为，是当前 K3 异步化路线的最终交付。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
 
 | ID | Milestone | 交付范围 | 验证 Gate | 前置 | 状态 |
 |---|---|---|---|---|---|
@@ -28,7 +28,7 @@ NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任
 | <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ✅ 完成（MS11；单次回收 terminal、Full 不覆盖、001-rework doorbell 排他语义修复、stage12 20/20 terminal + 真实 ARP reply） |
 | <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | ✅ 完成（MS12；k3-async 双镜像、真实 RI/TI→deferred owner、V4 run3 20 ARP TX 零丢、IoC/owner/slot 契约全过） |
 | <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ✅ 完成（MS12；NetDriver adapter+唯一 owner+64/16 容量+C4 flush，V3 run3 板测全项；真板四协议与 quiet 见 T22 前置 MS12 收口） |
-| <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ⏳ 等待 T21 |
+| <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ✅ 完成（MS13；受控 reset 双轮 committed fault=0、旧对象 connection-reset 终态、容量第 1 轮+两级边界+flush c4、source-60 拔插端到端与插回上升沿可达、插回后 new-2 真实会话交换；容量第 2 轮/fail-stop 按用户收口裁决留档） |
 | <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ⏳ 等待 MS13（MS17 已于 2026-10-08 验收） |
 | <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ⏳ 等待 T23 |
 | <!-- T25 --> T25 | 已转为 I19 | 不再作为执行任务；方向见 `.agents/memory/improvements.md` I19 | 不参与当前路线完成判定 | 不适用 | superseded — 2026-10-06 用户批准退出路线 |
@@ -194,7 +194,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 
 ### MS13：目标板单 CPU/hart 恢复语义
 
-- Status: planned
+- Status: completed — 2026-10-14；用户审计接受（原话"工作被接收"）。交付结论限于 CoM260 Kit 单 hart：k3-async/k3-async-probe 独立入口下的受控恢复矩阵（18 页 arena 原地 stop/SWR/重建、QueueEpoch/cookie 隔离、resident owner、socket terminal、容量第 1 轮两级边界、C4 flush、真实 source-60 拔插事件含插回上升沿可达（INSR/INTN ack：arm 清 pending + owner link 读消费 latch）、插回后 new-2 真实逐字节 UDP/TCP 会话交换）；host 面生产 adapter/Service/socket 契约全绿（host 全包含 recovery_socket、axnet 三面 486/516/519、harness 37/37+32/32）。残余按用户收口原话"本轮change就做这么多"留档不追：容量/C4 第 2 轮、fail-stop 末场景、矩阵形态 new-2 判定行、插回后 link 不稳定三候选（事件通路单次失手/末次 Down 门永久关/DMA 静默停摆，有 trace 证据未定位）。结论不含多 hart（MS14）、长稳与性能（I19）。
 - Outcome: 真板 link flap 和设备 reset 下保持 epoch、DMA quiesce 与资源回收正确；无法确认 DMA 停止时不释放 backing。
 - Rationale: 先将 QEMU 恢复契约迁移到真板并取得物理 DMA/cache 证据，再引入多 hart 和长稳压力。
 - Dependencies: MS12
@@ -205,7 +205,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 - Verification boundary: 真板 fault injection 下无重复回收、永久 Pending、静默丢包、stale completion 误归属或 reset 后 DMA 越界；单纯寄存器读回和 QEMU reset 不计 DMA 停止证明。
 - Diagnostic boundary: 失败限制在真板 link 状态、reset epoch、DMA quiesce/stop、backing retention 或 owner 重建。
 - Split signals: link 恢复与完整设备 reset 出现不可共享的生命周期和验证边界。
-- Related changes: None
+- Related changes: `ms13-com260-kit-single-hart-network-recovery`（已归档于 `openspec/changes/archive/2026-10-14-ms13-com260-kit-single-hart-network-recovery/`；Iteration 000/001 accepted、Iteration 002 经 001-rework accepted（A3-R 折价收口：残余豁免与"不得表述为已板上验证"边界记录在该 Review）；行为规格已合并为 `openspec/specs/k3-com260-kit-single-hart-network-recovery/` 并更新 `k3-com260-kit-async-network-data-plane/`）
 
 ### MS17：K3 单 hart 异步串口与交互 shell 基线
 
@@ -274,6 +274,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前无活跃 change（MS12 已于 2026-10-13 完成并归档）。
+当前无活跃 change（MS13 已于 2026-10-14 完成并归档）。
 
-当前优先顺序为 MS13→MS14；MS12 网卡单 hart 异步双向数据面与 MS17 串口单 hart 基线均已完成，MS14 剩余前置为 MS13 真板恢复语义基线。MS11、MS12、MS17、MS18 详情保留在各自条目。
+当前交付终点为 MS14：MS12 网卡单 hart 异步双向数据面、MS13 真板恢复语义与 MS17 串口单 hart 基线均已完成，MS14（真板网卡与 UART 多 hart + 组合长稳）为剩余唯一 milestone。MS11、MS12、MS13、MS17、MS18 详情保留在各自条目。

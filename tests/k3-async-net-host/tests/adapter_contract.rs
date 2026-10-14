@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use axdriver_net::{
     BaseDriverOps, DevError, DeviceType, NetBuf, NetDriverOps, NetQueueControl,
-    NetQueueDirection, NetTxQueue, QueueEpoch, TxCookie,
+    NetQueueDirection, NetRecoveryControl, NetTxQueue, QueueEpoch, RecoveryProgress,
+    RecoveryStage, TxCookie,
 };
 use memory_addr::{PhysAddr, VirtAddr};
 
@@ -71,7 +72,7 @@ fn device_identity_reports_async_irq_and_bounded_queues() {
     assert_eq!(adapter.tx_queue_size(), 16);
     assert!(adapter.queue_control().is_some(), "queue control exposed");
     assert!(adapter.tx_queue().is_some(), "tx queue exposed");
-    assert!(adapter.recovery_control().is_none(), "no recovery control");
+    assert!(adapter.recovery_control().is_some(), "recovery control exposed");
 }
 
 #[test]
@@ -185,6 +186,21 @@ fn slots_wrap_from_15_to_0_and_never_double_reclaim() {
 #[test]
 fn cookies_keep_owner_epoch_across_the_device() {
     let (mut adapter, mut board, _script) = ready_adapter();
+    // The cookie epoch binds to the adapter's checked QueueEpoch (MS13 T2):
+    // one real recovery moves the instance to epoch 1 first, then the
+    // epoch-1 cookie rides the device and returns unchanged.
+    {
+        let control = adapter.recovery_control().expect("recovery control");
+        control.begin_recovery().expect("begin from healthy");
+        loop {
+            match control.poll_recovery_step().expect("in-window step") {
+                RecoveryProgress { stage: RecoveryStage::Resetting, .. }
+                | RecoveryProgress { stage: RecoveryStage::Reinitializing, .. } => {}
+                RecoveryProgress { stage: RecoveryStage::Recovered, .. } => break,
+                other => panic!("unexpected recovery stage {other:?}"),
+            }
+        }
+    }
     let epoch = QueueEpoch::MIN.advance().unwrap();
     let cookie = TxCookie::with_epoch(epoch, 4242);
     let buf = adapter.alloc_tx_buffer(60).unwrap();

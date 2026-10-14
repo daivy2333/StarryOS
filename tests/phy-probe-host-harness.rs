@@ -464,6 +464,43 @@ fn pad_writeback_cases() {
 }
 
 #[test]
+fn pad35_edge_setup_arms_both_edges_and_releases_clear() {
+    // Board reset default: CLEAR hold latched (hold-in-clear), GPIO mux,
+    // plain electrical bits, no edge enables.
+    let reset_default = 0x0142 | phy_probe::PAD_EDGE_CLEAR;
+    let mut b = FakeBoard::board();
+    b.regs.insert(phy_probe::PAD35_MFPR_PADDR, reset_default);
+    let ev = phy_probe::pad35_edge_setup(&mut b);
+    assert!(
+        ev.ok(),
+        "pad35 setup evidence must hold: {ev:?}"
+    );
+    let edges = ev.readback & (phy_probe::PAD_EDGE_RISE | phy_probe::PAD_EDGE_FALL);
+    assert_eq!(
+        edges,
+        phy_probe::PAD_EDGE_RISE | phy_probe::PAD_EDGE_FALL,
+        "the plug-in rising edge must be armed alongside the unplug falling edge: {ev:?}"
+    );
+    assert_eq!(
+        ev.readback & phy_probe::PAD_EDGE_CLEAR,
+        0,
+        "the CLEAR hold must stay released: {ev:?}"
+    );
+    assert_eq!(
+        ev.readback & phy_probe::PAD_MUX_MASK,
+        phy_probe::PAD_MUX_GPIO,
+        "the pad stays in GPIO function: {ev:?}"
+    );
+    // Electrical bits survive untouched.
+    let electrical = !(phy_probe::PAD_MUX_MASK | phy_probe::PAD_EDGE_FIELD_MASK);
+    assert_eq!(
+        ev.readback & electrical,
+        reset_default & electrical,
+        "only mux and edge bits may change: {ev:?}"
+    );
+}
+
+#[test]
 fn run_pad_gpio_happy_minimal_sequence() {
     let mut b = FakeBoard::board();
     let (lines, outcome) = capture(|emit| phy_probe::run_pad_gpio(&mut b, emit));

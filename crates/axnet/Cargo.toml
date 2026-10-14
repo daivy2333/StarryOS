@@ -29,12 +29,13 @@ repository = "https://github.com/arceos-org/arceos/tree/main/modules/axnet"
 [features]
 vsock = ["axdriver/vsock"]
 # Transport-neutral bounded pressure controls (D9): the hold/lease control
-# plane, the C4 flush entry and the minimal-frame diagnostic enqueue.
-# Propagated from `starry-kernel/k3-net-diagnostics` (K3 probe builds) and
-# implied by `qemu-diagnostics`; never enabled by default.
+# plane, the C4 flush entry, the minimal-frame diagnostic enqueue and the
+# explicit resident-owner recovery reset request (MS13 T4). Propagated from
+# `starry-kernel/k3-net-diagnostics` (K3 probe builds) and implied by
+# `qemu-diagnostics`; never enabled by default.
 queue-diagnostics = []
 # QEMU-only diagnostics: everything in `queue-diagnostics` plus the QEMU
-# recovery/reset request, link tracing and migration surfaces. Propagated
+# link tracing, round tracing and V4 migration snapshot surfaces. Propagated
 # exclusively from `starry-kernel/qemu`; never enabled by default or in
 # D1/real-board builds.
 qemu-diagnostics = ["queue-diagnostics"]

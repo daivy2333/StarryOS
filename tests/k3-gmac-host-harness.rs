@@ -112,6 +112,9 @@ struct FakeEnv {
     swr_ready_at: u64,
     swr_latency_ns: u64,
     swr_stuck: bool,
+    /// DMA_MODE read count (the T7 confirm-withhold witness: the injection
+    /// reads the mode word exactly once, then withholds every later read).
+    dma_mode_reads: u64,
     /// Cost advanced by each cache operation (models real CBO time so the
     /// 10 ms refill/reclaim deadlines are stallable in tests).
     cache_cost_ns: u64,
@@ -183,6 +186,7 @@ impl FakeEnv {
                 swr_ready_at: 0,
                 swr_latency_ns: 0,
                 swr_stuck: false,
+                dma_mode_reads: 0,
                 cache_cost_ns: 0,
                 pending_arp: None,
                 pending_arp_reply: None,
@@ -228,6 +232,17 @@ impl FakeEnv {
 
     fn reg_write_offsets(&self) -> Vec<u32> {
         self.reg_writes.iter().map(|(off, _)| *off).collect()
+    }
+
+    /// DMA_MODE read count (the T7 confirm-withhold witness).
+    fn dma_mode_reads(&self) -> u64 {
+        self.dma_mode_reads
+    }
+
+    /// Advances the fake clock without any board access (the withheld confirm
+    /// path performs no access, so only the test can move time forward).
+    fn advance_clock(&mut self, nanos: u64) {
+        self.clock_ns += nanos;
     }
 }
 
@@ -377,6 +392,7 @@ impl GmacEnv for FakeEnv {
         assert!((offset as u64) < GMAC_WINDOW, "register {offset:#x} outside GMAC window");
         if offset == 0x1000 {
             // SWR model: bit0 stays set until `swr_ready_at`.
+            self.dma_mode_reads += 1;
             return if self.clock_ns < self.swr_ready_at { 1 } else { 0 };
         }
         self.regs.get(&offset).copied().unwrap_or(0)
@@ -2249,6 +2265,429 @@ fn async_check_completions_windows_no_false_work() {
     // completions (slot 1 is still device-owned here).
     let hint = g.check_completions(&mut env).expect("wrap check");
     assert!(!hint.rx_ready, "device-owned head after wrap is idle, not work");
+}
+
+// ---------------------------------------------------------------------------
+// Tests — MS13 Iteration 000 T1: bounded runtime stop / SWR / same-arena
+// rebuild micro-steps
+// ---------------------------------------------------------------------------
+
+/// Steps the machine from begin to the confirmed Stopped boundary
+/// (`RuntimeRecovery::Rebuilding`); returns the steps consumed.
+fn steps_to_confirmed<B: ArenaBacking>(
+    g: &mut Gmac<B>,
+    env: &mut FakeEnv,
+) -> usize {
+    let mut n = 0usize;
+    loop {
+        match g.runtime_poll_step(env).expect("in-window step") {
+            k3_gmac::RecoveryStep::Pending
+            | k3_gmac::RecoveryStep::Stepped { stage: k3_gmac::RuntimeRecovery::Resetting } => {}
+            k3_gmac::RecoveryStep::Stepped { stage: k3_gmac::RuntimeRecovery::Rebuilding } => {
+                return n + 1;
+            }
+            other => panic!("unexpected step before confirmation: {other:?}"),
+        }
+        n += 1;
+        assert!(n < 200, "the stop machine never reached the confirmed boundary");
+    }
+}
+
+/// Counts the SWR trigger writes (register 0x1000 with bit0 set).
+fn swr_trigger_writes(env: &FakeEnv) -> usize {
+    env.reg_writes
+        .iter()
+        .filter(|(o, v)| *o == 0x1000 && v & 1 != 0)
+        .count()
+}
+
+/// Counts the issued cache operations (flush/clean/invalidate; fences are
+/// barrier markers, not cache work).
+fn cache_ops(env: &FakeEnv) -> usize {
+    env.ops
+        .iter()
+        .filter(|op| **op == "flush" || **op == "clean" || **op == "inval")
+        .count()
+}
+
+/// The machine is a fixed, finite sequence of bounded micro-steps: begin
+/// writes nothing, each step performs at most one plain MMIO write or one
+/// fixed-slot clear/refill unit (≤2 register writes, ≤2 cache ops), the SWR
+/// request is written exactly once, and the rebuild lands on Running with
+/// the fixed capacity restored. Repeated begin is a stable Busy.
+#[test]
+fn runtime_reset_is_step_bounded() {
+    let (mut g, mut env, _arena) = init_async();
+    let frame = [0x44u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { slot }) => assert_eq!(slot, 0),
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    let writes_at_begin = env.reg_writes.len();
+    assert_eq!(
+        g.runtime_begin_reset(),
+        Ok(k3_gmac::RuntimeRecovery::Resetting),
+        "begin arms the machine from the healthy Running state"
+    );
+    assert_eq!(
+        env.reg_writes.len(),
+        writes_at_begin,
+        "begin is a pure arm: no board access"
+    );
+    assert_eq!(g.runtime_recovery(), Some(k3_gmac::RuntimeRecovery::Resetting));
+    // Mid-recovery begin: stable Busy, never a second SWR write.
+    assert_eq!(g.runtime_begin_reset(), Err(k3_gmac::RecoveryRefusal::Busy));
+
+    let mut steps = 0usize;
+    loop {
+        let (prev_writes, prev_cache) = (env.reg_writes.len(), cache_ops(&env));
+        let out = g.runtime_poll_step(&mut env).expect("in-window step");
+        steps += 1;
+        assert!(
+            env.reg_writes.len() - prev_writes <= 2,
+            "step {steps} wrote more than one unit (doorbell+SR rewrite bound)"
+        );
+        assert!(
+            cache_ops(&env) - prev_cache <= 2,
+            "step {steps} issued more cache work than one unit"
+        );
+        match out {
+            k3_gmac::RecoveryStep::Pending
+            | k3_gmac::RecoveryStep::Stepped {
+                stage: k3_gmac::RuntimeRecovery::Resetting
+            }
+            | k3_gmac::RecoveryStep::Stepped {
+                stage: k3_gmac::RuntimeRecovery::Rebuilding
+            } => {}
+            k3_gmac::RecoveryStep::Stepped {
+                stage: k3_gmac::RuntimeRecovery::Failed
+            } => panic!("a failed stage never reports Stepped"),
+            k3_gmac::RecoveryStep::Recovered => break,
+        }
+        assert!(steps < 200, "the machine is not step-bounded");
+    }
+    assert!(
+        steps <= 100,
+        "the fixed stop+rebuild sequence exceeded the step bound: {steps}"
+    );
+    assert_eq!(
+        swr_trigger_writes(&env),
+        2,
+        "init + exactly one recovery SWR request; begin/step never re-writes it"
+    );
+    assert_eq!(g.state(), GmacState::Running, "rebuild publishes Running");
+    assert_eq!(g.runtime_recovery(), None, "the machine is consumed on Recovered");
+    assert_eq!(g.tx_free_capacity(), 16, "fixed TX capacity restored");
+}
+
+/// Between begin and the confirmed SWR boundary no ring register is written
+/// (bases/lengths/doorbells, no SR start) and the arena memory is
+/// byte-identical; the old owner summary stays observable at the boundary.
+#[test]
+fn reset_does_not_rewrite_ring_before_confirmation() {
+    let (mut g, mut env, arena) = init_async();
+    let frame = [0x55u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { .. }) => {}
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    let before = arena.to_vec();
+    let ring_writes_at_begin = env.rx_ring_writes();
+    assert_eq!(g.runtime_begin_reset(), Ok(k3_gmac::RuntimeRecovery::Resetting));
+    loop {
+        match g.runtime_poll_step(&mut env).expect("in-window step") {
+            k3_gmac::RecoveryStep::Pending
+            | k3_gmac::RecoveryStep::Stepped { stage: k3_gmac::RuntimeRecovery::Resetting } => {}
+            k3_gmac::RecoveryStep::Stepped { stage: k3_gmac::RuntimeRecovery::Rebuilding } => break,
+            other => panic!("unexpected step outcome: {other:?}"),
+        }
+        assert_eq!(
+            env.rx_ring_writes(),
+            ring_writes_at_begin,
+            "no ring-base/length/tail/start write before the SWR confirmation"
+        );
+        assert!(
+            arena[..] == before[..],
+            "no DMA-reachable memory is rewritten before confirmation"
+        );
+    }
+    // The fixed Stopped boundary: observable state, retained owner summary.
+    assert!(matches!(g.state(), GmacState::Stopped { .. }));
+    assert_eq!(g.runtime_recovery(), Some(k3_gmac::RuntimeRecovery::Rebuilding));
+    assert_eq!(g.tx_inflight(), 1, "the old owner summary is still observable");
+    assert_eq!(env.rx_ring_writes(), ring_writes_at_begin);
+    assert!(arena[..] == before[..], "the boundary itself rewrote nothing");
+}
+
+/// The SWR confirmation deadline is absolute: taken once at the request
+/// write, never renewed by the polling steps. A self-clear past the window
+/// (2 s latency, 100 ms per access) must report ResetTimeout — with a
+/// renewed deadline the machine would have confirmed at 2 s instead. The
+/// failed machine re-reports the same stable error with no board access.
+#[test]
+fn reset_deadline_is_absolute() {
+    let (mut g, mut env, _arena) = init_async();
+    env.access_cost_ns = 100_000_000; // every board access costs 100 ms
+    env.swr_latency_ns = 2_000_000_000; // self-clears only after 2 s
+    assert_eq!(g.runtime_begin_reset(), Ok(k3_gmac::RuntimeRecovery::Resetting));
+    let mut pending = 0usize;
+    loop {
+        match g.runtime_poll_step(&mut env) {
+            Ok(k3_gmac::RecoveryStep::Pending) => pending += 1,
+            Ok(k3_gmac::RecoveryStep::Stepped { stage: k3_gmac::RuntimeRecovery::Resetting }) => {}
+            Err(GmacError::ResetTimeout { raw }) => {
+                assert_eq!(raw, 1, "the raw SWR bit is reported");
+                break;
+            }
+            other => panic!("expected the absolute deadline to fire, got {other:?}"),
+        }
+        assert!(
+            pending <= ((k3_gmac::RESET_BOUND_NANOS / env.access_cost_ns) + 2) as usize,
+            "the SWR deadline was renewed instead of staying absolute"
+        );
+    }
+    assert!(pending >= 1, "the window held Pending before the deadline");
+    assert_eq!(g.runtime_recovery(), Some(k3_gmac::RuntimeRecovery::Failed));
+    assert!(matches!(g.state(), GmacState::Stopped { .. }));
+    let writes_before = env.reg_writes.len();
+    assert!(
+        matches!(
+            g.runtime_poll_step(&mut env),
+            Err(GmacError::ResetTimeout { .. })
+        ),
+        "the failed machine re-reports the same stable error"
+    );
+    assert_eq!(
+        env.reg_writes.len(),
+        writes_before,
+        "the stable error re-report touches no board access"
+    );
+    assert_eq!(
+        g.runtime_begin_reset(),
+        Err(k3_gmac::RecoveryRefusal::BadState),
+        "a failed machine refuses begin"
+    );
+}
+
+/// MS13 T7: the honest fail-stop injection. The SWR write is really issued;
+/// the FIRST confirm read executes with its real value, and every later
+/// confirm read is withheld (no board access at all), so the machine rides
+/// the absolute deadline into `ResetTimeout` carrying the last honest raw
+/// value. During the withheld window: no read, no write, submit refuses; the
+/// failed machine re-reports the stable error with no board access.
+#[test]
+fn confirm_withhold_injection_reports_honest_raw_timeout() {
+    let (mut g, mut env, _arena) = init_async();
+    // SWR self-clears only after 10 s of fake time; the 1 s absolute deadline
+    // hits first, so the injection has an honest SWR-set value to report.
+    env.swr_latency_ns = 10_000_000_000;
+    k3_gmac::diagnostic_arm_reset_confirm_withhold(true);
+
+    let frame = [0x77u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { .. }) => {}
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    assert_eq!(g.runtime_begin_reset(), Ok(k3_gmac::RuntimeRecovery::Resetting));
+
+    // Step to the first confirm. DMA_MODE is read twice before the machine
+    // holds Pending: once by the stop teardown's RMW (step 7) and once by the
+    // FIRST confirm read — the injection's single honest read. Everything
+    // else in the window reads nothing.
+    let reads_at_begin = env.dma_mode_reads();
+    let mut saw_pending = false;
+    for _ in 0..40 {
+        match g.runtime_poll_step(&mut env) {
+            Ok(k3_gmac::RecoveryStep::Pending) => {
+                saw_pending = true;
+                assert_eq!(
+                    env.dma_mode_reads(),
+                    reads_at_begin + 2,
+                    "exactly the teardown RMW read plus the ONE honest confirm read"
+                );
+                break;
+            }
+            Ok(k3_gmac::RecoveryStep::Stepped {
+                stage: k3_gmac::RuntimeRecovery::Resetting,
+            }) => {
+                assert!(env.dma_mode_reads() <= reads_at_begin + 2);
+            }
+            other => panic!("unexpected step before the confirm: {other:?}"),
+        }
+    }
+    assert!(saw_pending, "the injected machine reached the confirm step");
+
+    // Withheld window: every later confirm step touches NO board access —
+    // no read, no write, no submit — and the machine stays Pending.
+    let reads_at_withhold = env.dma_mode_reads();
+    let writes_at_withhold = env.reg_writes.len();
+    for _ in 0..8 {
+        match g.runtime_poll_step(&mut env) {
+            Ok(k3_gmac::RecoveryStep::Pending) => {}
+            other => panic!("the withheld window must hold Pending, got {other:?}"),
+        }
+        assert_eq!(env.dma_mode_reads(), reads_at_withhold, "confirm reads are withheld");
+        assert_eq!(env.reg_writes.len(), writes_at_withhold, "the window writes nothing");
+        let mut stalled_frame = [0x88u8; 60];
+        assert!(
+            g.try_submit(&mut env, &stalled_frame).is_err(),
+            "a machine mid-stop refuses new submits"
+        );
+        assert_eq!(env.reg_writes.len(), writes_at_withhold, "the refusal writes nothing");
+    }
+
+    // Only the test can move time forward (the withheld path performs no
+    // access); past the absolute deadline the machine fails with the LAST
+    // HONEST raw value.
+    env.advance_clock(k3_gmac::RESET_BOUND_NANOS + 1);
+    match g.runtime_poll_step(&mut env) {
+        Err(GmacError::ResetTimeout { raw }) => {
+            assert_eq!(raw, 1, "raw is the last honest SWR-set read, never fabricated");
+        }
+        other => panic!("expected the honest ResetTimeout, got {other:?}"),
+    }
+    assert_eq!(env.dma_mode_reads(), reads_at_withhold, "the failure itself reads nothing");
+    assert_eq!(g.runtime_recovery(), Some(k3_gmac::RuntimeRecovery::Failed));
+    assert!(matches!(g.state(), GmacState::Stopped { .. }));
+    let writes_at_fail = env.reg_writes.len();
+    assert!(
+        matches!(g.runtime_poll_step(&mut env), Err(GmacError::ResetTimeout { raw: 1 })),
+        "the failed machine re-reports the same honest error"
+    );
+    assert_eq!(env.reg_writes.len(), writes_at_fail, "the re-report touches nothing");
+    assert_eq!(
+        g.runtime_begin_reset(),
+        Err(k3_gmac::RecoveryRefusal::BadState),
+        "a failed machine refuses begin"
+    );
+    k3_gmac::diagnostic_arm_reset_confirm_withhold(false);
+}
+
+/// The rebuild reuses the same arena: the rebuilt ring-base registers carry
+/// the original PA bases, all 16 RX slots are republished (async IOC, OWN
+/// last), the fixed capacity returns, the notify stays closed for the owner
+/// to arm, and the rebuilt plane serves a full TX terminal.
+#[test]
+fn runtime_reset_rebuilds_same_arena() {
+    let (mut g, mut env, mut arena) = init_async();
+    let frame = [0x66u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { .. }) => {}
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    let rx_ll0 = env.regs.get(&0x111c).copied().expect("init wrote the RX base");
+    let tx_ll0 = env.regs.get(&0x1114).copied().expect("init wrote the TX base");
+    assert_eq!(g.runtime_begin_reset(), Ok(k3_gmac::RuntimeRecovery::Resetting));
+    let mut steps = 0usize;
+    loop {
+        match g.runtime_poll_step(&mut env).expect("in-window step") {
+            k3_gmac::RecoveryStep::Pending
+            | k3_gmac::RecoveryStep::Stepped { .. } => {}
+            k3_gmac::RecoveryStep::Recovered => break,
+        }
+        steps += 1;
+        assert!(steps < 200, "the machine never recovered");
+    }
+    assert_eq!(g.state(), GmacState::Running);
+    assert_eq!(g.runtime_recovery(), None);
+    // Same arena: the rebuilt ring bases name the original PA addresses.
+    assert_eq!(env.regs.get(&0x111c), Some(&rx_ll0), "same RX ring PA");
+    assert_eq!(env.regs.get(&0x1114), Some(&tx_ll0), "same TX ring PA");
+    assert!(g.is_published(), "the backing is retained across the rebuild");
+    for slot in 0..NUM_SLOTS {
+        assert_eq!(
+            desc_word(&arena, &env, slot, 3),
+            RDES3_IOC | RDES3_OWN | RDES3_BUF1V,
+            "RX slot {slot} republished with the async IOC and OWN last"
+        );
+    }
+    assert_eq!(g.tx_inflight(), 0, "the confirmed stop closed the old carriers");
+    assert_eq!(g.tx_free_capacity(), 16, "fixed TX capacity restored");
+    assert_eq!(
+        env.regs.get(&DMA_CHAN_IRQ_EN),
+        Some(&0),
+        "the notify stays closed after the rebuild (owner arms it)"
+    );
+    // The rebuilt plane is live: one full submit → device completion →
+    // single-shot terminal on the same arena.
+    let frame2 = [0x77u8; 60];
+    match g.try_submit(&mut env, &frame2) {
+        Ok(TxSubmit::Submitted { slot }) => assert_eq!(slot, 0, "the wrap starts at slot 0"),
+        other => panic!("expected Submitted after rebuild, got {other:?}"),
+    }
+    set_tx_desc_word(&mut arena, 0, 3, TDES3_FD | TDES3_LD | 60);
+    match g.poll_tx(&mut env).expect("terminal after rebuild") {
+        TxPoll::Completed { slot, .. } => assert_eq!(slot, 0),
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+/// A stuck SWR holds Pending without rewriting the arena or losing owners,
+/// crosses the absolute deadline into a stable ResetTimeout, refuses every
+/// data-plane entry, and the published backing survives the drop.
+#[test]
+fn stuck_reset_retains_arena_and_owners() {
+    let (mut env, arena) = FakeEnv::new();
+    env.set_phy_link_1000fd();
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guard = ArenaGuard::new(TrackingBacking {
+        arena_va: env.arena_va,
+        arena_pa: env.arena_pa,
+        dropped: dropped.clone(),
+    });
+    let mut g = Gmac::new_async(guard).expect("layout");
+    g.init_rx(&mut env).expect("init");
+    g.enable_tx(&mut env);
+    let frame = [0x88u8; 60];
+    match g.try_submit(&mut env, &frame) {
+        Ok(TxSubmit::Submitted { .. }) => {}
+        other => panic!("expected Submitted, got {other:?}"),
+    }
+    let before = arena.to_vec();
+    env.swr_stuck = true;
+    env.access_cost_ns = 100_000_000;
+    assert_eq!(g.runtime_begin_reset(), Ok(k3_gmac::RuntimeRecovery::Resetting));
+    // Inside the window: Pending only, nothing retained changes.
+    let mut in_window = 0usize;
+    loop {
+        match g.runtime_poll_step(&mut env) {
+            Ok(k3_gmac::RecoveryStep::Pending) => in_window += 1,
+            Ok(k3_gmac::RecoveryStep::Stepped { stage: k3_gmac::RuntimeRecovery::Resetting }) => {}
+            Err(_) => break,
+            other => panic!("stuck SWR must hold the window, got {other:?}"),
+        }
+        assert_eq!(g.tx_inflight(), 1, "the owner is preserved while pending");
+        assert!(g.is_published(), "the backing is retained while pending");
+        assert!(
+            arena[..] == before[..],
+            "a pending stop never rewrites DMA-reachable memory"
+        );
+        assert!(in_window < 30, "the window never crossed into the deadline");
+    }
+    // The deadline fired (the loop above broke on Err): stable failure state.
+    assert!(matches!(g.state(), GmacState::Stopped { .. }));
+    assert_eq!(g.runtime_recovery(), Some(k3_gmac::RuntimeRecovery::Failed));
+    assert_eq!(g.tx_inflight(), 1, "the unconfirmed stop keeps the owner");
+    assert!(g.is_published(), "the backing is retained after the failure");
+    let mut scratch = [0u8; 1514];
+    assert!(
+        matches!(
+            g.try_submit(&mut env, &frame),
+            Err(TxSubmitError::Driver(_))
+        ),
+        "the failed machine refuses submits"
+    );
+    assert!(g.poll_rx(&mut env, &mut scratch).is_err(), "refuses reap");
+    assert!(g.poll_tx(&mut env).is_err(), "refuses reclaim");
+    assert!(
+        arena[..] == before[..],
+        "the failure path rewrote no DMA-reachable memory"
+    );
+    drop(g);
+    assert!(
+        !dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "the published backing survives the drop (retained until external reset)"
+    );
 }
 
 /// The pure wait decision: fault first, then descriptor work, then the

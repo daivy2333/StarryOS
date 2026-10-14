@@ -16,7 +16,7 @@
 //!   per trap and returns that vector; every other vector returns `None`.
 //!   `SSIE`/`SEXT` and the external claim path are never touched here.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Complete supervisor timer vector (`interrupt bit | cause 5`), matching the
 /// `timer-irq` platform config the runtime registers against.
@@ -137,5 +137,49 @@ pub fn unregister_irq() -> Option<fn()> {
 
 /// Dispatches the timer vector on the production slot.
 pub fn handle_irq(vector: usize) -> Option<usize> {
+    // MS13 001-rework T5-R1 diagnostics: every timer trap that reached the
+    // axplat dispatch counts here, before any slot-state decision (same
+    // observation-only shape as `aia::AIA_DEBUG_TRAPS`). A frozen count with
+    // `sip.STIP=1` splits the fault to trap delivery, not to the slot.
+    TIMER_DEBUG_TICKS.fetch_add(1, Ordering::Relaxed);
     TIMER_SLOT.handle(vector)
+}
+
+// ---------------------------------------------------------------------------
+// MS13 001-rework T5-R1 diagnostics: board discriminator observation
+// ---------------------------------------------------------------------------
+
+/// Timer traps that reached the platform dispatch ([`handle_irq`]). Read by
+/// the board discriminator lines; never participates in control.
+pub static TIMER_DEBUG_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Raw supervisor trap-state CSRs for the board discriminator lines
+/// (observation-only). `sie`: `STIE` = bit 5, `SEXT` = bit 9; `sip`:
+/// `STIP` = bit 5, `SEIP` = bit 9; `sstatus`: global `SIE` = bit 5.
+#[cfg(target_arch = "riscv64")]
+pub struct TrapCsrSnapshot {
+    pub sie: usize,
+    pub sip: usize,
+    pub sstatus: usize,
+}
+
+/// Reads `sie`/`sip`/`sstatus` of the current hart in one snapshot.
+#[cfg(target_arch = "riscv64")]
+pub fn debug_trap_csr_snapshot() -> TrapCsrSnapshot {
+    let sie: usize;
+    let sip: usize;
+    let sstatus: usize;
+    // SAFETY: read-only CSR reads in S-mode; none of the three has a side
+    // effect on this platform (`sip.SEIP` mirrors the IMSIC pending word).
+    unsafe {
+        core::arch::asm!(
+            "csrr {sie}, sie",
+            "csrr {sip}, sip",
+            "csrr {st}, sstatus",
+            sie = out(reg) sie,
+            sip = out(reg) sip,
+            st = out(reg) sstatus,
+        )
+    }
+    TrapCsrSnapshot { sie, sip, sstatus }
 }

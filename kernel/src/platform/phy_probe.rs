@@ -430,28 +430,32 @@ pub struct PadEdgeSetupEvidence {
 
 impl PadEdgeSetupEvidence {
     /// The written value took effect and changed only the mux field plus the
-    /// EDGE field's CLEAR-release and FALL-enable (every electrical bit
-    /// preserved).
+    /// EDGE field's CLEAR-release and RISE|FALL enables (every electrical
+    /// bit preserved).
     pub const fn ok(&self) -> bool {
         let non_mux_written = self.written & !PAD_MUX_MASK;
-        let non_mux_expected =
-            (self.before & !PAD_MUX_MASK & !PAD_EDGE_CLEAR) | PAD_EDGE_FALL;
+        let non_mux_expected = (self.before & !PAD_MUX_MASK & !PAD_EDGE_CLEAR)
+            | PAD_EDGE_RISE
+            | PAD_EDGE_FALL;
         self.readback == self.written
             && non_mux_written == non_mux_expected
             && self.written & PAD_MUX_MASK == PAD_MUX_GPIO
     }
 }
 
-/// Arms the PHY INTN pad for the pinctrl GPIO interrupt path (board DTB
-/// `ethernet-phy@1 interrupts = <35 2>`: pin 35, falling edge): mux → GPIO,
-/// the falling-edge enable set, the CLEAR hold released (every pad resets
-/// with CLEAR=1 — board runs 1–2 falsified latching with the reset default
-/// left in place), every other bit preserved, then read back. Called once
-/// from the stage 10 setup before the window opens; the ack sequence later
-/// pulses CLEAR and re-arms back to exactly this released state.
+/// Arms the PHY INTN pad for the pinctrl GPIO interrupt path: mux → GPIO,
+/// both edge enables set (falling = unplug, rising = plug-in — MS13 T7-R3;
+/// the board DTB `ethernet-phy@1` declares only `<35 2>` falling, but the
+/// plug-in rising edge is the only trigger that re-reads link after a
+/// recovery), the CLEAR hold released (every pad resets with CLEAR=1 —
+/// board runs 1–2 falsified latching with the reset default left in place),
+/// every other bit preserved, then read back. Called once from the stage 10
+/// setup before the window opens; the ack sequence later pulses CLEAR and
+/// re-arms back to exactly this released state.
 pub fn pad35_edge_setup(env: &mut impl ProbeEnv) -> PadEdgeSetupEvidence {
     let before = env.mmio_read(PAD35_MFPR_PADDR);
-    let written = (before & !PAD_MUX_MASK & !PAD_EDGE_CLEAR) | PAD_EDGE_FALL;
+    let written =
+        (before & !PAD_MUX_MASK & !PAD_EDGE_CLEAR) | PAD_EDGE_RISE | PAD_EDGE_FALL;
     env.mmio_write(PAD35_MFPR_PADDR, written);
     let readback = env.mmio_read(PAD35_MFPR_PADDR);
     PadEdgeSetupEvidence {

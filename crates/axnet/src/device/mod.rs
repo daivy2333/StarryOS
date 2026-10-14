@@ -383,6 +383,16 @@ pub trait Device: Send + Sync {
         }
     }
 
+    /// Purges every copied-but-undelivered frame from the fixed RX slot
+    /// storage (MS13 T4). Called on the old-epoch close seams — the link-down
+    /// transition and the resident-recovery commit — under the Service guard,
+    /// so no frame copied for a closed socket epoch can be delivered to a new
+    /// epoch's sockets. Returns the number of frames discarded. Devices
+    /// without slot storage discard nothing.
+    fn discard_old_epoch_rx(&mut self) -> usize {
+        0
+    }
+
     /// Sets or clears the link gate (Task 3.1 / D6). While the link is down
     /// the device rejects new enqueue/submit (returns `Full`); DeviceOwned
     /// completions are still reclaimed. This is an independent gate from the

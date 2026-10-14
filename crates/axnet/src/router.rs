@@ -271,6 +271,29 @@ impl Router {
         device.activate_slot_mode()
     }
 
+    /// Purges the target's copied-but-undelivered RX slot frames (MS13 T4).
+    /// Returns the number of frames discarded.
+    pub fn discard_old_epoch_rx(&mut self, dev: usize) -> usize {
+        self.devices
+            .get_mut(dev)
+            .map(|device| device.discard_old_epoch_rx())
+            .unwrap_or(0)
+    }
+
+    /// Purges the Router's software RX and TX staging buffers (MS13 T4) so no
+    /// frame staged for a closed socket epoch survives into the next one.
+    /// Returns the number of buffered frames discarded.
+    pub fn discard_software_buffers(&mut self) -> usize {
+        let mut purged = 0usize;
+        while self.rx_buffer.dequeue().is_ok() {
+            purged += 1;
+        }
+        while self.tx_buffer.dequeue().is_ok() {
+            purged += 1;
+        }
+        purged
+    }
+
     /// Advances the raw→RX-slot copy on device `dev` by at most one frame.
     pub fn rx_copy_one(&mut self, dev: usize) -> RxCopyStep {
         let Some(device) = self.devices.get_mut(dev) else {

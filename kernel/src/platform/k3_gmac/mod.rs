@@ -118,6 +118,125 @@ pub struct LinkConfig {
     pub full_duplex: bool,
 }
 
+/// MS13 T5: the MAC PS/FES/DM configuration bits for a decoded link. TE/RE
+/// are caller-owned (init keeps TE off; the runtime application is an RMW
+/// that only replaces the speed bits).
+fn mac_config_for(link: LinkConfig) -> u32 {
+    let mut cfg = 0;
+    if link.full_duplex {
+        cfg |= regs::MAC_CONFIG_DM;
+    }
+    match link.speed {
+        LinkSpeed::S100 => cfg |= regs::MAC_CONFIG_FES | regs::MAC_CONFIG_PS,
+        LinkSpeed::S10 => cfg |= regs::MAC_CONFIG_PS,
+        LinkSpeed::S1000 => {}
+    }
+    cfg
+}
+
+/// Priority ability decode shared by the init link phase and the runtime
+/// changed-to-up application: 1000FD/HD from CTRL1000 bits9/8 vs peer
+/// STAT1000 bits11/10; 10/100 from ANA&LPA bits8/7/6/5.
+fn decode_abilities(
+    ana: u16,
+    lpa: u16,
+    ctrl1000: u16,
+    stat1000: u16,
+) -> Result<LinkConfig, GmacError> {
+    let common = ana & lpa;
+    let link = if ctrl1000 & (1 << 9) != 0 && stat1000 & (1 << 11) != 0 {
+        LinkConfig { speed: LinkSpeed::S1000, full_duplex: true }
+    } else if ctrl1000 & (1 << 8) != 0 && stat1000 & (1 << 10) != 0 {
+        LinkConfig { speed: LinkSpeed::S1000, full_duplex: false }
+    } else if common & (1 << 8) != 0 {
+        LinkConfig { speed: LinkSpeed::S100, full_duplex: true }
+    } else if common & (1 << 7) != 0 {
+        LinkConfig { speed: LinkSpeed::S100, full_duplex: false }
+    } else if common & (1 << 6) != 0 {
+        LinkConfig { speed: LinkSpeed::S10, full_duplex: true }
+    } else if common & (1 << 5) != 0 {
+        LinkConfig { speed: LinkSpeed::S10, full_duplex: false }
+    } else {
+        return Err(GmacError::NoCommonAbility { ana, lpa, ctrl1000, stat1000 });
+    };
+    Ok(link)
+}
+
+/// MS13 T5: one C22 register in the runtime link-read schedule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkReg {
+    Bmsr,
+    Ana,
+    Lpa,
+    Ctrl1000,
+    Stat1000,
+}
+
+impl LinkReg {
+    fn reg(self) -> u32 {
+        match self {
+            LinkReg::Bmsr => phy_probe::BMSR_REG,
+            LinkReg::Ana => phy_probe::ANA_REG,
+            LinkReg::Lpa => LPA_REG,
+            LinkReg::Ctrl1000 => CTRL1000_REG,
+            LinkReg::Stat1000 => STAT1000_REG,
+        }
+    }
+
+    /// Issues the C22 read trigger for this register: one MMIO write into
+    /// the MDIO window, the same address math the init decode uses.
+    fn trigger<E: GmacEnv>(self, env: &mut E) {
+        let raw = phy_probe::mii_addr_value(phy_probe::PHY_ADDR, self.reg(), phy_probe::GOC_READ)
+            .expect("C22 register in range");
+        env.mmio_write(mac_probe::MAC_BASE_PADDR + phy_probe::MDIO_ADDR_OFFSET, raw);
+    }
+
+    fn store(self, scratch: &mut LinkScratch, value: u16) {
+        match self {
+            LinkReg::Bmsr => scratch.bmsr = value,
+            LinkReg::Ana => scratch.ana = value,
+            LinkReg::Lpa => scratch.lpa = value,
+            LinkReg::Ctrl1000 => scratch.ctrl1000 = value,
+            LinkReg::Stat1000 => scratch.stat1000 = value,
+        }
+    }
+}
+
+/// MS13 T5: collected raw words of the running link snapshot.
+#[derive(Clone, Copy, Debug, Default)]
+struct LinkScratch {
+    bmsr: u16,
+    ana: u16,
+    lpa: u16,
+    ctrl1000: u16,
+    stat1000: u16,
+}
+
+/// MS13 T5: runtime link-snapshot micro-state. Every
+/// [`Gmac::read_link_step`] performs at most one MMIO action.
+enum LinkRead {
+    Idle,
+    /// The head register's C22 read trigger is out; the MDIO busy must
+    /// clear before the absolute deadline.
+    Busy { head: LinkReg, deadline: u64 },
+    /// The head register's busy cleared; its DATA word is the next action.
+    Data { head: LinkReg, deadline: u64 },
+    /// A head value was collected and the schedule still has work; the
+    /// next scheduled trigger write is the pending action.
+    Next { deadline: u64 },
+}
+
+/// MS13 T5: one outcome of [`Gmac::read_link_step`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkReadStep {
+    /// The snapshot is in progress; the caller retries after a bounded
+    /// cadence.
+    Pending,
+    /// The snapshot completed: the BMSR link bit (`true` = up). A
+    /// changed-to-up snapshot already applied the decoded ability.
+    Done(bool),
+}
+
 /// Driver failure taxonomy: every variant names its phase and carries the
 /// raw evidence; a cancelled/faulted driver never releases device-owned
 /// storage and never software-clears OWN.
@@ -147,6 +266,8 @@ pub enum GmacError {
 pub enum Phase {
     Reset,
     Link,
+    /// MS13 T5: the runtime stepped link snapshot (10 ms, absolute).
+    LinkRead,
     Refill,
     Reclaim,
     Poll,
@@ -179,6 +300,136 @@ pub enum RxPoll {
     /// was refilled.
     Dropped { slot: usize, reason: RxDrop, raw_w3: u32 },
 }
+
+// ---------------------------------------------------------------------------
+// MS13 Iteration 000 (T1): bounded runtime stop, SWR wait and same-arena
+// rebuild micro-steps
+// ---------------------------------------------------------------------------
+
+/// Runtime recovery stage observable on the [`Gmac`] (MS13 T1). The raw
+/// descriptor carries no epoch and the adapter owns the only `QueueEpoch`;
+/// this is the local hardware micro-step machine only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeRecovery {
+    /// Stop armed: the micro-steps mask the notify, tear down RE/SR/TE/ST
+    /// and request SWR; the confirmation wait owns this stage.
+    Resetting,
+    /// SWR self-clear observed (the fixed Stopped boundary): bounded
+    /// same-arena rebuild units run from here.
+    Rebuilding,
+    /// Terminal refusal (reset deadline or rebuild unit failed): resources
+    /// retained, every step re-reports the same stable error, no retry.
+    Failed,
+}
+
+/// A runtime recovery entry refusal with no side effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryRefusal {
+    /// A machine is already in progress (SWR is never re-written).
+    Busy,
+    /// The driver is not recoverable here (Uninit, a pending cancel request,
+    /// cancelled/faulted state, or a failed machine).
+    BadState,
+}
+
+/// One bounded recovery micro-step outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStep {
+    /// SWR still set inside the absolute window: call again (the deadline
+    /// is never re-taken).
+    Pending,
+    /// One unit advanced; the machine now sits in `stage`.
+    Stepped { stage: RuntimeRecovery },
+    /// Same-arena rebuild finished: Running again with the fixed capacity.
+    Recovered,
+}
+
+/// The local micro-step machine (MS13 T1): fixed step cursors, the absolute
+/// SWR deadline and the RMW scratch shared by one read/write pair. The
+/// machine is `Copy` so every step works on a snapshot and commits at the
+/// end — no state survives a step in a lock.
+#[derive(Clone, Copy)]
+struct Recovery {
+    stage: RuntimeRecovery,
+    /// Absolute SWR confirmation deadline (taken once at the request write;
+    /// never renewed).
+    swr_deadline: u64,
+    /// Fixed cursor over the stop/rebuild unit sequence.
+    step: usize,
+    /// RMW scratch: read by one step, consumed by the matching write step
+    /// of the same owner state.
+    rmw: u32,
+    /// The MAC_CONFIG value read before the RE/TE teardown, reused verbatim
+    /// by the rebuild's MAC_CONFIG unit (the last-known link configuration,
+    /// no 5 s decode).
+    mac_config_orig: u32,
+    /// The stable error of a failed machine (repeated verbatim, no MMIO).
+    failed: Option<GmacError>,
+    /// MS13 T7 honest fail-stop injection: the last honest confirm-read value
+    /// once the withhold engaged. `Some` means every later confirm read is
+    /// withheld (no board access). Compiled only in diagnostics builds and
+    /// the host harness; a normal image has no injection at all.
+    #[cfg(any(feature = "k3-net-diagnostics", test))]
+    diag_confirm_withhold: Option<u32>,
+}
+
+/// MS13 T7: the arm switch of the honest confirm-withhold injection. Only
+/// diagnostics builds and the host harness can even see it; the arming entry
+/// is called exclusively by the k3-net-diagnostics payload (fail-stop is the
+/// FIXED last scenario, never armed in a normal run) and by host tests.
+#[cfg(any(feature = "k3-net-diagnostics", test))]
+static RESET_CONFIRM_WITHHOLD: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Arms/disarms the confirm-withhold injection (see [`RESET_CONFIRM_WITHHOLD`]).
+#[cfg(any(feature = "k3-net-diagnostics", test))]
+pub fn diagnostic_arm_reset_confirm_withhold(on: bool) {
+    RESET_CONFIRM_WITHHOLD.store(on, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(any(feature = "k3-net-diagnostics", test))]
+fn reset_confirm_withhold_armed() -> bool {
+    RESET_CONFIRM_WITHHOLD.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Resetting cursor of the request-write step (the deadline is taken here).
+const RESET_STEP_SWR_WRITE: usize = 8;
+/// Resetting cursor of the confirmation read (Pending/confirm/timeout).
+const RESET_STEP_CONFIRM: usize = 9;
+/// Rebuild cursor 0: software ring bookkeeping restart (no MMIO).
+const REBUILD_BOOKKEEP: usize = 0;
+/// Rebuild cursors 1..=32: one ring clear unit each (RX slots 0..16, then
+/// TX slots 0..16).
+const REBUILD_CLEAR_FIRST: usize = 1;
+const REBUILD_CLEAR_LAST: usize = 32;
+const REBUILD_HWFEAT_READ: usize = 33;
+const REBUILD_SYS_BUS: usize = 34;
+const REBUILD_CHAN_CTL: usize = 35;
+const REBUILD_TX_CTL: usize = 36;
+const REBUILD_RX_CTL: usize = 37;
+const REBUILD_IRQ_EN: usize = 38;
+const REBUILD_MTL_TX: usize = 39;
+const REBUILD_MTL_RX: usize = 40;
+const REBUILD_TX_BASE_H: usize = 41;
+const REBUILD_TX_BASE_L: usize = 42;
+const REBUILD_RX_BASE_H: usize = 43;
+const REBUILD_RX_BASE_L: usize = 44;
+const REBUILD_TX_RINGLEN: usize = 45;
+const REBUILD_RX_RINGLEN: usize = 46;
+const REBUILD_MAC_LOW: usize = 47;
+const REBUILD_MAC_HIGH: usize = 48;
+const REBUILD_RXQ_MAP: usize = 49;
+const REBUILD_FILTER_READ: usize = 50;
+const REBUILD_FILTER_WRITE: usize = 51;
+const REBUILD_MAC_CONFIG: usize = 52;
+const REBUILD_RX_START: usize = 53;
+/// Rebuild cursors 54..=69: one checked refill unit per RX slot.
+const REBUILD_REFILL_FIRST: usize = 54;
+const REBUILD_REFILL_LAST: usize = 69;
+const REBUILD_TX_EN_READ_MAC: usize = 70;
+const REBUILD_TX_EN_WRITE_MAC: usize = 71;
+const REBUILD_TX_EN_READ_CTL: usize = 72;
+const REBUILD_TX_EN_WRITE_CTL: usize = 73;
 
 // ---------------------------------------------------------------------------
 // Task 2.1: bounded TX submit, terminal and single-shot reclaim
@@ -266,12 +517,26 @@ pub struct Gmac<B: ArenaBacking> {
     tx_inflight: usize,
     state: GmacState,
     link: Option<LinkConfig>,
+    /// MS13 T5: last committed runtime link snapshot (`None` before the
+    /// first one). Init seeds it from the bounded decode: the first runtime
+    /// read of an unchanged link dedups.
+    link_up: Option<bool>,
+    /// MS13 T5: the running link-snapshot machine.
+    link_read: LinkRead,
+    /// MS13 T5: raw words of the running snapshot and its remaining
+    /// schedule (the ability tail of a changed-to-up snapshot).
+    link_scratch: LinkScratch,
+    link_read_rest: [LinkReg; 4],
+    link_read_rest_len: usize,
     cancel_requested: bool,
     /// MS12 async (IOC) mode: descriptor publishes raise the completion
     /// interrupt (RX des3 bit30 / TX des2 IOC) and [`Self::arm_notify`]
     /// opens the device notification. The polling constructor keeps the
     /// MS11 behavior (IOC=0, IRQ_EN=0).
     async_notify: bool,
+    /// MS13 runtime recovery machine (`Some` between a successful
+    /// `runtime_begin_reset` and the final rebuild step).
+    recovery: Option<Recovery>,
 }
 
 /// Read-only arm-recheck observation (MS12 task T2): which ring heads hold
@@ -301,8 +566,14 @@ impl<B: ArenaBacking> Gmac<B> {
             tx_inflight: 0,
             state: GmacState::Uninit,
             link: None,
+            link_up: None,
+            link_read: LinkRead::Idle,
+            link_scratch: LinkScratch::default(),
+            link_read_rest: [LinkReg::Ana, LinkReg::Lpa, LinkReg::Ctrl1000, LinkReg::Stat1000],
+            link_read_rest_len: 0,
             cancel_requested: false,
             async_notify: false,
+            recovery: None,
         })
     }
 
@@ -431,17 +702,11 @@ impl<B: ArenaBacking> Gmac<B> {
         env.reg_write(regs::MAC_PKT_FILTER, pf | regs::MAC_FILTER_PR);
 
         // 10. MAC config per the decoded ability; TE stays 0, RE on.
-        let mut cfg = regs::MAC_CONFIG_RE;
-        if link.full_duplex {
-            cfg |= regs::MAC_CONFIG_DM;
-        }
-        match link.speed {
-            LinkSpeed::S100 => cfg |= regs::MAC_CONFIG_FES | regs::MAC_CONFIG_PS,
-            LinkSpeed::S10 => cfg |= regs::MAC_CONFIG_PS,
-            LinkSpeed::S1000 => {}
-        }
-        env.reg_write(regs::MAC_CONFIG, cfg);
+        env.reg_write(regs::MAC_CONFIG, regs::MAC_CONFIG_RE | mac_config_for(link));
         self.link = Some(link);
+        // The init decode committed the boot link: the first runtime
+        // snapshot of an unchanged link dedups against it.
+        self.link_up = Some(true);
 
         // 11. RX DMA start, then the R69 refill walk: per-slot buffer flush,
         //     descriptor publish, tail doorbell and SR rewrite.
@@ -483,26 +748,109 @@ impl<B: ArenaBacking> Gmac<B> {
             .map_err(GmacError::Mdio)?;
         let stat1000 = phy_probe::mdio_read(env, phy_probe::PHY_ADDR, STAT1000_REG)
             .map_err(GmacError::Mdio)?;
+        decode_abilities(ana, lpa, ctrl1000, stat1000)
+    }
 
-        // Priority decode (contract): 1000FD/HD from CTRL1000 bits9/8 vs
-        // peer STAT1000 bits11/10; 10/100 from ANA&LPA bits8/7/6/5.
-        let common = ana & lpa;
-        let link = if ctrl1000 & (1 << 9) != 0 && stat1000 & (1 << 11) != 0 {
-            LinkConfig { speed: LinkSpeed::S1000, full_duplex: true }
-        } else if ctrl1000 & (1 << 8) != 0 && stat1000 & (1 << 10) != 0 {
-            LinkConfig { speed: LinkSpeed::S1000, full_duplex: false }
-        } else if common & (1 << 8) != 0 {
-            LinkConfig { speed: LinkSpeed::S100, full_duplex: true }
-        } else if common & (1 << 7) != 0 {
-            LinkConfig { speed: LinkSpeed::S100, full_duplex: false }
-        } else if common & (1 << 6) != 0 {
-            LinkConfig { speed: LinkSpeed::S10, full_duplex: true }
-        } else if common & (1 << 5) != 0 {
-            LinkConfig { speed: LinkSpeed::S10, full_duplex: false }
-        } else {
-            return Err(GmacError::NoCommonAbility { ana, lpa, ctrl1000, stat1000 });
-        };
-        Ok(link)
+    /// MS13 T5: one bounded runtime link-snapshot step. Each call performs
+    /// at most one MMIO action — a C22 read trigger, a busy observation, a
+    /// DATA read or the next scheduled trigger — and the caller retries
+    /// [`LinkReadStep::Pending`] after a bounded cadence. The BMSR link bit
+    /// is the state; a changed-to-up snapshot extends the schedule with the
+    /// ability words and applies the init priority decode to MAC_CONFIG
+    /// exactly once (RMW: only PS/FES/DM are replaced, TE and every other
+    /// committed bit stay). A busy engine past the absolute 10 ms deadline
+    /// fails the machine back to `Idle` with a phase timeout and touches no
+    /// owner resource. A running runtime recovery must not interleave: the
+    /// adapter refuses reads while one is in flight.
+    pub fn read_link_step<E: GmacEnv>(&mut self, env: &mut E) -> Result<LinkReadStep, GmacError> {
+        let now = env.now_nanos();
+        match self.link_read {
+            LinkRead::Idle => {
+                if self.recovery.is_some() {
+                    return Err(GmacError::Cancelled { phase: Phase::LinkRead, after_publish: false });
+                }
+                self.link_scratch = LinkScratch::default();
+                self.link_read_rest_len = 0;
+                LinkReg::Bmsr.trigger(env);
+                self.link_read = LinkRead::Busy {
+                    head: LinkReg::Bmsr,
+                    deadline: now + phy_probe::MDIO_TIMEOUT_NANOS,
+                };
+                Ok(LinkReadStep::Pending)
+            }
+            LinkRead::Busy { head, deadline } => {
+                let raw = env.mmio_read(mac_probe::MAC_BASE_PADDR + phy_probe::MDIO_ADDR_OFFSET);
+                if raw & phy_probe::MII_ADDR_BUSY != 0 {
+                    if now >= deadline {
+                        self.link_read = LinkRead::Idle;
+                        return Err(GmacError::PhaseTimeout { phase: Phase::LinkRead });
+                    }
+                    return Ok(LinkReadStep::Pending);
+                }
+                self.link_read = LinkRead::Data { head, deadline };
+                Ok(LinkReadStep::Pending)
+            }
+            LinkRead::Data { head, deadline } => {
+                let word = env.mmio_read(mac_probe::MAC_BASE_PADDR + phy_probe::MDIO_DATA_OFFSET);
+                let value = (word & 0xffff) as u16;
+                head.store(&mut self.link_scratch, value);
+                if head == LinkReg::Bmsr {
+                    let up = value & phy_probe::BMSR_LINK != 0;
+                    if self.link_up == Some(up) {
+                        // Dedup: the same value never re-runs the ability
+                        // schedule and never re-applies the MAC config.
+                        self.link_read = LinkRead::Idle;
+                        return Ok(LinkReadStep::Done(up));
+                    }
+                    if !up {
+                        self.link_up = Some(false);
+                        self.link_read = LinkRead::Idle;
+                        return Ok(LinkReadStep::Done(false));
+                    }
+                    // Changed-to-up: schedule the ability words (the stack
+                    // pops Ana first, matching the init read order); the
+                    // commit happens only after the full decode succeeds.
+                    self.link_read_rest = [
+                        LinkReg::Stat1000,
+                        LinkReg::Ctrl1000,
+                        LinkReg::Lpa,
+                        LinkReg::Ana,
+                    ];
+                    self.link_read_rest_len = 4;
+                }
+                if self.link_read_rest_len > 0 {
+                    self.link_read = LinkRead::Next { deadline };
+                    return Ok(LinkReadStep::Pending);
+                }
+                debug_assert_eq!(head, LinkReg::Stat1000);
+                self.link_read = LinkRead::Idle;
+                self.finish_abilities(env)
+            }
+            LinkRead::Next { deadline } => {
+                let next = self.link_read_rest[self.link_read_rest_len - 1];
+                self.link_read_rest_len -= 1;
+                next.trigger(env);
+                self.link_read = LinkRead::Busy { head: next, deadline };
+                Ok(LinkReadStep::Pending)
+            }
+        }
+    }
+
+    /// MS13 T5: applies the priority decode of the collected ability words.
+    /// Runs only for a changed-to-up snapshot whose words all completed.
+    fn finish_abilities<E: GmacEnv>(&mut self, env: &mut E) -> Result<LinkReadStep, GmacError> {
+        let s = self.link_scratch;
+        let link = decode_abilities(s.ana, s.lpa, s.ctrl1000, s.stat1000)?;
+        // Runtime application (contract ④): the same priority decode as
+        // init, written as an RMW that replaces only the speed bits — TE
+        // and every other committed MAC_CONFIG bit stay.
+        let cur = env.reg_read(regs::MAC_CONFIG);
+        let speed_bits =
+            mac_config_for(link) & (regs::MAC_CONFIG_DM | regs::MAC_CONFIG_FES | regs::MAC_CONFIG_PS);
+        env.reg_write(regs::MAC_CONFIG, (cur & !(regs::MAC_CONFIG_DM | regs::MAC_CONFIG_FES | regs::MAC_CONFIG_PS)) | speed_bits);
+        self.link = Some(link);
+        self.link_up = Some(true);
+        Ok(LinkReadStep::Done(true))
     }
 
     /// Zeros and cache-syncs both rings (empty, device-visible descriptors).
@@ -619,6 +967,11 @@ impl<B: ArenaBacking> Gmac<B> {
                 return Err(GmacError::Fault { raw_status: 0 });
             }
         }
+        if self.recovery.is_some() {
+            // A recovery machine owns the device: no reap/refill until it
+            // finishes or fails.
+            return Err(GmacError::Cancelled { phase: Phase::Poll, after_publish: true });
+        }
         let status = env.reg_read(regs::DMA_CHAN_STATUS);
         if status & regs::DMA_STATUS_FBE != 0 {
             self.bounded_stop(env);
@@ -724,6 +1077,14 @@ impl<B: ArenaBacking> Gmac<B> {
                 }))
             }
             GmacState::Uninit => return Err(TxSubmitError::Driver(GmacError::Fault { raw_status: 0 })),
+        }
+        if self.recovery.is_some() {
+            // A recovery machine owns the device: no submit until it
+            // finishes or fails.
+            return Err(TxSubmitError::Driver(GmacError::Cancelled {
+                phase: Phase::Submit,
+                after_publish: true,
+            }));
         }
         let status = env.reg_read(regs::DMA_CHAN_STATUS);
         if status & regs::DMA_STATUS_FBE != 0 {
@@ -835,6 +1196,11 @@ impl<B: ArenaBacking> Gmac<B> {
             }
             GmacState::Uninit => return Err(GmacError::Fault { raw_status: 0 }),
         }
+        if self.recovery.is_some() {
+            // A recovery machine owns the device: no reclaim until it
+            // finishes or fails.
+            return Err(GmacError::Cancelled { phase: Phase::Poll, after_publish: true });
+        }
         let status = env.reg_read(regs::DMA_CHAN_STATUS);
         if status & regs::DMA_STATUS_FBE != 0 {
             self.bounded_stop(env);
@@ -915,7 +1281,10 @@ impl<B: ArenaBacking> Gmac<B> {
     /// word. Polling-mode drivers keep the device silent: the call is a
     /// no-op there, preserving the MS11 behavior under any accidental use.
     pub fn arm_notify<E: GmacEnv>(&self, env: &mut E, tx: bool) {
-        if !self.async_notify {
+        if !self.async_notify || self.recovery.is_some() {
+            // Polling mode stays silent (MS11 behavior); a recovery machine
+            // owns the IRQ_EN window — a stray arm must not reopen the
+            // notify mid-stop.
             return;
         }
         let word = if tx { DMA_IRQ_EN_DEFAULT } else { DMA_IRQ_EN_RX_ONLY };
@@ -943,6 +1312,11 @@ impl<B: ArenaBacking> Gmac<B> {
                 return Err(GmacError::Cancelled { phase: Phase::Poll, after_publish: true })
             }
             GmacState::Uninit => return Err(GmacError::Fault { raw_status: 0 }),
+        }
+        if self.recovery.is_some() {
+            // A recovery machine owns the device: the recheck surface is
+            // closed until it finishes or fails.
+            return Err(GmacError::Cancelled { phase: Phase::Poll, after_publish: true });
         }
         env.fence_rw();
         let rx_desc = self.layout.rx_desc_va(self.rx_head).map_err(GmacError::Address)?;
@@ -1004,6 +1378,365 @@ impl<B: ArenaBacking> Gmac<B> {
         self.bounded_stop(env);
         self.stop_tx(env);
         self.state = GmacState::Faulted { raw_status };
+    }
+
+    // -----------------------------------------------------------------------
+    // MS13 Iteration 000 (T1): runtime recovery micro-step machine
+    // -----------------------------------------------------------------------
+
+    /// Observable runtime recovery stage (`None` when not recovering).
+    pub fn runtime_recovery(&self) -> Option<RuntimeRecovery> {
+        self.recovery.map(|r| r.stage)
+    }
+
+    /// Arms the bounded runtime stop from the healthy Running state. Begin
+    /// touches no board state: the first [`Self::runtime_poll_step`]
+    /// performs the notify mask. A machine already in progress is a stable
+    /// `Busy` (SWR is never re-written); Uninit, a pending cancel request,
+    /// cancelled/faulted states and a failed machine are a stable
+    /// `BadState`.
+    pub fn runtime_begin_reset(&mut self) -> Result<RuntimeRecovery, RecoveryRefusal> {
+        if let Some(r) = &self.recovery {
+            // A live machine is Busy (SWR never re-written); a failed
+            // machine is a stable BadState — no in-round retry, the
+            // retained backing waits for external reset.
+            return if r.failed.is_some() {
+                Err(RecoveryRefusal::BadState)
+            } else {
+                Err(RecoveryRefusal::Busy)
+            };
+        }
+        if !matches!(self.state, GmacState::Running) || self.cancel_requested {
+            return Err(RecoveryRefusal::BadState);
+        }
+        self.recovery = Some(Recovery {
+            stage: RuntimeRecovery::Resetting,
+            swr_deadline: 0,
+            step: 0,
+            rmw: 0,
+            mac_config_orig: 0,
+            failed: None,
+            #[cfg(any(feature = "k3-net-diagnostics", test))]
+            diag_confirm_withhold: None,
+        });
+        Ok(RuntimeRecovery::Resetting)
+    }
+
+    /// One bounded recovery micro-step: at most one MMIO read or write, or
+    /// one fixed-slot clear/refill unit. Never spins; the SWR deadline is
+    /// taken once at the request write and never renewed. A failed machine
+    /// re-reports its stable error without board access.
+    pub fn runtime_poll_step<E: GmacEnv>(
+        &mut self,
+        env: &mut E,
+    ) -> Result<RecoveryStep, GmacError> {
+        let mut r = match self.recovery {
+            Some(r) => r,
+            None => {
+                return Err(match self.state {
+                    GmacState::Faulted { raw_status } => GmacError::Fault { raw_status },
+                    _ => GmacError::Cancelled { phase: Phase::Poll, after_publish: true },
+                });
+            }
+        };
+        if let Some(e) = r.failed {
+            // Terminal refusal: the same stable error, no board access.
+            return Err(e);
+        }
+        match r.stage {
+            RuntimeRecovery::Resetting => {
+                let outcome = self.resetting_step(env, &mut r);
+                self.recovery = Some(r);
+                outcome
+            }
+            RuntimeRecovery::Rebuilding => {
+                let outcome = self.rebuild_step(env, &mut r);
+                if matches!(outcome, Ok(RecoveryStep::Recovered)) {
+                    // The machine is consumed; the driver is Running.
+                    self.recovery = None;
+                } else {
+                    self.recovery = Some(r);
+                }
+                outcome
+            }
+            // Unreachable: a failed machine always carries `failed` and was
+            // handled above.
+            RuntimeRecovery::Failed => Err(GmacError::Fault { raw_status: 0 }),
+        }
+    }
+
+    /// Terminal machine failure: the stable error is retained (re-reported
+    /// verbatim by every later step), the driver lands in its refusal state
+    /// and everything device-owned stays retained.
+    fn fail_recovery(
+        &mut self,
+        r: &mut Recovery,
+        reason: &'static str,
+        e: GmacError,
+    ) -> Result<RecoveryStep, GmacError> {
+        r.stage = RuntimeRecovery::Failed;
+        r.failed = Some(e);
+        self.state = GmacState::Stopped { reason };
+        Err(e)
+    }
+
+    /// One Resetting micro-step: mask the notify, tear down RE/SR/TE/ST
+    /// (RMW split into read/write steps, other bits preserved), request SWR
+    /// (deadline taken once), then read for the self-clear — confirm into
+    /// the fixed Stopped boundary, hold Pending inside the window or fail
+    /// on the absolute deadline.
+    fn resetting_step<E: GmacEnv>(
+        &mut self,
+        env: &mut E,
+        r: &mut Recovery,
+    ) -> Result<RecoveryStep, GmacError> {
+        match r.step {
+            0 => env.reg_write(regs::DMA_CHAN_IRQ_EN, 0),
+            1 => r.mac_config_orig = env.reg_read(regs::MAC_CONFIG),
+            2 => env.reg_write(
+                regs::MAC_CONFIG,
+                r.mac_config_orig & !(regs::MAC_CONFIG_RE | regs::MAC_CONFIG_TE),
+            ),
+            3 => r.rmw = env.reg_read(regs::DMA_RX_CTL),
+            4 => env.reg_write(regs::DMA_RX_CTL, r.rmw & !regs::DMA_RX_CTL_SR),
+            5 => r.rmw = env.reg_read(regs::DMA_TX_CTL),
+            6 => env.reg_write(regs::DMA_TX_CTL, r.rmw & !regs::DMA_TX_CTL_ST),
+            7 => r.rmw = env.reg_read(regs::DMA_MODE),
+            RESET_STEP_SWR_WRITE => {
+                env.reg_write(regs::DMA_MODE, r.rmw | regs::DMA_MODE_SWR);
+                r.swr_deadline = env.now_nanos() + RESET_BOUND_NANOS;
+            }
+            RESET_STEP_CONFIRM => {
+                // MS13 T7 honest fail-stop injection (diagnostics builds and
+                // the host harness only): the SWR write was really issued;
+                // once the first honest read found SWR still set, every later
+                // confirm read is WITHHELD — no board access — and the machine
+                // rides the absolute deadline into `ResetTimeout` carrying the
+                // last honest raw value. Never writes, never fabricates a
+                // cleared SWR, never invents a stuck value.
+                #[cfg(any(feature = "k3-net-diagnostics", test))]
+                if reset_confirm_withhold_armed() {
+                    if let Some(raw) = r.diag_confirm_withhold {
+                        if env.now_nanos() >= r.swr_deadline {
+                            return self.fail_recovery(
+                                r,
+                                "runtime-reset-failed",
+                                GmacError::ResetTimeout { raw },
+                            );
+                        }
+                        return Ok(RecoveryStep::Pending);
+                    }
+                }
+                let raw = env.reg_read(regs::DMA_MODE);
+                #[cfg(any(feature = "k3-net-diagnostics", test))]
+                if reset_confirm_withhold_armed() && raw & regs::DMA_MODE_SWR != 0 {
+                    // The first honest read found SWR genuinely still set:
+                    // withhold from here on.
+                    r.diag_confirm_withhold = Some(raw);
+                }
+                if raw & regs::DMA_MODE_SWR == 0 {
+                    // The confirmed Stopped boundary: the old ring/owner
+                    // summary stays observable until the first rebuild
+                    // unit, then the same arena is rebuilt in place.
+                    self.state = GmacState::Stopped { reason: "runtime-reset-confirmed" };
+                    r.stage = RuntimeRecovery::Rebuilding;
+                    r.step = REBUILD_BOOKKEEP;
+                    return Ok(RecoveryStep::Stepped { stage: RuntimeRecovery::Rebuilding });
+                }
+                if env.now_nanos() >= r.swr_deadline {
+                    return self.fail_recovery(
+                        r,
+                        "runtime-reset-failed",
+                        GmacError::ResetTimeout { raw },
+                    );
+                }
+                return Ok(RecoveryStep::Pending);
+            }
+            _ => unreachable!("resetting cursor out of range"),
+        }
+        r.step += 1;
+        Ok(RecoveryStep::Stepped { stage: RuntimeRecovery::Resetting })
+    }
+
+    /// One Rebuilding micro-step over the same arena: software bookkeeping
+    /// restart, 32 fixed-slot ring clear units, then the absolute register
+    /// configuration in init's write order (address width re-read, bases,
+    /// MAC/MTL, last-known MAC_CONFIG, RX start), the 16 checked refill
+    /// units and the TX enable — never before the SWR confirmation.
+    fn rebuild_step<E: GmacEnv>(
+        &mut self,
+        env: &mut E,
+        r: &mut Recovery,
+    ) -> Result<RecoveryStep, GmacError> {
+        let unit = match r.step {
+            REBUILD_BOOKKEEP => {
+                // The confirmed reset killed the old carriers: the software
+                // ring bookkeeping restarts empty on the same arena.
+                self.rx_head = 0;
+                self.tx_head = 0;
+                self.tx_tail = 0;
+                self.tx_slots = [TxSlotState::Free; dma::NUM_SLOTS];
+                self.tx_deadlines = [0; dma::NUM_SLOTS];
+                self.tx_inflight = 0;
+                Ok(false)
+            }
+            REBUILD_CLEAR_FIRST..=REBUILD_CLEAR_LAST => {
+                // One fixed-slot clear unit: zero the four descriptor words,
+                // fence, clean — an empty device-visible descriptor.
+                let i = r.step - REBUILD_CLEAR_FIRST;
+                let ring_va = if i < dma::NUM_SLOTS {
+                    self.layout.rx_ring_va()
+                } else {
+                    self.layout.tx_ring_va()
+                };
+                let slot = i % dma::NUM_SLOTS;
+                let va = ring_va + slot * DESC_BYTES;
+                for word in 0..4 {
+                    write_desc_word(va, word, 0);
+                }
+                env.fence_rw();
+                match check_cache_range(self.layout.base_va(), va, DESC_BYTES) {
+                    Ok(_) => {
+                        env.cache_clean(va, DESC_BYTES);
+                        Ok(false)
+                    }
+                    Err(e) => Err(GmacError::Address(e)),
+                }
+            }
+            REBUILD_HWFEAT_READ => {
+                r.rmw = env.reg_read(regs::MAC_HW_FEATURE1);
+                Ok(false)
+            }
+            REBUILD_SYS_BUS => {
+                let width = decode_addr_width(r.rmw).map_err(GmacError::Address)?;
+                let eame = if width.bits() > 32 { regs::DMA_SYS_BUS_EAME } else { 0 };
+                env.reg_write(
+                    regs::DMA_SYS_BUS_MODE,
+                    regs::DMA_SYS_BUS_RD_OSR_LMT_2 | regs::DMA_SYS_BUS_BLEN8 | regs::DMA_SYS_BUS_BLEN16 | eame,
+                );
+                Ok(false)
+            }
+            REBUILD_CHAN_CTL => {
+                env.reg_write(regs::DMA_CHAN_CTL, regs::DMA_CHAN_PBLX8 | regs::DMA_CHAN_DSL_6);
+                Ok(false)
+            }
+            REBUILD_TX_CTL => {
+                env.reg_write(regs::DMA_TX_CTL, regs::DMA_TX_CTL_OSP | regs::DMA_TX_CTL_PBL_8);
+                Ok(false)
+            }
+            REBUILD_RX_CTL => {
+                env.reg_write(regs::DMA_RX_CTL, regs::DMA_RX_CTL_RBSZ_2048 | regs::DMA_RX_CTL_PBL_8);
+                Ok(false)
+            }
+            REBUILD_IRQ_EN => {
+                env.reg_write(regs::DMA_CHAN_IRQ_EN, 0);
+                Ok(false)
+            }
+            REBUILD_MTL_TX => {
+                env.reg_write(
+                    regs::MTL_TXQ0_OP,
+                    regs::MTL_TXQ_TSF | regs::MTL_TXQ_TXQEN | regs::MTL_TXQ_TQS_31,
+                );
+                Ok(false)
+            }
+            REBUILD_MTL_RX => {
+                env.reg_write(
+                    regs::MTL_RXQ0_OP,
+                    regs::MTL_RXQ_RSF | regs::MTL_RXQ_DIS_TCP_EF | regs::MTL_RXQ_RQS_31,
+                );
+                Ok(false)
+            }
+            REBUILD_TX_BASE_H => {
+                env.reg_write(regs::DMA_TX_DESC_HL, addr_hi32(self.layout.tx_ring_pa()));
+                Ok(false)
+            }
+            REBUILD_TX_BASE_L => {
+                env.reg_write(regs::DMA_TX_DESC_LL, addr_lo32(self.layout.tx_ring_pa()));
+                Ok(false)
+            }
+            REBUILD_RX_BASE_H => {
+                env.reg_write(regs::DMA_RX_DESC_HL, addr_hi32(self.layout.rx_ring_pa()));
+                Ok(false)
+            }
+            REBUILD_RX_BASE_L => {
+                env.reg_write(regs::DMA_RX_DESC_LL, addr_lo32(self.layout.rx_ring_pa()));
+                Ok(false)
+            }
+            REBUILD_TX_RINGLEN => {
+                env.reg_write(regs::DMA_TX_RINGLEN, regs::DMA_RINGLEN_15);
+                Ok(false)
+            }
+            REBUILD_RX_RINGLEN => {
+                env.reg_write(regs::DMA_RX_RINGLEN, regs::DMA_RINGLEN_15);
+                Ok(false)
+            }
+            REBUILD_MAC_LOW => {
+                env.reg_write(regs::MAC_ADDR0_LOW, 0x0000_0002);
+                Ok(false)
+            }
+            REBUILD_MAC_HIGH => {
+                env.reg_write(regs::MAC_ADDR0_HIGH, regs::MAC_ADDR_AE | 0x0000_0126);
+                Ok(false)
+            }
+            REBUILD_RXQ_MAP => {
+                env.reg_write(regs::MAC_RXQ0_MAP, regs::MAC_RXQ0_MAP_CH0);
+                Ok(false)
+            }
+            REBUILD_FILTER_READ => {
+                r.rmw = env.reg_read(regs::MAC_PKT_FILTER);
+                Ok(false)
+            }
+            REBUILD_FILTER_WRITE => {
+                env.reg_write(regs::MAC_PKT_FILTER, r.rmw | regs::MAC_FILTER_PR);
+                Ok(false)
+            }
+            REBUILD_MAC_CONFIG => {
+                // The captured pre-teardown MAC_CONFIG (last-known link
+                // configuration, RE included) — no synchronous decode.
+                env.reg_write(regs::MAC_CONFIG, r.mac_config_orig);
+                Ok(false)
+            }
+            REBUILD_RX_START => {
+                env.reg_write(
+                    regs::DMA_RX_CTL,
+                    regs::DMA_RX_CTL_RBSZ_2048 | regs::DMA_RX_CTL_PBL_8 | regs::DMA_RX_CTL_SR,
+                );
+                Ok(false)
+            }
+            REBUILD_REFILL_FIRST..=REBUILD_REFILL_LAST => {
+                let slot = r.step - REBUILD_REFILL_FIRST;
+                let sr = regs::DMA_RX_CTL_RBSZ_2048 | regs::DMA_RX_CTL_PBL_8 | regs::DMA_RX_CTL_SR;
+                self.refill_slot(env, slot, sr).map(|_| false)
+            }
+            REBUILD_TX_EN_READ_MAC => {
+                r.rmw = env.reg_read(regs::MAC_CONFIG);
+                Ok(false)
+            }
+            REBUILD_TX_EN_WRITE_MAC => {
+                env.reg_write(regs::MAC_CONFIG, r.rmw | regs::MAC_CONFIG_TE);
+                Ok(false)
+            }
+            REBUILD_TX_EN_READ_CTL => {
+                r.rmw = env.reg_read(regs::DMA_TX_CTL);
+                Ok(false)
+            }
+            REBUILD_TX_EN_WRITE_CTL => {
+                env.reg_write(regs::DMA_TX_CTL, r.rmw | regs::DMA_TX_CTL_ST);
+                // The rebuild is complete: Running on the same arena with
+                // the fixed capacity; the machine is consumed by the caller.
+                self.state = GmacState::Running;
+                Ok(true)
+            }
+            _ => unreachable!("rebuild cursor out of range"),
+        };
+        match unit {
+            Ok(true) => Ok(RecoveryStep::Recovered),
+            Ok(false) => {
+                r.step += 1;
+                Ok(RecoveryStep::Stepped { stage: RuntimeRecovery::Rebuilding })
+            }
+            Err(e) => self.fail_recovery(r, "runtime-rebuild-failed", e),
+        }
     }
 }
 // ---------------------------------------------------------------------------

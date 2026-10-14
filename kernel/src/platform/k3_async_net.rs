@@ -293,12 +293,13 @@ mod board {
         TxSubmitError,
     };
     /// Fixed session contract (001-replan T2): 20 raw ARP frames, one
-    /// independent 1 s terminal deadline per frame, a 30 s session cap and
-    /// a 2048-byte RX scratch.
+    /// independent 1 s terminal deadline per frame, a 25 s session cap and
+    /// a 2048-byte RX scratch. (2026-10-14 user direction: every test
+    /// observation window is 25 s.)
     pub const RAW_TX_FRAMES: usize = 20;
     pub const RAW_FRAME_DEADLINE_NANOS: u64 = 1_000_000_000;
     pub const RAW_INTERFRAME_NANOS: u64 = 100_000_000;
-    pub const RAW_SESSION_NANOS: u64 = 30_000_000_000;
+    pub const RAW_SESSION_NANOS: u64 = 25_000_000_000;
     pub const RAW_RX_SCRATCH: usize = 2048;
     /// Per service round: at most 16 poll steps per direction.
     const ROUND_BUDGET: usize = 16;
@@ -327,6 +328,132 @@ mod board {
     /// (generation + waker, no Service/descriptor touch).
     fn irq_publish_work() {
         axnet::publish_queue_event();
+    }
+
+    // -----------------------------------------------------------------
+    // MS13 T5: the runtime PHY link-event source (diagnostics builds)
+    // -----------------------------------------------------------------
+
+    /// The PHY INTN route pin (MS10 fixed route; armed per the board DTB).
+    const PHY_IRQ_SOURCE: usize = 60;
+
+    /// Source-60 IRQ-context observations (the handler's snapshot/hold/config
+    /// record for the board A4 line). All `Relaxed`, observation-only.
+    static PHY60_EVENTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    static PHY60_MFPR_BEFORE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static PHY60_MFPR_SET: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static PHY60_MFPR_REARM: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+    /// The latest source-60 handler evidence (events, MFPR35 before/set/rearm).
+    pub fn phy60_counts() -> (u64, u32, u32, u32) {
+        use core::sync::atomic::Ordering;
+        (
+            PHY60_EVENTS.load(Ordering::Relaxed),
+            PHY60_MFPR_BEFORE.load(Ordering::Relaxed),
+            PHY60_MFPR_SET.load(Ordering::Relaxed),
+            PHY60_MFPR_REARM.load(Ordering::Relaxed),
+        )
+    }
+
+    /// MS13 A4 diagnostics: the live device notify word (`DMA_CHAN_IRQ_EN`),
+    /// read from task context through the same IRQ-access surface the ISR
+    /// uses. `0x0` = the owner never armed; `0xd041` = armed.
+    pub fn gmac_irq_en_snapshot() -> u32 {
+        (BOARD_IRQ_ACCESS.reg_read)(gmac::DMA_CHAN_IRQ_EN)
+    }
+
+    /// MS13 A4 diagnostics: the live DMA channel status (a W1C register —
+    /// the read is non-destructive). Latched RI/TI here while the handler
+    /// stays silent splits the failure to the delivery layer.
+    pub fn gmac_status_snapshot() -> u32 {
+        (BOARD_IRQ_ACCESS.reg_read)(gmac::DMA_CHAN_STATUS)
+    }
+
+    /// MS13 001-rework T5-R1: one time-ordered discriminator line for the
+    /// handover-window delivery fault. Pure observation — timer tick count,
+    /// raw trap-state CSRs, the AIA claim counters and the live GMAC
+    /// notify/status words — printed at the fixed probe/payload milestones
+    /// without any sleep dependency.
+    pub(super) fn discriminator_line(tag: &str, out: &mut dyn FnMut(&str)) {
+        use axplat_riscv64_k3::aia::{AIA_DEBUG_LAST_CLAIM, AIA_DEBUG_TRAPS};
+        use axplat_riscv64_k3::timer_irq::{TIMER_DEBUG_TICKS, debug_trap_csr_snapshot};
+        let ticks = TIMER_DEBUG_TICKS.load(Ordering::Relaxed);
+        let csr = debug_trap_csr_snapshot();
+        let aia_traps = AIA_DEBUG_TRAPS.load(Ordering::Relaxed);
+        let aia_claim = AIA_DEBUG_LAST_CLAIM.load(Ordering::Relaxed);
+        line(
+            out,
+            format_args!(
+                "[ms13] disc {tag} ticks={} sie={:#x} sip={:#x} sstatus={:#x} stie={} stip={} sext={} aia-traps={} aia-claim={:#x} irq-en={:#x} status={:#x}",
+                ticks,
+                csr.sie,
+                csr.sip,
+                csr.sstatus,
+                (csr.sie >> 5) & 1,
+                (csr.sip >> 5) & 1,
+                (csr.sie >> 9) & 1,
+                aia_traps,
+                aia_claim,
+                gmac_irq_en_snapshot(),
+                gmac_status_snapshot(),
+            ),
+        );
+    }
+
+    /// The minimal source-60 PHY INTN handler (MS13 T5). IRQ context: the
+    /// MFPR35 pad edge ack (set CLEAR → read back → clear CLEAR with every
+    /// non-CLEAR bit preserved — the MS10 hold-in-clear adjudication), the
+    /// edge evidence snapshot and one axnet CONFIG cause. No MDIO access,
+    /// no locks, no console: the link STATE is the owner's BMSR read.
+    pub fn phy_gpio60_handler() {
+        use crate::platform::phy_probe;
+        let mut env = super::super::k3::K3Env;
+        let ev = phy_probe::pad35_edge_ack(&mut env);
+        use core::sync::atomic::Ordering;
+        PHY60_MFPR_BEFORE.store(ev.before, Ordering::Relaxed);
+        PHY60_MFPR_SET.store(ev.set_readback, Ordering::Relaxed);
+        PHY60_MFPR_REARM.store(ev.rearm_readback, Ordering::Relaxed);
+        PHY60_EVENTS.fetch_add(1, Ordering::Relaxed);
+        axnet::publish_config_event();
+    }
+
+    /// Arms the runtime PHY link-event source (MS13 T5, diagnostics builds
+    /// only). The pad edge arm releases the MFPR hold-in-clear and enables
+    /// the falling edge, the INER link-change enable rides the paged MDIO
+    /// in owner-capable boot context, and the minimal handler is registered
+    /// with its route opened. A failed arm degrades only the EVENT path —
+    /// the evidence line makes it observable; the BMSR state reads and the
+    /// data plane are independent of it.
+    fn arm_phy_source60(env: &mut super::super::k3::K3Env, out: &mut dyn FnMut(&str)) -> bool {
+        use crate::platform::phy_probe;
+        let setup = phy_probe::pad35_edge_setup(env);
+        let iner = phy_probe::iner_enable_link_change(env);
+        let iner_ok = iner.is_ok();
+        // MS13 rework (INTS/INTN ack): clear any cause latched before the
+        // arm so INTN sits high and the NEXT link transition produces a
+        // fresh pad edge; a value latched here predates this owner and is
+        // evidence only (the handler re-reads link state, not causes).
+        let insr = phy_probe::paged_read(env, phy_probe::PHY_PAGE_INSR, phy_probe::PHY_INSR_REG);
+        // Stage10's observation handler is still registered on 60 (the boot
+        // entry only retires 133). Retire it first — the route is closed
+        // here, so no IRQ can fire between unregister and register.
+        axhal::irq::unregister(PHY_IRQ_SOURCE);
+        let registered = axhal::irq::register(PHY_IRQ_SOURCE, phy_gpio60_handler);
+        if registered {
+            axhal::irq::set_enable(PHY_IRQ_SOURCE, true);
+        }
+        let insr_desc = match insr.as_ref() {
+            Ok(v) => alloc::format!("{v:#x}"),
+            Err(e) => alloc::format!("err={e:?}"),
+        };
+        line(
+            out,
+            format_args!(
+                "[ms13] phy60 arm mfpr={:#x}->{:#x} iner={} registered={} insr={}",
+                setup.before, setup.readback, iner_ok, registered, insr_desc
+            ),
+        );
+        iner_ok && registered
     }
 
     static BOARD_IRQ_ACCESS: IrqAccess = IrqAccess {
@@ -676,6 +803,284 @@ mod board {
         }
     }
 
+    /// The retained-arena observation window (A3): the confirmed stop is
+    /// observed for 25 s of real timer time with real peer input still
+    /// arriving — new DMA write-back bytes must be zero. (2026-10-14 user
+    /// direction: every test observation window is 25 s.)
+    const STOPPED_WINDOW_NANOS: u64 = 25_000_000_000;
+
+    /// One synchronized read of the whole arena through the device view:
+    /// block-granular invalidate (every CPU line was cleaned at publish) →
+    /// fence → volatile byte reads. Never writes.
+    #[cfg(feature = "k3-net-diagnostics")]
+    fn sync_arena_read(
+        env: &mut super::super::k3::K3Env,
+        base_va: usize,
+        len: usize,
+    ) -> alloc::vec::Vec<u8> {
+        use gmac::GmacEnv;
+        let mut off = 0usize;
+        while off < len {
+            env.cache_invalidate(base_va + off, dma::CACHE_BLOCK_BYTES);
+            off += dma::CACHE_BLOCK_BYTES;
+        }
+        env.fence_rw();
+        let mut v = alloc::vec::Vec::with_capacity(len);
+        for i in 0..len {
+            // SAFETY: the checked arena VA from the construction layout;
+            // read-only observation of the retained backing.
+            v.push(unsafe { ((base_va + i) as *const u8).read_volatile() });
+        }
+        v
+    }
+
+    /// MS13 Iteration 000 (T3): the native stop/rebuild witness. Runs in the
+    /// probe build on the SAME Gmac/arena before the adapter/Service
+    /// handover; the Service never runs alongside it. Baseline real ARP
+    /// session (real RI/TI through the source-133 route, real RX frames
+    /// from the pinging peer) → bounded stop/SWR → confirmed Stopped
+    /// boundary with a 2 s retained-arena observation → in-place rebuild →
+    /// the real ARP session again → notify/route closed for the handover.
+    /// Every failure prints its stage and parks with the backing retained;
+    /// a nonzero write-back count is a counter-indication and never hands
+    /// the driver to the Service.
+    #[cfg(feature = "k3-net-diagnostics")]
+    fn native_recovery_probe<B: gmac::ArenaBacking>(
+        drv: &mut Gmac<B>,
+        env: &mut super::super::k3::K3Env,
+        arena_va: usize,
+        out: &mut dyn FnMut(&str),
+    ) {
+        use gmac::GmacEnv;
+        // 1. Baseline: the existing real ARP session — real terminals and
+        //    real RX frames are the peer-input premise for the observation.
+        let mut ledger = SessionLedger::new();
+        let mut scratch = [0u8; RAW_RX_SCRATCH];
+        let baseline = raw_session(drv, env, &mut ledger, &mut scratch, out);
+        match block_on(timeout(Some(Duration::from_nanos(RAW_SESSION_NANOS)), baseline)) {
+            Ok(true) if ledger.rx_frames >= 1 => {}
+            Ok(true) => {
+                line(out, format_args!("[ms13] probe err=baseline-no-rx stop"));
+                park();
+            }
+            Ok(false) => {
+                line(out, format_args!("[ms13] probe err=baseline-session stop"));
+                park();
+            }
+            Err(_elapsed) => {
+                line(out, format_args!("[ms13] probe err=baseline-cap stop"));
+                park();
+            }
+        }
+        let (ri0, ti0, _, _) = irq_counts();
+        line(
+            out,
+            format_args!(
+                "[ms13] probe baseline sent={} terminals={} rx-frames={} irq-runs={} ri={} ti={}",
+                ledger.sent,
+                ledger.terminals,
+                ledger.rx_frames,
+                irq_handler_runs(),
+                ri0,
+                ti0,
+            ),
+        );
+        discriminator_line("probe-baseline", out);
+
+        // 2. Quiesce: close the notify and the source-133 route — the stop
+        //    machine owns the device from here.
+        drv.mask_notify(env);
+        axhal::irq::set_enable(GMAC_IRQ_SOURCE, false);
+
+        // 3. Bounded stop: arm the machine and step to the confirmed
+        //    boundary; Pending polls are paced by the real timer inside the
+        //    absolute 1 s window the machine enforces itself.
+        match drv.runtime_begin_reset() {
+            Ok(gmac::RuntimeRecovery::Resetting) => {}
+            Ok(gmac::RuntimeRecovery::Rebuilding)
+            | Ok(gmac::RuntimeRecovery::Failed) => {
+                unreachable!("begin reports Resetting from the healthy Running state")
+            }
+            Err(e) => {
+                line(out, format_args!("[ms13] probe err=begin {e:?} stop"));
+                park();
+            }
+        }
+        loop {
+            match drv.runtime_poll_step(env) {
+                Ok(gmac::RecoveryStep::Pending) => {
+                    block_on(sleep_until(wall_time() + Duration::from_millis(10)));
+                }
+                Ok(gmac::RecoveryStep::Stepped { stage: gmac::RuntimeRecovery::Resetting }) => {}
+                Ok(gmac::RecoveryStep::Stepped { stage: gmac::RuntimeRecovery::Rebuilding }) => {
+                    break;
+                }
+                Ok(gmac::RecoveryStep::Stepped { stage: gmac::RuntimeRecovery::Failed }) => {
+                    line(out, format_args!("[ms13] probe err=stop-failed stop backing=retained"));
+                    park();
+                }
+                Ok(gmac::RecoveryStep::Recovered) => {
+                    unreachable!("the rebuild cannot finish before the confirmation")
+                }
+                Err(e) => {
+                    line(
+                        out,
+                        format_args!("[ms13] probe err=stop-machine {e:?} stop backing=retained"),
+                    );
+                    park();
+                }
+            }
+        }
+
+        // 4. The confirmed Stopped boundary: raw register facts, the
+        //    synchronized old descriptor/owner summary, and the arena
+        //    snapshot the write-back observation compares against.
+        let mode = env.reg_read(gmac::regs::DMA_MODE);
+        let rxctl = env.reg_read(gmac::DMA_RX_CTL);
+        let txctl = env.reg_read(gmac::DMA_TX_CTL);
+        let mac = env.reg_read(gmac::MAC_CONFIG);
+        let status = env.reg_read(gmac::DMA_CHAN_STATUS);
+        let (rx_head, tx_head) = drv.diag_head_words(env);
+        line(
+            out,
+            format_args!(
+                "[ms13] probe stopped mode={mode:#010x} rxctl={rxctl:#010x} txctl={txctl:#010x} mac={mac:#010x} status={status:#010x} sr={} st={} te={} re={} tx-inflight={} rx-head={rx_head:#010x} tx-head={tx_head:#010x}",
+                rxctl & 1,
+                txctl & 1,
+                (mac >> 1) & 1,
+                mac & 1,
+                drv.tx_inflight(),
+            ),
+        );
+        let before = sync_arena_read(env, arena_va, dma::ARENA_BYTES);
+
+        // 5. The 2 s retained-arena observation: real input still arrives
+        //    (the peer keeps pinging) while the driver touches nothing —
+        //    new DMA write-back bytes must be zero.
+        block_on(sleep_until(wall_time() + Duration::from_nanos(STOPPED_WINDOW_NANOS)));
+        let after = sync_arena_read(env, arena_va, dma::ARENA_BYTES);
+        let writeback = before.iter().zip(after.iter()).filter(|(a, b)| a != b).count();
+        line(
+            out,
+            format_args!(
+                "[ms13] probe stopped-window window-ms={} writeback-bytes={writeback}",
+                STOPPED_WINDOW_NANOS / 1_000_000,
+            ),
+        );
+        discriminator_line("stopped-window", out);
+        if let Some(off) = before.iter().zip(after.iter()).position(|(a, b)| a != b) {
+            line(
+                out,
+                format_args!(
+                    "[ms13] probe writeback-at off={off} old={:#02x} new={:#02x} stop backing=retained",
+                    before[off], after[off],
+                ),
+            );
+            park();
+        }
+
+        // 6. In-place rebuild on the same arena: step to Running, then
+        //    report the fixed capacity facts.
+        let mut rebuilt_steps = 0usize;
+        loop {
+            match drv.runtime_poll_step(env) {
+                Ok(gmac::RecoveryStep::Stepped { stage: gmac::RuntimeRecovery::Rebuilding }) => {
+                    rebuilt_steps += 1;
+                    if rebuilt_steps > 200 {
+                        line(out, format_args!("[ms13] probe err=rebuild-unbounded stop"));
+                        park();
+                    }
+                }
+                Ok(gmac::RecoveryStep::Recovered) => break,
+                Ok(gmac::RecoveryStep::Stepped { stage: gmac::RuntimeRecovery::Failed }) => {
+                    line(
+                        out,
+                        format_args!("[ms13] probe err=rebuild-failed stop backing=retained"),
+                    );
+                    park();
+                }
+                Ok(gmac::RecoveryStep::Pending)
+                | Ok(gmac::RecoveryStep::Stepped { stage: gmac::RuntimeRecovery::Resetting }) => {
+                    unreachable!("the rebuild phase holds no SWR window")
+                }
+                Err(e) => {
+                    line(
+                        out,
+                        format_args!("[ms13] probe err=rebuild-machine {e:?} stop backing=retained"),
+                    );
+                    park();
+                }
+            }
+        }
+        let mut rx_published = 0usize;
+        for slot in 0..dma::NUM_SLOTS {
+            let va = arena_va + dma::RX_RING_OFF + slot * dma::DESC_BYTES + 12;
+            // SAFETY: checked arena VA, the word3 of RX descriptor `slot`.
+            let w3 = unsafe { (va as *const u32).read_volatile() };
+            if w3 & gmac::RDES3_OWN != 0 {
+                rx_published += 1;
+            }
+        }
+        line(
+            out,
+            format_args!(
+                "[ms13] probe rebuilt state=running rx-published={rx_published} tx-capacity={} irq-en={:#010x}",
+                drv.tx_free_capacity(),
+                env.reg_read(gmac::DMA_CHAN_IRQ_EN),
+            ),
+        );
+        discriminator_line("rebuilt", out);
+
+        // 7. The rebuilt plane serves real traffic again (the same
+        //    20-frame ARP session: at least one full bidirectional exchange
+        //    with real RI/TI and a full TX terminal).
+        let mut ledger2 = SessionLedger::new();
+        let session2 = raw_session(drv, env, &mut ledger2, &mut scratch, out);
+        match block_on(timeout(Some(Duration::from_nanos(RAW_SESSION_NANOS)), session2)) {
+            Ok(true) if ledger2.rx_frames >= 1 => {}
+            Ok(true) => {
+                line(out, format_args!("[ms13] probe err=rebuilt-no-rx stop"));
+                park();
+            }
+            Ok(false) => {
+                line(out, format_args!("[ms13] probe err=rebuilt-session stop"));
+                park();
+            }
+            Err(_elapsed) => {
+                line(out, format_args!("[ms13] probe err=rebuilt-cap stop"));
+                park();
+            }
+        }
+        let (ri1, ti1, _, _) = irq_counts();
+        line(
+            out,
+            format_args!(
+                "[ms13] probe rebuilt-session sent={} terminals={} rx-frames={} irq-runs={} ri={} ti={}",
+                ledger2.sent,
+                ledger2.terminals,
+                ledger2.rx_frames,
+                irq_handler_runs(),
+                ri1,
+                ti1,
+            ),
+        );
+
+        // 8. Close for the handover: notify masked, route re-opened — the
+        //    Service owner arms through its own protocol; the handler stays
+        //    registered (never re-registered). The stop step (2) CLOSED the
+        //    source-133 AIA route, and nothing downstream re-opens it: the
+        //    owner's arm/recheck protocol only opens the device IRQ_EN word,
+        //    and the axhal first-registration enable already fired in the
+        //    baseline session (the waker registry entry exists, so
+        //    re-registration is a no-op) — the 001-rework discriminator run
+        //    watched zero claims past this window with the route closed.
+        //    Re-open the route here; the owner's armed notify takes over.
+        drv.mask_notify(env);
+        axhal::irq::set_enable(GMAC_IRQ_SOURCE, true);
+        line(out, format_args!("[ms13] probe ok handover-next backing=retained"));
+        discriminator_line("handover", out);
+    }
+
     /// K3 board entry (the async-net boot branch): after a normally ended
     /// stage 10, mask the three device routes, retire the observation
     /// handler, build the IOC-mode driver with the notification closed,
@@ -823,7 +1228,8 @@ mod board {
             park();
         }
         // Mask the three device routes and retire the stage-10 observation
-        // handler; 60/277 stay registered but masked.
+        // handler; 60/277 stay registered but masked (probe builds re-arm
+        // 60 below).
         for source in [60, GMAC_IRQ_SOURCE, 277] {
             axhal::irq::set_enable(source, false);
         }
@@ -841,6 +1247,10 @@ mod board {
         };
         page.zero();
         let mut env = super::super::k3::K3Env;
+        // The probe's arena observation reads the retained backing through
+        // this VA (the guard retains it until external reset).
+        #[cfg(feature = "k3-net-diagnostics")]
+        let arena_va = page.start_vaddr().as_usize();
         let mut drv = match Gmac::new_async(ArenaGuard::new(BoardBacking::new(page))) {
             Ok(d) => d,
             Err(e) => {
@@ -853,6 +1263,34 @@ mod board {
             park();
         }
         drv.enable_tx(&mut env);
+
+        // MS13 T3: the IRQ-context access and the one source-133 handler
+        // are armed/registered BEFORE the native probe and reused by the
+        // Service handover — never re-registered, never parallel with the
+        // owner. The route stays closed until a waker registration opens it.
+        arm_irq_access(&BOARD_IRQ_ACCESS);
+        if !axhal::irq::register(GMAC_IRQ_SOURCE, gmac133_handler) {
+            out("[ms12] net err=register-133 stop\n");
+            park();
+        }
+
+        // MS13 T5 (probe builds only): the runtime PHY link-event source is
+        // armed before the probe and the Service handover — MFPR35 falling
+        // edge, INER link-change enable and the minimal source-60 handler.
+        // The plain image keeps no PHY event behavior; its link snapshot is
+        // still available through the adapter's BMSR read.
+        #[cfg(feature = "k3-net-diagnostics")]
+        {
+            let mut env = super::super::k3::K3Env;
+            arm_phy_source60(&mut env, &mut out);
+        }
+
+        // MS13 T3 probe build only: the native stop/rebuild witness runs on
+        // the same Gmac/arena before the adapter exists; the plain async
+        // build never runs it.
+        #[cfg(feature = "k3-net-diagnostics")]
+        native_recovery_probe(&mut drv, &mut env, arena_va, &mut out);
+
         let adapter = match K3NetAdapter::new(drv, env) {
             Ok(a) => a,
             Err(e) => {
@@ -860,14 +1298,6 @@ mod board {
                 park();
             }
         };
-
-        // Arm the IRQ-context access BEFORE the handler registration (the
-        // ISR may fire immediately after the route opens).
-        arm_irq_access(&BOARD_IRQ_ACCESS);
-        if !axhal::irq::register(GMAC_IRQ_SOURCE, gmac133_handler) {
-            out("[ms12] net err=register-133 stop\n");
-            park();
-        }
 
         // Install the adapter as the ONLY NIC and start exactly one pinned
         // queue owner (spawn-free installation, D5; the owner activates on
@@ -917,6 +1347,8 @@ mod board {
                 GMAC_IRQ_SOURCE,
             ),
         );
+        #[cfg(feature = "k3-net-diagnostics")]
+        discriminator_line("owner-active", &mut out);
 
         // The T6 stack runner: the ONE resident protocol promoter (the MS06
         // contract). Failure stops — the data plane parks without a stack
@@ -942,7 +1374,7 @@ mod board {
         // branches diverge.
         #[cfg(feature = "k3-net-diagnostics")]
         {
-            super::k3_net_diagnostics::run_diagnostics(&mut out);
+            super::k3_net_diagnostics::run_diagnostics(arena_va, &mut out);
             park()
         }
         #[cfg(not(feature = "k3-net-diagnostics"))]
@@ -992,7 +1424,8 @@ mod k3_net_diagnostics {
     /// The reclaim hold: below every data deadline and explicitly released.
     const HOLD_LEASE_MS: u64 = 200;
     /// Per-phase absolute wall cap (the payload stops, never wedges).
-    const PHASE_CAP_NANOS: u64 = 10_000_000_000;
+    /// 2026-10-14 user direction: every test observation window is 25 s.
+    const PHASE_CAP_NANOS: u64 = 25_000_000_000;
 
     /// `HOLD_TX_RECLAIM` and `RELEASE`, mirroring the diag constants.
     const OP_HOLD_TX_RECLAIM: u64 = 2;
@@ -1002,20 +1435,25 @@ mod k3_net_diagnostics {
     /// The fixed echo ports (T6 contract).
     const UDP_ECHO_PORT: u16 = 26001;
     const TCP_ECHO_PORT: u16 = 26002;
-    /// Per-operation bound: every session op is 5 s bounded.
+    /// The recovery-matrix ports (MS13 T7; distinct from the echo ports).
+    const MATRIX_UDP_PORT: u16 = 26011;
+    const MATRIX_TCP_PORT: u16 = 26012;
+    const MATRIX_WAITER_PORT: u16 = 26013;
+    /// Per-operation bound: every session op is 5 s bounded (T6 contract).
     const SESSION_OP_NANOS: u64 = 5_000_000_000;
-    /// Operator-paced session wait: 10 s-level per phase (T7 D6).
-    const SESSION_WAIT_NANOS: u64 = 15_000_000_000;
-    /// The quiet window: no new cause and no due protocol timer (T7).
-    const QUIET_WINDOW_NANOS: u64 = 2_000_000_000;
-    /// The bounded wait for the operator's post-quiet packet (T7).
-    const RESUME_WAIT_NANOS: u64 = 10_000_000_000;
+    /// Operator-paced session wait (2026-10-14 user direction: 25 s).
+    const SESSION_WAIT_NANOS: u64 = 25_000_000_000;
+    /// The quiet window: no new cause and no due protocol timer (T7;
+    /// 2026-10-14 user direction: 25 s).
+    const QUIET_WINDOW_NANOS: u64 = 25_000_000_000;
+    /// The bounded wait for the operator's post-quiet packet (T7; 25 s).
+    const RESUME_WAIT_NANOS: u64 = 25_000_000_000;
     /// Settle stillness span: the source-133 claim stream must be quiet for
     /// this long before the freeze window opens (V3 round-1: the peer's TCP
     /// close tail otherwise lands inside the quiet window).
     const SETTLE_QUIET_NANOS: u64 = 500_000_000;
     /// Absolute cap for the settle wait (the payload stops, never wedges).
-    const SETTLE_CAP_NANOS: u64 = 10_000_000_000;
+    const SETTLE_CAP_NANOS: u64 = 25_000_000_000;
 
     fn out_line(out: &mut dyn FnMut(&str), args: core::fmt::Arguments<'_>) {
         line(out, args);
@@ -1060,15 +1498,40 @@ mod k3_net_diagnostics {
 
     /// One product-side observation line (T7): cause, drop, occupancy,
     /// budget, flush and quiet counters read directly from the committed
-    /// ledgers — raw facts only, the payload never judges PASS.
+    /// ledgers — raw facts only, the payload never judges PASS. MS13 T5
+    /// adds the source-60 PHY event evidence (events, latest MFPR35 ack
+    /// readback) so the board session observes the link-event path directly.
     fn snapshot_line(out: &mut dyn FnMut(&str), tag: &str) {
         let s = axnet::rx_snapshot_v3();
         let st = axnet::stack_snapshot();
         let (ri, ti, abnormal, spurious) = irq_counts();
+        let (phy60_events, _before, phy60_set, phy60_rearm) = super::board::phy60_counts();
+        let irq_en = super::board::gmac_irq_en_snapshot();
+        let status = super::board::gmac_status_snapshot();
+        let arena = PAYLOAD_ARENA_VA.load(core::sync::atomic::Ordering::Relaxed);
+        let mut rx_done = 0usize;
+        if arena != 0 {
+            for slot in 0..16 {
+                let va =
+                    arena + axplat_riscv64_k3::dma::RX_RING_OFF + slot * axplat_riscv64_k3::dma::DESC_BYTES + 12;
+                // SAFETY: checked arena VA; word3 of RX descriptor `slot`.
+                let w3 = unsafe { (va as *const u32).read_volatile() };
+                if w3 & super::gmac::RDES3_OWN == 0 {
+                    rx_done += 1;
+                }
+            }
+        }
+        let aia_traps = axplat_riscv64_k3::aia::AIA_DEBUG_TRAPS
+            .load(core::sync::atomic::Ordering::Relaxed);
+        let aia_claim = axplat_riscv64_k3::aia::AIA_DEBUG_LAST_CLAIM
+            .load(core::sync::atomic::Ordering::Relaxed);
+        let ticks = axplat_riscv64_k3::timer_irq::TIMER_DEBUG_TICKS
+            .load(core::sync::atomic::Ordering::Relaxed);
+        let csr = axplat_riscv64_k3::timer_irq::debug_trap_csr_snapshot();
         line(
             out,
             format_args!(
-                "[ms12] probe {tag} cause=raw={:#010x} irq-runs={} ri={} ti={} abnormal={} spurious={} drop=malformed-ip={} no-route={} src-mismatch={} rx-full={} tx-full={} occupancy=rx-slot={} tx-slot={} desc-inflight={} budget=reclaim-ex={} rx-ex={} submit-ex={} flush=target={} ok={} err={} busy={} cancel={} quiet=task-poll={} rounds={} work={} self-yield={} timer-wake={} fallback={} lifecycle={} owner={}",
+                "[ms12] probe {tag} cause=raw={:#010x} irq-runs={} ri={} ti={} abnormal={} spurious={} drop=malformed-ip={} no-route={} src-mismatch={} rx-full={} tx-full={} occupancy=rx-slot={} tx-slot={} desc-inflight={} budget=reclaim-ex={} rx-ex={} submit-ex={} flush=target={} ok={} err={} busy={} cancel={} quiet=task-poll={} rounds={} work={} self-yield={} timer-wake={} fallback={} lifecycle={} owner={} phy60=events={} set={:#x} rearm={:#x} irq-en={:#x} status={:#x} rx-done={} aia-traps={} aia-claim={:#x} ticks={} sie={:#x} sip={:#x} stie={} stip={} sext={} sstatus={:#x}",
                 irq_last_raw(),
                 irq_handler_runs(),
                 ri,
@@ -1099,6 +1562,21 @@ mod k3_net_diagnostics {
                 st.fallback_poll,
                 s.lifecycle,
                 s.owner,
+                phy60_events,
+                phy60_set,
+                phy60_rearm,
+                irq_en,
+                status,
+                rx_done,
+                aia_traps,
+                aia_claim,
+                ticks,
+                csr.sie,
+                csr.sip,
+                (csr.sie >> 5) & 1,
+                (csr.sip >> 5) & 1,
+                (csr.sie >> 9) & 1,
+                csr.sstatus,
             ),
         );
     }
@@ -1108,6 +1586,10 @@ mod k3_net_diagnostics {
     /// operator-paced; every op is bounded and every outcome is printed.
     fn udp_echo_once(out: &mut dyn FnMut(&str)) {
         let session = async {
+            // MS13 001-rework T5-R1: the payload's first timer-dependent
+            // await — proves the executor polled this far (prints once, on
+            // the first poll, before any hang point).
+            super::board::discriminator_line("udp-enter", out);
             let sock = UdpSocket::new();
             sock.bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -1275,17 +1757,18 @@ mod k3_net_diagnostics {
         axtask::sleep(Duration::from_nanos(QUIET_WINDOW_NANOS));
         snapshot_line(out, "quiet-after");
 
-        // Resume: the operator sends one packet — a new source-133 claim
-        // must wake the data plane and grow the counters again.
-        let irq0 = irq_handler_runs();
+        // Resume: the operator sends one packet — a new source-133 MAC cause
+        // (RI/TI growth) must wake the data plane and grow the counters
+        // again. MS13 001 Minor refinement: a bare PHY source-60 claim or any
+        // non-MAC ISR publish must NOT consume the resume window, so the
+        // trigger is the MAC cause counters, not every handler run.
+        let (ri0, ti0, _, _) = irq_counts();
         let baseline = axnet::rx_snapshot_v3();
         let deadline = wall_time() + Duration::from_nanos(RESUME_WAIT_NANOS);
         loop {
             let snap = axnet::rx_snapshot_v3();
-            if irq_handler_runs() != irq0
-                || snap.reaped != baseline.reaped
-                || snap.isr_publish != baseline.isr_publish
-            {
+            let (ri, ti, _, _) = irq_counts();
+            if ri != ri0 || ti != ti0 || snap.reaped != baseline.reaped {
                 snapshot_line(out, "resume");
                 break;
             }
@@ -1307,7 +1790,17 @@ mod k3_net_diagnostics {
 
     /// The capacity/flush payload (see the module docs). The caller parks
     /// after this returns in every path.
-    pub(super) fn run_diagnostics(out: &mut dyn FnMut(&str)) {
+    /// MS13 A4 diagnostics: the retained arena VA, set once at payload
+    /// start so snapshot_line can observe the RX descriptors' OWN bits
+    /// non-destructively (frames arriving vs interrupts dead).
+    static PAYLOAD_ARENA_VA: core::sync::atomic::AtomicUsize =
+        core::sync::atomic::AtomicUsize::new(0);
+
+    pub(super) fn run_diagnostics(arena_va: usize, out: &mut dyn FnMut(&str)) {
+        PAYLOAD_ARENA_VA.store(
+            arena_va,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         out_line(
             out,
             format_args!(
@@ -1316,10 +1809,30 @@ mod k3_net_diagnostics {
             ),
         );
 
-        // ── Phase 1: the two-level capacity boundary under a reclaim hold ──
+        // ── Phases 1–3: the two-level capacity boundary, the explicit
+        //    release and the flush Pending→release→C4 ──
+        if !run_capacity_flush_cycle(out) {
+            return;
+        }
+
+        // ── Phase 4 (T6/T7): the protocol session, product-side snapshots
+        //    and the quiet/resume observation — every hold released above.
+        run_protocol_phase(out);
+
+        // ── MS13 T7: the final on-board recovery matrix (old/new sockets,
+        //    physical link flap, reset/link/flush interleave, two recoveries
+        //    with capacity/C4, and the fixed-last honest fail-stop). ──
+        run_recovery_matrix(out);
+    }
+
+    /// One capacity/flush cycle (the original phases 1–3): the two-level
+    /// capacity boundary under a reclaim hold, the explicit release drain and
+    /// the flush Pending→release→C4 close. Returns `false` when a stop
+    /// condition printed; the caller parks with the backing retained.
+    fn run_capacity_flush_cycle(out: &mut dyn FnMut(&str)) -> bool {
         if let Err(e) = axnet::diagnostic_control(OP_HOLD_TX_RECLAIM, HOLD_LEASE_MS) {
             out_line(out, format_args!("[ms12] probe err=hold {e:?} stop"));
-            return;
+            return false;
         }
         // One console line costs ~10 ms at 115200 — printing per frame would
         // outlast the 200 ms lease before the loop ends. Print every 25th
@@ -1361,7 +1874,7 @@ mod k3_net_diagnostics {
                 }
                 Err(e) => {
                     out_line(out, format_args!("[ms12] probe err=enqueue {e:?} stop"));
-                    return;
+                    return false;
                 }
             }
             axtask::yield_now();
@@ -1387,7 +1900,7 @@ mod k3_net_diagnostics {
         // ── Phase 2: the explicit release drains everything ──
         if let Err(e) = axnet::diagnostic_control(OP_RELEASE, 0) {
             out_line(out, format_args!("[ms12] probe err=release {e:?} stop"));
-            return;
+            return false;
         }
         out_line(out, format_args!("[ms12] probe release ok"));
         let snap = wait_v3(out, "restore", |s| {
@@ -1411,17 +1924,17 @@ mod k3_net_diagnostics {
         // ── Phase 3: flush Pending → explicit release → C4 ──
         if let Err(e) = axnet::diagnostic_control(OP_HOLD_TX_RECLAIM, HOLD_LEASE_MS) {
             out_line(out, format_args!("[ms12] probe err=hold-2 {e:?} stop"));
-            return;
+            return false;
         }
         match axnet::diagnostic_enqueue_frame([0xff; 6], 0x0800, b"flush") {
             Ok(rep) if rep.accepted => {}
             Ok(_) => {
                 out_line(out, format_args!("[ms12] probe err=flush-enqueue-full stop"));
-                return;
+                return false;
             }
             Err(e) => {
                 out_line(out, format_args!("[ms12] probe err=flush-enqueue {e:?} stop"));
-                return;
+                return false;
             }
         }
         axtask::yield_now();
@@ -1429,12 +1942,12 @@ mod k3_net_diagnostics {
             Ok(f) => core::pin::pin!(f),
             Err(e) => {
                 out_line(out, format_args!("[ms12] probe err=flush {e:?} stop"));
-                return;
+                return false;
             }
         };
         if !matches!(flush_poll(&mut fut), Poll::Pending) {
             out_line(out, format_args!("[ms12] probe err=flush-not-held stop"));
-            return;
+            return false;
         }
         out_line(out, format_args!("[ms12] probe flush pending"));
         // THE SAME waiter observes the release: the explicit release lets the
@@ -1443,7 +1956,7 @@ mod k3_net_diagnostics {
         // future, so the sole waiter slot would stay taken.)
         if let Err(e) = axnet::diagnostic_control(OP_RELEASE, 0) {
             out_line(out, format_args!("[ms12] probe err=release-2 {e:?} stop"));
-            return;
+            return false;
         }
         out_line(out, format_args!("[ms12] probe release-2 ok"));
         let deadline = wall_time() + Duration::from_nanos(PHASE_CAP_NANOS);
@@ -1453,7 +1966,7 @@ mod k3_net_diagnostics {
                 Poll::Pending => {
                     if wall_time() >= deadline {
                         out_line(out, format_args!("[ms12] probe err=flush-cap stop"));
-                        return;
+                        return false;
                     }
                     axtask::yield_now();
                 }
@@ -1463,7 +1976,7 @@ mod k3_net_diagnostics {
             Ok(()) => out_line(out, format_args!("[ms12] probe flush c4 ok")),
             Err(e) => {
                 out_line(out, format_args!("[ms12] probe err=flush-c4 {e:?} stop"));
-                return;
+                return false;
             }
         }
 
@@ -1483,9 +1996,453 @@ mod k3_net_diagnostics {
                 snap.owner,
             ),
         );
+        true
+    }
 
-        // ── Phase 4 (T6/T7): the protocol session, product-side snapshots
-        // and the quiet/resume observation — every hold released above.
-        run_protocol_phase(out);
+    // ── MS13 T7: the final on-board recovery matrix ────────────────────────
+
+    /// Encoded waiter outcome for the matrix observers (lock-free; the exact
+    /// terminal category is the operator's judgment input).
+    const WAITER_PENDING: u8 = 0;
+    const WAITER_OK: u8 = 1;
+    const WAITER_TIMED_OUT: u8 = 2;
+    const WAITER_NOT_CONNECTED: u8 = 3;
+    const WAITER_CONNECTION_RESET: u8 = 4;
+    const WAITER_OTHER: u8 = 5;
+
+    fn waiter_code_name(code: u8) -> &'static str {
+        match code {
+            WAITER_PENDING => "pending",
+            WAITER_OK => "ok",
+            WAITER_TIMED_OUT => "timed-out",
+            WAITER_NOT_CONNECTED => "not-connected",
+            WAITER_CONNECTION_RESET => "connection-reset",
+            _ => "other",
+        }
+    }
+
+    fn encode_waiter(res: &axerrno::AxResult<usize>) -> u8 {
+        match res {
+            Ok(_) => WAITER_OK,
+            Err(AxError::NotConnected) => WAITER_NOT_CONNECTED,
+            Err(AxError::ConnectionReset) => WAITER_CONNECTION_RESET,
+            Err(AxError::TimedOut) => WAITER_TIMED_OUT,
+            Err(_) => WAITER_OTHER,
+        }
+    }
+
+    /// One parked old-epoch UDP waiter (bound `port`, no data coming). The
+    /// task stores the terminal category when the epoch terminal reaches it.
+    fn spawn_matrix_udp_waiter(port: u16) -> alloc::sync::Arc<core::sync::atomic::AtomicU8> {
+        use core::sync::atomic::{AtomicU8, Ordering};
+        let code = alloc::sync::Arc::new(AtomicU8::new(WAITER_PENDING));
+        let code2 = code.clone();
+        axtask::spawn(move || {
+            let session = async {
+                let sock = UdpSocket::new();
+                sock.bind(SocketAddrEx::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    port,
+                )))?;
+                let mut buf = [0u8; 64];
+                poll_io(&sock, IoEvents::IN, false, || {
+                    sock.recv(&mut buf[..], RecvOptions::default())
+                })
+                .await
+            };
+            let res = block_on(session);
+            code2.store(encode_waiter(&res), Ordering::Release);
+        });
+        code
+    }
+
+    /// One parked old-epoch TCP listener waiter (bound `port`).
+    fn spawn_matrix_listener_waiter(port: u16) -> alloc::sync::Arc<core::sync::atomic::AtomicU8> {
+        use core::sync::atomic::{AtomicU8, Ordering};
+        let code = alloc::sync::Arc::new(AtomicU8::new(WAITER_PENDING));
+        let code2 = code.clone();
+        axtask::spawn(move || {
+            let session = async {
+                let listener = TcpSocket::new();
+                listener.bind(SocketAddrEx::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    port,
+                )))?;
+                listener.listen()?;
+                let socket = poll_io(&listener, IoEvents::IN, false, || listener.accept()).await?;
+                let _ = socket;
+                Ok(0usize)
+            };
+            let res = block_on(session);
+            code2.store(encode_waiter(&res), Ordering::Release);
+        });
+        code
+    }
+
+    /// One operator-paced UDP echo on the matrix port (the tag names the
+    /// phase; every outcome is printed, the operator adjudicates).
+    fn matrix_udp_echo_once(out: &mut dyn FnMut(&str), tag: &str) {
+        let session = async {
+            let sock = UdpSocket::new();
+            sock.bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                MATRIX_UDP_PORT,
+            )))?;
+            let mut buf = [0u8; 128];
+            let mut from =
+                SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+            let n = timeout(
+                Some(Duration::from_nanos(SESSION_WAIT_NANOS)),
+                poll_io(&sock, IoEvents::IN, false, || {
+                    let opts = RecvOptions {
+                        from: Some(&mut from),
+                        ..Default::default()
+                    };
+                    sock.recv(&mut buf[..], opts)
+                }),
+            )
+            .await
+            .map_err(|_| AxError::TimedOut)??;
+            let peer = match from {
+                SocketAddrEx::Ip(addr) => addr,
+                _ => return Err(AxError::InvalidInput),
+            };
+            let sent = timeout(
+                Some(Duration::from_nanos(SESSION_OP_NANOS)),
+                poll_io(&sock, IoEvents::OUT, false, || {
+                    sock.send(
+                        &buf[..n],
+                        SendOptions {
+                            to: Some(SocketAddrEx::Ip(peer)),
+                            ..Default::default()
+                        },
+                    )
+                }),
+            )
+            .await
+            .map_err(|_| AxError::TimedOut)??;
+            Ok((sent, peer))
+        };
+        match block_on(session) {
+            Ok((sent, peer)) => out_line(
+                out,
+                format_args!("[ms13] matrix {tag} udp ok bytes={sent} from={peer}"),
+            ),
+            Err(e) => out_line(out, format_args!("[ms13] matrix {tag} udp err={e:?}")),
+        }
+    }
+
+    /// One operator-paced TCP echo with an active close on the matrix port.
+    fn matrix_tcp_echo_once(out: &mut dyn FnMut(&str), tag: &str) {
+        let session = async {
+            let listener = TcpSocket::new();
+            listener.bind(SocketAddrEx::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                MATRIX_TCP_PORT,
+            )))?;
+            listener.listen()?;
+            let socket = timeout(
+                Some(Duration::from_nanos(SESSION_WAIT_NANOS)),
+                poll_io(&listener, IoEvents::IN, false, || listener.accept()),
+            )
+            .await
+            .map_err(|_| AxError::TimedOut)??;
+            let Socket::Tcp(conn) = socket else {
+                return Err(AxError::InvalidInput);
+            };
+            let mut buf = [0u8; 64];
+            let n = timeout(
+                Some(Duration::from_nanos(SESSION_OP_NANOS)),
+                poll_io(&conn, IoEvents::IN, false, || {
+                    conn.recv(&mut buf[..], RecvOptions::default())
+                }),
+            )
+            .await
+            .map_err(|_| AxError::TimedOut)??;
+            let sent = timeout(
+                Some(Duration::from_nanos(SESSION_OP_NANOS)),
+                poll_io(&conn, IoEvents::OUT, false, || {
+                    conn.send(&buf[..n], SendOptions::default())
+                }),
+            )
+            .await
+            .map_err(|_| AxError::TimedOut)??;
+            conn.shutdown(Shutdown::Both)?;
+            Ok(sent)
+        };
+        match block_on(session) {
+            Ok(sent) => out_line(
+                out,
+                format_args!("[ms13] matrix {tag} tcp ok bytes={sent} closed=1"),
+            ),
+            Err(e) => out_line(out, format_args!("[ms13] matrix {tag} tcp err={e:?}")),
+        }
+    }
+
+    /// Bounded wait for one owner lifecycle value; the final snapshot is
+    /// returned either way and the timeout prints its own line. The value
+    /// must be observed to leave `want` before a matching sample is
+    /// accepted: single-hart cooperative scheduling lets the first sample
+    /// read back the stale pre-request Active(2) while the owner has not
+    /// claimed the request yet. Fail-stop's want=3 leaves at once (the live
+    /// value starts at 2).
+    fn wait_lifecycle(out: &mut dyn FnMut(&str), stage: &str, want: u64) -> axnet::RxSnapshotV3 {
+        let deadline = wall_time() + Duration::from_nanos(PHASE_CAP_NANOS);
+        let mut left = false;
+        loop {
+            let snap = axnet::rx_snapshot_v3();
+            if snap.lifecycle != want {
+                left = true;
+            } else if left {
+                return snap;
+            }
+            if wall_time() >= deadline {
+                out_line(
+                    out,
+                    format_args!(
+                        "[ms13] matrix {stage} timeout lifecycle={} want={} owner={} fault={} last-err-stage={} last-err-code={}",
+                        snap.lifecycle,
+                        want,
+                        snap.owner,
+                        axnet::rx_snapshot().fault,
+                        snap.last_error_stage,
+                        snap.last_error_code,
+                    ),
+                );
+                return snap;
+            }
+            axtask::yield_now();
+        }
+    }
+
+    /// Bounded wait for one parked waiter's terminal category.
+    fn wait_waiter(
+        out: &mut dyn FnMut(&str),
+        stage: &str,
+        code: &alloc::sync::Arc<core::sync::atomic::AtomicU8>,
+    ) -> u8 {
+        use core::sync::atomic::Ordering;
+        let deadline = wall_time() + Duration::from_nanos(PHASE_CAP_NANOS);
+        loop {
+            let seen = code.load(Ordering::Acquire);
+            if seen != WAITER_PENDING {
+                out_line(
+                    out,
+                    format_args!("[ms13] matrix {stage} waiter={}", waiter_code_name(seen)),
+                );
+                return seen;
+            }
+            if wall_time() >= deadline {
+                out_line(out, format_args!("[ms13] matrix {stage} waiter=pending-timeout"));
+                return WAITER_PENDING;
+            }
+            axtask::yield_now();
+        }
+    }
+
+    /// The final on-board recovery matrix (MS13 T7). Every line is a native
+    /// observation the operator adjudicates; every wait is the unified 25 s
+    /// window. The fail-stop injection is the FIXED last scenario: after it
+    /// the device stays faulted and the payload returns (the caller parks
+    /// with the backing retained until the external reset).
+    fn run_recovery_matrix(out: &mut dyn FnMut(&str)) {
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix begin udp={} tcp={} waiter={} wait-ms={} op-ms={} cap-ms={}",
+                MATRIX_UDP_PORT,
+                MATRIX_TCP_PORT,
+                MATRIX_WAITER_PORT,
+                SESSION_WAIT_NANOS / 1_000_000,
+                SESSION_OP_NANOS / 1_000_000,
+                PHASE_CAP_NANOS / 1_000_000,
+            ),
+        );
+        snapshot_line(out, "matrix-begin");
+
+        // ── R1: the old epoch's live plane (operator-paced) ──
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix old-session send one UDP datagram to udp={} then one TCP session to tcp={} (each echoed back)",
+                MATRIX_UDP_PORT, MATRIX_TCP_PORT,
+            ),
+        );
+        matrix_udp_echo_once(out, "old");
+        matrix_tcp_echo_once(out, "old");
+
+        // Old waiters parked: a UDP recv and a listener accept with no data
+        // coming; the recovery's epoch terminal must reach both.
+        let udp_waiter = spawn_matrix_udp_waiter(MATRIX_WAITER_PORT);
+        let listener_waiter = spawn_matrix_listener_waiter(MATRIX_TCP_PORT);
+        // A pending flush anchored pre-reset: the 2 s reclaim hold outlasts
+        // the 1 s quiesce window, so the anchored ticket is still
+        // device-held when the recovery closes it — the flush observes the
+        // recovery's lost/abort outcome, never a forged C4 success.
+        const MATRIX_HOLD_LEASE_MS: u64 = 2000;
+        if let Err(e) = axnet::diagnostic_control(OP_HOLD_TX_RECLAIM, MATRIX_HOLD_LEASE_MS) {
+            out_line(out, format_args!("[ms13] matrix err=hold {e:?}"));
+            return;
+        }
+        match axnet::diagnostic_enqueue_frame([0xff; 6], 0x0800, b"pre-reset") {
+            Ok(rep) if rep.accepted => {}
+            Ok(_) | Err(_) => {
+                out_line(out, format_args!("[ms13] matrix err=flush-enqueue"));
+                return;
+            }
+        }
+        let mut matrix_flush = match axnet::flush() {
+            Ok(f) => core::pin::pin!(f),
+            Err(e) => {
+                out_line(out, format_args!("[ms13] matrix err=flush {e:?}"));
+                return;
+            }
+        };
+        if !matches!(flush_poll(&mut matrix_flush), Poll::Pending) {
+            out_line(out, format_args!("[ms13] matrix err=flush-not-held"));
+            return;
+        }
+        out_line(out, format_args!("[ms13] matrix flush pending"));
+
+        // ── R2: controlled reset #1 ──
+        out_line(out, format_args!("[ms13] matrix reset-1 request now"));
+        if let Err(e) = axnet::recovery_reset_request() {
+            out_line(out, format_args!("[ms13] matrix err=reset-1 {e:?}"));
+            return;
+        }
+        let snap = wait_lifecycle(out, "reset-1", 2);
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix reset-1 committed lifecycle={} owner={} queue-gen={} fault={}",
+                snap.lifecycle,
+                snap.owner,
+                snap.queue_generation,
+                axnet::rx_snapshot().fault,
+            ),
+        );
+        // The old waiters observe the reset terminal, never silence.
+        wait_waiter(out, "reset-1-udp-waiter", &udp_waiter);
+        wait_waiter(out, "reset-1-listener-waiter", &listener_waiter);
+        // The flush observes the aborted outcome (an error, never a C4).
+        match flush_poll(&mut matrix_flush) {
+            Poll::Ready(Err(e)) => out_line(
+                out,
+                format_args!("[ms13] matrix reset-1 flush aborted err={e:?}"),
+            ),
+            Poll::Ready(Ok(())) => {
+                out_line(out, format_args!("[ms13] matrix reset-1 flush UNEXPECTED-C4-OK"))
+            }
+            Poll::Pending => {
+                out_line(out, format_args!("[ms13] matrix reset-1 flush still-pending"))
+            }
+        }
+        // Release the matrix hold explicitly (the lease never had to expire;
+        // the auto-release counter must stay 0).
+        if let Err(e) = axnet::diagnostic_control(OP_RELEASE, 0) {
+            out_line(out, format_args!("[ms13] matrix err=release {e:?}"));
+            return;
+        }
+        // Post-recovery capacity/C4 round one.
+        if !run_capacity_flush_cycle(out) {
+            return;
+        }
+        // New objects on the same ports (operator-paced).
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix new-session-1 send one UDP datagram to udp={} then one TCP session to tcp={}",
+                MATRIX_UDP_PORT, MATRIX_TCP_PORT,
+            ),
+        );
+        matrix_udp_echo_once(out, "new-1");
+        matrix_tcp_echo_once(out, "new-1");
+
+        // ── R3: the physical link flap (the 001 residual) ──
+        // A fresh pre-flap object: its blocked recv must complete with the
+        // link-down terminal.
+        let flap_waiter = spawn_matrix_udp_waiter(MATRIX_WAITER_PORT);
+        out_line(out, format_args!("[ms13] matrix link-down: operator unplug the cable now"));
+        wait_waiter(out, "link-down", &flap_waiter);
+        snapshot_line(out, "link-down-observed");
+        // Reset during link-down (the reset/link interleave, recovery two).
+        out_line(out, format_args!("[ms13] matrix reset-2 (link down) request now"));
+        if let Err(e) = axnet::recovery_reset_request() {
+            out_line(out, format_args!("[ms13] matrix err=reset-2 {e:?}"));
+            return;
+        }
+        let snap = wait_lifecycle(out, "reset-2", 2);
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix reset-2 committed lifecycle={} owner={} queue-gen={} fault={}",
+                snap.lifecycle,
+                snap.owner,
+                snap.queue_generation,
+                axnet::rx_snapshot().fault,
+            ),
+        );
+        // The rising edge: the operator plugs back; the source-60 event (and
+        // the owner's reopened epoch) must arrive within the window.
+        let (phy60_before, _, _, _) = super::board::phy60_counts();
+        out_line(out, format_args!("[ms13] matrix link-up: operator plug the cable back now"));
+        let deadline = wall_time() + Duration::from_nanos(PHASE_CAP_NANOS);
+        loop {
+            let (phy60_now, _, _, _) = super::board::phy60_counts();
+            if phy60_now > phy60_before {
+                out_line(
+                    out,
+                    format_args!("[ms13] matrix link-up phy60-event observed events={phy60_now}"),
+                );
+                break;
+            }
+            if wall_time() >= deadline {
+                out_line(out, format_args!("[ms13] matrix link-up phy60-event timeout"));
+                break;
+            }
+            axtask::yield_now();
+        }
+        // Plug-in new-epoch sessions (the 001 residual) + ICMP: the operator
+        // pings the board, then sends UDP and TCP once more.
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix new-session-2 ping the board, then send one UDP datagram to udp={} and one TCP session to tcp={}",
+                MATRIX_UDP_PORT, MATRIX_TCP_PORT,
+            ),
+        );
+        matrix_udp_echo_once(out, "new-2");
+        matrix_tcp_echo_once(out, "new-2");
+        snapshot_line(out, "matrix-pre-capacity-2");
+        // Post-recovery capacity/C4 round two (two successful recoveries).
+        if !run_capacity_flush_cycle(out) {
+            return;
+        }
+
+        // ── R4: the honest fail-stop (FIXED LAST; no recovery after it) ──
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix fail-stop: arming the confirm-withhold injection (last scenario)"
+            ),
+        );
+        super::gmac::diagnostic_arm_reset_confirm_withhold(true);
+        if let Err(e) = axnet::recovery_reset_request() {
+            out_line(out, format_args!("[ms13] matrix err=fail-stop-request {e:?}"));
+            return;
+        }
+        let snap = wait_lifecycle(out, "fail-stop", 3);
+        snapshot_line(out, "fail-stop-observed");
+        // The faulted plane refuses new submits and retains the backing.
+        let rep = axnet::diagnostic_enqueue_frame([0xff; 6], 0x0800, b"after-fail-stop");
+        out_line(
+            out,
+            format_args!(
+                "[ms13] matrix fail-stop enqueue-after={:?} lifecycle={} want=3 owner={} backing=retained external-reset-next",
+                rep.map(|r| r.accepted),
+                snap.lifecycle,
+                snap.owner,
+            ),
+        );
     }
 }

@@ -908,6 +908,20 @@ impl Service {
         }
     }
 
+    /// MS13 T4: drops the old socket epoch's software data on the target —
+    /// the device's copied-but-undelivered RX slots plus the Router RX/TX
+    /// staging buffers. Called at the epoch-close seams under the Service
+    /// guard. Returns the number of frames discarded from (device slots,
+    /// software buffers).
+    pub(crate) fn discard_old_epoch_data_target(&mut self) -> (usize, usize) {
+        let slots = match self.target_dev {
+            Some(dev) => self.router.discard_old_epoch_rx(dev),
+            None => 0,
+        };
+        let buffers = self.router.discard_software_buffers();
+        (slots, buffers)
+    }
+
     /// Task 3.1 / R6 / D6: one coherent link-policy step on the target.
     ///
     /// Reads a consistent link snapshot. On a down transition the current
@@ -970,6 +984,10 @@ impl Service {
                     self.socket_epoch_wake = Some(self.socket_epoch);
                 }
             }
+            // MS13 T4: the closed epoch's copied RX frames and staged
+            // software buffers are dead — a later up transition opens a NEW
+            // epoch whose sockets must never receive them.
+            self.discard_old_epoch_data_target();
         } else {
             // The initial link snapshot describes the already-open epoch. A
             // later up transition follows a down transition and must open the

@@ -232,7 +232,7 @@ pub(crate) const SUBMIT_BUDGET: usize = 32;
 /// The one queue notification state. There is exactly one task waiter; Router
 /// space wakes and future queue events share this waker.
 pub(crate) static QUEUE_EVENT: QueueEvent = QueueEvent::new();
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 static RECOVERY_RESET_REQUEST: spin::Mutex<RecoveryRequestState> =
     spin::Mutex::new(RecoveryRequestState::new());
 
@@ -285,14 +285,14 @@ fn net_link_step_diag(step: &crate::service::LinkStep) {
 /// transition lock with the resident owner so a request cannot survive a
 /// natural recovery and trigger a second reset after the owner becomes Active
 /// again.
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 #[derive(Debug, Clone, Copy, Default)]
 struct RecoveryRequestState {
     pending: bool,
     owner_claimed: bool,
 }
 
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 impl RecoveryRequestState {
     const fn new() -> Self {
         Self {
@@ -329,7 +329,7 @@ impl RecoveryRequestState {
     }
 }
 
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 fn with_recovery_request_transition<T>(
     request: &spin::Mutex<RecoveryRequestState>,
     transition: impl FnOnce() -> T,
@@ -1371,10 +1371,10 @@ pub(crate) fn diagnostic_control_shared(
     Ok(())
 }
 
-/// QEMU-only reset control: atomically queue one request for the resident
-/// owner. The syscall path merely commits this event and wakes that owner; it
-/// never accesses a transport or performs recovery itself.
-#[cfg(feature = "qemu-diagnostics")]
+/// Queue-diagnostics reset control: atomically queue one request for the
+/// resident owner. The control path merely commits this event and wakes that
+/// owner; it never accesses a transport or performs recovery itself.
+#[cfg(feature = "queue-diagnostics")]
 pub(crate) fn recovery_reset_request_shared() -> DevResult {
     if crate::SERVICE.get().is_none() {
         return Err(DevError::BadState);
@@ -1384,7 +1384,7 @@ pub(crate) fn recovery_reset_request_shared() -> DevResult {
     Ok(())
 }
 
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 fn claim_recovery_reset_request() -> bool {
     RECOVERY_RESET_REQUEST.lock().claim(RX_LIFECYCLE.load())
 }
@@ -1447,6 +1447,15 @@ pub(crate) struct RxRxFuture {
     /// Task 2.2: per-test recovery clock. Production never sets it (wall clock).
     #[cfg(all(test))]
     recovery_test_clock: Option<crate::recovery::RecoveryTestClock>,
+    /// MS13 T4: armed one-shot wake (nanos) for a retained link `Again`
+    /// retry. Wake-only: a stale wake costs at most one bounded poll, and the
+    /// next link read re-arms from the live state. `None` when no retry is
+    /// pending.
+    link_retry_wake: Option<u64>,
+    /// MS13 T4: axtask timer that wakes the owner at `link_retry_wake`
+    /// (production only; host tests drive the fake clock and re-poll).
+    #[cfg(not(test))]
+    link_retry_timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     /// Task 2.2: axtask timer that wakes the owner at the current recovery
     /// stage deadline (production only; host tests drive the fake clock).
     #[cfg(all(not(test)))]
@@ -1505,6 +1514,12 @@ const RESET_STAGE_DEADLINE_NS: u64 = 2_000_000_000;
 /// delayed reset can fully confirm within its 2 s window strictly before the
 /// deadline, without a busy poll and without renewing the deadline.
 const RECOVERY_PROGRESS_CADENCE_NS: u64 = 10_000_000;
+
+/// MS13 T4: one-shot cadence for a retained link `Again` retry. A transient
+/// link-snapshot error (`Again`, e.g. a busy multi-step MDIO phase) keeps the
+/// retry work and wakes the owner once after this cadence instead of
+/// self-waking into a busy retry loop.
+const LINK_RETRY_CADENCE_NS: u64 = 1_000_000;
 
 /// Outcome of one RX servicing round before releasing the guard.
 enum RoundOutcome {
@@ -1605,8 +1620,6 @@ impl RxRxFuture {
                     }
                     TxReclaimStep::Empty => break,
                     TxReclaimStep::Fault(err) => {
-                        self.telemetry
-                            .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
                         // RW-2: an ownership-invariant reclaim fault (unknown,
                         // duplicate or still-Queued cookie) is a terminal
                         // cookie→ticket ledger drift; count it independently
@@ -1616,9 +1629,13 @@ impl RxRxFuture {
                                 .ownership_invariant
                                 .fetch_add(1, Ordering::Relaxed);
                         }
-                        // D8: a terminal reclaim fault wakes the flush waiter.
+                        // D8: a fault wakes the flush waiter before any
+                        // classification work.
                         service.flush_fault(&err);
-                        return self.classify_fault(service, err, recover_stage::RECLAIM);
+                        let outcome =
+                            self.classify_fault(service, err, recover_stage::RECLAIM);
+                        self.record_stage_fault(rx_error_stage::RECEIVE_RECYCLE, &outcome);
+                        return outcome;
                     }
                 }
             }
@@ -1657,10 +1674,11 @@ impl RxRxFuture {
                     break;
                 }
                 RxCopyStep::Fault(err) => {
-                    self.telemetry
-                        .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
                     service.flush_fault(&err);
-                    return self.classify_fault(service, err, recover_stage::COMPLETION_WAIT);
+                    let outcome =
+                        self.classify_fault(service, err, recover_stage::COMPLETION_WAIT);
+                    self.record_stage_fault(rx_error_stage::RECEIVE_RECYCLE, &outcome);
+                    return outcome;
                 }
             }
         }
@@ -1707,10 +1725,11 @@ impl RxRxFuture {
                         break;
                     }
                     TxSubmitStep::Fault(err) => {
-                        self.telemetry
-                            .record_fault(rx_error_stage::RECEIVE_RECYCLE, &err);
                         service.flush_fault(&err);
-                        return self.classify_fault(service, err, recover_stage::SUBMIT_WAIT);
+                        let outcome =
+                            self.classify_fault(service, err, recover_stage::SUBMIT_WAIT);
+                        self.record_stage_fault(rx_error_stage::RECEIVE_RECYCLE, &outcome);
+                        return outcome;
                     }
                 }
             }
@@ -1749,13 +1768,13 @@ impl RxRxFuture {
         let pending = match service.completion_pending_both_target() {
             Ok(pending) => pending,
             Err(err) => {
-                self.telemetry
-                    .record_fault(rx_error_stage::COMPLETION_QUERY, &err);
-                service.flush_fault(&err);
                 // F2: a completion-query failure is not itself a bounded
                 // recovery stage; classify it as unclassified (UNKNOWN) so the
                 // recoverable path still carries a stable stage in the summary.
-                return self.classify_fault(service, err, recover_stage::UNKNOWN);
+                service.flush_fault(&err);
+                let outcome = self.classify_fault(service, err, recover_stage::UNKNOWN);
+                self.record_stage_fault(rx_error_stage::COMPLETION_QUERY, &outcome);
+                return outcome;
             }
         };
         let tx_pending = service.tx_slot_pending_target();
@@ -1926,24 +1945,36 @@ impl RxRxFuture {
         let Some(mut service) = access.lock() else {
             return Poll::Pending;
         };
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         if claim_recovery_reset_request() {
-            // The ioctl only queued an event.  This resident owner is the sole
-            // context allowed to enter the driver recovery state machine.
+            // The control entry only queued an event.  This resident owner is
+            // the sole context allowed to enter the driver recovery state
+            // machine.
             drop(service);
             self.enter_recovery(&DevError::Io, recover_stage::EXPLICIT_REQUEST);
             return self.poll_recovery(cx);
         }
         // Task 3.1 / R6: bounded config micro-step. Take the cause flags once
         // per poll and, on a pending CONFIG cause or an unresolved initial-link
-        // flag, read a consistent link snapshot at most once. A transient
-        // `Again` retains the cause (a re-publish bumps the generation, so
-        // whichever sleep path follows observes the change and retries) and
-        // keeps the initial-link flag for the next bounded poll. A link down/up
-        // publishes stack progress after the round so readiness re-evaluates.
+        // flag, read a consistent link snapshot at most once. While a link
+        // `Again` retry is armed (MS13 T4), only the elapsed one-shot cadence
+        // runs the retained read, so a busy MDIO phase becomes a bounded
+        // cadence instead of a busy retry loop. A transient `Again` keeps the
+        // retry work (a re-publish is no longer needed: the one-shot wake
+        // reruns the read). A link down/up publishes stack progress after the
+        // round so readiness re-evaluates.
         let causes = self.notify.take_causes();
         let mut link_change = false;
-        if causes.config || self.initial_link_pending {
+        // While an `Again` retry is armed, only the elapsed one-shot cadence
+        // runs the retained read; a fresh CONFIG cause or the initial-link
+        // flag alone would busy-retry the busy snapshot it is waiting out.
+        let link_read_due = if self.link_retry_wake.is_some() {
+            self.link_retry_wake
+                .is_some_and(|at| self.recovery_now() >= at)
+        } else {
+            causes.config || self.initial_link_pending
+        };
+        if link_read_due {
             let link_step = service.link_policy_step_target();
             // MS12 task T1: the QEMU-only link-step diagnostic is defined under
             // `qemu-diagnostics`; the ordinary (real-board) build must not
@@ -1952,18 +1983,20 @@ impl RxRxFuture {
             net_link_step_diag(&link_step);
             match link_step {
                 LinkStep::Again => {
-                    // Retain the retry work: re-publish the CONFIG cause to
-                    // self-wake. An initial-link `Again` keeps its pending flag
-                    // (only the non-Again arms below clear it), so the next
-                    // bounded poll retries the very first snapshot.
-                    self.notify.publish_config();
+                    // MS13 T4: retain the retry work and schedule the one-shot
+                    // wake after the cadence instead of an immediate self-wake.
+                    // An initial-link `Again` keeps its pending flag (only the
+                    // non-Again arms below clear it).
+                    self.arm_link_retry(cx);
                 }
                 LinkStep::Down | LinkStep::Up => {
                     self.initial_link_pending = false;
+                    self.cancel_link_retry();
                     link_change = true;
                 }
                 LinkStep::NoEvent | LinkStep::Unsupported | LinkStep::Fault => {
                     self.initial_link_pending = false;
+                    self.cancel_link_retry();
                 }
             }
         }
@@ -2088,6 +2121,26 @@ impl RxRxFuture {
         }
     }
 
+    /// MS13 T4: single terminal accounting per fault event class. A fault the
+    /// classifier routes to resident recovery or drift quarantine records the
+    /// observation (last error) only; the terminal committer —
+    /// `publish_recovery_fault` or `enter_drift_quarantine` — owns the single
+    /// `fault` increment. A terminal classification records here, because on a
+    /// device without recovery `publish_fatal` never double-counts. Only
+    /// fault-classified outcomes carry an error to record.
+    fn record_stage_fault(&self, stage: u64, outcome: &RoundOutcome) {
+        let err = match outcome {
+            RoundOutcome::Fault(err) | RoundOutcome::Drift(err) => err,
+            RoundOutcome::Recover(err, _) => err,
+            _ => return,
+        };
+        if matches!(outcome, RoundOutcome::Recover(..) | RoundOutcome::Drift(_)) {
+            self.telemetry.record_last_error(stage, err);
+        } else {
+            self.telemetry.record_fault(stage, err);
+        }
+    }
+
     /// Task 2.2 / A1–A3: arms, clears and enforces the three concurrent Active
     /// data-stage deadlines. Each wait is armed exactly once (to
     /// `now + QUIESCE_STAGE_DEADLINE_NS`) the first time its blocking condition
@@ -2184,12 +2237,13 @@ impl RxRxFuture {
         // Find 2: gate the TX enqueue before any recovery window opens so no
         // new Queued ticket enters a data plane being cleared.
         self.set_recovery_hold(true);
-        #[cfg(feature = "qemu-diagnostics")]
+        self.cancel_link_retry();
+        #[cfg(feature = "queue-diagnostics")]
         let lifecycle_transition =
             with_recovery_request_transition(&RECOVERY_RESET_REQUEST, || {
                 self.lifecycle.begin_recovery()
             });
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let lifecycle_transition = self.lifecycle.begin_recovery();
         if !lifecycle_transition.is_ok() {
             self.telemetry.record_last_error_code(
@@ -2210,8 +2264,11 @@ impl RxRxFuture {
         self.telemetry
             .recover_origin_stage
             .store(origin_stage, Ordering::Relaxed);
+        // MS13 T4: entering recovery is an observation, not the terminal
+        // commit — the fault counter stays with the terminal committer
+        // (`publish_recovery_fault` / `enter_drift_quarantine`).
         self.telemetry
-            .record_fault(rx_error_stage::RECEIVE_RECYCLE, err);
+            .record_last_error(rx_error_stage::RECEIVE_RECYCLE, err);
         // A recoverable reset closes only the current SocketEpoch. The
         // resident owner will open a fresh epoch after the driver reports
         // Recovered; old handles therefore remain ConnectionReset forever.
@@ -2246,12 +2303,12 @@ impl RxRxFuture {
         // `freeze_recovery_summary` observes the Faulted lifecycle and records
         // the real software ticket epoch instead of `u64::MAX`.
         // A1 rework: absorb any pending/claimed request on the Active->Faulted seam.
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let lifecycle_transition =
             with_recovery_request_transition(&RECOVERY_RESET_REQUEST, || {
                 self.lifecycle.recover_fault()
             });
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let lifecycle_transition = self.lifecycle.recover_fault();
         if !lifecycle_transition.is_ok() {
             self.telemetry.record_last_error_code(
@@ -2414,11 +2471,11 @@ impl RxRxFuture {
                 match outcome {
                     RecoveryRound::Finished => {
                         // F5: commit any pending flush outcome under the
-                        // (already dropped) guard before reopening the gate and
-                        // self-waking.
+                        // (already dropped) guard before self-waking. The
+                        // I/O gate was already reopened inside
+                        // `recovery_step`, under the guard and before the
+                        // lifecycle committed (T7-R2 ordering).
                         self.service.lock().map(|s| s.flush_wake_pending());
-                        // The new epoch was committed; reopen the I/O gate.
-                        self.set_recovery_hold(false);
                         cx.waker().wake_by_ref();
                         Poll::Pending
                     }
@@ -2452,15 +2509,32 @@ impl RxRxFuture {
                     return RecoveryRound::Fault(err);
                 }
                 service.tx_close_device_owned_target();
+                // MS13 T4: the closed epoch's copied-but-undelivered RX frames
+                // and staged software buffers are dead — drop them so nothing
+                // copied pre-reset reaches the new epoch's sockets. Ticket,
+                // flush and wake ordering below is unchanged.
+                service.discard_old_epoch_data_target();
                 // Finding 1: settle the old-epoch flush BEFORE the epoch
                 // advances so its outcome is not corrupted by the reset.
                 service.flush_recovery_close();
                 service.tx_advance_epoch_target(epoch);
+                // MS13 T7-R2: reopen the I/O gate under the same guard and
+                // BEFORE the lifecycle commits, so "lifecycle==2 ⟹ gate
+                // open" holds for any observer regardless of preemption
+                // between the two otherwise-separated writes.
+                service.tx_set_recovery_hold_target(false);
                 if !self.lifecycle.recovery_committed().is_ok() {
                     self.telemetry
                         .lifecycle_fault
                         .fetch_add(1, Ordering::Relaxed);
                 }
+                // MS13 T4: the reopened data plane must re-read the link
+                // before the owner treats it as usable; the existing
+                // initial-link/link-gate semantics decide Up (gate stays
+                // open) or Down (gate closes, epoch terminal) on the next
+                // poll. Any stale `Again` retry is superseded.
+                self.initial_link_pending = true;
+                self.cancel_link_retry();
                 self.recovery = None;
                 self.recovery_deadline = None;
                 self.recovery_progress_wake = None;
@@ -2786,6 +2860,57 @@ impl RxRxFuture {
         );
     }
 
+    /// MS13 T4: arms the one-shot wake for a retained link `Again` retry at
+    /// `now + LINK_RETRY_CADENCE_NS` (absolute, never renewed before it
+    /// fires). Wake-only: a stale wake costs at most one bounded poll. Host
+    /// tests drive the fake clock and re-poll instead of running an axtask
+    /// timer.
+    fn arm_link_retry(&mut self, cx: &mut Context<'_>) {
+        let at = self.recovery_now().saturating_add(LINK_RETRY_CADENCE_NS);
+        if self.link_retry_wake == Some(at) {
+            return;
+        }
+        self.link_retry_wake = Some(at);
+        self.arm_link_retry_timer(cx, at);
+    }
+
+    /// MS13 T4: drops any armed link-retry wake and its timer.
+    fn cancel_link_retry(&mut self) {
+        self.link_retry_wake = None;
+        self.cancel_link_retry_timer();
+    }
+
+    /// Registers the axtask timer that wakes the owner at the link-retry
+    /// instant (production only).
+    #[cfg(not(test))]
+    fn arm_link_retry_timer(&mut self, cx: &mut Context<'_>, at: u64) {
+        use axhal::time::TimeValue;
+        use axtask::future::sleep_until;
+
+        self.link_retry_timer = None;
+        let mut timer = Box::pin(sleep_until(TimeValue::from_nanos(at)));
+        let mut timer_cx = Context::from_waker(cx.waker());
+        if timer.as_mut().poll(&mut timer_cx).is_ready() {
+            cx.waker().wake_by_ref();
+        } else {
+            self.link_retry_timer = Some(timer);
+        }
+    }
+
+    /// Host-test counterpart: the fake clock drives the wake instead.
+    #[cfg(test)]
+    fn arm_link_retry_timer(&mut self, _cx: &mut Context<'_>, _at: u64) {}
+
+    /// Drops the armed link-retry timer (production only).
+    #[cfg(not(test))]
+    fn cancel_link_retry_timer(&mut self) {
+        self.link_retry_timer = None;
+    }
+
+    /// Host-test counterpart: there is no axtask timer to cancel.
+    #[cfg(test)]
+    fn cancel_link_retry_timer(&mut self) {}
+
     /// RW-1: registers an axtask timer that wakes the owner at `deadline`.
     #[cfg(all(feature = "queue-diagnostics", not(test)))]
     fn arm_lease_timer(&mut self, cx: &mut Context<'_>, deadline: u64) {
@@ -2880,10 +3005,10 @@ impl RxRxFuture {
         // explicit recovery request on the same seam that commits the
         // transition, so an accepted request cannot survive to a later
         // Active generation.
-        #[cfg(feature = "qemu-diagnostics")]
+        #[cfg(feature = "queue-diagnostics")]
         let lifecycle_transition =
             with_recovery_request_transition(&RECOVERY_RESET_REQUEST, || self.lifecycle.fatal());
-        #[cfg(not(feature = "qemu-diagnostics"))]
+        #[cfg(not(feature = "queue-diagnostics"))]
         let lifecycle_transition = self.lifecycle.fatal();
         match lifecycle_transition {
             Ok(()) => true,
@@ -2994,6 +3119,9 @@ fn spawn_rx_task() {
                 recovery_deadline: None,
                 recovery_progress_wake: None,
                 #[cfg(not(test))]
+                link_retry_wake: None,
+                #[cfg(not(test))]
+                link_retry_timer: None,
                 recovery_timer: None,
                 data_deadlines: DataStageDeadlines::new(),
                 #[cfg(not(test))]
@@ -3028,6 +3156,9 @@ fn spawn_rx_task_affinity(mask: AxCpuMask) -> Option<AxTaskRef> {
                 recovery_deadline: None,
                 recovery_progress_wake: None,
                 #[cfg(not(test))]
+                link_retry_wake: None,
+                #[cfg(not(test))]
+                link_retry_timer: None,
                 recovery_timer: None,
                 data_deadlines: DataStageDeadlines::new(),
                 #[cfg(not(test))]
@@ -3368,10 +3499,9 @@ mod tests {
         fault_cause, recover_stage, rx_error_code, rx_error_stage, software_nudge_impl,
         start_affinity_with_checked, start_with,
     };
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     use super::{RECOVERY_RESET_REQUEST, RecoveryRequestState, with_recovery_request_transition};
 
-    #[cfg(feature = "qemu-diagnostics")]
     static RECOVERY_REQUEST_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use crate::{
         device::{
@@ -4298,6 +4428,10 @@ mod tests {
         /// post-recovery `tx_reclaim_one` releases the submitted DeviceOwned
         /// ticket via an epoch-bound cookie (Task 2.3 A5 witness).
         completion_armed: core::sync::atomic::AtomicBool,
+        /// One-shot: the next `rx_copy_one` copies one frame into the fixed
+        /// RX slot storage, modelling a completion the queue task reaped but
+        /// the stack has not drained yet (MS13 T4 epoch-close discard witness).
+        staged_rx: AtomicBool,
         /// Link snapshot reported by `read_link_status` (Task 3.1; true = up).
         link: AtomicBool,
         /// Number of `read_link_status` calls observed (at-most-once witness).
@@ -4414,6 +4548,8 @@ mod tests {
         stats: Arc<RecoveryDriverStats>,
         recovery: ScriptedRecovery,
         queue_control: ScriptedControl,
+        /// Fixed RX slot storage for the staged-frame discard witness.
+        rx_slots: FixedFrameQueue<64>,
     }
 
     impl Device for RecoveringDevice {
@@ -4441,6 +4577,17 @@ mod tests {
         }
 
         fn rx_copy_one(&mut self) -> RxCopyStep {
+            // MS13 T4: a scripted frame copied into the fixed RX slot storage.
+            if self.stats.staged_rx.swap(false, Ordering::Relaxed) {
+                if self
+                    .rx_slots
+                    .enqueue(&[0x08, 0x00, 0xde, 0xad], (), None)
+                    .is_ok()
+                {
+                    return RxCopyStep::Copied;
+                }
+                return RxCopyStep::Full;
+            }
             // F4: an ownership-drift RX-copy fault must quarantine the owner
             // without a reset mask.
             if matches!(
@@ -4546,6 +4693,19 @@ mod tests {
             Some(&mut self.recovery)
         }
 
+        #[cfg(test)]
+        fn rx_slot_len_for_test(&self) -> usize {
+            self.rx_slots.len()
+        }
+
+        fn discard_old_epoch_rx(&mut self) -> usize {
+            let mut purged = 0usize;
+            while self.rx_slots.pop().is_some() {
+                purged += 1;
+            }
+            purged
+        }
+
         fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
             Some(&mut self.queue_control)
         }
@@ -4568,6 +4728,7 @@ mod tests {
             queue_control: ScriptedControl {
                 stats: queue_stats.clone(),
             },
+            rx_slots: FixedFrameQueue::new(),
         };
         let mut router = Router::new();
         let idx = router.add_device(Box::new(device));
@@ -4591,6 +4752,7 @@ mod tests {
             queue_control: ScriptedControl {
                 stats: queue_stats.clone(),
             },
+            rx_slots: FixedFrameQueue::new(),
         };
         let mut router = Router::new();
         let idx = router.add_device(Box::new(device));
@@ -5006,18 +5168,48 @@ mod tests {
     }
 
     #[test]
-    fn owner_config_cause_again_retains_cause_for_next_poll() {
+    fn owner_config_cause_again_schedules_one_shot_retry() {
+        // MS13 T4: a transient snap-race no longer re-publishes the CONFIG
+        // cause (no busy self-wake); the retry work is retained by the
+        // one-shot link-retry wake, and the retained read reruns after the
+        // 1 ms cadence.
         let (mutex, stats) = leaked_service_link();
         let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
         let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        fut.recovery_test_clock = Some(clock);
         let count = Arc::new(AtomicUsize::new(0));
         stats.link_again.store(true, Ordering::Relaxed);
         notify.publish_config();
         let res = poll_once(&mut fut, count.clone());
         assert!(res.is_pending());
         assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
-        // A transient snap-race retained the config cause for the next poll.
-        assert!(notify.take_causes().config);
+        // The cause was consumed once; the retry is carried by the one-shot
+        // wake, not by a re-published cause.
+        assert_eq!(notify.take_causes(), super::QueueCauses::default());
+        assert_eq!(
+            fut.link_retry_wake,
+            Some(super::LINK_RETRY_CADENCE_NS),
+            "Again arms the one-shot retry wake"
+        );
+        // Before the cadence elapses a poll does not retry the snapshot.
+        clock.store(super::LINK_RETRY_CADENCE_NS - 1);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(
+            stats.link_reads.load(Ordering::Relaxed),
+            1,
+            "an early poll must not retry the retained snapshot"
+        );
+        // The cadence elapses: the retained read reruns and consumes the
+        // one-shot `Again`.
+        clock.store(super::LINK_RETRY_CADENCE_NS);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            fut.link_retry_wake, None,
+            "the resolved read clears the retry wake"
+        );
     }
 
     #[test]
@@ -5072,13 +5264,16 @@ mod tests {
     #[test]
     fn owner_activation_initial_link_again_retries_until_commit() {
         // P2 / A3: a transient config-generation race on the very first read is
-        // retained and retried once per later bounded poll (no spinning, no
-        // lost event), then commits once the snapshot is consistent.
+        // retained and retried after the one-shot cadence (no spinning, no lost
+        // event, MS13 T4), then commits once the snapshot is consistent.
         let (mutex, stats) = leaked_service_link();
         stats.link.store(true, Ordering::Relaxed);
         let gen0 = mutex.lock().link_generation();
         let notify: &'static super::QueueEvent = Box::leak(Box::new(super::QueueEvent::new()));
         let (_lifecycle, mut fut) = leaked_future(mutex, notify);
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        fut.recovery_test_clock = Some(clock);
         let count = Arc::new(AtomicUsize::new(0));
         stats.link_again.store(true, Ordering::Relaxed);
         let res = poll_once(&mut fut, count.clone());
@@ -5089,11 +5284,13 @@ mod tests {
             gen0,
             "Again must not commit"
         );
-        // A transient first-read race retains the retry work by re-publishing
-        // the CONFIG cause (self-wake), exactly like a later CONFIG `Again`.
-        assert!(notify.take_causes().config);
-        // Second bounded poll: the one-shot `Again` is consumed, the snapshot
-        // is now consistent, and the initial link commits exactly once.
+        // The transient first-read race retains the retry work as a one-shot
+        // link-retry wake; no CONFIG cause is re-published (MS13 T4).
+        assert_eq!(notify.take_causes(), super::QueueCauses::default());
+        // Second bounded poll after the cadence: the one-shot `Again` is
+        // consumed, the snapshot is now consistent, and the initial link
+        // commits exactly once.
+        clock.store(super::LINK_RETRY_CADENCE_NS);
         let res = poll_once(&mut fut, count.clone());
         assert!(res.is_pending());
         assert_eq!(stats.link_reads.load(Ordering::Relaxed), 2);
@@ -5584,6 +5781,7 @@ mod tests {
             recovery_deadline: None,
             recovery_progress_wake: None,
             #[cfg(test)]
+            link_retry_wake: None,
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
@@ -5618,6 +5816,7 @@ mod tests {
             recovery_deadline: None,
             recovery_progress_wake: None,
             #[cfg(test)]
+            link_retry_wake: None,
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
@@ -5811,6 +6010,7 @@ mod tests {
             recovery_deadline: None,
             recovery_progress_wake: None,
             #[cfg(test)]
+            link_retry_wake: None,
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
@@ -6105,6 +6305,7 @@ stack_progress_pending: false,
                 recovery_deadline: None,
                 recovery_progress_wake: None,
             #[cfg(test)]
+            link_retry_wake: None,
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
@@ -6537,6 +6738,7 @@ stack_progress_pending: false,
             recovery_deadline: None,
             recovery_progress_wake: None,
             #[cfg(test)]
+            link_retry_wake: None,
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
@@ -6609,6 +6811,7 @@ stack_progress_pending: false,
             recovery_deadline: None,
             recovery_progress_wake: None,
             #[cfg(test)]
+            link_retry_wake: None,
             recovery_test_clock: None,
             data_deadlines: DataStageDeadlines::new(),
         };
@@ -7428,6 +7631,255 @@ stack_progress_pending: false,
             fut.telemetry.recover_origin_stage.load(Ordering::Relaxed),
             recover_stage::COMPLETION_WAIT,
             "origin stage of the triggering data-plane fault is preserved"
+        );
+    }
+
+    // ── MS13 T4: shared request seam, Again cadence, epoch-close discard ──
+
+    #[cfg(feature = "queue-diagnostics")]
+    #[test]
+    fn queue_only_reset_request_is_reachable() {
+        // MS13 T4: the explicit reset request group is a queue-diagnostics
+        // surface so the K3 probe builds reach it — compiling this test under
+        // `--features queue-diagnostics` (without qemu) is the reachability
+        // witness. The unit interleavings: an accepted request is Busy to a
+        // duplicate, the global entry fails closed without a Service, and a
+        // natural recovery absorbs the request on the same seam.
+        let lifecycle = drive_to(RxTaskLifecycle::Active);
+        let mut request = RecoveryRequestState::new();
+        request.request(lifecycle.load()).unwrap();
+        assert!(matches!(
+            request.request(lifecycle.load()),
+            Err(DevError::ResourceBusy)
+        ));
+        assert!(
+            matches!(
+                super::recovery_reset_request_shared(),
+                Err(DevError::BadState)
+            ),
+            "no global Service is installed in host tests"
+        );
+        request.clear_for_recovery();
+        lifecycle.begin_recovery().unwrap();
+        assert!(!request.claim(lifecycle.load()));
+    }
+
+    #[test]
+    fn link_again_waits_without_busy_wake() {
+        // MS13 T4: a link `Again` retains the retry work but must not self-wake
+        // into a busy retry; the one-shot retry runs after the 1 ms cadence.
+        let (mutex, stats) = leaked_service_link();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        fut.recovery_test_clock = Some(clock);
+        let woken = Arc::new(AtomicUsize::new(0));
+        notify.register_queue(&counting_waker(woken.clone()));
+        let count = Arc::new(AtomicUsize::new(0));
+
+        // Activation: the initial link read returns `Again` once.
+        stats.link_again.store(true, Ordering::Relaxed);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(stats.link_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(
+            woken.load(Ordering::Relaxed),
+            0,
+            "Again must not self-wake into a busy retry"
+        );
+
+        // Before the 1 ms cadence elapses a poll does not retry the snapshot.
+        clock.store(1_000_000 - 1);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(
+            stats.link_reads.load(Ordering::Relaxed),
+            1,
+            "an early poll must not retry the retained snapshot"
+        );
+
+        // The cadence elapses: the next poll retries and resolves.
+        clock.store(1_000_000);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert!(
+            stats.link_reads.load(Ordering::Relaxed) >= 2,
+            "cadence elapsed: the retained snapshot is retried"
+        );
+        assert!(
+            !fut.initial_link_pending,
+            "the resolved read clears the initial-link flag"
+        );
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+    }
+
+    #[test]
+    fn closed_epoch_discards_copied_packets() {
+        // MS13 T4: a closed socket epoch takes its copied-but-undelivered data
+        // with it — the device's fixed RX slots and the Router RX/TX staging
+        // buffers — on both close seams (link-down transition and the
+        // resident-recovery commit), so a later epoch's sockets can never
+        // receive frames staged for the old one.
+        let (mutex, _registry, stats) = leaked_service_paired_link();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+
+        // Link-down seam: stage one copied frame plus both software buffers,
+        // then close the epoch with a down transition.
+        stats.staged_rx.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            mutex.lock().rx_copy_one_target(),
+            RxCopyStep::Copied
+        ));
+        {
+            let mut s = mutex.lock();
+            let router = s.router_for_test();
+            router.fill_rx_buffer_for_test();
+            assert!(router.enqueue_tx_for_test(&[1, 2, 3, 4]));
+            assert!(router.rx_buffer_pending_for_test());
+            assert!(router.tx_pending_for_test());
+        }
+        stats.link.store(false, Ordering::Relaxed);
+        assert_eq!(mutex.lock().link_policy_step_target(), LinkStep::Down);
+        {
+            let mut s = mutex.lock();
+            let router = s.router_for_test();
+            assert_eq!(
+                router.devices[0].rx_slot_len_for_test(),
+                0,
+                "down must purge the copied RX slots"
+            );
+            assert!(
+                !router.rx_buffer_pending_for_test(),
+                "down must purge the Router RX staging buffer"
+            );
+            assert!(
+                !router.tx_pending_for_test(),
+                "down must purge the Router TX staging buffer"
+            );
+        }
+
+        // Recovery-commit seam: restage a copied frame and staged buffers for
+        // the epoch the recovery closes, then drive the staged recovery.
+        stats.staged_rx.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            mutex.lock().rx_copy_one_target(),
+            RxCopyStep::Copied
+        ));
+        {
+            let mut s = mutex.lock();
+            let router = s.router_for_test();
+            router.fill_rx_buffer_for_test();
+            assert!(router.enqueue_tx_for_test(&[5, 6, 7, 8]));
+        }
+        stats.fault_pending.store(true, Ordering::Relaxed);
+        let notify: &'static QueueEvent = Box::leak(Box::new(QueueEvent::new()));
+        let (lifecycle, mut fut) = leaked_future(mutex, notify);
+        fut.recovery_test_clock = Some(clock);
+        let count = Arc::new(AtomicUsize::new(0));
+        for stage in [
+            RxTaskLifecycle::Resetting,
+            RxTaskLifecycle::Reinitializing,
+            RxTaskLifecycle::Active,
+        ] {
+            assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+            assert_eq!(lifecycle.load(), stage);
+        }
+        {
+            let mut s = mutex.lock();
+            let router = s.router_for_test();
+            assert_eq!(
+                router.devices[0].rx_slot_len_for_test(),
+                0,
+                "the recovery commit must purge the closed epoch's copied RX slots"
+            );
+            assert!(
+                !router.rx_buffer_pending_for_test(),
+                "the recovery commit must purge the Router RX staging buffer"
+            );
+            assert!(
+                !router.tx_pending_for_test(),
+                "the recovery commit must purge the Router TX staging buffer"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_waiter_does_not_cancel_resident_recovery() {
+        // MS13 T4 / R6: cancelling (dropping) an outstanding flush waiter while
+        // the resident recovery is in flight must not abort, fault or restart
+        // the staged recovery; the same owner still commits the new epoch. The
+        // waiter is reserved before the fault (RW-3: a flush constructed after
+        // a terminal fault fails immediately), rides into the recovery window
+        // and is cancelled at the Resetting stage.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        let flush = crate::flush::flush_new(ServiceAccess::Injected(mutex))
+            .expect("reserve the flush waiter before the fault");
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Resetting);
+
+        // Cancel the waiter mid-recovery.
+        drop(flush);
+
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Reinitializing);
+        assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+        assert_eq!(lifecycle.load(), RxTaskLifecycle::Active);
+        assert_eq!(
+            stats.committed_epoch.load(Ordering::Relaxed),
+            1,
+            "the waiter cancellation did not disturb the recovery commit"
+        );
+        assert_eq!(
+            fut.telemetry.fault.load(Ordering::Relaxed),
+            0,
+            "a waiter cancellation is not a terminal fault"
+        );
+    }
+
+    #[test]
+    fn resident_recovery_keeps_one_owner() {
+        // MS13 T4: the same resident owner walks the whole recovery — exactly
+        // one reset begin and one pre-submit cancel pair, the async owner view
+        // at every stage, no owner exit, and no terminal fault accounting on a
+        // successful recovery.
+        let (mutex, stats) = leaked_service_recovering();
+        let clock = crate::recovery::RecoveryTestClock::new();
+        clock.store(0);
+        let (lifecycle, mut fut) = leaked_future(mutex, Box::leak(Box::new(QueueEvent::new())));
+        fut.recovery_test_clock = Some(clock);
+        let count = Arc::new(AtomicUsize::new(0));
+
+        for stage in [
+            RxTaskLifecycle::Resetting,
+            RxTaskLifecycle::Reinitializing,
+            RxTaskLifecycle::Active,
+        ] {
+            assert!(matches!(poll_once(&mut fut, count.clone()), Poll::Pending));
+            assert_eq!(lifecycle.load(), stage);
+            assert_eq!(
+                lifecycle.load().owner_view(),
+                RxOwnerView::AsyncOwned,
+                "the async owner stays resident through {stage:?}"
+            );
+        }
+        assert_eq!(stats.begin_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.cancel_queued_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.cancel_pending_calls.load(Ordering::Relaxed), 1);
+        assert!(fut.recovery.is_none(), "recovery cleared after commit");
+        assert!(
+            !stats.recovery_hold.load(Ordering::Relaxed),
+            "the I/O gate reopened after commit"
+        );
+        assert_eq!(
+            fut.telemetry.fault.load(Ordering::Relaxed),
+            0,
+            "a successful recovery records no terminal fault"
         );
     }
 
@@ -9110,7 +9562,7 @@ stack_progress_pending: false,
         );
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn explicit_request_is_absorbed_when_natural_recovery_wins() {
         let lifecycle = drive_to(RxTaskLifecycle::Active);
@@ -9126,7 +9578,7 @@ stack_progress_pending: false,
         assert_eq!(lifecycle.load(), RxTaskLifecycle::Quiescing);
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn request_claim_rejects_duplicate_until_recovery_linearizes() {
         let lifecycle = drive_to(RxTaskLifecycle::Active);
@@ -9149,7 +9601,7 @@ stack_progress_pending: false,
         ));
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn terminal_transition_holds_request_gate_through_lifecycle_commit() {
         let lifecycle = drive_to(RxTaskLifecycle::Active);
@@ -9174,7 +9626,7 @@ stack_progress_pending: false,
         ));
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn pending_request_absorbed_when_drift_quarantines_owner() {
         // A1 rework: a checked explicit recovery request left pending when the
@@ -9209,7 +9661,7 @@ stack_progress_pending: false,
         req.clear_for_recovery();
     }
 
-    #[cfg(feature = "qemu-diagnostics")]
+    #[cfg(feature = "queue-diagnostics")]
     #[test]
     fn pending_request_absorbed_when_owner_ends_in_faulted_terminal() {
         // A1 rework: the `Active -> Faulted` non-recovery terminal path

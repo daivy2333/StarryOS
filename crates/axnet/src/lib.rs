@@ -261,7 +261,7 @@ pub fn diagnostic_enqueue_frame(
 }
 
 /// Queues one reset request for the unique resident queue owner.
-#[cfg(feature = "qemu-diagnostics")]
+#[cfg(feature = "queue-diagnostics")]
 pub fn recovery_reset_request() -> axdriver::prelude::DevResult {
     async_rx::recovery_reset_request_shared()
 }

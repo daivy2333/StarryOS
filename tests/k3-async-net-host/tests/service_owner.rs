@@ -270,5 +270,15 @@ fn service_owner_bounded_bidirectional_contract() {
     let later = rx_snapshot();
     assert_eq!(later.reaped, fault_reaped, "faulted data plane serves nothing more");
     assert_eq!(later.lifecycle, 3, "fault stays stable across rounds");
-    assert_eq!(later.fault, 1, "exactly one terminal fault: the device fatal");
+    // MS13 T2/T4: the K3 adapter exposes NetRecoveryControl, so a device
+    // fatal drives the resident-recovery path; the faulted driver refuses
+    // begin (FBE stays a stable error, never reset-cleared), so the owner
+    // still fail-stops in Faulted. MS13 T4 made the accounting single: the
+    // fault counter counts exactly one terminal commit per fatal event class
+    // — the begin-refusal quarantine — while the detection and the
+    // recovery-entry observations only update the last-error record.
+    assert_eq!(
+        later.fault, 1,
+        "single terminal accounting for one fatal event class, then stable fail-stop"
+    );
 }

@@ -42,15 +42,48 @@ use spin::Mutex;
 
 use axdriver_net::{
     BaseDriverOps, DevError, DevResult, DeviceType, EthernetAddress, NetBuf, NetBufBox,
-    NetBufPool, NetBufPtr, NetDriverOps, NetQueueControl, NetQueueDirection, NetTxQueue,
-    TxCookie, TxResourceLedger,
+    NetBufPtr, NetBufPool, NetDriverOps, NetQueueControl, NetQueueDirection, NetRecoveryControl,
+    NetTxQueue, OwnerSummary, QueueEpoch, RecoveryProgress, RecoveryStage, TxCookie,
+    TxResourceLedger,
 };
 
 use super::dma::{BUFFER_BYTES, NUM_SLOTS};
 use super::{
-    ArenaBacking, Gmac, GmacEnv, GmacState, TxPoll, TxSubmit, TxSubmitError, TX_FRAME_MAX,
-    TX_FRAME_MIN,
+    ArenaBacking, Gmac, GmacEnv, GmacState, RecoveryRefusal, RecoveryStep, RuntimeRecovery,
+    TxPoll, TxSubmit, TxSubmitError, TX_FRAME_MAX, TX_FRAME_MIN,
 };
+// Same dual binding as the parent module: kernel builds see the kernel
+// platform tree, host harnesses see the root-module sibling.
+#[cfg(feature = "k3")]
+use crate::platform::phy_probe;
+#[cfg(not(feature = "k3"))]
+use super::phy_probe;
+
+/// Bounded INSR consume (MS13 rework, INTS/INTN ack): the RTL8211F INTN
+/// output is a level, deasserted only by a clear-on-read of INSR; the ISR
+/// stays MDIO-free (MS10), so the owner's link-read path consumes the
+/// latched cause here. A latched link-change means events may postdate the
+/// stepped BMSR sample, so the level is re-read (latch-low: the second read
+/// is current) and the loop re-arms; three rounds bound a pathological flap
+/// storm, and a cause arriving after the final INSR read lowers INTN again
+/// and produces a fresh pad edge, so the bound itself never loses an event.
+/// A paged failure reports `Io`: an unconsumed INSR would hold INTN low and
+/// silence every later event.
+fn consume_link_cause<E: phy_probe::ProbeEnv>(env: &mut E, mut up: bool) -> DevResult<bool> {
+    for _ in 0..3 {
+        let insr = phy_probe::paged_read(env, phy_probe::PHY_PAGE_INSR, phy_probe::PHY_INSR_REG)
+            .map_err(|_| DevError::Io)?;
+        if insr & phy_probe::PHY_INSR_LINK_CHANGE == 0 {
+            return Ok(up);
+        }
+        let _first = phy_probe::mdio_read(env, phy_probe::PHY_ADDR, phy_probe::BMSR_REG)
+            .map_err(|_| DevError::Io)?;
+        let second = phy_probe::mdio_read(env, phy_probe::PHY_ADDR, phy_probe::BMSR_REG)
+            .map_err(|_| DevError::Io)?;
+        up = second & phy_probe::BMSR_LINK != 0;
+    }
+    Ok(up)
+}
 
 /// The adapter carries the board's single-hart contract into the trait
 /// world: `BaseDriverOps` requires `Send + Sync`, so the board env/backing
@@ -101,6 +134,19 @@ struct Core<B: ArenaBacking, E: GmacEnv> {
     completions_seen: u64,
     /// Reuse scratch for the DMA→CPU frame copy (never aliased).
     rx_scratch: Vec<u8>,
+    /// The adapter-owned checked `QueueEpoch` (MS13 T2): advanced once per
+    /// recovery at the begin boundary, before any device access. Cookies
+    /// are only accepted under the current epoch.
+    epoch: QueueEpoch,
+    /// The running recovery's target epoch (`None` = Idle). The Gmac owns
+    /// the hardware micro-stages; the adapter owns the epoch bookkeeping.
+    recovery: Option<QueueEpoch>,
+    /// MS13 A4 diagnostics (LOG=info): one-shot flag for the first notify
+    /// arm, proving the owner's wait protocol reached the device.
+    armed_reported: bool,
+    /// MS13 A4 diagnostics (LOG=info): last reported runtime link snapshot,
+    /// so a stable link prints once and a change prints once.
+    link_reported: Option<bool>,
 }
 
 /// The K3 GMAC as an `axdriver_net` NIC. All queue state sits behind one
@@ -129,6 +175,10 @@ impl<B: ArenaBacking, E: GmacEnv> K3NetAdapter<B, E> {
                 quarantine: Vec::new(),
                 completions_seen: 0,
                 rx_scratch: alloc::vec![0u8; RX_SCRATCH_LEN],
+                epoch: QueueEpoch::MIN,
+                recovery: None,
+                armed_reported: false,
+                link_reported: None,
             }),
         })
     }
@@ -201,6 +251,10 @@ impl<B: AdapterBacking, E: AdapterEnv> NetDriverOps for K3NetAdapter<B, E> {
     }
 
     fn queue_control(&mut self) -> Option<&mut dyn NetQueueControl> {
+        Some(self)
+    }
+
+    fn recovery_control(&mut self) -> Option<&mut dyn NetRecoveryControl> {
         Some(self)
     }
 
@@ -279,12 +333,20 @@ impl<B: AdapterBacking, E: AdapterEnv> NetTxQueue for K3NetAdapter<B, E> {
         // moves into this call exactly once.
         let buf = unsafe { NetBuf::from_buf_ptr(tx_buf) };
         let mut core = self.core.lock();
-        let Core { drv, env, owners, fault, quarantine, .. } = &mut *core;
-        // Faulted driver: the refused buffer is a legal software resource
-        // and goes back to the pool; the same error repeats.
-        if fault.is_some() {
+        let Core { drv, env, owners, fault, quarantine, epoch, recovery, .. } = &mut *core;
+        // Faulted driver or a running recovery: the refused buffer is a
+        // legal software resource and goes back to the pool; the same error
+        // repeats.
+        if fault.is_some() || recovery.is_some() {
             drop(buf);
             return Err(DevError::Io);
+        }
+        // Epoch binding: only a cookie minted under the CURRENT epoch is
+        // accepted; a stale or future cookie is refused before any device
+        // access.
+        if cookie.epoch() != *epoch {
+            drop(buf);
+            return Err(DevError::BadState);
         }
         // Duplicate owner identity: pre-accept invariant breach, nothing
         // touched on the device.
@@ -330,8 +392,8 @@ impl<B: AdapterBacking, E: AdapterEnv> NetTxQueue for K3NetAdapter<B, E> {
 
     fn reclaim_tx(&mut self) -> DevResult<Option<TxCookie>> {
         let mut core = self.core.lock();
-        let Core { drv, env, owners, completions_seen, fault, .. } = &mut *core;
-        if fault.is_some() {
+        let Core { drv, env, owners, completions_seen, fault, recovery, .. } = &mut *core;
+        if fault.is_some() || recovery.is_some() {
             return Err(DevError::Io);
         }
         match drv.poll_tx(env) {
@@ -402,9 +464,26 @@ impl<B: AdapterBacking, E: AdapterEnv> NetQueueControl for K3NetAdapter<B, E> {
         &mut self,
         directions: NetQueueDirection,
     ) -> DevResult<NetQueueDirection> {
+        {
+            let core = self.core.lock();
+            // A running recovery owns the device: arming an unsafe state is
+            // refused, the owner re-arms after the machine finishes.
+            if core.recovery.is_some() {
+                return Err(DevError::Io);
+            }
+        }
         let mut core = self.core.lock();
-        let Core { drv, env, .. } = &mut *core;
+        let Core { drv, env, armed_reported, .. } = &mut *core;
         drv.arm_notify(env, directions.contains(NetQueueDirection::TX));
+        // MS13 A4 diagnostics (LOG=info): the first arm proves the owner's
+        // wait protocol reached the device notify word.
+        if !*armed_reported {
+            *armed_reported = true;
+            axlog::info!(
+                "k3-gmac: owner armed the device notify irq_en={:#x}",
+                env.reg_read(super::DMA_CHAN_IRQ_EN),
+            );
+        }
         let hint = drv.check_completions(env).map_err(map_gmac_err)?;
         Ok(map_hint(directions, hint))
     }
@@ -421,5 +500,178 @@ impl<B: AdapterBacking, E: AdapterEnv> NetQueueControl for K3NetAdapter<B, E> {
         Ok(self
             .arm_notify_and_check(NetQueueDirection::RX)?
             .contains(NetQueueDirection::RX))
+    }
+}
+
+impl<B: AdapterBacking, E: AdapterEnv> NetRecoveryControl for K3NetAdapter<B, E> {
+    /// MS13 T5: a consistent BMSR link snapshot through the Gmac's stepped
+    /// MDIO machine. A running recovery owns the device and reports `Again`
+    /// (the caller retries after it commits); a stable fault reports `Io`;
+    /// a busy MDIO phase reports `Again` so the bounded cadence retries.
+    /// Link transitions never touch the adapter epoch bookkeeping.
+    fn read_link_status(&mut self) -> DevResult<bool> {
+        let mut core = self.core.lock();
+        if core.recovery.is_some() {
+            return Err(DevError::Again);
+        }
+        if core.fault.is_some() {
+            return Err(DevError::Io);
+        }
+        let Core { drv, env, link_reported, .. } = &mut *core;
+        match drv.read_link_step(env) {
+            Ok(super::LinkReadStep::Pending) => Err(DevError::Again),
+            Ok(super::LinkReadStep::Done(up)) => {
+                // MS13 rework: consume the PHY's latched cause so INTN
+                // returns high (see `consume_link_cause`).
+                let up = consume_link_cause(env, up)?;
+                // MS13 A4 diagnostics (LOG=info): the runtime snapshot value,
+                // printed once for a stable link and once per change.
+                if *link_reported != Some(up) {
+                    *link_reported = Some(up);
+                    axlog::info!("k3-gmac: runtime link snapshot up={}", up);
+                }
+                Ok(up)
+            }
+            Err(e) => Err(map_gmac_err(e)),
+        }
+    }
+
+    /// Observable progress without device access: the adapter's epoch
+    /// bookkeeping plus the Gmac's hardware stage.
+    fn progress(&self) -> RecoveryProgress {
+        let core = self.core.lock();
+        let stage = match core.recovery {
+            None => RecoveryStage::Idle,
+            Some(_) => match core.drv.runtime_recovery() {
+                Some(RuntimeRecovery::Resetting) => RecoveryStage::Resetting,
+                Some(RuntimeRecovery::Rebuilding) => RecoveryStage::Reinitializing,
+                Some(RuntimeRecovery::Failed) => RecoveryStage::Faulted,
+                // The Gmac machine finished between adapter steps; the next
+                // step lands on Recovered.
+                None => RecoveryStage::Recovered,
+            },
+        };
+        RecoveryProgress {
+            stage,
+            epoch: core.recovery.unwrap_or(core.epoch),
+        }
+    }
+
+    /// Initiates a recovery from a healthy driver: the checked epoch
+    /// advance happens BEFORE any device access (exhaustion fails closed),
+    /// and a refused begin leaves nothing touched.
+    fn begin_recovery(&mut self) -> DevResult<RecoveryProgress> {
+        let mut core = self.core.lock();
+        if core.recovery.is_some() {
+            return Err(DevError::ResourceBusy);
+        }
+        if core.fault.is_some() || !matches!(core.drv.state(), GmacState::Running) {
+            return Err(DevError::BadState);
+        }
+        let target = core.epoch.advance().ok_or(DevError::BadState)?;
+        match core.drv.runtime_begin_reset() {
+            Ok(_) => {
+                core.epoch = target;
+                core.recovery = Some(target);
+                Ok(RecoveryProgress { stage: RecoveryStage::Resetting, epoch: target })
+            }
+            Err(RecoveryRefusal::Busy) => Err(DevError::ResourceBusy),
+            Err(RecoveryRefusal::BadState) => Err(DevError::BadState),
+        }
+    }
+
+    /// One bounded recovery step. At the confirmed SWR boundary the old TX
+    /// carriers die here: their cookies can never return (the owner table
+    /// is settled into the quarantine) and their buffers stay retained.
+    fn poll_recovery_step(&mut self) -> DevResult<RecoveryProgress> {
+        let mut core = self.core.lock();
+        let Some(target) = core.recovery else {
+            return Err(DevError::BadState);
+        };
+        let outcome = {
+            let Core { drv, env, owners, quarantine, .. } = &mut *core;
+            match drv.runtime_poll_step(env) {
+                Ok(RecoveryStep::Pending)
+                | Ok(RecoveryStep::Stepped { stage: RuntimeRecovery::Resetting }) => Ok(
+                    RecoveryProgress { stage: RecoveryStage::Resetting, epoch: target },
+                ),
+                Ok(RecoveryStep::Stepped { stage: RuntimeRecovery::Rebuilding }) => {
+                    for slot in owners.iter_mut() {
+                        if let Some(owner) = slot.take() {
+                            quarantine.push((owner.cookie, owner.buf));
+                        }
+                    }
+                    Ok(RecoveryProgress {
+                        stage: RecoveryStage::Reinitializing,
+                        epoch: target,
+                    })
+                }
+                Ok(RecoveryStep::Recovered) => Ok(RecoveryProgress {
+                    stage: RecoveryStage::Recovered,
+                    epoch: target,
+                }),
+                // A failed machine re-reports its stable error: the stage
+                // stays observable as Faulted, the classification keeps the
+                // unconfirmed device-owned carriers.
+                Ok(RecoveryStep::Stepped { stage: RuntimeRecovery::Failed }) => Err(DevError::Io),
+                Err(_) => Err(DevError::Io),
+            }
+        };
+        if matches!(outcome, Ok(RecoveryProgress { stage: RecoveryStage::Recovered, .. })) {
+            // The machine is consumed; the next begin starts from the new
+            // epoch.
+            core.recovery = None;
+        }
+        outcome
+    }
+
+    /// The fixed 32-carrier conservation view: 16 TX CPU buffers + 16 RX
+    /// descriptors. `available` counts free TX buffers, `device_owned` the
+    /// 16 RX descriptors plus the live TX carriers, `quarantined` the
+    /// buffers retained by a confirmed stop or fault (never released, never
+    /// reused).
+    fn owner_summary(&self) -> OwnerSummary {
+        let core = self.core.lock();
+        let live = core.owners.iter().filter(|o| o.is_some()).count() as u64;
+        let quarantined = core.quarantine.len() as u64;
+        OwnerSummary {
+            available: NUM_SLOTS as u64 - live - quarantined,
+            device_owned: NUM_SLOTS as u64 + live,
+            quarantined,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fake::Board;
+
+    /// Epoch exhaustion fails closed BEFORE any device access: the checked
+    /// advance is the first thing a healthy begin does.
+    #[test]
+    fn recovery_epoch_exhaustion_is_fail_before_touch() {
+        let mut board = Board::new();
+        board.env.set_phy_link_1000fd();
+        let drv = board.ready_async_driver();
+        let script = board.env.handle();
+        let mut adapter = K3NetAdapter::new(drv, board.env.handle()).expect("adapter");
+        // Private-state boundary: set the epoch directly at MAX (no
+        // production seed API exists or is added).
+        {
+            let mut core = adapter.core.lock();
+            core.epoch = QueueEpoch::MAX;
+        }
+        let writes_at = script.reg_writes().len();
+        let control = adapter.recovery_control().unwrap();
+        assert!(
+            matches!(control.begin_recovery(), Err(DevError::BadState)),
+            "exhaustion refuses begin with BadState"
+        );
+        assert_eq!(
+            script.reg_writes().len(),
+            writes_at,
+            "the exhausted begin touched no device register"
+        );
     }
 }

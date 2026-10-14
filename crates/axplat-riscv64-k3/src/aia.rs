@@ -577,6 +577,12 @@ pub fn readback(b: &mut impl AiaBackend, source: usize) -> AiaReadback {
 }
 
 // ---------------------------------------------------------------------------
+/// MS13 A4 diagnostics: board-loop counters read by the payload snapshot —
+/// SEI traps that reached `handle_external` and the raw `stopei` of the
+/// latest one. Both are observation-only and never participate in control.
+pub static AIA_DEBUG_TRAPS: AtomicU64 = AtomicU64::new(0);
+pub static AIA_DEBUG_LAST_CLAIM: AtomicU64 = AtomicU64::new(0);
+
 // Chip (registration + dispatch)
 // ---------------------------------------------------------------------------
 
@@ -659,7 +665,11 @@ impl<'a, T: ?Sized + HandlerStore> AiaChip<'a, T> {
     /// inside the handler survives and is taken by the next trap. Spurious
     /// (zero claim) and unknown (no handler) events are only counted.
     pub fn handle_external(&self, b: &mut impl AiaBackend) -> Option<usize> {
+        // MS13 A4 diagnostics: board-loop counters for the payload snapshot
+        // (traps that reached the claim and the raw stopei they returned).
+        AIA_DEBUG_TRAPS.fetch_add(1, Ordering::Relaxed);
         let raw = b.with_imsic(|c| c.claim());
+        AIA_DEBUG_LAST_CLAIM.store(raw, Ordering::Relaxed);
         self.last_raw_claim.store(raw, Ordering::Relaxed);
         let Some((eid, _priority)) = parse_stopei(raw) else {
             self.spurious.fetch_add(1, Ordering::Relaxed);

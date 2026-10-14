@@ -50,7 +50,19 @@ struct BoardState {
     mdio_regs: [u16; 32],
     mdio_pending: Option<(u32, u32, u64)>,
     mdio_data: u32,
+    /// Scriptable MDIO completion latency (MS13 T5: stepped link reads).
+    mdio_latency_ns: u64,
+    /// Scriptable stuck MDIO engine (the busy bit never clears).
+    mdio_stuck: bool,
     swr_ready_at: u64,
+    /// Scriptable SWR self-clear latency (MS13 T2: delayed confirmation).
+    swr_latency_ns: u64,
+    /// Scriptable stuck SWR (never self-clears).
+    swr_stuck: bool,
+    /// Cost per cache operation (MS13 T2: stallable refill deadlines).
+    cache_cost_ns: u64,
+    /// Every GMAC register write in issue order (used-register trace).
+    reg_writes: Vec<(u32, u32)>,
     apmu_delay: u32,
 }
 
@@ -77,7 +89,13 @@ impl FakeEnv {
                 mdio_regs: [0; 32],
                 mdio_pending: None,
                 mdio_data: 0,
+                mdio_latency_ns: 0,
+                mdio_stuck: false,
                 swr_ready_at: 0,
+                swr_latency_ns: 0,
+                swr_stuck: false,
+                cache_cost_ns: 0,
+                reg_writes: Vec::new(),
                 apmu_delay: 0,
             })),
         };
@@ -99,6 +117,38 @@ impl FakeEnv {
         b.mdio_regs[10] = 0x0800;
     }
 
+    /// Scripts the runtime BMSR link bit (MS13 T5): a link down/up keeps the
+    /// rest of the ability registers unchanged, like a real re-link at the
+    /// same advertised abilities.
+    pub fn set_phy_link(&self, up: bool) {
+        let mut b = self.board.lock().unwrap();
+        if up {
+            b.mdio_regs[1] |= 0x0004;
+        } else {
+            b.mdio_regs[1] &= !0x0004;
+        }
+    }
+
+    /// Scripts the MDIO engine behavior (MS13 T5): a completion latency the
+    /// stepped read observes as `Again`, or a stuck engine that never
+    /// clears its busy bit.
+    pub fn set_mdio_behavior(&self, latency_ns: u64, stuck: bool) {
+        let mut b = self.board.lock().unwrap();
+        b.mdio_latency_ns = latency_ns;
+        b.mdio_stuck = stuck;
+    }
+
+    /// Scripts the RTL8211F INSR latch (MS13 rework): the page-`a43` cause
+    /// register, clear-on-read like the real PHY.
+    pub fn set_phy_insr(&self, value: u16) {
+        self.board.lock().unwrap().mdio_regs[crate::phy_probe::PHY_INSR_REG as usize] = value;
+    }
+
+    /// Reads the INSR latch back without clearing (test observation only).
+    pub fn phy_insr(&self) -> u16 {
+        self.board.lock().unwrap().mdio_regs[crate::phy_probe::PHY_INSR_REG as usize]
+    }
+
     /// Sets a GMAC register value the fake controller reports back.
     pub fn set_reg(&self, offset: u32, value: u32) {
         self.board.lock().unwrap().regs.insert(offset, value);
@@ -114,12 +164,39 @@ impl FakeEnv {
         self.board.lock().unwrap().clock_ns += nanos;
     }
 
+    /// Scripts the SWR self-clear behavior (MS13 T2): a delayed
+    /// confirmation latency or a stuck reset.
+    pub fn set_swr_behavior(&self, latency_ns: u64, stuck: bool) {
+        let mut b = self.board.lock().unwrap();
+        b.swr_latency_ns = latency_ns;
+        b.swr_stuck = stuck;
+    }
+
+    /// Sets the cost of every cache operation (MS13 T2: stallable refill
+    /// deadlines).
+    pub fn set_cache_cost(&self, ns: u64) {
+        self.board.lock().unwrap().cache_cost_ns = ns;
+    }
+
+    /// Returns the GMAC register write trace in issue order.
+    pub fn reg_writes(&self) -> Vec<(u32, u32)> {
+        self.board.lock().unwrap().reg_writes.clone()
+    }
+
     fn serve_phy_read(b: &mut BoardState, reg: u32) -> u16 {
         if reg == crate::phy_probe::PHY_PAGE_SEL_REG {
             return b.mdio_page;
         }
         if b.mdio_page == 0 {
             return b.mdio_regs[reg as usize];
+        }
+        if b.mdio_page == crate::phy_probe::PHY_PAGE_INSR
+            && reg == crate::phy_probe::PHY_INSR_REG
+        {
+            // MS13 rework: INSR is clear-on-read, like the real PHY.
+            let v = b.mdio_regs[reg as usize];
+            b.mdio_regs[reg as usize] = 0;
+            return v;
         }
         0
     }
@@ -137,6 +214,11 @@ impl ProbeEnv for FakeEnv {
                     if b.clock_ns >= ready {
                         if goc == crate::phy_probe::GOC_READ >> 2 {
                             b.mdio_data = Self::serve_phy_read(&mut b, reg) as u32;
+                        } else if reg == crate::phy_probe::PHY_PAGE_SEL_REG {
+                            // MS13 rework: the page selector write commits so
+                            // paged INSR reads route like the real PHY; plain
+                            // page-0 PHY writes stay fire-and-forget as before.
+                            b.mdio_page = b.mdio_data as u16;
                         }
                         b.mdio_pending = None;
                     }
@@ -159,7 +241,12 @@ impl ProbeEnv for FakeEnv {
                 }
                 let goc = (value >> 2) & 3;
                 let reg = (value >> 16) & 0x1f;
-                b.mdio_pending = Some((reg, goc, b.clock_ns));
+                let ready = if b.mdio_stuck {
+                    u64::MAX
+                } else {
+                    b.clock_ns + b.mdio_latency_ns
+                };
+                b.mdio_pending = Some((reg, goc, ready));
             }
             APMU_EBUS_DELAY_PADDR => b.apmu_delay = value,
             _ => {}
@@ -186,15 +273,34 @@ impl GmacEnv for FakeEnv {
 
     fn reg_write(&mut self, offset: u32, value: u32) {
         let mut b = self.board.lock().unwrap();
-        b.regs.insert(offset, value);
+        b.reg_writes.push((offset, value));
         if offset == DMA_MODE && value & 1 != 0 {
-            b.swr_ready_at = b.clock_ns;
+            // SWR trigger: model the self-clear (delayed or stuck) and the
+            // controller-wide register reset it implies — the capability
+            // word survives, every driver-written word clears.
+            b.swr_ready_at = if b.swr_stuck {
+                u64::MAX
+            } else {
+                b.clock_ns + b.swr_latency_ns
+            };
+            b.regs.retain(|k, _| *k == MAC_HW_FEATURE1);
+            return;
         }
+        b.regs.insert(offset, value);
     }
 
-    fn cache_flush(&mut self, _va: usize, _len: usize) {}
-    fn cache_clean(&mut self, _va: usize, _len: usize) {}
-    fn cache_invalidate(&mut self, _va: usize, _len: usize) {}
+    fn cache_flush(&mut self, _va: usize, _len: usize) {
+        let mut b = self.board.lock().unwrap();
+        b.clock_ns += b.cache_cost_ns;
+    }
+    fn cache_clean(&mut self, _va: usize, _len: usize) {
+        let mut b = self.board.lock().unwrap();
+        b.clock_ns += b.cache_cost_ns;
+    }
+    fn cache_invalidate(&mut self, _va: usize, _len: usize) {
+        let mut b = self.board.lock().unwrap();
+        b.clock_ns += b.cache_cost_ns;
+    }
     fn fence_rw(&mut self) {}
     fn fence_iorw(&mut self) {}
 }
@@ -329,6 +435,14 @@ impl FakeWire {
         // FD missing: NotComplete classification, length legal on its own.
         self.set_rx_desc_word(slot, 3, RDES3_LD | (68u32));
         self.rx_fetch = (slot + 1) % NUM_SLOTS;
+    }
+
+    /// MS13 T6: realigns the device fetch cursor after an in-place rebuild.
+    /// The rebuild restarts the driver's ring bookkeeping at slot 0 with all
+    /// 16 descriptors re-published device-owned, so the device half's
+    /// completion cursor restarts at 0 exactly like the driver's fetch head.
+    pub fn reset_rx_fetch(&mut self) {
+        self.rx_fetch = 0;
     }
 
     /// Device-side TX completion: every OWN-set TX descriptor is "sent" and
