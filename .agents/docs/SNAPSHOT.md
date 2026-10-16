@@ -1,8 +1,8 @@
 # SNAPSHOT.md — 当前项目描述
 
 > Sync status: current
-> Updated: 2026-10-14
-> Revision: `0a8835c8`
+> Updated: 2026-10-16
+> Revision: `42ea95e2`
 > Branch: `k3`
 > Worktree: clean
 
@@ -80,12 +80,13 @@ StarryOS 是使用 Rust 编写、基于 ArceOS 组件化架构的宏内核操作
 - SpacemiT K3 的 RAM rootfs 普通 shell 基线（MS18 RAM 部分）已交付：`k3-rootfs` 单 hart 模式按 D1-r1 预留布局（rootfs 承载窗 `[0x240000000,0x250000000)`、DTB 窗 `[0x2ef000000,0x2ef100000)`，post-kernel FREE 区连续性由 host 布局不变量长期承载）从临时加载的 ext4 RAM 镜像挂载根文件系统，经普通 loader 启动动态 BusyBox `/bin/sh`（musl 解释器）并执行文件系统外部命令；启动依赖缺失按层报告无 fallback（range 层板上见证，resolve/load 层 host 契约见证）、命令错误报告与前台 Ctrl-C 取消恢复板测观察、外部 RESET 回官方 Linux 用户实测；k3-rootfs 与 k3-stdio/k3-shell/raw-port 互斥、SMP>1 拒绝、独立 FIT（`StarryOS_riscv64-k3-rootfs.fit`）。本板裁决事实：axruntime 页分配器主区取 `.bss` 后首个 FREE 区，预留窗不得落于该区间（MS18 OOM 根因，host 不变量承载）；U-Boot 在新 DTB 窗装载/就地改写无异常。脚本/管道/重定向、易失写入对照、空闲编辑与 exit 收尾未取得正式见证（用户裁决取消 Iteration 002）；不含真实块设备存储（原 MS18 剩余范围）、GMAC 数据面、多 hart 与性能优化。
 - SpacemiT K3 的单 hart 异步双向网络数据面（MS12）已交付：`k3-async-net`/`k3-async-probe` 独立入口（SMP>1 与 shell 组合拒绝）、GMAC source-133 IOC 底座（注册/重臂/重查协议、deferred owner、fatal latch；V4 run3 真板 20 ARP TX 真实 RI/TI 零丢、外部 RESET 回原系统）、`K3NetAdapter` 接入既有 NetDriverOps/queue/stack 契约（唯一 owner、64 slot/16 descriptor 账本、两级 Full→恢复、C4 flush Pending→release→C4，V3 run3 板测全项）、stack runner + socket 载荷（UDP 26001/TCP 26002 全字节 echo、TCP 主动关闭 EOF）与真板四协议（两轮 ping 10/10、UDP/TCP 全字节回显、quiet 经沉降相后 2 s 计数逐字节冻结直证；孤立 resume 行按用户裁决豁免——唤醒路径由全程逐包真实中断行使）。本板裁决事实：quiet 观察窗前须先经沉降相吸收 TCP 关闭尾流（claim 流静止 500 ms 再开窗），宿主 axhal 无平台后端（`wall_time()≡0`）故 timer wheel 仅真板/QEMU 可验。结论不含真板 reset/link-flap 恢复与 DMA quiesce 证明（MS13）、多 hart（MS14）与性能优化（I19）。
 - SpacemiT K3 的单 hart 网络恢复语义（MS13）已交付：受控恢复矩阵在 k3-async/probe 独立入口运行——18 页 arena 原地 stop/SWR/重建、QueueEpoch/cookie 旧新隔离、resident owner、旧 socket connection-reset 终态与 flush abort、容量第 1 轮 81 帧两级边界、C4 flush、真实 source-60 拔插事件（含插回上升沿可达：RTL8211F INTN 电平型，arm 时清 INSR pending、owner link 读路径消费 latch，ISR 保持无 MDIO）与插回后 new-2 真实逐字节 UDP/TCP 会话交换；host 生产契约全绿。本板裁决事实：pad35 MFPR 复位即双沿武装（运行时写幂等）、INTN 置低后靠读 INSR 复位、事件路径依赖 owner 消费无兜底轮询。残余按用户收口裁决留档不追：容量/C4 第 2 轮、fail-stop 末场景、矩阵形态 new-2 判定行、插回后 link 不稳定三候选（事件通路单次失手/末次 Down 门永久关/DMA 静默停摆，有 trace 证据未定位）。结论不含多 hart（MS14）、长稳与性能（I19）。
+- SpacemiT K3 的多 hart 网卡与串口异步化最终验收（MS14）已交付：`k3-smp`/`k3-smp-net`/`k3-smp-uart`/`k3-smp-combined` 独立入口（SMP=1/17 原生拒绝）；16 AP 实际调度、per-hart timer/S_SOFT 与固定外设路由真板验证（A1–A4）；NIC owner/runner/app 固定跨簇（actual hart=2/3/9）四协议、两级容量、C4 与 quiet、UART copier pinned（rx=0/tx=1）raw/shell 双形态专项两轮板测通过（A5–A12）；`k3-smp-combined` 16-hart BusyBox RAM rootfs 最终形态经普通 loader 启动动态 `/bin/sh`，wget 逐字节读回、nc TCP/UDP 同内容回显、shell 存活（A16），两处产品修复均有先行真板 RED 与板验 GREEN（`kernel/src/mm/loader.rs` exec 段 eager populate 规避 K3 跨簇取指 fault 间歇性污染 stval；用户态网络 syscall 门收窄为仅 `k3-smp-combined` 开启）；同板原厂 Linux 单连接 TCP 对比单样本：板→PC 714.3/934.0 Mbps=76.5%，PC→板 218.8/854.3 Mbps=25.6%（A18）。本板裁决事实：K3 跨簇 instruction page fault 间歇性交付污染 stval（sepc 始终正确）。按用户 2026-10-16 裁决取消多 hart 恢复/长稳资格矩阵、UART 线速测量与多次采样，均不表述为已验证。结论不含性能优化（I19）、真实存储（I21）与 ping/ICMP socket。
 - 交付物包括可启动内核镜像、平台构建产物，以及配套的内核态和用户态测试载荷。
 
 ## 仓库现场
 
-- 当前 Git 分支为 `k3`，HEAD 为 `0a8835c8`；工作树 clean。
-- 当前无活跃 change；归档目录最新保留 MS13 单 hart 网络恢复语义（`archive/2026-10-14-ms13-com260-kit-single-hart-network-recovery/`）、MS12 异步双向数据面（`archive/2026-10-13-ms12-com260-kit-async-bidirectional-data-plane/`）与 MS11 轮询网络、MS17 异步串口/交互 shell、MS18 RAM rootfs 普通 shell 产物。当前行为规格包括 `openspec/specs/k3-com260-kit-single-hart-network-recovery/`、`k3-com260-kit-async-network-data-plane/`、`k3-com260-kit-polling-network-baseline/`、`k3-com260-kit-async-uart-interactive-shell/` 与 `k3-com260-kit-standard-shell-rootfs/`；项目支持范围仍以已验收行为为准。
+- 当前 Git 分支为 `k3`，HEAD 为 `42ea95e2`；工作树 clean。
+- 当前无活跃 change；归档目录最新保留 MS14 多 hart 异步 I/O（`archive/2026-10-16-ms14-com260-kit-multi-hart-async-io/`）、MS13 单 hart 网络恢复语义（`archive/2026-10-14-ms13-com260-kit-single-hart-network-recovery/`）、MS12 异步双向数据面（`archive/2026-10-13-ms12-com260-kit-async-bidirectional-data-plane/`）与 MS11 轮询网络、MS17 异步串口/交互 shell、MS18 RAM rootfs 普通 shell 产物。当前行为规格包括 `openspec/specs/k3-com260-kit-multi-hart-async-io/`、`k3-com260-kit-single-hart-network-recovery/`、`k3-com260-kit-async-network-data-plane/`、`k3-com260-kit-polling-network-baseline/`、`k3-com260-kit-async-uart-interactive-shell/` 与 `k3-com260-kit-standard-shell-rootfs/`；项目支持范围仍以已验收行为为准。
 - 已知遗留：vf2 构建入口 pre-existing 失败（`axfs`/`axnet`/`axtask` import 解析错误）为 Issue 候选未落账；SNAPSHOT 此前记录的 `make host-test` ms04 失败在当前工作区不复现（2026-10-07 host-test exit 0）。
 - 详细里程碑状态见 [`tasks.md`](tasks.md)。
 
