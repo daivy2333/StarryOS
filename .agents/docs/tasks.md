@@ -276,4 +276,4 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 当前无活跃 change（MS14 已于 2026-10-16 完成并归档于 `openspec/changes/archive/2026-10-16-ms14-com260-kit-multi-hart-async-io/`）。
 
-K3 异步化路线已全部交付，最终形态为 16-hart `k3-smp-combined` BusyBox RAM rootfs shell：异步 UART 交互 + 异步 GMAC 网络（wget/nc 经用户态 socket），外部 RESET 回官方 Linux。后续方向均未承诺：I19 性能优化、I20 剩余 ping/ICMP socket、I21 真实块设备存储；缺陷台账 `.agents/issues/`（ISS01–ISS03 open）。
+K3 异步化路线已全部交付，最终形态为 16-hart `k3-smp-combined` BusyBox RAM rootfs shell：异步 UART 交互 + 异步 GMAC 网络（wget/nc 经用户态 socket），外部 RESET 回官方 Linux。后续方向均未承诺：I19 性能优化、I20 剩余 ping/ICMP socket、I21 真实块设备存储；缺陷台账 `.agents/issues/`（ISS01–ISS04 open）。
