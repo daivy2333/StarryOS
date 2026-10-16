@@ -11,29 +11,9 @@
 
 NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。MS14 已于 2026-10-16 完成并归档，T01–T24 全部闭合，K3 异步化路线（网卡与串口多 hart + BusyBox 组合最终使用）全部交付，当前无剩余执行 milestone。QEMU 与真板是不同证据类别。
 
-| ID | Milestone | 交付范围 | 验证 Gate | 前置 | 状态 |
-|---|---|---|---|---|---|
-| <!-- T07 --> T07 | QEMU 异步 TX | 增加 TX submit、reclaim、completion 和 flush；不改 packet slot | queue full 产生背压；completion 不等于 peer delivery；flush 不永久 Pending | T06 | ✅ 完成（MS05） |
-| <!-- T08 --> T08 | 有界 packet slot | 建立 RX/TX slot、occupancy、drop reason 和 partial write 契约 | 满载时内存有上界；背压可见；descriptor 不跨 await 泄漏 | T07 | ✅ 完成（MS05） |
-| <!-- T09 --> T09 | stack runner | 独立推进 smoltcp ingress、egress、maintenance 和 timer | device、software、timer 唤醒可复现；空闲不轮询；持续流量不饥饿 | T08 | ✅ 完成（MS06 Iteration 000 `001-rework` accepted；Tasks 1.1–1.5 全部闭合） |
-| <!-- T10 --> T10 | socket readiness | 将 smoltcp 单槽 waker 桥接到 `axpoll::PollSet` | 多 waiter、overflow、close 和 error 下，poll/select 与实际 I/O 一致 | T09 | ✅ 完成（MS06；最终 Cycle `001-replan` accepted，单 hart QEMU 手工验收全过；host/QEMU 进程证据完整性按用户明确授权豁免） |
-| <!-- T11 --> T11 | reset 与取消 | 引入 generation、stale completion 丢弃、cancel、timeout 和 link flap | fault injection 下无 UAF、重复回收、永久 Pending 或静默丢包 | T10 | ✅ 完成（MS07；Iteration 000–007 全部 accepted；最终 Cycle 006 六 case + MS01/MS04/MS05/MS06 回归全过；change 已归档于 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`） |
-| <!-- T12 --> T12 | QEMU 多 hart | 定义 queue affinity、跨 hart wake、控制面同步和 ordering 理由 | 多 hart 双向压力与 reset/I/O 交错无 race；单 hart 结果不计通过 | T11 | ✅ 完成（MS08；Iteration 000–005 共 18 个 Cycle 全部 accepted；最终 Cycle `005/003-rework` 的 `SMP=16` 六 case network-only 运行 exit 0。UART 专项、受控迁移稳定性、reset/link 交错与旧阶段回归按用户明确授权豁免） |
-| <!-- T13 --> T13 | 目标板事实 Gate | 记录启动介质、DTS/ACPI、MAC、PHY、MMIO、IRQ、DMA/cache 和 CPU/hart 拓扑 | 每项来自真板、固件描述或手册；未知项阻塞后端选择 | T12；目标硬件可用 | ✅ 完成（MS09；板级事实、安全 RAM 边界与可重复临时启动已 accepted） |
-| <!-- T14 --> T14 | 目标板启动与 MAC 寄存器 | 接通 feature、镜像和 early console；只验证目标 MAC 寄存器访问 | 重复启动稳定；寄存器非全零/全一；异常访问可定位 | T13 | ✅ 完成（MS09；FIT RAM 启动可重复，MAC version=0x1054 可读可解释） |
-| <!-- T15 --> T15 | 目标板 Clock/Reset/PHY | 依据 T13 的 bootloader handoff 决定保留或恢复 clock/reset；只建立链路 | preserved 状态有原值；PHY/link 或等效链路结果可重复 | T14 | ✅ 完成（MS09；APMU 两步使能 + IO-PD 按 R69 用法设置，PHYID=0x001cc916 RTL8211F，插拔循环可重复） |
-| <!-- T16 --> T16 | 目标板设备中断 delivery | 只接 MAC IRQ claim、handler、device status 和 EOI | IRQ claim 与设备 status 对齐；无中断风暴；CPU/hart 初始化可区分 | T15 | ✅ 完成（MS10；AIA 软件底座 + PHY 设备 IRQ 插拔对齐板上验证，change 已归档） |
-| <!-- T17 --> T17 | 目标板 DMA/cache 基线 | 建立 DMA 地址转换、cache/barrier 和硬件队列 ownership | CPU/设备看到同一 descriptor/queue entry；ownership 转移有日志和断言 | T16 | ✅ 完成（MS11；checked 18 页独占 arena、线性 PA/DMA、Zicbom 发布/回收序、高位地址与 4 GiB 环检查，host harness 全绿 + 板测成立） |
-| <!-- T18 --> T18 | 目标控制器轮询 RX | 只实现最小 RX refill/reap 或等效接收队列 | 抓包与硬件队列计数一致；坏帧和队列满有明确结果 | T17 | ✅ 完成（MS11；16 slot RX publish/reap/refill/wrap、分类 drop、stage11 真实 ARP RX 与 link-down 有界失败） |
-| <!-- T19 --> T19 | 目标控制器轮询 TX | 只实现最小 TX submit/reclaim 或等效发送队列 | ARP/ICMP 发包可抓取；回收不重复；timeout 可诊断 | T18 | ✅ 完成（MS11；单次回收 terminal、Full 不覆盖、001-rework doorbell 排他语义修复、stage12 20/20 terminal + 真实 ARP reply） |
-| <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | ✅ 完成（MS12；k3-async 双镜像、真实 RI/TI→deferred owner、V4 run3 20 ARP TX 零丢、IoC/owner/slot 契约全过） |
-| <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ✅ 完成（MS12；NetDriver adapter+唯一 owner+64/16 容量+C4 flush，V3 run3 板测全项；真板四协议与 quiet 见 T22 前置 MS12 收口） |
-| <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ✅ 完成（MS13；受控 reset 双轮 committed fault=0、旧对象 connection-reset 终态、容量第 1 轮+两级边界+flush c4、source-60 拔插端到端与插回上升沿可达、插回后 new-2 真实会话交换；容量第 2 轮/fail-stop 按用户收口裁决留档） |
-| <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ✅ 完成（MS14；Iteration 000–002 accepted：NIC owner/runner/app actual hart=2/3/9、UART rx=0/tx=1 raw/shell 双形态与跨簇唤醒板测成立，操作者"认可，通过"/"正常工作"） |
-| <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ✅ 完成（MS14；按用户 2026-10-16 裁决以 16-hart BusyBox 最终正常使用替代恢复/长稳资格矩阵，A16 成立；原资格矩阵不表述为已验证） |
-| <!-- T25 --> T25 | 已转为 I19 | 不再作为执行任务；方向见 `.agents/memory/improvements.md` I19 | 不参与当前路线完成判定 | 不适用 | superseded — 2026-10-06 用户批准退出路线 |
-
 <!-- arc: ARC-202609171804 --> T01-T06 已归档 (2026-09-17) → ../../openspec/changes/archive/2026-09-17-ARC-202609171804/proposal.md
+
+<!-- arc: d6aaead9 --> T07–T25 任务表已归档 (2026-10-16)：全部完成或豁免，逐条结论由对应 MS05–MS14 条目承载 → `git show d6aaead9:.agents/docs/tasks.md`
 
 共同约束：
 
@@ -72,50 +52,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 
 <!-- arc: ARC-202609171804 --> MS01-MS04、MS16 已归档 (2026-09-17) → ../../openspec/changes/archive/2026-09-17-ARC-202609171804/proposal.md
 
-### MS05：QEMU 有界双向设备数据面
-
-- Status: completed — 2026-08-19；最终 Review accepted，Evidence 与兼容性偏差按用户明确授权豁免
-- Outcome: RX/TX 通过有界 packet slot 形成可背压、可回收的双向设备数据面。
-- Rationale: T07 的 TX completion 与 T08 的 slot/backpressure 共同形成完整的设备侧双向基线。
-- Dependencies: MS04
-- Scope: T07-T08；TX submit/reclaim/completion/flush、RX/TX slot、occupancy、drop 和 partial write。
-- Non-goals: 独立 stack runner、socket 多 waiter、reset 和零拷贝。
-- Workload: TX 状态机、有界 handoff、压力边界和完成语义。
-- Stable baseline: 内存有上界，queue/slot full 可观测并能恢复，descriptor 不跨 await 泄漏。
-- Verification boundary: completion 不等于 peer delivery，flush 不永久 Pending，背压与实际容量一致。
-- Diagnostic boundary: 失败限制在 TX ownership、slot handoff、回收或背压传播。
-- Split signals: RX 与 TX slot 策略出现无法共享的验证或生命周期边界。
-- Related changes: `ms05-qemu-bounded-bidirectional-device-data-plane`（已归档于 `openspec/changes/archive/2026-08-19-ms05-qemu-bounded-bidirectional-device-data-plane/`；12 iterations，27/27 tasks，最终 Review: accepted with explicit user Evidence/compatibility waiver）。
-
-### MS06：应用可见的异步网络栈
-
-- Status: completed — 2026-08-27；最终 Review accepted，缺失的 host/QEMU 进程级留档按用户明确授权豁免
-- Outcome: stack runner 和 socket readiness 让应用在无主动轮询依赖下使用异步网络。
-- Rationale: T09 单独只有协议栈内部推进，和 T10 合并后才形成应用可依赖的阶段成果。
-- Dependencies: MS05
-- Scope: T09-T10；ingress/egress/maintenance/timer、device/software/timer wake 和 axpoll bridge。
-- Non-goals: reset、SMP、真板 transport 和多接口扩展。
-- Workload: 协议栈 runner、唤醒合流、多 waiter 语义和 socket 回归。
-- Stable baseline: 空闲无轮询，持续流量不饥饿，poll/select 与实际 I/O readiness 一致。
-- Verification boundary: 多 waiter、overflow、close、error 和三类 runner 唤醒均有见证。
-- Diagnostic boundary: 失败限制在 stack 推进、timer/software wake 或 socket event bridge。
-- Split signals: readiness bridge 需要替换 axpoll 并形成独立的多 waiter 子系统。
-- Related changes: `ms06-application-visible-async-network-stack`（归档于 `openspec/changes/archive/2026-08-27-ms06-application-visible-async-network-stack/`；9 iterations，全部 tasks 完成；最终 Iteration 008 Cycle `001-replan` Review accepted。MS06 12/12、MS01 14/14、MS04 4/4、MS05 六 mode guest runtime PASS；host/QEMU 进程级输出未完整留档，用户以逐步手工全过声明接受证据完整性风险）
-
-### MS07：QEMU 单 hart 恢复语义
-
-- Status: completed
-- Outcome: reset、分层取消、阶段化超时和 link flap 下的异步对象生命周期封闭，迟到 completion 不跨 owner epoch 生效。
-- Rationale: 恢复语义必须在 SMP 放大竞态前先形成可故障注入的稳定基线；R53 的单请求 DMA fail-stop 只提供无法安全收敛时的下限，不替代 NIC 多 packet ownership 设计。
-- Dependencies: MS06
-- Scope: T11；区分 waiter cancellation、pre-submit 撤销和 device-owned quiesce；generation 绑定 reset epoch 与 descriptor/cookie owner ledger；submit、completion、reclaim、quiesce、reset 分阶段 timeout；link flap 和 queue stall。
-- Non-goals: 跨 hart 同步、真板 DMA 停止证明、自动 polling fallback 和性能优化。
-- Workload: 生命周期状态机、epoch/owner ledger、阶段化 deadline 与错误传播、quiesce/reset fail-stop、故障注入和资源保留/回收。
-- Stable baseline: reset 前后对象不混用；取消等待不改变 packet ownership；无法安全 quiesce 时保持 faulted owner、拒绝新提交且不提前释放 backing。
-- Verification boundary: 在 waiter、pre-submit、device-owned、各 timeout stage 和 reset failure 注入下，无 UAF、重复回收、永久 Pending、静默丢包或 stale completion 误归属；结论限定于单 hart QEMU/VirtIO 模型。
-- Diagnostic boundary: 失败限制在取消层级、epoch/descriptor/cookie 归属、具体 timeout stage、quiesce 或 reset 状态转换。
-- Split signals: link 管理与设备 reset 形成两个可独立验收且可独立延期的控制面成果。
-- Related changes: `ms07-qemu-single-hart-recovery-semantics`（已归档于 `openspec/changes/archive/2026-09-02-ms07-qemu-single-hart-recovery-semantics/`；Iteration 000–007 全部 accepted，最终 Cycle `Dma::new` 零化重建 queue + 六 case + MS01/MS04/MS05/MS06 回归通过）
+<!-- arc: d6aaead9 --> MS05、MS06、MS07 已归档 (2026-10-16)：QEMU 数据面/应用可见栈/单 hart 恢复语义完成 44–58 天，逐条结论与 change 归档指针已随条目落史；change 分别归档于 `openspec/changes/archive/2026-08-19-ms05-qemu-bounded-bidirectional-device-data-plane/`、`2026-08-27-ms06-application-visible-async-network-stack/`、`2026-09-02-ms07-qemu-single-hart-recovery-semantics/`；条目内容 → `git show d6aaead9:.agents/docs/tasks.md`
 
 ### MS08：QEMU 多 hart 正确性基线
 

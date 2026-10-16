@@ -114,8 +114,6 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 | <!-- R25 --> `.agents/analysis/arceos-async-network-driver-analysis.md` | ArceOS 网卡工作可复用性：区分 QEMU 直接代码、transport-neutral 抽象审查和目标真板经验；DWMAC 仅在兼容控制器上进入移植候选 |
 | <!-- R26 --> `.agents/analysis/starryos-async-network-roadmap.md` | StarryOS 异步网卡架构路线：RX/TX ownership、IRQ budget、背压、completion、可观测性，以及 QEMU 基线后按目标板事实选择后端 |
 | <!-- R41 --> `.agents/analysis/starryos-network-development-strategy.md` | StarryOS 网络开发实施探索：当前 axnet/smoltcp/VirtIO-MMIO 调用链、异步 queue/stack 数据流、MS04 边界和目标板 B0-B7 条件化 Gate |
-| <!-- R42 --> `.agents/analysis/_archive/starryos-network-delivery-estimate.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 固定路线的人周假设；目标板路线不得沿用其数字 |
-| <!-- R43 --> `.agents/analysis/_archive/starryos-network-knowledge-gaps.md` | [ARCHIVED 2026-08-09] 旧 T01-T13、PCI-first 和 VF2/DWMAC 分组；当前 Plan 读取 tasks、R23、R25 和 R41 |
 | <!-- R46 --> `.agents/analysis/starryos-device-specific-irq-waker-architecture.md` | StarryOS 设备专属 IRQ 与任务唤醒分析：UART 全局 hook 冲突、PLIC 设备 handler、设备私有 waker、MS03/MS04 分批边界和 Gate 2 未确认项 |
 | <!-- R47 --> `.agents/analysis/starryos-virtio-mmio-network-benchmark-baseline.md` | MS16 统一网卡基线设计：QEMU/TAP 轮询 B0、跨轮询/异步/真板 workload、C1-C6 完成语义、吞吐/延迟/指令/CPU/复制/IRQ 指标、Evidence Schema、BDD/Gate 和 MS04 A/B 比较资格 |
 | <!-- R53 --> `.agents/analysis/sdmmc-async-driver-external-reference.md` | xianxw/Final-NO-SDMMC 固定 commit 的异步 SDMMC 参考：W1C cause 保留、阶段化超时与终态验证、单请求 DMA fail-stop、同步/异步共用完成谓词，以及 MS07/MS10/MS11/MS13 的迁移边界；不扩张 MS05 |
@@ -128,6 +126,8 @@ Rust 异步核心机制（async/await、Pin、UnsafeCell）MUST 查官方文档�
 > ⚠️ STALE [2026-09-17] — R23 的项目状态已过期；R47 的 benchmark 身份、hash、manifest 和握手机制与当前规则冲突。两篇 Analysis 已就地标记，正文修订或替代前只复用未受警告影响的架构、workload 和指标内容。
 
 **已归档**：UART 阶段全部分析文档。完整归档载体见 `openspec/changes/archive/2026-07-25-cleanup-uart-docs/`（48 文件，含 analysis、docs、meta-specs、runbooks、specs）、q17: `openspec/changes/archive/2026-07-25-q17-smp-memory-ordering/`、旧 ARC: `openspec/changes/archive/2026-07-25-arc-202607251326/`。
+
+<!-- arc: d6aaead9 --> R42、R43 索引行已归档 (2026-10-16)：目标分析文档 2026-08-09 已移入 `.agents/analysis/_archive/`（文件保留），活动索引不再登记已归档分析 → `git show d6aaead9:.agents/memory/references.md`
 
 #### Scenario: 新生成 openspec-explorer 分析文档
 
