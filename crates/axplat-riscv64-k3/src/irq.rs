@@ -102,6 +102,27 @@ struct IrqIfImpl;
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
     fn set_enable(irq: usize, enabled: bool) {
+        // MS14 task T2: the CPU-side timer vector is per-hart CSR state —
+        // `set_enable` touches only the caller's local `STIE`.
+        #[cfg(feature = "runtime-irq")]
+        if irq == crate::timer_irq::TIMER_IRQ_VECTOR {
+            crate::timer_irq::set_local_timer(enabled);
+            return;
+        }
+        // MS14 task T2: the same contract for the S_SOFT reschedule vector.
+        #[cfg(feature = "smp")]
+        if irq == crate::ipi_irq::SOFT_IRQ_VECTOR {
+            crate::ipi_irq::set_local_soft(enabled);
+            return;
+        }
+        // MS14 task T3: under SMP the device routes target the boot hart's
+        // IMSIC file, so ANY caller gates only the global APLIC SETIE/CLRIE
+        // bits; local EIE belongs to boot registration/unregistration.
+        #[cfg(feature = "smp")]
+        {
+            CHIP.smp_set_enable(&mut aia::HardwareBackend, irq, enabled);
+        }
+        #[cfg(not(feature = "smp"))]
         CHIP.set_enable(&mut aia::HardwareBackend, irq, enabled);
     }
 
@@ -116,6 +137,32 @@ impl IrqIf for IrqIfImpl {
             warn!("k3-irq: timer handler duplicate rejected");
             return false;
         }
+        // MS14 task T2: under SMP the full S_SOFT vector goes to the
+        // independent reschedule slot owned by axtask's scheduler.
+        #[cfg(feature = "smp")]
+        if irq == crate::ipi_irq::SOFT_IRQ_VECTOR {
+            if crate::ipi_irq::register_irq(handler) {
+                return true;
+            }
+            warn!("k3-irq: soft handler duplicate rejected");
+            return false;
+        }
+        // MS14 task T3: fixed device routes are boot-owned under SMP — the
+        // chip refuses a remote caller with no hardware touch.
+        #[cfg(feature = "smp")]
+        {
+            if CHIP.smp_register(
+                &mut aia::HardwareBackend,
+                axplat::percpu::this_cpu_id(),
+                irq,
+                handler,
+            ) {
+                return true;
+            }
+            warn!("k3-irq: register source {irq} rejected (route/duplicate/remote or unsupported)");
+            return false;
+        }
+        #[cfg(not(feature = "smp"))]
         if CHIP.register(&mut aia::HardwareBackend, irq, handler) {
             true
         } else {
@@ -125,10 +172,32 @@ impl IrqIf for IrqIfImpl {
     }
 
     fn unregister(irq: usize) -> Option<IrqHandler> {
-        #[cfg(feature = "runtime-irq")]
+        // MS14 task T2: under SMP the runtime timer/soft slots are global
+        // owner state shared by every hart — unregistration is refused
+        // (None, no slot/CSR change); the caller-local mask via `set_enable`
+        // is the stop mechanism.
+        #[cfg(feature = "smp")]
+        if irq == crate::timer_irq::TIMER_IRQ_VECTOR
+            || irq == crate::ipi_irq::SOFT_IRQ_VECTOR
+        {
+            return None;
+        }
+        // Single-hart timer lifecycle (MS17): mask-before-remove stays.
+        #[cfg(all(feature = "runtime-irq", not(feature = "smp")))]
         if irq == crate::timer_irq::TIMER_IRQ_VECTOR {
             return crate::timer_irq::unregister_irq();
         }
+        // MS14 task T3: boot-only route removal under SMP.
+        #[cfg(feature = "smp")]
+        {
+            let removed =
+                CHIP.smp_unregister(&mut aia::HardwareBackend, axplat::percpu::this_cpu_id(), irq);
+            if removed.is_none() {
+                debug!("k3-irq: unregister source {irq} rejected (route/remote or absent)");
+            }
+            return removed;
+        }
+        #[cfg(not(feature = "smp"))]
         CHIP.unregister(&mut aia::HardwareBackend, irq)
     }
 
@@ -139,8 +208,15 @@ impl IrqIf for IrqIfImpl {
         if irq == crate::timer_irq::TIMER_IRQ_VECTOR {
             return crate::timer_irq::handle_irq(irq);
         }
+        // MS14 task T2: the S_SOFT vector acknowledges SSIP and dispatches
+        // the reschedule handler (SMP builds only; single-hart keeps the
+        // MS09 inert behavior).
+        #[cfg(feature = "smp")]
+        if irq == crate::ipi_irq::SOFT_IRQ_VECTOR {
+            return crate::ipi_irq::handle_irq(irq);
+        }
         // Only the external vector claims; timer/IPI vectors keep the MS09
-        // inert behavior when the timer slot is not compiled in (no STIE/SSIE
+        // inert behavior when their slots are not compiled in (no STIE/SSIE
         // is ever opened there).
         if irq != EXTERNAL_IRQ_VECTOR {
             return None;

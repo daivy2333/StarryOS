@@ -2,7 +2,10 @@ mod fs;
 mod io_mpx;
 mod ipc;
 mod mm;
-#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
 mod net;
 mod resources;
 mod signal;
@@ -15,7 +18,10 @@ use axerrno::{AxError, LinuxError};
 use axhal::uspace::UserContext;
 use syscalls::Sysno;
 
-#[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+#[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
 pub use self::net::*;
 pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, resources::*, signal::*, sync::*, sys::*, task::*, time::*,
@@ -551,41 +557,74 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::shmdt => sys_shmdt(uctx.arg0() as _),
 
         // net
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::socket => sys_socket(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::socketpair => sys_socketpair(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3().into(),
         ),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::bind => sys_bind(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::connect => sys_connect(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::getsockname => {
             sys_getsockname(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2().into())
         }
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::getpeername => {
             sys_getpeername(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2().into())
         }
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::listen => sys_listen(uctx.arg0() as _, uctx.arg1() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::accept => sys_accept(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2().into()),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::accept4 => sys_accept4(
             uctx.arg0() as _,
             uctx.arg1().into(),
             uctx.arg2().into(),
             uctx.arg3() as _,
         ),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::shutdown => sys_shutdown(uctx.arg0() as _, uctx.arg1() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::sendto => sys_sendto(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -594,7 +633,10 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4().into(),
             uctx.arg5() as _,
         ),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::recvfrom => sys_recvfrom(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -603,11 +645,20 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4().into(),
             uctx.arg5().into(),
         ),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::sendmsg => sys_sendmsg(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::recvmsg => sys_recvmsg(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::getsockopt => sys_getsockopt(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -615,7 +666,10 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3().into(),
             uctx.arg4().into(),
         ),
-        #[cfg(not(any(feature = "lichee-d1", feature = "k3")))]
+        #[cfg(not(any(
+    feature = "lichee-d1",
+    all(feature = "k3", not(feature = "k3-smp-combined"))
+)))]
         Sysno::setsockopt => sys_setsockopt(
             uctx.arg0() as _,
             uctx.arg1() as _,

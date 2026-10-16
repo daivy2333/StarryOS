@@ -1,7 +1,7 @@
 # tasks.md — 任务追踪
 
-> 任务状态最后同步: 2026-10-14 | 路线规划更新: 2026-10-06 | 分支: k3 | grep: `<!-- T{编号} -->`
-> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I19；MS01-MS11、MS16 与 MS17 已归档。
+> 任务状态最后同步: 2026-10-16 | 路线规划更新: 2026-10-15 | 分支: k3 | grep: `<!-- T{编号} -->`
+> 来源: R41、R47、R49、R51、R53、M41、D22、K31-K32、K37、K41、K43、I06、I13-I19、I21；MS01-MS14、MS16-MS18 已归档（MS15 已转 I19）。
 
 ---
 
@@ -9,7 +9,7 @@
 
 每个 milestone 只引入一个主要调试变量。执行前必须通过 OpenSpec Plan 建立 BDD、RTM、测试见证和获批 change。完成状态只依据对应 change 的新鲜证据更新。
 
-NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。当前排期仅余 MS14（MS12、MS13 网卡基线与 MS17 串口基线均已验收），MS14 同时验收网卡与 UART 多 hart 异步行为，是当前 K3 异步化路线的最终交付。QEMU 与真板是不同证据类别。前置 Gate 未通过时，后续 milestone 保持等待。
+NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任务。MS14 已于 2026-10-16 完成并归档，T01–T24 全部闭合，K3 异步化路线（网卡与串口多 hart + BusyBox 组合最终使用）全部交付，当前无剩余执行 milestone。QEMU 与真板是不同证据类别。
 
 | ID | Milestone | 交付范围 | 验证 Gate | 前置 | 状态 |
 |---|---|---|---|---|---|
@@ -29,8 +29,8 @@ NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任
 | <!-- T20 --> T20 | 目标后端异步 RX | 将 T06 的 RX queue task 接到真板 IRQ | RX burst 无 lost wakeup；budget、drop 和 occupancy 可观测 | T19 | ✅ 完成（MS12；k3-async 双镜像、真实 RI/TI→deferred owner、V4 run3 20 ARP TX 零丢、IoC/owner/slot 契约全过） |
 | <!-- T21 --> T21 | 目标后端异步 TX | 将 T07 的 TX completion 和背压接到真板 | TX burst、queue full 和 flush 通过；无硬件队列双重所有权 | T20 | ✅ 完成（MS12；NetDriver adapter+唯一 owner+64/16 容量+C4 flush，V3 run3 板测全项；真板四协议与 quiet 见 T22 前置 MS12 收口） |
 | <!-- T22 --> T22 | 真板恢复语义 | 单 hart 验证 link flap、设备 reset、generation 和 stale completion | reset 前后对象不混用；无重复回收、永久 Pending 或静默丢包 | T21 | ✅ 完成（MS13；受控 reset 双轮 committed fault=0、旧对象 connection-reset 终态、容量第 1 轮+两级边界+flush c4、source-60 拔插端到端与插回上升沿可达、插回后 new-2 真实会话交换；容量第 2 轮/fail-stop 按用户收口裁决留档） |
-| <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ⏳ 等待 MS13（MS17 已于 2026-10-08 验收） |
-| <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ⏳ 等待 T23 |
+| <!-- T23 --> T23 | 真板网卡与 UART 多 hart | 分别验证 NIC queue/stack 与 UART copier 的 affinity、跨 hart wake、控制面同步和 ordering | 两设备双向异步 I/O 均有专项见证；网络 reset 交错无 race；每项 ordering 有角色说明 | T22；MS17 | ✅ 完成（MS14；Iteration 000–002 accepted：NIC owner/runner/app actual hart=2/3/9、UART rx=0/tx=1 raw/shell 双形态与跨簇唤醒板测成立，操作者"认可，通过"/"正常工作"） |
+| <!-- T24 --> T24 | 真板组合长稳压力 | 网卡双向流量与串口交互并行，覆盖各自容量/背压边界及网络 reset 交错 | 长时间运行无 stall、永久 Pending 或资源泄漏；两设备持续推进，错误与 occupancy 可解释 | T23 | ✅ 完成（MS14；按用户 2026-10-16 裁决以 16-hart BusyBox 最终正常使用替代恢复/长稳资格矩阵，A16 成立；原资格矩阵不表述为已验证） |
 | <!-- T25 --> T25 | 已转为 I19 | 不再作为执行任务；方向见 `.agents/memory/improvements.md` I19 | 不参与当前路线完成判定 | 不适用 | superseded — 2026-10-06 用户批准退出路线 |
 
 <!-- arc: ARC-202609171804 --> T01-T06 已归档 (2026-09-17) → ../../openspec/changes/archive/2026-09-17-ARC-202609171804/proposal.md
@@ -47,7 +47,7 @@ NIC 任务按 T01→T24 的依赖推进；T25 已转为 I19，不再是执行任
 - M39：跨 hart ordering 按同步角色说明；QEMU 单 hart 不能作为 SMP 证据。
 - R53：W1C/clear-on-read cause 保留只补充 register-recheck，不替代 descriptor/cookie completion ledger；单请求 DMA fail-stop 只作为恢复语义的安全下限，不扩张 MS05。
 - I06 只在 T13-T24 的触发条件满足时评估。
-- I13-I19 未承诺，不得混入当前执行路线；I17 仅在 MS08+MS07 accepted 且唯一 spawn seam 稳定后评估，I18 仅在 MS08 accepted + 至少一个其他 async 设备稳定后评估。I19 不阻塞 MS14 收口。
+- I13-I19、I21 未承诺，不得混入当前执行路线；I17 仅在 MS08+MS07 accepted 且唯一 spawn seam 稳定后评估，I18 仅在 MS08 accepted + 至少一个其他 async 设备稳定后评估。I19 不阻塞 MS14 收口。
 
 ---
 
@@ -60,9 +60,9 @@ milestone 可以由一个或多个 change 完成，不预先绑定数量。
 
 ```text
 QEMU:  MS01 -> MS02 -> MS03 -> MS16 -> MS04 -> MS05 -> MS06 -> MS07 -> MS08
-K3:    MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS17 -> MS14（当前交付终点）
+K3:    MS08 -> MS09 -> MS10 -> MS11 -> MS12 -> MS13 -> MS17 -> MS14（2026-10-16 完成）
        MS14 的依赖为 MS13 + MS17；MS17 的技术前置仍为 MS10
-独立存储方向: MS17 -> MS18（不进入当前异步化交付排期）
+独立存储方向: MS17 -> MS18 已按 RAM rootfs 范围收口（2026-10-15 用户裁决）；真实块设备存储与持久挂载转 I21，无后继 milestone
 未承诺优化: I19（原 MS15/T25，不作为 MS14 的前置或后继任务）
 ```
 
@@ -223,7 +223,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 
 ### MS14：K3 多 hart 网卡与串口异步化最终验收
 
-- Status: planned
+- Status: completed — 2026-10-16；用户审计接受（多轮原话："认可，通过"、"我看了，正常工作，不阻塞在这里，填写回复吧直接"、"很好正常工作"，Review 预授权"没问题就接收"）。交付结论限于 CoM260 Kit 16 hart：`k3-smp`/`k3-smp-net`/`k3-smp-uart`/`k3-smp-combined` 独立入口（SMP=1/17 原生拒绝）；AP 0–15 实际调度、per-hart timer/S_SOFT 与固定外设路由（A1–A4）；NIC 固定 owner/runner/app 跨簇实际执行、四协议/两级容量/C4/quiet（A5–A8 两轮板测）；UART copier pinned、raw/shell 双形态 wrap/Full/drain/行编辑（A9–A12 两轮）；BusyBox RAM rootfs 组合最终形态（wget 10 字节逐字节读回、nc TCP/UDP 同内容回显、shell 存活，A16）与两处产品修复——`kernel/src/mm/loader.rs` exec 段 eager populate（规避 K3 跨簇取指 fault 间歇性污染 stval，sepc 正确）与用户态网络 syscall 门收窄仅 `k3-smp-combined` 开启，两处均有先行真板 RED 与修复后板验 GREEN；TCP 对比单样本裁决：板→PC 714.3/934.0 Mbps=76.5%，PC→板 218.8/854.3 Mbps=25.6%（A18）。本板裁决事实：K3 跨簇 instruction page fault 间歇性交付污染 stval；K3 用户态 socket syscall 家族此前被 cfg 全门（MS12/13 内核态载荷从未行使，004 归为 Plan 遗漏）。按用户 2026-10-16 裁决取消且留档不表述为已验证：多 hart 恢复/容量/C4/quiet/故障注入资格矩阵与 30 分钟长稳（"其中研发需要改代码的工作仍旧保留，但是整体各种验证的工作取消"）、UART 线速测量（"uart的测试不做"）、T15 多次采样（"我们不做什么多次测试，有当前数据已经足够"）。结论不含性能优化（I19）、真实存储（I21）、ping/ICMP socket 与 PC→板路径不对称归因。
 - Outcome: CoM260 Kit 上网卡和 UART 均在多 hart 下完成双向异步 I/O、跨 hart 唤醒与组合长稳验收；成为当前 K3 异步化路线的最终交付。
 - Rationale: MS12/MS13 提供网卡功能与恢复基线，MS17 提供串口单 hart 基线；本阶段只推进这些既有能力的多 hart 正确性和共同运行稳定性，不重新承担设备 bring-up。
 - Dependencies: MS13、MS17（含传递前置 MS12）；两条单 hart 基线均验收后才进入。
@@ -235,7 +235,7 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 - Diagnostic boundary: 分别定位 NIC queue/stack、UART copier/tty、平台跨 hart IRQ/IPI/调度和组合恢复边界，不以网络通过推定 UART 通过。
 - Balance audit: 网卡与 UART 各自具有独立故障域，专项验收必须保留；用户明确指定一个最终集成阶段，允许通过多个 change/Iteration 分开诊断，再共同验收，不新增后继 milestone。
 - Split signals: 任一设备多 hart 适配或组合长稳长期独立受阻时，在本阶段内拆分 change/Iteration 并记录未完成项；不因另一设备通过就收口，也不自动扩展新 milestone。
-- Related changes: None
+- Related changes: `ms14-com260-kit-multi-hart-async-io`（已归档于 `openspec/changes/archive/2026-10-16-ms14-com260-kit-multi-hart-async-io/`；Iteration 000–004 各一 Cycle 全部 accepted，T1–T15 全部闭合或豁免；行为规格已合并为 `openspec/specs/k3-com260-kit-multi-hart-async-io/`）
 
 ### MS15：性能优化已转为改进方向
 
@@ -243,19 +243,19 @@ MS17–MS18 属 NIC 单变量分解之外的平台方向（2026-10-02 用户批�
 - Replacement: `.agents/memory/improvements.md` I19；未承诺实施，不是 MS14 的前置或后继阶段。
 - Related changes: None
 
-### MS18：K3 存储与 rootfs 用户态基线
+### MS18：K3 RAM rootfs 用户态基线
 
-- Status: planned — 2026-10-08 RAM rootfs 普通 shell 基线已交付归档：单 hart 临时 RAM 启动、平台预留窗保护（D1-r1：rootfs 窗收档 256 MiB + DTB 窗上移 0x2ef000000）、ext4 挂载、动态 BusyBox `/bin/sh`（musl 解释器）与外部命令、k3-rootfs 隔离模式（互斥/SMP 拒绝、独立 FIT）、官方启动保持（RESET 回官方 Linux 用户实测）；真实块设备存储、分区与持久挂载仍按本条原 planned 范围保留后续，不因该基线标记完成。
-- Scheduling: 保留既有独立存储规划；不列入当前 MS12→MS13→MS17→MS14 的异步化交付排期，不阻塞 MS14，也不作为其自动后继阶段。
-- Outcome: K3 上从块设备挂载 rootfs 并运行完整用户态（shell 与用户程序从文件系统加载），形成可复现的存储与文件系统基线。
-- Rationale: rootfs 路线（R74 增强方向）复用 Linux 生态与本仓 QEMU rootfs 经验（同源发行）；存储是独立故障域（块设备、分区、文件系统、DMA/cache 一致性），必须独立验收，不与交互性混同。
+- Status: completed — 2026-10-15 按 RAM rootfs 范围收口。交付（2026-10-08 归档）：单 hart 临时 RAM 启动、平台预留窗保护（D1-r1：rootfs 窗收档 256 MiB + DTB 窗上移 0x2ef000000）、ext4 挂载、动态 BusyBox `/bin/sh`（musl 解释器）与外部命令、k3-rootfs 隔离模式（互斥/SMP 拒绝、独立 FIT）、官方启动保持（RESET 回官方 Linux 用户实测）；重启即失为用户期望形态。真实块设备存储、分区与持久挂载按用户 2026-10-15 裁决退出执行路线，转 I21（原话见 improvements.md）。
+- Scheduling: 无后继存储 milestone；不列入 MS12→MS13→MS17→MS14 的异步化交付排期，不阻塞 MS14，也不作为其自动后继阶段。
+- Outcome: K3 上从临时 RAM ext4 镜像挂载 rootfs 并运行完整用户态（动态 BusyBox shell 与文件系统外部命令），形成可复现的 rootfs 用户态基线。
+- Rationale: rootfs 路线（R74 增强方向）复用 Linux 生态与本仓 QEMU rootfs 经验（同源发行）；存储是独立故障域，必须独立验收，不与交互性混同——该独立验收现由 I21 承载。
 - Dependencies: MS17
-- Scope: K3 块设备驱动（UFS 或 SD/eMMC 按当前板介质事实从 tgoskits 参考适配其一）；分区识别与挂载接入现有 axfs-ng/VFS；rootfs 镜像来源与写入边界裁决（外置介质优先，挂载出厂分区读写为独立风险决策）；用户程序从 rootfs 加载。
-- Non-goals: 持久刷写固件分区（独立高危决策）、GMAC 数据面、多 hart、性能优化、双介质并行支持。
-- Stable baseline: rootfs 挂载后 shell 与用户程序从文件系统加载运行，介质事实与挂载来源可解释、可重复。
-- Verification boundary: 块设备、分区、挂载、程序加载逐层有直接观察；介质/分区事实来自当前板，不推定 R70 布局。
-- Diagnostic boundary: 失败限于块设备驱动、分区/挂载、文件系统或程序加载路径。
-- Split signals: UFS 与 SD/eMMC 需要不同驱动且其一已稳定；或挂载与程序加载各自独立受阻。
+- Scope: RAM rootfs 承载：平台预留窗保护、ext4 RAM 镜像挂载、动态 ELF 用户态与外部命令、k3-rootfs 隔离模式与官方启动保持。
+- Non-goals: 持久刷写固件分区（独立高危决策）、GMAC 数据面、多 hart、性能优化、双介质并行支持、真实块设备存储（转 I21）。
+- Stable baseline: rootfs 挂载后 shell 与用户程序从文件系统加载运行，挂载来源与启动依赖分层可解释、可重复。
+- Verification boundary: 挂载、程序加载逐层有直接观察；启动依赖缺失按层报告无 fallback。
+- Diagnostic boundary: 失败限于挂载、文件系统或程序加载路径。
+- Split signals: None（存储方向已退出至 I21）。
 - Related changes: `ms18-com260-kit-standard-shell-rootfs`（已归档于 `openspec/changes/archive/2026-10-08-ms18-com260-kit-standard-shell-rootfs/`；Iteration 000–001 accepted，002 shell 行为与恢复按用户 2026-10-08 裁决取消，S3/S5/S7/S8 后半未取得正式见证；行为规格已按见证状态合并为 `openspec/specs/k3-com260-kit-standard-shell-rootfs/`）
 
 Roadmap 共同 Non-goals：
@@ -274,6 +274,6 @@ UART 文档已归档；q17 multi-hart SMP 验证 deferred（task 6.1 未完成�
 
 ## 活跃 Change
 
-当前无活跃 change（MS13 已于 2026-10-14 完成并归档）。
+当前无活跃 change（MS14 已于 2026-10-16 完成并归档于 `openspec/changes/archive/2026-10-16-ms14-com260-kit-multi-hart-async-io/`）。
 
-当前交付终点为 MS14：MS12 网卡单 hart 异步双向数据面、MS13 真板恢复语义与 MS17 串口单 hart 基线均已完成，MS14（真板网卡与 UART 多 hart + 组合长稳）为剩余唯一 milestone。MS11、MS12、MS13、MS17、MS18 详情保留在各自条目。
+K3 异步化路线已全部交付，最终形态为 16-hart `k3-smp-combined` BusyBox RAM rootfs shell：异步 UART 交互 + 异步 GMAC 网络（wget/nc 经用户态 socket），外部 RESET 回官方 Linux。后续方向均未承诺：I19 性能优化、I20 剩余 ping/ICMP socket、I21 真实块设备存储；缺陷台账 `.agents/issues/`（ISS01–ISS03 open）。

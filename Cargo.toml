@@ -201,6 +201,60 @@ k3-rootfs = [
     "starry-kernel/k3-rootfs",
 ]
 
+# MS14 Iteration 000: K3 multi-hart platform shape (`make k3-smp SMP=16`) —
+# implies the polling `k3` shape, the full root `smp` closure (axfeat/smp +
+# starry-kernel/smp -> axtask/ipi), the platform SMP hooks and the runtime
+# timer slot. The recursive K3 make call passes `APP_FEATURES` on the
+# command line, so the top-level `APP_FEATURES += smp` never reaches this
+# build: the closure must be explicit here.
+k3-smp = [
+    "k3",
+    "smp",
+    "axplat-riscv64-k3/smp",
+    "axplat-riscv64-k3/runtime-irq",
+    "starry-kernel/k3-smp",
+]
+
+# MS14 Iteration 001: K3 multi-hart NIC steady-state mode (`make k3-smp-net
+# SMP=16`) — the `k3-smp` platform closure plus the async-net data plane and
+# the queue-diagnostics surface (root `k3-net-diagnostics`); the kernel
+# `k3-smp-net` cfg selects the role-composition seam and the SMP net boot
+# entry. The plain `k3-async-net` shape stays single-hart (kernel guard).
+k3-smp-net = [
+    "k3-smp",
+    "k3-net-diagnostics",
+    "starry-kernel/k3-smp-net",
+]
+
+# MS14 Iteration 002: K3 multi-hart UART mode (`make k3-smp-uart SMP=16`) —
+# the `k3-smp` platform closure plus the tty/userland shell tree (root
+# `k3-shell`): the runtime timer slot and the UART42 route arrive through the
+# existing `k3-async-uart` chain inside `k3-shell`. The kernel `k3-smp-uart`
+# cfg selects the role-composition seam and the SMP UART boot entries; the
+# plain single-hart UART shapes stay untouched (kernel guard).
+k3-smp-uart = ["k3-smp", "k3-shell", "starry-kernel/k3-smp-uart"]
+
+# MS14 Iteration 002: the raw sub-form selector (`make k3-smp-uart-raw
+# SMP=16`) — the same mode with the shell boot excluded and the MS17
+# data-plane payload as the sole RX consumer; the stdio tree still compiles
+# through the closure but is never constructed.
+k3-smp-uart-raw = ["k3-smp-uart", "starry-kernel/k3-smp-uart-raw"]
+
+# MS14 Iteration 003: K3 combined multi-hart rootfs mode (`make
+# k3-smp-combined`, exact SMP=16) — the k3-smp platform closure, the
+# ordinary RAM-rootfs shell (`k3-rootfs`) and the async-net data plane in
+# one boot entry; the UART42 route arrives through the k3-rootfs chain and
+# paging through k3-uart, so the axklib provider is axruntime's (the local
+# stub stays excluded). The kernel `k3-smp-combined` cfg selects the
+# combined composition seam and boot entry; the kernel guard rejects every
+# specialized selector inside this mode.
+k3-smp-combined = [
+    "k3-smp",
+    "k3-rootfs",
+    "k3-async-net",
+    "starry-kernel/k3-smp-combined",
+]
+
 [[bin]]
 name = "starryos"
 path = "src/main.rs"

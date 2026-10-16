@@ -19,6 +19,11 @@ uart-irq = ["irq-if"]
 # rootfs carrying window and the DTB carrying window from the allocator.
 # Every other mode keeps the empty reservation list.
 ram-rootfs = []
+# MS14 Iteration 000 (task T1): multi-hart platform hooks — the axplat `smp`
+# surface (`cpu_boot`, secondary init slots) plus the secondary entry point.
+# The runtime timer slot stays opt-in through `runtime-irq` (the `k3-smp`
+# root closure selects both).
+smp = ["axplat/smp"]
 
 [lib]
 name = "axplat_riscv64_k3"

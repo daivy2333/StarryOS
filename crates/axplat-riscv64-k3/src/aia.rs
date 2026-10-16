@@ -698,6 +698,72 @@ impl<'a, T: ?Sized + HandlerStore> AiaChip<'a, T> {
         b.aplic_write(clrie_word_off(bitmap_word(source)), bitmap_bit(source));
         set_eid_enabled(b, source, false);
     }
+
+    // -----------------------------------------------------------------------
+    // MS14 Iteration 000 (task T3): SMP fixed-route control plane. Only the
+    // boot hart registers/unregisters; mask/unmask moves the global APLIC
+    // gate for any caller. Remote operations are refused with zero hardware
+    // effect (routes target the boot hart's interrupt file).
+    // -----------------------------------------------------------------------
+
+    /// SMP registration of a fixed route — boot hart only. A remote caller
+    /// is refused (`false`) with no hardware touch. The boot path keeps the
+    /// full single-hart flow: sourcecfg, target, pending clear, boot-local
+    /// EIE, then the APLIC SETIE bit.
+    pub fn smp_register(
+        &self,
+        b: &mut impl AiaBackend,
+        caller: usize,
+        source: usize,
+        handler: fn(),
+    ) -> bool {
+        if caller != boot_hart() {
+            return false;
+        }
+        self.register(b, source, handler)
+    }
+
+    /// SMP unregistration — boot hart only; a remote caller gets `None`
+    /// with no hardware touch. Boot unregister masks the global gate first,
+    /// then clears the boot-local EIE (the single-hart order, unchanged).
+    pub fn smp_unregister(
+        &self,
+        b: &mut impl AiaBackend,
+        caller: usize,
+        source: usize,
+    ) -> Option<fn()> {
+        if caller != boot_hart() {
+            return None;
+        }
+        self.unregister(b, source)
+    }
+
+    /// SMP mask/unmask of a fixed route — the global APLIC gate only (see
+    /// [`set_source_gate`]). Route ownership, the MSI target and the boot
+    /// hart's local EIE stay with boot registration/unregistration.
+    pub fn smp_set_enable(&self, b: &mut impl AiaBackend, source: usize, enabled: bool) {
+        if route_for(source).is_none() {
+            return;
+        }
+        set_source_gate(b, source, enabled);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MS14 Iteration 000 (task T3): global-only source gate (SMP control plane)
+// ---------------------------------------------------------------------------
+
+/// Gates one wired source at the APLIC only: one SETIE/CLRIE bitmap write,
+/// no local IMSIC file access. Under SMP the fixed routes target the boot
+/// hart's interrupt file, so a remote caller's local EIE — its own file —
+/// must never be touched by a mask/unmask (board fact: the EIE-masked
+/// window drops MSI; the global gate is the shared control surface).
+pub fn set_source_gate(b: &mut impl AiaBackend, source: usize, on: bool) {
+    if on {
+        b.aplic_write(setie_word_off(bitmap_word(source)), bitmap_bit(source));
+    } else {
+        b.aplic_write(clrie_word_off(bitmap_word(source)), bitmap_bit(source));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -734,13 +800,19 @@ pub fn read_eip_snapshot(b: &mut impl AiaBackend) -> [u64; IMSIC_WORDS] {
 // ---------------------------------------------------------------------------
 
 /// Raw boot hartid handed over by `boot::_start` (never assume hart 0).
-#[cfg(target_arch = "riscv64")]
+/// Unconditionally compiled: the SMP caller gate and the host harnesses
+/// read it through [`boot_hart`].
 static BOOT_HART: AtomicUsize = AtomicUsize::new(0);
 
 /// Records the boot hartid before the first route registration.
-#[cfg(target_arch = "riscv64")]
 pub fn record_boot_hart(hart: usize) {
     BOOT_HART.store(hart, Ordering::Relaxed);
+}
+
+/// The recorded boot hartid: under SMP the only owner of the fixed device
+/// routes (register/unregister) and the MSI target of every route.
+pub fn boot_hart() -> usize {
+    BOOT_HART.load(Ordering::Relaxed)
 }
 
 /// `siselect` CSR (S-mode indirect register select).

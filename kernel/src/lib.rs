@@ -33,26 +33,67 @@ compile_error!(
 // MS17 Iteration 000: the K3 async UART mode is a single-hart qualification
 // shape; multi-hart async I/O is the MS14 milestone and must not silently
 // combine with it (the `make k3-uart-port` target rejects SMP>1 up front).
-#[cfg(all(feature = "k3-async-uart", feature = "smp"))]
+// MS14 Iteration 002: `k3-smp-uart` is the sanctioned multi-hart UART mode;
+// MS14 Iteration 003: `k3-smp-combined` is the sanctioned combined mode (its
+// rootfs closure implies `k3-async-uart`). The plain async shape stays
+// single-hart.
+#[cfg(all(
+    feature = "k3-async-uart",
+    feature = "smp",
+    not(feature = "k3-smp-uart"),
+    not(feature = "k3-smp-combined")
+))]
 compile_error!(
     "k3-async-uart is a single-hart qualification mode; the `smp` feature cannot be combined \
-     with it"
+     with it (use the k3-smp-uart or k3-smp-combined multi-hart mode)"
 );
 
 // MS12 Iteration 000: the K3 async GMAC mode is a single-hart qualification
 // shape (multi-hart async I/O is MS14) with its own boot path; the UART-mode
 // shapes derive from `k3-async-uart`, so rejecting that feature rejects every
 // derived combination (k3-uart/k3-stdio/k3-shell/k3-uart-port-test/k3-rootfs).
-#[cfg(all(feature = "k3-async-net", feature = "smp"))]
+// MS14 Iteration 001: `k3-smp-net` is the sanctioned multi-hart network mode;
+// MS14 Iteration 003: `k3-smp-combined` is the sanctioned combined mode. The
+// plain async shape stays single-hart.
+#[cfg(all(
+    feature = "k3-async-net",
+    feature = "smp",
+    not(feature = "k3-smp-net"),
+    not(feature = "k3-smp-combined")
+))]
 compile_error!(
     "k3-async-net is a single-hart qualification mode; the `smp` feature cannot be combined \
-     with it"
+     with it (use the k3-smp-net or k3-smp-combined multi-hart mode)"
 );
 
-#[cfg(all(feature = "k3-async-net", feature = "k3-async-uart"))]
+#[cfg(all(
+    feature = "k3-async-net",
+    feature = "k3-async-uart",
+    not(feature = "k3-smp-combined")
+))]
 compile_error!(
     "k3-async-net and k3-async-uart (and every shape derived from it) are mutually exclusive; \
-     select exactly one K3 boot mode"
+     select exactly one K3 boot mode (k3-smp-combined is the one sanctioned combination)"
+);
+
+// MS14 Iteration 003 (T10): the combined mode is its own single boot entry;
+// the specialized multi-hart selectors, the stdio/raw-port qualification
+// shapes and the diagnostics payload must not silently mix into it, and the
+// combined closure is the only sanctioned async-net + async-uart shape.
+#[cfg(all(
+    feature = "k3-smp-combined",
+    any(
+        feature = "k3-smp-net",
+        feature = "k3-smp-uart",
+        feature = "k3-smp-uart-raw",
+        feature = "k3-stdio",
+        feature = "k3-uart-port-test",
+        feature = "k3-net-diagnostics",
+    )
+))]
+compile_error!(
+    "k3-smp-combined is the single combined mode; the smp-net/smp-uart/stdio/raw-port/\
+     diagnostics selectors cannot be combined with it"
 );
 
 // MS18 Iteration 000: the K3 RAM-rootfs shape is its own boot path — it

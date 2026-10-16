@@ -226,13 +226,14 @@ I18 在触发条件满足前 MUST 只记录观察与候选方向，不得预先�
 
 在 K3 的 shell 环境中接通用户态网络工具（ping/wget 等），使"shell 能用 + 网络能用"形成完整可用的交付形态：用户在 shell 提示符下直接操作网络，而非仅经内核侧载荷验证。
 
-**来源**: 2026-10-12 用户方向，原话："shell 里敲 ping/wget 等用户态网络工具这个我们也要做，而且到时候shell能用，网络能用，做了这个才是正常的"
-**状态**: 待评估，未承诺
+**来源**: 2026-10-12 用户方向，原话："shell 里敲 ping/wget 等用户态网络工具这个我们也要做，而且到时候shell能用，网络能用，做了这个才是正常的"；2026-10-15 用户确认最终形态，原话："我期望最终我们能够做到进入BB rootfs shell并使用我们写的驱动，这样就说明我们的工作已经完全ok了"
+**状态**: promoted — 2026-10-16 经 MS14 change（`ms14-com260-kit-multi-hart-async-io` R9）交付 wget+nc 用户态网络工具并经 BusyBox 最终形态板测验收（wget 逐字节读回、nc TCP/UDP 回显）；ping/ICMP socket 未交付，留作后续未承诺方向
 **触发条件**: 真板异步网络（MS12/MS13）与 shell 环境均已验收可用，且用户批准提升为独立 change。
-**关联**: MS12 变更明确将其列为范围外（"本变更不增加shell命令、rootfs、用户态网络工具或新的里程碑"），故本方向当前未承诺；MS18 RAM rootfs（动态 BusyBox 载体）；I19 性能优化（正交，互不前置）。
+**关联**: MS12 变更明确将其列为范围外（"本变更不增加shell命令、rootfs、用户态网络工具或新的里程碑"），故本方向当前未承诺；MS18 RAM rootfs（动态 BusyBox 载体，console 已走异步 UART 数据面）；I21 真实持久存储（已从 MS18 拆出，本 I 以 RAM rootfs 为载体）；I19 性能优化（正交，互不前置）；MS14 多 hart 组合（可选底座，验收后评估）。
 
 - **基础面**: MS12 交付真板异步数据面 + stack runner + SocketOps/poll readiness；socket syscall/VFS/进程加载沿用 QEMU 已验证实现，K3 用户态 spawn 已由 MS17/MS18 接通。缺口仅在用户态网络工具与其接通（工具选型/编译进 rootfs、可能的 syscall 缺口补齐）。
 - **方向**: 在 RAM rootfs 的 BusyBox（或等价用户态）中接通 ping/wget/nc 等网络工具，经内核 socket 契约使用 MS12+ 异步网络栈，不绕过内核数据面。
+- **最终形态（2026-10-15 补充）**: BusyBox rootfs shell 作为交付形态，全部外设使用本仓异步驱动——console 走异步 UART 数据面（MS18 已验证），网络工具经内核 socket 契约走异步 GMAC 数据面。可选以 MS14 多 hart 组合成果为底座；当前缺口：rootfs×NIC 组合形态不存在（`k3-rootfs` 未接 GMAC 数据面）、rootfs 形态 SMP>1 拒绝、组合的 paging/axklib 与单 tty reader 接缝待融合（T12 先例）。实施时按独立 change 规划，不混入 MS14 验收。
 - **通过条件**: shell 提示符下实际执行网络工具并与真板异步网络栈完成交换（如 ping、wget 经由数据面收发），有直接板测见证。
 - **边界**: 不改变 MS12→MS13→MS14 的验收范围与顺序；工具接通不作为 MS14 完成门槛；实施走独立 change 的 BDD/RTM/板测流程。
 
@@ -242,6 +243,24 @@ I18 在触发条件满足前 MUST 只记录观察与候选方向，不得预先�
 - **AND** 用户批准将该方向提升为独立 change
 - **THEN** SHOULD 启动 Plan 评估工具清单、syscall 缺口与 rootfs 集成方式
 - **AND** MUST NOT 把工具接通混入 MS12–MS14 当前验收范围
+
+### Requirement: I21 — K3 真实块设备存储与持久 rootfs
+
+K3 从真实块设备挂载持久 rootfs 的方向保留为未承诺改进；当前交付止于 RAM rootfs（重启即失，为用户期望形态）。
+
+**来源**: 原 MS18 planned 剩余范围（真实块设备存储、分区与持久挂载）；2026-10-15 用户裁决退出执行路线，原话："我们的工作只做到RAM 镜像这个就好，就当前来说重启即失正是我们所期望的，把真实储存这里的工作退化到I文档"
+**状态**: 待评估，未承诺
+**触发条件**: 用户另行批准提升为独立 change；实施前按当前板重新核对介质与分区事实，不推定 R70 布局。
+**关联**: MS18 RAM rootfs 基线（已交付：内存根加载、ext4 挂载、动态 ELF 与异步 UART console 链路可复用）；I20 shell 网络工具（共享 rootfs 载体，方向正交）。
+
+- **范围**: UFS 或 SD/eMMC 块设备驱动（按当前板介质事实从参考适配其一）、分区识别与挂载接入既有 axfs-ng/VFS、rootfs 镜像来源与写入边界裁决（外置介质优先，挂载出厂分区读写为独立风险决策）、用户程序从持久 rootfs 加载。
+- **边界**: 不持久刷写固件分区（独立高危决策）；MS14 多 hart 验收不依赖本 I；介质磨损与掉电一致性不在登记时预设计。
+
+#### Scenario: 需要持久 rootfs 时评估
+
+- **WHEN** 用户要求 K3 从真实块设备持久启动或保存状态
+- **THEN** SHOULD 启动独立 change 并先重新取得当前板介质/分区事实
+- **AND** MUST NOT 沿用 R70 布局推定，也不与 MS14 当前验收混同
 
 <!-- arc: ARC-202607251326 --> 4 条目已归档 (I07-I10, 2026-07-25) -> openspec/changes/archive/2026-07-25-arc-202607251326/proposal.md
 

@@ -121,11 +121,13 @@ fn map_elf<'a>(
             seg_start.align_down_4k(),
             seg_align_size,
             mapping_flags(ph.flags),
-            false,
+            // Populate eagerly: a lazily-filled text page takes its first
+            // fetch fault on the executing hart, and K3 cores intermittently
+            // report a corrupted stval there (sepc stays correct), which the
+            // fault handler cannot resolve and kills the task.
+            true,
             backend,
         )?;
-
-        // TDOO: flush the I-cache
     }
 
     Ok(elf_parser)

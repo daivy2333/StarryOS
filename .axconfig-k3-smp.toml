@@ -1,0 +1,54 @@
+# SpacemiT K3 Com260 IFX platform configuration.
+#
+# Facts come from MS09 Iteration 001 board adjudication (change
+# ms09-com260-kit-observable-link-baseline, Iteration 001 Act Response,
+# evidence/001-board-ram-boundary/) cross-checked with the shipped
+# k3_com260_ifx.dtb (extracted from the Buildroot-K3-v1.0.7 bootfs):
+# - Safe RAM window [0x160000000, 0x2f0000000): above the CMA pool
+#   (0x140000000 + 512 MiB), below SWIOTLB (0x2f0e00000), the framebuffer
+#   reservation (0x2fe000000) and the observed U-Boot working area
+#   (>= 0x2f9700000). Kernel payload >= 0x180000000.
+# - UART0 0xd4017000, reg-shift=2 (stride 4), reg-io-width=4 (U32 access);
+#   clock/reset/pinctrl stay in the bootloader handoff state.
+# - timebase-frequency = 0x16e3600 = 24 MHz (shipped DTB, cpu node).
+# - APLIC 0xe0804000 (window 0x4000) is wired by MS10 Iteration 000 (change
+#   ms10-com260-kit-diagnosable-device-irq-baseline): the AIA core drives it
+#   through the identity-mapped devices.mmio-ranges window; IMSIC access is
+#   CSR-based (siselect/sireg/stopei) and needs no MMIO range.
+arch = "riscv64"
+package = "axplat-riscv64-k3"
+platform = "riscv64-k3"
+# Stack size of each task.
+task-stack-size = 0x40000 # uint
+# Number of timer ticks per second (Hz). A timer tick may contain several timer
+# interrupts.
+ticks-per-sec = 100 # uint
+
+[devices]
+ipi-irq = "0x8000_0000_0000_0001"
+mmio-ranges = [
+    [0xd401_7000, 0x1000],
+    [0xcac8_2000, 0x2000],
+    [0xd428_2800, 0x400],
+    [0xd401_9000, 0x1000],
+    [0xd401_5000, 0x1000],
+    [0xd401_e000, 0x1000],
+    [0xe080_4000, 0x4000]
+] # [(uint, uint)]
+timer-frequency = 24_000_000
+timer-irq = "0x8000_0000_0000_0005"
+uart-irq = 42
+uart-paddr = 0xd401_7000
+virtio-mmio-ranges = [] # [(uint, uint)]
+
+[plat]
+boot-stack-size = 0x40000
+kernel-aspace-base = "0xffff_ffc0_0000_0000"
+kernel-aspace-size = "0x0000_003f_ffff_ffff"
+kernel-base-paddr = 0x1_8000_0000
+kernel-base-vaddr = "0xffff_ffc1_8000_0000"
+max-cpu-num = 16
+phys-bus-offset = 0
+phys-memory-base = 0x1_6000_0000
+phys-memory-size = 6710886400
+phys-virt-offset = "0xffff_ffc0_0000_0000"

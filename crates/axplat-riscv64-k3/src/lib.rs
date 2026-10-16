@@ -21,6 +21,16 @@ pub mod aia;
 /// Independent supervisor timer handler slot (MS17 Iteration 000, task T1).
 pub mod timer_irq;
 
+/// Fixed S_SOFT reschedule-IPI slot and per-hart local enables (MS14
+/// Iteration 000, task T2). Only the multi-hart shape carries it.
+#[cfg(feature = "smp")]
+pub mod ipi_irq;
+
+/// Multi-hart startup decision core: `cpu_boot` acceptance checks and the
+/// later-init step tables (MS14 Iteration 000, task T1). Pure `core`; both
+/// the boot-hart and secondary init sequences dispatch over its tables.
+pub mod smp_boot;
+
 /// K3 GMAC DMA address/cache foundation (MS11 Iteration 000, task 1.1).
 pub mod dma;
 

@@ -22,7 +22,7 @@ mod aia;
 
 use aia::{
     eie_bit, eie_selector, eie_word, eip_selector, init_global, init_percpu, parse_stopei,
-    route_for, set_eid_enabled, AiaBackend, AiaChip, HandlerStore, ImsicAccess,
+    route_for, set_eid_enabled, set_source_gate, AiaBackend, AiaChip, HandlerStore, ImsicAccess,
     APLIC_CLRIE_BASE, APLIC_CLRIP_BASE, APLIC_DOMAINCFG, APLIC_DOMAINCFG_IE, APLIC_SETIE_BASE,
     APLIC_SMSICFGADDR, APLIC_SMSICFGADDRH, APLIC_SOURCECFG_BASE, APLIC_TARGET_BASE, SM_DETACHED,
     SM_LEVEL_HIGH,
@@ -38,6 +38,12 @@ const IMSIC_WORDS: usize = 8;
 
 static EIP: [AtomicU64; IMSIC_WORDS] = [const { AtomicU64::new(0) }; IMSIC_WORDS];
 static EIE: [AtomicU64; IMSIC_WORDS] = [const { AtomicU64::new(0) }; IMSIC_WORDS];
+/// Second independent local file (MS14 Iteration 000): models the
+/// secondary/remote hart's own IMSIC file, fully distinct from the boot
+/// file statics above. `FakeBackend::remote_file` selects which file the
+/// production core's `with_imsic` touches.
+static EIP_REMOTE: Mutex<[u64; IMSIC_WORDS]> = Mutex::new([0; IMSIC_WORDS]);
+static EIE_REMOTE: Mutex<[u64; IMSIC_WORDS]> = Mutex::new([0; IMSIC_WORDS]);
 static EIDELIVERY: AtomicU64 = AtomicU64::new(0);
 static EITHRESHOLD: AtomicU64 = AtomicU64::new(0);
 /// Monotonic operation tick across APLIC and IMSIC accesses (ordering witness).
@@ -58,6 +64,8 @@ fn reset_fake_imsic() {
         EIP[w].store(0, Ordering::SeqCst);
         EIE[w].store(0, Ordering::SeqCst);
     }
+    *EIP_REMOTE.lock().unwrap() = [0; IMSIC_WORDS];
+    *EIE_REMOTE.lock().unwrap() = [0; IMSIC_WORDS];
     EIDELIVERY.store(0, Ordering::SeqCst);
     EITHRESHOLD.store(0, Ordering::SeqCst);
     TICK.store(0, Ordering::SeqCst);
@@ -91,6 +99,15 @@ fn enabled_bit(eid: usize) -> bool {
     EIE[eie_word(eid)].load(Ordering::SeqCst) & eie_bit(eid) != 0
 }
 
+/// Remote-file views (MS14): the remote hart's own EIE words.
+fn enabled_bit_remote(eid: usize) -> bool {
+    EIE_REMOTE.lock().unwrap()[eie_word(eid)] & eie_bit(eid) != 0
+}
+
+fn remote_eie_all_zero() -> bool {
+    EIE_REMOTE.lock().unwrap().iter().all(|w| *w == 0)
+}
+
 // ---------------------------------------------------------------------------
 // Fake backend
 // ---------------------------------------------------------------------------
@@ -108,6 +125,10 @@ struct FakeBackend {
     /// writes are accepted but reads always return 0 (sourcecfg and all
     /// other registers read back normally). Default false = readable model.
     msicfg_reads_zero: bool,
+    /// MS14: which hart's local file `with_imsic` exposes. `false` (the
+    /// default) selects the boot file statics; `true` selects the
+    /// independent remote/secondary file.
+    remote_file: bool,
 }
 
 impl FakeBackend {
@@ -121,7 +142,13 @@ impl FakeBackend {
             sie_at_entry: Vec::new(),
             in_critical: false,
             msicfg_reads_zero: false,
+            remote_file: false,
         }
+    }
+
+    /// Switches the local file the backend exposes (per-hart model).
+    fn set_remote_file(&mut self, remote: bool) {
+        self.remote_file = remote;
     }
 
     /// Test-side reads use DT-window-relative offsets translated to the
@@ -141,12 +168,67 @@ impl FakeBackend {
     }
 }
 
-struct ImsicFile;
+struct ImsicFile {
+    /// Which hart's file this access touches (MS14 per-hart model).
+    remote: bool,
+}
+
+impl ImsicFile {
+    fn eie(&self, word: usize) -> u64 {
+        if self.remote {
+            EIE_REMOTE.lock().unwrap()[word]
+        } else {
+            EIE[word].load(Ordering::SeqCst)
+        }
+    }
+
+    fn set_eie(&self, word: usize, value: u64) {
+        if self.remote {
+            EIE_REMOTE.lock().unwrap()[word] = value;
+        } else {
+            EIE[word].store(value, Ordering::SeqCst);
+        }
+    }
+
+    fn eip(&self, word: usize) -> u64 {
+        if self.remote {
+            EIP_REMOTE.lock().unwrap()[word]
+        } else {
+            EIP[word].load(Ordering::SeqCst)
+        }
+    }
+
+    /// Claim-side pending clear (the only EIP mutation the model allows).
+    fn clear_eip_bit(&self, eid: usize) {
+        let mask = !eie_bit(eid);
+        if self.remote {
+            EIP_REMOTE.lock().unwrap()[eie_word(eid)] &= mask;
+        } else {
+            EIP[eie_word(eid)].fetch_and(mask, Ordering::SeqCst);
+        }
+    }
+
+    fn set_eip_bit(&self, eid: usize) {
+        if self.remote {
+            EIP_REMOTE.lock().unwrap()[eie_word(eid)] |= eie_bit(eid);
+        } else {
+            EIP[eie_word(eid)].fetch_or(eie_bit(eid), Ordering::SeqCst);
+        }
+    }
+
+    fn pending_set(&self, eid: usize) -> bool {
+        self.eip(eie_word(eid)) & eie_bit(eid) != 0
+    }
+
+    fn enabled_bit(&self, eid: usize) -> bool {
+        self.eie(eie_word(eid)) & eie_bit(eid) != 0
+    }
+}
 
 impl ImsicAccess for ImsicFile {
     fn read(&mut self, selector: u16) -> u64 {
         push_op("imsic-read");
-        read_selector(selector)
+        read_selector(self, selector)
     }
 
     fn write(&mut self, selector: u16, value: u64) {
@@ -157,7 +239,7 @@ impl ImsicAccess for ImsicFile {
             _ => "imsic-write",
         };
         push_op(name);
-        write_selector(selector, value);
+        write_selector(self, selector, value);
     }
 
     fn claim(&mut self) -> u64 {
@@ -165,8 +247,8 @@ impl ImsicAccess for ImsicFile {
         // returns and clears exactly that one.
         push_op("claim");
         for eid in 1..512 {
-            if pending_set(eid) && enabled_bit(eid) {
-                EIP[eie_word(eid)].fetch_and(!eie_bit(eid), Ordering::SeqCst);
+            if self.pending_set(eid) && self.enabled_bit(eid) {
+                self.clear_eip_bit(eid);
                 let raw = ((eid as u64) << 16) | eid as u64;
                 CLAIM_LOG.lock().unwrap().push(raw);
                 return raw;
@@ -177,27 +259,27 @@ impl ImsicAccess for ImsicFile {
     }
 }
 
-fn read_selector(selector: u16) -> u64 {
+fn read_selector(file: &ImsicFile, selector: u16) -> u64 {
     match selector {
         0x70 => EIDELIVERY.load(Ordering::SeqCst),
         0x72 => EITHRESHOLD.load(Ordering::SeqCst),
         s if (0xc0..0xc0 + 2 * IMSIC_WORDS as u16).contains(&s) && s % 2 == 0 => {
-            EIE[((s - 0xc0) / 2) as usize].load(Ordering::SeqCst)
+            file.eie(((s - 0xc0) / 2) as usize)
         }
         s if (0x80..0x80 + 2 * IMSIC_WORDS as u16).contains(&s) && s % 2 == 0 => {
-            EIP[((s - 0x80) / 2) as usize].load(Ordering::SeqCst)
+            file.eip(((s - 0x80) / 2) as usize)
         }
         _ => 0,
     }
 }
 
-fn write_selector(selector: u16, value: u64) {
+fn write_selector(file: &ImsicFile, selector: u16, value: u64) {
     match selector {
         0x70 => EIDELIVERY.store(value, Ordering::SeqCst),
         0x72 => EITHRESHOLD.store(value, Ordering::SeqCst),
         // EIP registers are read-only: writes are ignored (WARL model).
         s if (0xc0..0xc0 + 2 * IMSIC_WORDS as u16).contains(&s) && s % 2 == 0 => {
-            EIE[((s - 0xc0) / 2) as usize].store(value, Ordering::SeqCst)
+            file.set_eie(((s - 0xc0) / 2) as usize, value)
         }
         _ => {}
     }
@@ -234,7 +316,7 @@ impl AiaBackend for FakeBackend {
         self.sie_at_entry.push(self.sie);
         let saved = self.sie;
         self.sie = false; // modeled disable_irqs()
-        let r = f(&mut ImsicFile);
+        let r = f(&mut ImsicFile { remote: self.remote_file });
         if saved {
             self.sie = true; // restore only as found — never unconditionally
         }
@@ -744,4 +826,117 @@ fn route42_optin_duplicate_rejected_without_hardware() {
     let writes_before = b.write_log.len();
     assert!(!chip.register(&mut b, 42, handler_60), "duplicate 42 accepted");
     assert_eq!(b.write_log.len(), writes_before, "duplicate 42 touched hardware");
+}
+
+// ---------------------------------------------------------------------------
+// MS14 Iteration 000 task T3: SMP fixed-route control plane. The fake now
+// models two independent local files (boot + remote), so the tests prove
+// the global-only gate never leaks into a caller's own file.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remote_source_gate_preserves_local_eie() {
+    let _guard = test_guard();
+    aia::record_boot_hart(3);
+    reset_fake_imsic();
+    let store = FakeStore::new();
+    let chip = AiaChip::new(&store);
+    let mut b = FakeBackend::new(true);
+    // Boot registers route 1: target + boot-local EIE + global SETIE.
+    assert!(chip.smp_register(&mut b, 3, 1, handler_1));
+    assert!(enabled_bit(1), "boot local EIE missing after registration");
+    let writes_after_register = b.write_log.len();
+
+    // A remote caller (hart 5, its own file) masks and re-opens the route.
+    b.set_remote_file(true);
+    let ops_start = OP_SEQ.lock().unwrap().len();
+    chip.smp_set_enable(&mut b, 1, false);
+    chip.smp_set_enable(&mut b, 1, true);
+    let ops = OP_SEQ.lock().unwrap()[ops_start..].to_vec();
+    // Only global APLIC gate writes: no local-file read-modify-write.
+    assert!(
+        !ops.iter().any(|(n, _)| *n == "eie-write" || *n == "imsic-read"),
+        "remote gate touched the caller's local file: {ops:?}"
+    );
+    assert_eq!(ops.iter().filter(|(n, _)| *n == "aplic-clrie").count(), 1);
+    assert_eq!(ops.iter().filter(|(n, _)| *n == "aplic-setie").count(), 1);
+    // The remote caller's own file stays cleared, and the boot file's EIE
+    // bit — the actual delivery gate — is untouched.
+    assert!(remote_eie_all_zero(), "remote file EIE changed by the gate");
+    b.set_remote_file(false);
+    assert!(enabled_bit(1), "boot local EIE changed by a remote gate op");
+    assert_eq!(b.write_log.len() - writes_after_register, 2, "gate wrote more than SETIE/CLRIE");
+
+    // The free global-gate helper behaves identically (SETIE/CLRIE only).
+    b.set_remote_file(true);
+    let ops_start = OP_SEQ.lock().unwrap().len();
+    set_source_gate(&mut b, 1, false);
+    let ops = OP_SEQ.lock().unwrap()[ops_start..].to_vec();
+    assert_eq!(ops, vec![("aplic-clrie", ops[0].1)], "helper did more than CLRIE: {ops:?}");
+    assert!(remote_eie_all_zero(), "helper touched the caller's file");
+    // Unsupported routes stay no-ops with no hardware effect.
+    let writes_before = b.write_log.len();
+    chip.smp_set_enable(&mut b, 7, false);
+    assert_eq!(b.write_log.len(), writes_before, "unsupported route gated");
+}
+
+#[test]
+fn remote_device_registration_is_rejected_without_mmio() {
+    let _guard = test_guard();
+    aia::record_boot_hart(3);
+    reset_fake_imsic();
+    let store = FakeStore::new();
+    let chip = AiaChip::new(&store);
+    let mut b = FakeBackend::new(true);
+    assert!(chip.smp_register(&mut b, 3, 1, handler_1), "boot registration refused");
+    let writes_before = b.write_log.len();
+
+    // Remote registration: refused with zero APLIC writes and zero local
+    // file effect (the route would target the boot file anyway).
+    b.set_remote_file(true);
+    assert!(!chip.smp_register(&mut b, 5, 60, handler_60), "remote register accepted");
+    assert_eq!(b.write_log.len(), writes_before, "remote register touched APLIC");
+    assert!(remote_eie_all_zero(), "remote register touched the caller's file");
+    assert_eq!(CALLS_60.load(Ordering::SeqCst), 0);
+    assert!(route_for(60).is_some(), "route 60 is a valid route (refusal is caller-based)");
+    // Remote unregistration is refused the same way (None, no hardware).
+    assert!(chip.smp_unregister(&mut b, 5, 1).is_none(), "remote unregister accepted");
+    assert_eq!(b.write_log.len(), writes_before, "remote unregister touched APLIC");
+
+    // Boot keeps full ownership: unregister masks both layers and removes.
+    b.set_remote_file(false);
+    assert!(chip.smp_unregister(&mut b, 3, 1).is_some(), "boot unregister lost the handler");
+    assert!(b.write_log.len() > writes_before, "boot unregister wrote nothing");
+}
+
+#[test]
+fn secondary_init_preserves_boot_routes() {
+    let _guard = test_guard();
+    aia::record_boot_hart(3);
+    reset_fake_imsic();
+    let store = FakeStore::new();
+    let chip = AiaChip::new(&store);
+    let mut b = FakeBackend::new(true);
+    init_global(&mut b, |_| {}).expect("global init");
+    assert!(chip.smp_register(&mut b, 3, 1, handler_1));
+    // Boot route snapshot before any secondary activity.
+    let scfg = b.aplic_get(APLIC_SOURCECFG_BASE);
+    let tgt = b.aplic_get(APLIC_TARGET_BASE);
+    let setie = b.aplic_get(APLIC_SETIE_BASE);
+    assert_eq!(tgt, (3u32 << 18) | 1, "route target");
+    assert!(enabled_bit(1));
+
+    // The secondary runs its per-hart init against its OWN file: no APLIC
+    // write, no boot-file mutation, no boot-hart record overwrite.
+    b.set_remote_file(true);
+    let writes_before = b.write_log.len();
+    init_percpu(&mut b).expect("secondary percpu init");
+    assert_eq!(b.write_log.len(), writes_before, "secondary percpu init wrote APLIC");
+    assert_eq!(aia::boot_hart(), 3, "secondary init overwrote the boot hart record");
+    assert!(remote_eie_all_zero(), "secondary file EIE not cleared by its init");
+    b.set_remote_file(false);
+    assert_eq!(b.aplic_get(APLIC_SOURCECFG_BASE), scfg, "boot sourcecfg changed");
+    assert_eq!(b.aplic_get(APLIC_TARGET_BASE), tgt, "boot target changed");
+    assert_eq!(b.aplic_get(APLIC_SETIE_BASE), setie, "boot SETIE changed");
+    assert!(enabled_bit(1), "boot local EIE changed");
 }

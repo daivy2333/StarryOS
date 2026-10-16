@@ -74,6 +74,39 @@ k3-rootfs = [
     "axdriver_block/ramdisk-static",
     "dep:fdt-parser",
 ]
+# MS14 Iteration 000 (tasks T1–T4): K3 multi-hart platform shape (`make
+# k3-smp`) — implies the polling `k3` tree and the kernel `smp` closure
+# (axfeat/smp + axtask/ipi). Selects the native multi-hart platform entry
+# (platform/k3_smp.rs); every single-hart K3 boot path stays untouched.
+k3-smp = ["k3", "smp"]
+# MS14 Iteration 001 (task T5): K3 multi-hart NIC steady-state shape (`make
+# k3-smp-net`) — the k3-smp platform shape plus the async-net data plane and
+# the queue-diagnostics surface (the capacity/C4 payload). Selects the pure
+# role-composition seam (platform/k3_smp_net.rs) and the SMP net boot entry
+# in platform/k3_async_net.rs; every single-hart K3 boot path stays
+# untouched.
+k3-smp-net = ["k3-smp", "k3-net-diagnostics"]
+# MS14 Iteration 002 (task T7): K3 multi-hart UART mode (`make k3-smp-uart`)
+# — the k3-smp platform shape plus the whole shell closure
+# (k3-shell → k3-stdio → k3-uart → k3-async-uart → k3, so the runtime timer
+# and the UART42 route come along). Selects the pure role-composition seam
+# and the SMP UART boot entries in platform/k3_smp_uart.rs; every
+# single-hart K3 boot path stays untouched (lib.rs guard exception).
+k3-smp-uart = ["k3-smp", "k3-shell"]
+# MS14 Iteration 002 (task T7): the raw sub-form selector (`make
+# k3-smp-uart-raw`) — excludes the shell boot and selects the MS17
+# data-plane payload as the sole RX consumer; the stdio tree compiles
+# through the closure but is never constructed.
+k3-smp-uart-raw = ["k3-smp-uart"]
+# MS14 Iteration 003 (task T10): K3 combined multi-hart rootfs shape (`make
+# k3-smp-combined`) — the k3-smp platform shape plus the ordinary RAM-rootfs
+# shell closure and the async-net data plane in one boot entry. Selects the
+# combined composition seam (platform/k3_smp_combined.rs), the shared rootfs
+# body (platform/k3_rootfs.rs) and the returnable NIC install; paging comes
+# through k3-uart, so the axklib provider is axruntime's (the local
+# `k3_klib` stub stays excluded) and every single-hart K3 boot path stays
+# untouched (lib.rs guard).
+k3-smp-combined = ["k3-smp", "k3-rootfs", "k3-async-net"]
 # K3 smoltcp polling Device/session (MS11 Iteration 002): implied by `k3`;
 # keeps the raw-GMAC harness and other platforms free of the smoltcp edge.
 k3-polling-net = ["dep:smoltcp"]

@@ -359,22 +359,23 @@ pub fn apmu_clock_enable(env: &mut impl ProbeEnv, mut emit: impl FnMut(&str)) ->
 /// returns the classification summary for the PHY-stage gate. Runs after
 /// [`apmu_clock_enable`].
 ///
-/// # Safety
-///
-/// The MAC MMIO window `[MAC_BASE_PADDR, MAC_BASE_PADDR + MAC_WINDOW_SIZE)`
-/// must be identity-mapped (K3 `devices.mmio-ranges`) with the GMAC bus clock
-/// already enabled by [`apmu_clock_enable`]. The probe performs volatile
-/// reads inside the DT-declared window only and never writes any register.
-pub unsafe fn probe_and_report(mut emit: impl FnMut(&str)) -> MacProbeSummary {
+/// MS14 Iteration 003 (T10): the reads go through the caller's [`ProbeEnv`]
+/// (the production `K3Env` translates through the platform `phys_to_virt`;
+/// host tests inject their own register file), so this function no longer
+/// dereferences raw physical addresses itself. The read order, the sample
+/// counts, the classification and the strictly read-only behavior are
+/// unchanged.
+pub fn probe_and_report(
+    env: &mut impl ProbeEnv,
+    mut emit: impl FnMut(&str),
+) -> MacProbeSummary {
     emit("[starry-k3] stage=5 mac probe begin base=0xcac82000 (read-only)\n");
     let mut version_classes = [MacReadClass::Ok; READS_PER_REG];
     let mut debug_classes = [MacReadClass::Ok; READS_PER_REG];
     for (name, offset) in [("version", MAC_REG_VERSION), ("debug", MAC_REG_DEBUG)] {
         for read_idx in 1..=READS_PER_REG {
-            let addr = (MAC_BASE_PADDR + offset) as usize;
-            // SAFETY: identity-mapped MMIO read inside the DT-declared window;
-            // see the function safety contract above.
-            let value = unsafe { core::ptr::read_volatile(addr as *const u32) };
+            let paddr = MAC_BASE_PADDR + offset;
+            let value = env.mmio_read(paddr);
             let mut buf = [0u8; READ_LINE_BUF_LEN];
             match name {
                 "version" => {

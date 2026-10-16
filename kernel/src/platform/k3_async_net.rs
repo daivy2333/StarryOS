@@ -307,21 +307,15 @@ mod board {
     const SAMPLE_CAP: usize = 4;
 
     fn irq_reg_read(offset: u32) -> u32 {
-        // SAFETY: the GMAC window is identity-mapped via devices.mmio-ranges;
+        // MS14 Iteration 003 (T10): the GMAC window is reachable only through
+        // the platform phys_to_virt mapping under the full paging stage;
         // IRQ context reads the STATUS/IRQ_EN words only.
-        unsafe {
-            core::ptr::read_volatile((MAC_BASE_PADDR + offset as u64) as usize as *const u32)
-        }
+        super::super::k3_mmio::read32(MAC_BASE_PADDR + offset as u64)
     }
 
     fn irq_reg_write(offset: u32, value: u32) {
-        // SAFETY: same window contract; the ISR writes only IRQ_EN/STATUS.
-        unsafe {
-            core::ptr::write_volatile(
-                (MAC_BASE_PADDR + offset as u64) as usize as *mut u32,
-                value,
-            )
-        }
+        // Same window contract; the ISR writes only IRQ_EN/STATUS.
+        super::super::k3_mmio::write32(MAC_BASE_PADDR + offset as u64, value)
     }
 
     /// The production work-hint publish: the axnet ISR-safe queue event
@@ -1380,10 +1374,378 @@ mod board {
         #[cfg(not(feature = "k3-net-diagnostics"))]
         park()
     }
+
+    // -----------------------------------------------------------------
+    // MS14 Iteration 001 (T5): the k3-smp-net multi-hart mode — boot
+    // entry, install and the placed owner/runner start. One-shot,
+    // what-it-prints-is-the-verdict; parks in every path and the published
+    // backing is retained until external reset.
+    // -----------------------------------------------------------------
+
+    /// Saved `AxTaskRef`s of the started owner/runner (design D5: the
+    /// handles are retained; affinity commits before the first enqueue and
+    /// nothing migrates afterwards). Never drained — the mode is one-shot.
+    // MS14 Iteration 003 (T9): the install path is shared with the
+    // k3-smp-combined rootfs entry; the k3-smp-net wrapper keeps consuming it
+    // with its own qualification payload on top.
+    #[cfg(any(feature = "k3-smp-net", feature = "k3-smp-combined"))]
+    static SMP_NET_HANDLES: spin::Mutex<alloc::vec::Vec<axtask::AxTaskRef>> =
+        spin::Mutex::new(alloc::vec::Vec::new());
+
+    /// One bounded stop line + park for the SMP net boot (the recovery path
+    /// is the external RESET; no retry, no fallback).
+    #[cfg(any(feature = "k3-smp-net", feature = "k3-smp-combined"))]
+    fn smp_fault(out: &mut dyn FnMut(&str), stage: &str, detail: &str) -> ! {
+        line(
+            out,
+            format_args!("[ms14] net fault stage={stage} detail={detail} stop backing=retained"),
+        );
+        park()
+    }
+
+    /// A singleton CPU mask for one hart (fail at compile capacity only;
+    /// schedulable membership is validated by the spawn/start seams).
+    #[cfg(any(feature = "k3-smp-net", feature = "k3-smp-combined"))]
+    fn smp_singleton(hart: usize) -> axtask::AxCpuMask {
+        let mut mask = axtask::AxCpuMask::new();
+        mask.set(hart, true).expect("hart index within mask capacity");
+        mask
+    }
+
+    /// Installs the one NIC and starts its pinned owner/runner. Returns
+    /// the retained arena VA after both roles are ready. The caller invokes
+    /// this once on the boot hart; failed installation parks with backing
+    /// retained, and the caller owns any later application assembly.
+    ///
+    /// MS14 Iteration 003 (T9): consumed by the `k3-smp-net` wrapper (which
+    /// adds its own duplicate-start witness and qualification payload) and by
+    /// the `k3-smp-combined` rootfs entry (which adds no qualification load).
+    /// The `owner_hart`/`runner_hart` come from the caller's placement over
+    /// the published schedulable set; the 5 s owner/runner startup bounds,
+    /// the fail-closed parking and the retained backing semantics are this
+    /// function's own.
+    #[cfg(any(feature = "k3-smp-net", feature = "k3-smp-combined"))]
+    pub fn install_smp_net(
+        owner_hart: usize,
+        runner_hart: usize,
+        mut out: impl FnMut(&str),
+    ) -> usize {
+        // Stage 4–5: APMU GMAC bus clock enable + read-only MAC identity.
+        let mut env = super::super::k3::K3Env;
+        let apmu =
+            super::super::mac_probe::apmu_clock_enable(&mut env, |l| out(l));
+        let mac = super::super::mac_probe::probe_and_report(&mut env, |l| out(l));
+
+        // Stage 6 gate: identity all-zero/all-one or ineffective APMU bits
+        // stop everything (the same gate the polling path enforces).
+        let (clk_ok, rst_ok) =
+            super::super::mac_probe::apmu_bits_effective(apmu.after1, apmu.after2);
+        let version_ok = mac.version_identity_ok();
+        let version_label = if version_ok {
+            "ok"
+        } else {
+            super::super::mac_probe::class_label(mac.version_classes[0])
+        };
+        let mut buf = [0u8; super::super::mac_probe::READ_LINE_BUF_LEN];
+        out(super::super::mac_probe::format_gate_line(
+            &mut buf,
+            clk_ok,
+            rst_ok,
+            version_label,
+            clk_ok && rst_ok && version_ok,
+        ));
+        if !(clk_ok && rst_ok && version_ok) {
+            smp_fault(&mut out, "hw-gate", "apmu/mac identity gate failed");
+        }
+
+        // Stage 6–7: pad/GPIO and PHY identity, fail closed.
+        match super::super::phy_probe::run_pad_gpio(&mut env, |l| out(l)) {
+            super::super::phy_probe::PadGpioOutcome::Done => {}
+            super::super::phy_probe::PadGpioOutcome::Stopped(_) => {
+                smp_fault(&mut out, "hw-gate", "pad/gpio stage stopped");
+            }
+        }
+        match super::super::phy_probe::run_phy_identity(&mut env, |l| out(l)) {
+            super::super::phy_probe::PhyStatus::Ok => {}
+            super::super::phy_probe::PhyStatus::Stopped(_) => {
+                smp_fault(&mut out, "hw-gate", "phy identity stage stopped");
+            }
+        }
+
+        // ── Install (the MS12/MS13 order, no stage 8–10 outcomes) ──
+        // Mask the three device routes and retire the stage-10 observation
+        // handler registration slot; 60/277 stay registered but masked
+        // until the source60 arm below and the owner's own protocol.
+        for source in [60, GMAC_IRQ_SOURCE, 277] {
+            axhal::irq::set_enable(source, false);
+        }
+        axhal::irq::unregister(GMAC_IRQ_SOURCE);
+        // Arm the IRQ-context access BEFORE the handler registration: the
+        // ISR may fire immediately after the route opens.
+        arm_irq_access(&BOARD_IRQ_ACCESS);
+
+        let mut page = match GlobalPage::alloc_contiguous(dma::ARENA_PAGES, dma::PAGE_SIZE_BYTES)
+        {
+            Ok(p) => p,
+            Err(_) => smp_fault(&mut out, "alloc", "arena allocation failed"),
+        };
+        page.zero();
+        // The retained arena VA for the payload's descriptor observations
+        // (the guard retains the backing until external reset).
+        let arena_va = page.start_vaddr().as_usize();
+        let mut env = super::super::k3::K3Env;
+        let mut drv = match Gmac::new_async(ArenaGuard::new(BoardBacking::new(page))) {
+            Ok(d) => d,
+            Err(e) => smp_fault(&mut out, "arena", &alloc::format!("{e:?}")),
+        };
+        // IOC mode is established with the notification closed (init writes
+        // IRQ_EN = 0); a failed init never opens the data plane.
+        if let Err(e) = drv.init_rx(&mut env) {
+            smp_fault(&mut out, "init", &alloc::format!("{e:?}"));
+        }
+        drv.enable_tx(&mut env);
+        if !axhal::irq::register(GMAC_IRQ_SOURCE, gmac133_handler) {
+            smp_fault(&mut out, "register-133", "route registration rejected");
+        }
+        // Design D6: the PHY link-event source is armed in this production
+        // mode too — the same MS13 arm path (MFPR35 falling edge, INER
+        // link-change enable, minimal source-60 handler). A failed arm
+        // degrades only the event path and stays observable.
+        {
+            let mut env = super::super::k3::K3Env;
+            if !arm_phy_source60(&mut env, &mut out) {
+                line(
+                    &mut out,
+                    format_args!("[ms14] net note=source60-arm-degraded event-path-only"),
+                );
+            }
+        }
+
+        let adapter = match K3NetAdapter::new(drv, env) {
+            Ok(a) => a,
+            Err(e) => smp_fault(&mut out, "adapter", &alloc::format!("{e:?}")),
+        };
+        // Install the adapter as the ONLY NIC (spawn-free installation; the
+        // owner activates on its first poll).
+        let nic: Box<dyn axdriver_net::NetDriverOps> = Box::new(adapter);
+        axnet::init_network(axdriver::AxDeviceContainer::from_one(nic));
+
+        // Exactly one pinned owner start; the handle is retained (D5).
+        let owner_handle = match axnet::start_rx_task_affinity(smp_singleton(owner_hart)) {
+            Ok(h) => h,
+            Err(e) => smp_fault(&mut out, "start-owner", &alloc::format!("{e:?}")),
+        };
+        SMP_NET_HANDLES.lock().push(owner_handle);
+
+        // Foreground wait: yield + snapshot only, 5 s absolute cap. The
+        // route opens through the owner's first waker registration.
+        let deadline = wall_time() + Duration::from_nanos(SERVICE_START_NANOS);
+        loop {
+            axtask::yield_now();
+            let snap = axnet::rx_snapshot();
+            match snap.lifecycle {
+                // 2 = Active: the data plane is owned, notify armed by the
+                // owner's arm/recheck protocol.
+                2 => break,
+                // 3 = Faulted, 4 = Unavailable: a bounded stop, never a
+                // retry, never a second owner.
+                3 | 4 => {
+                    line(
+                        &mut out,
+                        format_args!(
+                            "[ms14] net service stage=owner-not-active stop lifecycle={} owner={} last-error-stage={} last-error-code={} backing=retained",
+                            snap.lifecycle, snap.owner, snap.last_error_stage, snap.last_error_code,
+                        ),
+                    );
+                    park()
+                }
+                _ => {}
+            }
+            if wall_time() >= deadline {
+                let snap = axnet::rx_snapshot();
+                line(
+                    &mut out,
+                    format_args!(
+                        "[ms14] net service stage=start-deadline stop lifecycle={} owner={} backing=retained",
+                        snap.lifecycle, snap.owner,
+                    ),
+                );
+                park()
+            }
+        }
+        let (owner_hart, owner_mask, owner_events) = axnet::owner_hart_tuple();
+        line(
+            &mut out,
+            format_args!(
+                "[ms14] net owner-active hart={owner_hart} mask={owner_mask:#x} events={owner_events} placement_owner={} irq-source={} arm=owner-protocol handles=retained",
+                owner_hart, GMAC_IRQ_SOURCE,
+            ),
+        );
+
+        // Exactly one pinned runner start; the handle is retained.
+        let runner_handle =
+            match axnet::start_stack_runner_affinity(smp_singleton(runner_hart)) {
+                Ok(h) => h,
+                Err(e) => smp_fault(&mut out, "start-stack", &alloc::format!("{e:?}")),
+            };
+        SMP_NET_HANDLES.lock().push(runner_handle);
+        // Bounded wait for the runner's first real poll: the actual-hart
+        // observation (UNKNOWN_HART = usize::MAX until the first poll).
+        let deadline = wall_time() + Duration::from_nanos(SERVICE_START_NANOS);
+        let runner_hart = loop {
+            let (hart, _, _) = axnet::runner_hart_tuple();
+            if hart != usize::MAX {
+                break hart;
+            }
+            if wall_time() >= deadline {
+                smp_fault(
+                    &mut out,
+                    "runner-first-poll",
+                    "runner never polled within the startup bound",
+                );
+            }
+            axtask::yield_now();
+        };
+        let stack = axnet::stack_snapshot();
+        line(
+            &mut out,
+            format_args!(
+                "[ms14] net stack-active hart={runner_hart} placement_runner={} started={} task-poll={} rounds={} fallback={} handles=retained",
+                runner_hart, stack.started, stack.task_poll, stack.rounds, stack.fallback_poll,
+            ),
+        );
+
+        arena_va
+    }
+
+    /// Existing NIC qualification entry over the shared installation path.
+    #[cfg(feature = "k3-smp-net")]
+    pub fn run_k3_smp_net_boot() -> ! {
+        use super::super::early_console::{DwApbUart32EarlyConsole, EarlyConsole};
+        use super::super::k3_smp_net::{place_smp_net_roles, placement};
+
+        let desc = super::super::descriptor();
+        // SAFETY: K3 UART0 MMIO is identity-mapped via the platform
+        // mmio-ranges and left in the bootloader handoff state (MS09
+        // Iteration 001 adjudication); this path runs once at boot.
+        let console = unsafe { DwApbUart32EarlyConsole::from_config(&desc.console) };
+        let mut out = |l: &str| console.write_str(l);
+
+        let boot = axhal::percpu::this_cpu_id();
+        line(
+            &mut out,
+            format_args!(
+                "[ms14] net mode=k3-smp-net begin harts={} boot_hart={boot}",
+                axhal::cpu_num(),
+            ),
+        );
+
+        // Stages 1–3: the same console facts as the polling path; stage 3
+        // names this mode instead of the polling park.
+        console.write_str("[starry-k3] stage=1 entry-reached\n");
+        console.write_str(
+            "[starry-k3] stage=2 console uart=0xd4017000 stride=4 width=u32 baud=115200\n",
+        );
+        console.write_str("[starry-k3] stage=3 mode=k3-smp-net (stage 8-10 observation windows skipped)\n");
+
+        // ── Placement: the shared policy decides, fail closed ──
+        let sched_mask = axtask::schedulable_cpu_mask();
+        let mut schedulable = alloc::vec::Vec::new();
+        for hart in 0..placement::MAX_CPU_NUM {
+            if sched_mask.get(hart) {
+                schedulable.push(hart);
+            }
+        }
+        let roles = match place_smp_net_roles(&schedulable, boot) {
+            Ok(r) => r,
+            Err(e) => smp_fault(&mut out, "placement", &alloc::format!("{e:?}")),
+        };
+        line(
+            &mut out,
+            format_args!(
+                "[ms14] net placement owner={} runner={} app={} harts={} anchor={boot}",
+                roles.net_owner,
+                roles.net_runner,
+                roles.app_hart(),
+                schedulable.len(),
+            ),
+        );
+
+        let arena_va = install_smp_net(roles.net_owner, roles.net_runner, &mut out);
+
+        // A5: the once-only seams must refuse a second start — no second
+        // role exists after either rejection.
+        let dup_owner = axnet::start_rx_task_affinity(smp_singleton(roles.net_owner));
+        let dup_runner = axnet::start_stack_runner_affinity(smp_singleton(roles.net_runner));
+        let owner_rejected = dup_owner.is_err();
+        let runner_rejected = dup_runner.is_err();
+        let owner_err = dup_owner.err();
+        let runner_err = dup_runner.err();
+        line(
+            &mut out,
+            format_args!(
+                "[ms14] net duplicate-start owner-rejected={owner_rejected} runner-rejected={runner_rejected} owner-err={owner_err:?} runner-err={runner_err:?}",
+            ),
+        );
+        if !(owner_rejected && runner_rejected) {
+            smp_fault(
+                &mut out,
+                "duplicate-start",
+                "a once-only seam allowed a second role",
+            );
+        }
+
+        // ── T6: the fixed-hart payload ──
+        let app_hart = roles.app_hart();
+        let spawned = axtask::spawn_with_name_affinity(
+            move || {
+                let mut out = |l: &str| ax_print!("{}", l);
+                super::k3_net_diagnostics::run_smp_net_payload(arena_va, app_hart, &mut out);
+            },
+            alloc::format!("ms14-net-app"),
+            smp_singleton(app_hart),
+        );
+        if spawned.is_none() {
+            smp_fault(
+                &mut out,
+                "app-spawn",
+                "affinity-committed app spawn rejected",
+            );
+        }
+        line(
+            &mut out,
+            format_args!("[ms14] net app spawned hart={app_hart}"),
+        );
+        // The payload is internally bounded in every phase; the boot task
+        // supervises with yields and never prints concurrently.
+        while !super::k3_net_diagnostics::SMP_PAYLOAD_DONE.load(core::sync::atomic::Ordering::Acquire)
+        {
+            axtask::yield_now();
+        }
+        line(
+            &mut out,
+            format_args!("[ms14] net summary stage=payload-done park (reset to recover)"),
+        );
+        park()
+    }
 }
 
 #[cfg(all(feature = "k3", target_arch = "riscv64"))]
 pub use board::{run_k3_async_net_service, run_k3_async_net_session};
+
+/// MS14 Iteration 001 (T5): the k3-smp-net multi-hart boot entry.
+#[cfg(all(feature = "k3", target_arch = "riscv64", feature = "k3-smp-net"))]
+pub use board::run_k3_smp_net_boot;
+
+/// MS14 Iteration 003 (T9): the returnable single-instance NIC install for
+/// the combined rootfs entry (same production path the k3-smp-net wrapper
+/// consumes; it starts the owner/runner and returns the retained arena VA).
+#[cfg(all(
+    feature = "k3",
+    target_arch = "riscv64",
+    feature = "k3-smp-combined"
+))]
+pub use board::install_smp_net;
 
 /// K3 capacity/flush diagnostics payload (MS12 Iteration 001, task T5).
 ///
@@ -2444,5 +2806,300 @@ mod k3_net_diagnostics {
                 snap.owner,
             ),
         );
+    }
+
+    // ── MS14 Iteration 001 (T6): the k3-smp-net multi-hart payload ────────
+    //
+    // Runs inside the ONE application task (singleton affinity on the fixed
+    // app hart, committed before its first enqueue): the reused MS12
+    // capacity/flush cycle, the four-protocol session with the approved
+    // 2 s quiet freeze, and the multi-waiter readiness witnesses — every
+    // application task (payload + waiters) lands on that same hart. The
+    // boot task supervises through `SMP_PAYLOAD_DONE`; every printed line
+    // is a native observation and the payload never judges PASS.
+
+    /// Set by `run_smp_net_payload` on every terminal path (the boot task
+    /// waits on it with yields; no retry, no second payload).
+    pub(super) static SMP_PAYLOAD_DONE: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
+    /// The approved quiet freeze window (A8): settle first, then 2 s of
+    /// frozen counters, then bounded resume on the operator's new packet.
+    const SMP_QUIET_NANOS: u64 = 2_000_000_000;
+
+    /// One parked waiter task bound `port`, singleton-pinned to the app
+    /// hart (the MS13 matrix waiter shape with an affinity-committed
+    /// spawn). `None` = the affinity-committed spawn was rejected.
+    fn spawn_smp_udp_waiter(
+        port: u16,
+        hart: usize,
+    ) -> Option<alloc::sync::Arc<core::sync::atomic::AtomicU8>> {
+        use core::sync::atomic::{AtomicU8, Ordering};
+        let code = alloc::sync::Arc::new(AtomicU8::new(WAITER_PENDING));
+        let code2 = code.clone();
+        let mut mask = axtask::AxCpuMask::new();
+        mask.set(hart, true).ok()?;
+        axtask::spawn_with_name_affinity(
+            move || {
+                let session = async {
+                    let sock = UdpSocket::new();
+                    sock.bind(SocketAddrEx::Ip(SocketAddr::new(
+                        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                        port,
+                    )))?;
+                    let mut buf = [0u8; 64];
+                    poll_io(&sock, IoEvents::IN, false, || {
+                        sock.recv(&mut buf[..], RecvOptions::default())
+                    })
+                    .await
+                };
+                let res = block_on(session);
+                code2.store(encode_waiter(&res), Ordering::Release);
+            },
+            alloc::format!("ms14-net-waiter-udp"),
+            mask,
+        )?;
+        Some(code)
+    }
+
+    /// One parked listener waiter task bound `port`, singleton-pinned to
+    /// the app hart. `None` = the affinity-committed spawn was rejected.
+    fn spawn_smp_listener_waiter(
+        port: u16,
+        hart: usize,
+    ) -> Option<alloc::sync::Arc<core::sync::atomic::AtomicU8>> {
+        use core::sync::atomic::{AtomicU8, Ordering};
+        let code = alloc::sync::Arc::new(AtomicU8::new(WAITER_PENDING));
+        let code2 = code.clone();
+        let mut mask = axtask::AxCpuMask::new();
+        mask.set(hart, true).ok()?;
+        axtask::spawn_with_name_affinity(
+            move || {
+                let session = async {
+                    let listener = TcpSocket::new();
+                    listener.bind(SocketAddrEx::Ip(SocketAddr::new(
+                        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                        port,
+                    )))?;
+                    listener.listen()?;
+                    let socket =
+                        poll_io(&listener, IoEvents::IN, false, || listener.accept()).await?;
+                    let _ = socket;
+                    Ok(0usize)
+                };
+                let res = block_on(session);
+                code2.store(encode_waiter(&res), Ordering::Release);
+            },
+            alloc::format!("ms14-net-waiter-listen"),
+            mask,
+        )?;
+        Some(code)
+    }
+
+    /// Bounded wait for one SMP waiter's terminal category.
+    fn wait_smp_waiter(
+        out: &mut dyn FnMut(&str),
+        stage: &str,
+        code: &alloc::sync::Arc<core::sync::atomic::AtomicU8>,
+    ) -> u8 {
+        use core::sync::atomic::Ordering;
+        let deadline = wall_time() + Duration::from_nanos(PHASE_CAP_NANOS);
+        loop {
+            let seen = code.load(Ordering::Acquire);
+            if seen != WAITER_PENDING {
+                out_line(
+                    out,
+                    format_args!("[ms14] net waiter {stage} terminal={}", waiter_code_name(seen)),
+                );
+                return seen;
+            }
+            if wall_time() >= deadline {
+                out_line(out, format_args!("[ms14] net waiter {stage} terminal=pending-timeout"));
+                return WAITER_PENDING;
+            }
+            axtask::yield_now();
+        }
+    }
+
+    /// The four-protocol phase: the operator pings (the stack answers ICMP
+    /// itself) and drives one UDP and one TCP echo, then the settle phase
+    /// absorbs the close tail, the approved 2 s quiet window must freeze
+    /// every counter, and one new packet must wake the plane again.
+    fn smp_protocol_phase(out: &mut dyn FnMut(&str)) {
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net proto begin udp={} tcp={} op-ms={} wait-ms={} settle-ms={} quiet-ms={}",
+                UDP_ECHO_PORT,
+                TCP_ECHO_PORT,
+                SESSION_OP_NANOS / 1_000_000,
+                SESSION_WAIT_NANOS / 1_000_000,
+                SETTLE_QUIET_NANOS / 1_000_000,
+                SMP_QUIET_NANOS / 1_000_000,
+            ),
+        );
+        snapshot_line(out, "proto-begin");
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net proto operator ping the board, then send one UDP datagram to udp={UDP_ECHO_PORT} and run one TCP echo session to tcp={TCP_ECHO_PORT}"
+            ),
+        );
+        udp_echo_once(out);
+        tcp_echo_once_close(out);
+
+        // Settle: the peer's close tail (FIN/ACK exchange) must land BEFORE
+        // the freeze observation starts (the MS12 V3 adjudication); wait
+        // until the claim stream has been still for SETTLE_QUIET_NANOS.
+        let settle_cap = wall_time() + Duration::from_nanos(SETTLE_CAP_NANOS);
+        let mut last_irq = irq_handler_runs();
+        let mut last_change = wall_time();
+        loop {
+            let now = wall_time();
+            let now_irq = irq_handler_runs();
+            if now_irq != last_irq {
+                last_irq = now_irq;
+                last_change = now;
+            }
+            if now.saturating_sub(last_change) >= Duration::from_nanos(SETTLE_QUIET_NANOS)
+                || now >= settle_cap
+            {
+                break;
+            }
+            axtask::yield_now();
+        }
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net settle irq-runs={} still-ms={} cap-ms={}",
+                last_irq,
+                SETTLE_QUIET_NANOS / 1_000_000,
+                SETTLE_CAP_NANOS / 1_000_000,
+            ),
+        );
+
+        // Quiet: the approved 2 s freeze — no new cause and no due protocol
+        // timer, so every queue/stack counter must stay frozen. The sleep
+        // is the app hart's own runtime timer.
+        snapshot_line(out, "quiet-before");
+        axtask::sleep(Duration::from_nanos(SMP_QUIET_NANOS));
+        snapshot_line(out, "quiet-after");
+
+        // Resume: the operator sends one packet — new MAC cause counters
+        // (RI/TI) or a new reap must wake the data plane again.
+        let (ri0, ti0, _, _) = irq_counts();
+        let baseline = axnet::rx_snapshot_v3();
+        let deadline = wall_time() + Duration::from_nanos(PHASE_CAP_NANOS);
+        loop {
+            let snap = axnet::rx_snapshot_v3();
+            let (ri, ti, _, _) = irq_counts();
+            if ri != ri0 || ti != ti0 || snap.reaped != baseline.reaped {
+                snapshot_line(out, "resume");
+                break;
+            }
+            if wall_time() >= deadline {
+                out_line(
+                    out,
+                    format_args!(
+                        "[ms14] net resume timeout irq-runs={} reaped={}",
+                        irq_handler_runs(),
+                        snap.reaped,
+                    ),
+                );
+                break;
+            }
+            axtask::yield_now();
+        }
+        snapshot_line(out, "proto-end");
+    }
+
+    /// The multi-waiter readiness phase (A7): two parked waiters on the
+    /// matrix ports, both singleton-pinned to the app hart; the operator's
+    /// datagram and TCP connection must complete them through real I/O.
+    fn smp_waiter_phase(out: &mut dyn FnMut(&str), app_hart: usize) -> bool {
+        let Some(udp_code) = spawn_smp_udp_waiter(MATRIX_WAITER_PORT, app_hart) else {
+            out_line(out, format_args!("[ms14] net fault stage=waiter-spawn kind=udp stop"));
+            return false;
+        };
+        let Some(listener_code) = spawn_smp_listener_waiter(MATRIX_TCP_PORT, app_hart) else {
+            out_line(
+                out,
+                format_args!("[ms14] net fault stage=waiter-spawn kind=listener stop"),
+            );
+            return false;
+        };
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net waiter begin app={app_hart} udp={} tcp-listen={} wait-ms={} operator: send one UDP datagram to udp={MATRIX_WAITER_PORT}, then open and close one TCP connection to tcp={MATRIX_TCP_PORT}",
+                MATRIX_WAITER_PORT,
+                MATRIX_TCP_PORT,
+                PHASE_CAP_NANOS / 1_000_000,
+            ),
+        );
+        let udp = wait_smp_waiter(out, "udp", &udp_code);
+        let listener = wait_smp_waiter(out, "listener", &listener_code);
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net waiter done udp={} listener={}",
+                waiter_code_name(udp),
+                waiter_code_name(listener),
+            ),
+        );
+        true
+    }
+
+    /// The k3-smp-net payload entry (T6), running inside the singleton app
+    /// task. Every terminal path sets `SMP_PAYLOAD_DONE`; the boot task
+    /// prints the summary and parks. The payload never judges PASS.
+    pub(super) fn run_smp_net_payload(
+        arena_va: usize,
+        app_hart: usize,
+        out: &mut dyn FnMut(&str),
+    ) {
+        use core::sync::atomic::Ordering;
+        PAYLOAD_ARENA_VA.store(arena_va, Ordering::Relaxed);
+        let hart = axhal::percpu::this_cpu_id();
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net app begin hart_actual={hart} expect={app_hart} slots={} descs={} hold-ms={} irq-source={}",
+                SLOT_CAPACITY, DESC_CAPACITY, HOLD_LEASE_MS, GMAC_IRQ_SOURCE,
+            ),
+        );
+        if hart != app_hart {
+            out_line(
+                out,
+                format_args!(
+                    "[ms14] net fault stage=app-hart actual={hart} expect={app_hart} stop"
+                ),
+            );
+            SMP_PAYLOAD_DONE.store(true, Ordering::Release);
+            return;
+        }
+        // ① Two-level capacity Full→recovery, single reclaim, wrap and the
+        //    ticketed C4 flush (the reused MS12 cycle; holds released).
+        if !run_capacity_flush_cycle(out) {
+            SMP_PAYLOAD_DONE.store(true, Ordering::Release);
+            return;
+        }
+        // ② Four protocols + settle + the approved 2 s quiet + resume.
+        smp_protocol_phase(out);
+        // ③ Multi-waiter readiness on the matrix ports.
+        if !smp_waiter_phase(out, app_hart) {
+            SMP_PAYLOAD_DONE.store(true, Ordering::Release);
+            return;
+        }
+        // ④ Final ledger snapshot.
+        snapshot_line(out, "smp-end");
+        out_line(
+            out,
+            format_args!(
+                "[ms14] net app done hart_actual={} done=1",
+                axhal::percpu::this_cpu_id(),
+            ),
+        );
+        SMP_PAYLOAD_DONE.store(true, Ordering::Release);
     }
 }

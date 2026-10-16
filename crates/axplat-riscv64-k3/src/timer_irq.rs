@@ -146,6 +146,26 @@ pub fn handle_irq(vector: usize) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// MS14 Iteration 000 (task T2): per-hart local STIE control. The global
+// slot belongs to the runtime registration; each hart only opens or masks
+// its own CSR bit. Under SMP the global slot is never unregistered — the
+// caller-local mask is the stop mechanism. Host harnesses drive
+// [`set_local_timer_enabled`].
+// ---------------------------------------------------------------------------
+
+/// Caller-local `STIE` control only: no slot state, no other hart. The
+/// secondary later-init path opens it; SMP stop paths mask it.
+pub fn set_local_timer_enabled(on: bool, csr: &mut impl TimerCsr) {
+    csr.set_stie(on);
+}
+
+/// Production caller-local `STIE` control.
+#[cfg(target_arch = "riscv64")]
+pub fn set_local_timer(on: bool) {
+    set_local_timer_enabled(on, &mut ProductionCsr);
+}
+
+// ---------------------------------------------------------------------------
 // MS13 001-rework T5-R1 diagnostics: board discriminator observation
 // ---------------------------------------------------------------------------
 

@@ -261,3 +261,29 @@ fn apmu_sequence_via_env_matches_traced_order_and_board_shape() {
     assert!(lines.contains(&"[starry-k3] stage=4 apmu ctrl after2=0x0000000b\n".to_string()));
     assert!(lines.contains(&"[starry-k3] stage=4 apmu clock enable done\n".to_string()));
 }
+
+#[test]
+fn identity_probe_reads_through_env_in_order_without_writes() {
+    struct IdentityEnv { reads: Vec<u64>, values: std::collections::VecDeque<u32> }
+    impl phy_probe::ProbeEnv for IdentityEnv {
+        fn mmio_read(&mut self, pa: u64) -> u32 {
+            self.reads.push(pa);
+            self.values.pop_front().unwrap()
+        }
+        fn mmio_write(&mut self, _: u64, _: u32) { panic!("identity probe must not write"); }
+        fn now_nanos(&self) -> u64 { 0 }
+        fn wait_nanos(&mut self, _: u64) { panic!("identity probe must not wait"); }
+    }
+    let mut env = IdentityEnv { reads: vec![], values: [0x1054, 0, u32::MAX, 1].into() };
+    let mut lines = vec![];
+    let result = mac_probe::probe_and_report(&mut env, |line| lines.push(line.to_string()));
+    assert_eq!(env.reads, vec![mac_probe::MAC_BASE_PADDR + MAC_REG_VERSION,
+        mac_probe::MAC_BASE_PADDR + MAC_REG_VERSION,
+        mac_probe::MAC_BASE_PADDR + MAC_REG_DEBUG,
+        mac_probe::MAC_BASE_PADDR + MAC_REG_DEBUG]);
+    assert_eq!(result.version_classes, [MacReadClass::Ok, MacReadClass::AllZero]);
+    assert_eq!(result.debug_classes, [MacReadClass::AllOne, MacReadClass::Ok]);
+    assert!(!result.version_identity_ok());
+    assert!(lines.iter().any(|l| l.contains("version read1=0x00001054 class=ok")));
+    assert!(lines.iter().any(|l| l.contains("debug read1=0xffffffff class=all-one")));
+}

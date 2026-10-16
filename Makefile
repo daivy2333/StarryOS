@@ -410,6 +410,132 @@ k3-rootfs:
 	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-rootfs MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=1 build
 	$(MAKE) --no-print-directory k3-rootfs-fit
 
+# MS14 Iteration 000: K3 multi-hart platform image (`make k3-smp [SMP=N]`).
+# The recursive make call passes `APP_FEATURES` on the command line, which
+# drops the top-level `APP_FEATURES += smp`, so the root `k3-smp` feature
+# carries the whole smp closure itself. SMP defaults to 16 (the board's 16
+# APs); 1 and >16 are rejected (diagnostic runs may pick 2/4/8; the final
+# qualification counts only SMP=16). The build is fully isolated
+# (TARGET_DIR/OUT_CONFIG/OUT_DIR): it neither reuses a single-hart
+# generated config (max-cpu-num) nor overwrites the existing board images.
+k3-smp:
+	@if [ -z "$(SMP)" ]; then smp_n=16; else smp_n=$(SMP); fi; \
+	if [ $$smp_n -le 1 ] || [ $$smp_n -gt 16 ]; then \
+		echo "ERROR: k3-smp boots 2..=16 harts (default 16), got SMP=$$smp_n"; exit 1; fi; \
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-smp MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=$$smp_n TARGET_DIR=$(PWD)/target/k3-smp OUT_CONFIG=$(PWD)/.axconfig-k3-smp.toml OUT_DIR=$(PWD)/out-k3-smp build
+	$(MAKE) --no-print-directory k3-smp-fit
+
+# MS14 Iteration 000: K3 multi-hart temporary FIT (kernel + FDT) for U-Boot
+# RAM boot. Same adjudicated load/entry/FDT addresses as the single-hart
+# image (kernel 0x180000000, FDT 0x181000000); the FIT payload comes from
+# the isolated k3-smp out directory.
+k3-smp-fit:
+	@echo "Packing K3 multi-hart FIT (kernel + FDT, temporary RAM boot)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3-smp.its StarryOS_riscv64-k3-smp.fit
+	@dumpimage -l StarryOS_riscv64-k3-smp.fit
+
+# MS14 Iteration 001: K3 multi-hart NIC steady-state image (`make k3-smp-net
+# [SMP=N]`). The k3-smp platform shape plus the async-net data plane and the
+# queue-diagnostics surface; the qualification shape is SMP=16 (2/4/8 stay
+# available for bounded diagnostics; 1 and >16 are rejected). Isolated build
+# (TARGET_DIR/OUT_CONFIG/OUT_DIR): it neither reuses a single-hart generated
+# config (max-cpu-num) nor overwrites the existing board images. Same
+# adjudicated MEM/PLAT_CONFIG window; IP/GW name the board (192.168.137.2)
+# and the PC peer (192.168.137.1) for the axconfig net block.
+k3-smp-net:
+	@if [ -z "$(SMP)" ]; then smp_n=16; else smp_n=$(SMP); fi; \
+	if [ $$smp_n -le 1 ] || [ $$smp_n -gt 16 ]; then \
+		echo "ERROR: k3-smp-net boots 2..=16 harts (default 16), got SMP=$$smp_n"; exit 1; fi; \
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-smp-net MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=$$smp_n IP=192.168.137.2 GW=192.168.137.1 TARGET_DIR=$(PWD)/target/k3-smp-net OUT_CONFIG=$(PWD)/.axconfig-k3-smp-net.toml OUT_DIR=$(PWD)/out-k3-smp-net build
+	$(MAKE) --no-print-directory k3-smp-net-fit
+
+# MS14 Iteration 001: K3 multi-hart NIC temporary FIT (kernel + FDT) for
+# U-Boot RAM boot. Same adjudicated load/entry/FDT addresses as the k3-smp
+# image (kernel 0x180000000, FDT 0x181000000); the FIT payload comes from
+# the isolated k3-smp-net out directory. Same product form as D1 (no
+# identity fields beyond the loadable shape).
+k3-smp-net-fit:
+	@echo "Packing K3 multi-hart NIC FIT (kernel + FDT, temporary RAM boot)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3-smp-net.its StarryOS_riscv64-k3-smp-net.fit
+	@dumpimage -l StarryOS_riscv64-k3-smp-net.fit
+
+# MS14 Iteration 002: K3 multi-hart UART shell image (`make k3-smp-uart
+# [SMP=N]`). The k3-smp platform shape plus the tty/userland shell tree; the
+# qualification shape is SMP=16 (the shell sub-form needs ≥9 harts for the
+# fixed shell hart and parks fail-closed below that; 1 and >16 are rejected
+# at make time). Depends on the embedded shell ELF the image embeds.
+# Isolated build (TARGET_DIR/OUT_CONFIG/OUT_DIR): it neither reuses a
+# single-hart generated config (max-cpu-num) nor overwrites the existing
+# board images. Same adjudicated MEM/PLAT_CONFIG window as k3-smp.
+k3-smp-uart: k3-shell-elf
+	@if [ -z "$(SMP)" ]; then smp_n=16; else smp_n=$(SMP); fi; \
+	if [ $$smp_n -le 1 ] || [ $$smp_n -gt 16 ]; then \
+		echo "ERROR: k3-smp-uart boots 2..=16 harts (default 16), got SMP=$$smp_n"; exit 1; fi; \
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-smp-uart MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=$$smp_n TARGET_DIR=$(PWD)/target/k3-smp-uart OUT_CONFIG=$(PWD)/.axconfig-k3-smp-uart.toml OUT_DIR=$(PWD)/out-k3-smp-uart build
+	$(MAKE) --no-print-directory k3-smp-uart-fit
+
+# MS14 Iteration 002: K3 multi-hart UART temporary FIT (kernel + FDT) for
+# U-Boot RAM boot. Same adjudicated load/entry/FDT addresses as the k3-smp
+# image (kernel 0x180000000, FDT 0x181000000); the FIT payload comes from
+# the isolated k3-smp-uart out directory.
+k3-smp-uart-fit:
+	@echo "Packing K3 multi-hart UART FIT (kernel + FDT, temporary RAM boot)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3-smp-uart.its StarryOS_riscv64-k3-smp-uart.fit
+	@dumpimage -l StarryOS_riscv64-k3-smp-uart.fit
+
+# MS14 Iteration 002: K3 multi-hart raw UART image (`make k3-smp-uart-raw
+# [SMP=N]`). The same mode with the shell boot excluded: the MS17
+# data-plane payload is the sole RX consumer (the stdio tree compiles but is
+# never constructed), so 2/4/8-hart bounded diagnostics stay available for
+# the raw form. 1 and >16 are rejected at make time.
+k3-smp-uart-raw:
+	@if [ -z "$(SMP)" ]; then smp_n=16; else smp_n=$(SMP); fi; \
+	if [ $$smp_n -le 1 ] || [ $$smp_n -gt 16 ]; then \
+		echo "ERROR: k3-smp-uart-raw boots 2..=16 harts (default 16), got SMP=$$smp_n"; exit 1; fi; \
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-smp-uart-raw MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=$$smp_n TARGET_DIR=$(PWD)/target/k3-smp-uart-raw OUT_CONFIG=$(PWD)/.axconfig-k3-smp-uart-raw.toml OUT_DIR=$(PWD)/out-k3-smp-uart-raw build
+	$(MAKE) --no-print-directory k3-smp-uart-raw-fit
+
+# MS14 Iteration 002: K3 multi-hart raw UART temporary FIT (kernel + FDT)
+# for U-Boot RAM boot. Same adjudicated load/entry/FDT addresses as the
+# k3-smp image; the FIT payload comes from the isolated k3-smp-uart-raw out
+# directory.
+k3-smp-uart-raw-fit:
+	@echo "Packing K3 multi-hart raw UART FIT (kernel + FDT, temporary RAM boot)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3-smp-uart-raw.its StarryOS_riscv64-k3-smp-uart-raw.fit
+	@dumpimage -l StarryOS_riscv64-k3-smp-uart-raw.fit
+
+# MS14 Iteration 003: K3 combined multi-hart rootfs image (`make
+# k3-smp-combined`). The k3-smp platform shape plus the ordinary RAM-rootfs
+# shell and the async-net data plane in one entry; the qualification shape
+# is exactly SMP=16 (any other value is rejected at make time). Isolated
+# build (TARGET_DIR/OUT_CONFIG/OUT_DIR): it neither reuses a single-hart
+# generated config (max-cpu-num) nor overwrites the existing board images.
+# Same adjudicated MEM/PLAT_CONFIG window; IP/GW name the board
+# (192.168.137.2) and the PC peer (192.168.137.1) for the axconfig net
+# block.
+k3-smp-combined:
+	@if [ -z "$(SMP)" ]; then smp_n=16; else smp_n=$(SMP); fi; \
+	if [ $$smp_n -ne 16 ]; then \
+		echo "ERROR: k3-smp-combined runs exactly SMP=16, got SMP=$$smp_n"; exit 1; fi; \
+	$(MAKE) ARCH=riscv64 APP_FEATURES=k3-smp-combined MYPLAT=axplat-riscv64-k3 PLAT_CONFIG=$(PWD)/crates/axplat-riscv64-k3/axconfig.toml MEM=6400M BUS=mmio DWARF=n LOG=off SMP=$$smp_n IP=192.168.137.2 GW=192.168.137.1 TARGET_DIR=$(PWD)/target/k3-smp-combined OUT_CONFIG=$(PWD)/.axconfig-k3-smp-combined.toml OUT_DIR=$(PWD)/out-k3-smp-combined build
+	$(MAKE) --no-print-directory k3-smp-combined-fit
+
+# MS14 Iteration 003: K3 combined multi-hart temporary FIT (kernel + FDT)
+# for U-Boot RAM boot. Kernel load/entry at the adjudicated 0x180000000;
+# the FDT rides the D1-r1 DTB window (0x2ef000000, above the rootfs
+# carrying window) the RAM-rootfs reservation keeps out of the allocator.
+# The FIT payload comes from the isolated k3-smp-combined out directory;
+# the rootfs image itself is loaded to 0x240000000 by the operator.
+k3-smp-combined-fit:
+	@echo "Packing K3 multi-hart combined rootfs FIT (kernel + FDT at 0x2ef000000)..."
+	@dtc -I dtb -O dts tools/k3_com260_ifx.dtb | grep -q 'model = "SpacemiT K3 Com260 IFX"'
+	mkimage -f tools/starry-k3-smp-combined.its StarryOS_riscv64-k3-smp-combined.fit
+	@dumpimage -l StarryOS_riscv64-k3-smp-combined.fit
+
 # MS18 Iteration 001 replan: k3-rootfs ships its own FIT so the FDT load
 # address tracks the D1-r1 carrying window (0x2ef000000, above the rootfs
 # window) without touching the legacy single-hart image layout.
@@ -471,4 +597,4 @@ network-benchmark-calibration-preflight: tests/network_benchmark-host tests/netw
 	@cat .claude/runbooks/network-benchmark-platform-qualification.md
 	@echo "=== Preflight complete ==="
 
-.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-async k3-async-probe k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf k3-rootfs k3-rootfs-fit
+.PHONY: build run justrun debug disasm clean host-test network-benchmark-test network-benchmark-local-test network-benchmark-workload-test network-benchmark-calibration-preflight lichee lichee-kbench lichee-userbench lichee-fullbench-mem lichee-fullbench-command benchmark-userbench-elf benchmark-fullbench-elf vf2 k3 k3-fit k3-async k3-async-probe k3-uart-port k3-uart k3-stdio k3-stdio-elf k3-shell k3-shell-elf k3-rootfs k3-rootfs-fit k3-smp k3-smp-fit k3-smp-net k3-smp-net-fit k3-smp-uart k3-smp-uart-fit k3-smp-uart-raw k3-smp-uart-raw-fit k3-smp-combined k3-smp-combined-fit

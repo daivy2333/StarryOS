@@ -115,3 +115,38 @@ unsafe extern "C" fn _start() -> ! {
         entry = sym axplat::call_main,
     )
 }
+
+/// The earliest entry point for secondary CPUs (MS14 Iteration 000, T1).
+///
+/// SBI HSM starts the hart here in S-mode with the MMU off: `a0` = hartid,
+/// `a1` = stack top physical address handed to `PowerIf::cpu_boot`. The
+/// hart installs the boot page table the primary already published (never
+/// writes it, never clears BSS, never shares the primary stack), makes the
+/// instruction stream coherent, switches to the high-half SP and calls the
+/// axplat secondary main. Relative calls work with the MMU off because the
+/// link and load layouts differ only by [`PHYS_VIRT_OFFSET`].
+#[cfg(feature = "smp")]
+#[unsafe(naked)]
+pub(crate) unsafe extern "C" fn _start_secondary() -> ! {
+    // a0 = hartid
+    // a1 = SP (physical)
+    core::arch::naked_asm!("
+        mv      s0, a0                  // save hartid
+        mv      sp, a1                  // switch to the handed stack (PA)
+
+        call    {init_mmu}              // install the published boot PT (satp + sfence)
+        fence.i                         // make the fetched instruction stream coherent
+
+        li      s1, {phys_virt_offset}  // fix up high-half SP
+        add     sp, sp, s1
+
+        mv      a0, s0
+        la      a1, {entry}
+        add     a1, a1, s1
+        jalr    a1                      // call_secondary_main(cpu_id)
+        j       .",
+        phys_virt_offset = const PHYS_VIRT_OFFSET,
+        init_mmu = sym init_mmu,
+        entry = sym axplat::call_secondary_main,
+    )
+}

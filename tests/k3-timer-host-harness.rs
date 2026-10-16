@@ -177,3 +177,57 @@ fn dispatch_without_handler_returns_none() {
     assert!(csr.ops.is_empty(), "handlerless dispatch touched STIE");
     assert!(!slot.registered());
 }
+
+// ---------------------------------------------------------------------------
+// MS14 Iteration 000 task T2: per-hart local STIE control (SMP later-init
+// and SMP stop paths). The global slot stays owned by the registering hart;
+// local enables/masks touch only the caller's own CSR fake.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn secondary_local_enable_does_not_register_handler_twice() {
+    reset_calls();
+    let slot = TimerSlot::new();
+    // The boot hart registers the runtime handler and opens its own STIE.
+    let mut boot = FakeCsr::new();
+    assert!(slot.register(handler_a, &mut boot));
+    // A secondary opens its own local STIE through the caller-local helper:
+    // the global slot must not see a second registration attempt, and the
+    // duplicate must still be refused without touching either CSR.
+    let mut secondary = FakeCsr::new();
+    timer_irq::set_local_timer_enabled(true, &mut secondary);
+    assert_eq!(secondary.ops, vec!["stie-on"], "local enable must set STIE once");
+    assert!(!slot.register(handler_b, &mut secondary), "local enable re-registered the slot");
+    assert_eq!(
+        secondary.ops,
+        vec!["stie-on"],
+        "refused duplicate must not touch the secondary CSR"
+    );
+    assert_eq!(calls_b(), 0);
+    // The boot registration is untouched: the boot hart still dispatches.
+    assert_eq!(slot.handle(TIMER_IRQ_VECTOR), Some(TIMER_IRQ_VECTOR));
+    assert_eq!(calls_a(), 1);
+    assert_eq!(calls_b(), 0);
+    assert!(boot.state, "local secondary enable leaked into the boot CSR");
+}
+
+#[test]
+fn local_timer_mask_preserves_other_hart() {
+    reset_calls();
+    let slot = TimerSlot::new();
+    let mut hart_a = FakeCsr::new();
+    assert!(slot.register(handler_a, &mut hart_a));
+    timer_irq::set_local_timer_enabled(true, &mut hart_a);
+    let mut hart_b = FakeCsr::new();
+    timer_irq::set_local_timer_enabled(true, &mut hart_b);
+    // Hart B masks its own STIE: the SMP stop mechanism is caller-local.
+    timer_irq::set_local_timer_enabled(false, &mut hart_b);
+    assert!(!hart_b.state, "hart B STIE not masked");
+    assert_eq!(hart_b.ops, vec!["stie-on", "stie-off"]);
+    // Hart A's CSR and the global slot are untouched: A still dispatches.
+    assert!(hart_a.state, "hart A STIE changed by hart B's mask");
+    assert_eq!(hart_a.ops, vec!["stie-on", "stie-on"]);
+    assert!(slot.registered(), "local mask removed the global handler");
+    assert_eq!(slot.handle(TIMER_IRQ_VECTOR), Some(TIMER_IRQ_VECTOR));
+    assert_eq!(calls_a(), 1);
+}

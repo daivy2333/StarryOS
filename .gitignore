@@ -4,7 +4,7 @@
 *.bin
 *.dbg
 **/target/
-/.axconfig.*
+/.axconfig*
 *.img
 *.fit
 /kernel-rv
@@ -22,3 +22,9 @@ crates/*/Cargo.lock
 tests/network_benchmark
 tests/network_benchmark-host
 tests/network_benchmark-host-asan
+out-k3-smp/
+out-k3-smp-net/
+out-k3-smp-uart/
+out-k3-smp-uart-raw/
+out-k3-smp-combined/
+

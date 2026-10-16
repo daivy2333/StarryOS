@@ -275,3 +275,19 @@ pub fn spawn_alarm_task() {
         axconfig::TASK_STACK_SIZE,
     );
 }
+
+/// Spawns the alarm task with an affinity committed before its first enqueue
+/// (MS14 Iteration 002 T7): the deadline waits never migrate. The old
+/// [`spawn_alarm_task`] API stays verbatim for every existing boot path.
+/// Returns `false` (and spawns nothing) when the mask is rejected — the
+/// caller must fail closed.
+pub fn spawn_alarm_task_with_affinity(cpumask: axtask::AxCpuMask) -> bool {
+    info!("Initialize alarm...");
+    axtask::spawn_raw_with_affinity(
+        || block_on(alarm_task()),
+        "alarm_task".to_owned(),
+        axconfig::TASK_STACK_SIZE,
+        cpumask,
+    )
+    .is_some()
+}

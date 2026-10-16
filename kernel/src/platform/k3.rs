@@ -107,9 +107,7 @@ pub unsafe fn run_first_byte_park() -> ! {
 
     let mut env = K3Env;
     let apmu = super::mac_probe::apmu_clock_enable(&mut env, |line| console.write_str(line));
-    // SAFETY: MAC window is identity-mapped via devices.mmio-ranges;
-    // probe_and_report reads only (see mac_probe).
-    let mac = unsafe { super::mac_probe::probe_and_report(|line| console.write_str(line)) };
+    let mac = super::mac_probe::probe_and_report(&mut env, |line| console.write_str(line));
 
     // PHY-stage gate (5.1): identity all-zero/all-one or ineffective APMU
     // clock/reset bits stop every later stage; debug=0 (idle) never does.
@@ -438,19 +436,31 @@ pub fn run_uart_port_bringup() -> ! {
 
 /// Long-line acceptance limit for the qualification echo (the payload's
 /// bounded accumulation; the 64 KiB RX ring sits far above it).
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart", not(feature = "k3-stdio")))]
+#[cfg(all(
+    target_arch = "riscv64",
+    feature = "k3-uart",
+    any(not(feature = "k3-stdio"), feature = "k3-smp-uart-raw")
+))]
 const PLANE_LINE_LIMIT: usize = 512;
 
 /// TX Full burst size: one full 64 KiB TX ring plus headroom. The wire
 /// drains at ~11.5 KiB/s (115200 8N1) while the payload pushes at memory
 /// speed, so the ring fills and the short-writes (the Full witness) are
 /// guaranteed long before the burst completes.
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart", not(feature = "k3-stdio")))]
+#[cfg(all(
+    target_arch = "riscv64",
+    feature = "k3-uart",
+    any(not(feature = "k3-stdio"), feature = "k3-smp-uart-raw")
+))]
 const PLANE_TX_BURST_BYTES: usize = 72 * 1024;
 
 /// Payload line predicate: CR, LF or CRLF terminates; the accumulation also
 /// completes at [`PLANE_LINE_LIMIT`].
-#[cfg(all(target_arch = "riscv64", feature = "k3-uart", not(feature = "k3-stdio")))]
+#[cfg(all(
+    target_arch = "riscv64",
+    feature = "k3-uart",
+    any(not(feature = "k3-stdio"), feature = "k3-smp-uart-raw")
+))]
 fn plane_line_complete(acc: &[u8]) -> bool {
     matches!(acc.last(), Some(b'\n') | Some(b'\r')) || acc.len() >= PLANE_LINE_LIMIT
 }
@@ -465,11 +475,13 @@ fn plane_line_complete(acc: &[u8]) -> bool {
 /// recovery), a bounded flush (tail drain completed through the native
 /// timer hook), a 10 s quiet window with post-quiet input, and the
 /// error-class counters. The kernel never judges PASS; reset returns to the
-/// stock system.
+/// stock system. The body is verbatim MS17; MS14 Iteration 002 (T7) widens
+/// only this cfg so the `k3-smp-uart-raw` sub-form — whose closure implies
+/// `k3-stdio` — compiles the payload as its sole RX consumer.
 #[cfg(all(
     target_arch = "riscv64",
     feature = "k3-uart",
-    not(feature = "k3-stdio")
+    any(not(feature = "k3-stdio"), feature = "k3-smp-uart-raw")
 ))]
 pub fn run_uart_data_plane() -> ! {
     use core::future::poll_fn;
@@ -762,9 +774,10 @@ pub(crate) struct K3Env;
 
 impl super::phy_probe::ProbeEnv for K3Env {
     fn mmio_read(&mut self, paddr: u64) -> u32 {
-        // SAFETY: paddr is a probe constant inside an identity-mapped
-        // DT-declared window (see the type contract above).
-        unsafe { core::ptr::read_volatile(paddr as usize as *const u32) }
+        // MS14 Iteration 003 (T10): the device windows are reachable only
+        // through the platform phys_to_virt mapping under the full paging
+        // stage; the translation point is `platform::k3_mmio`.
+        super::k3_mmio::read32(paddr)
     }
 
     fn mmio_write(&mut self, paddr: u64, value: u32) {
@@ -772,7 +785,7 @@ impl super::phy_probe::ProbeEnv for K3Env {
         // the APMU CTRL register, the APBC ASAR unlock keys and the gmac1
         // IO-PD voltage word, the gmac1 pad mux fields, GPIO1_5 and the
         // MDIO ADDR/DATA registers.
-        unsafe { core::ptr::write_volatile(paddr as usize as *mut u32, value) }
+        super::k3_mmio::write32(paddr, value)
     }
 
     fn now_nanos(&self) -> u64 {

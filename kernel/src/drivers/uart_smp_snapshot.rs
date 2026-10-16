@@ -80,6 +80,18 @@ fn record_copier_hart(dir: Copier) {
     }
 }
 
+/// Reads whether a copier has polled at least once, and its last actual poll
+/// hart (`None` until the first poll — the same unknown sentinel the
+/// snapshot uses). MS14 Iteration 002 (T7): the k3-smp-uart boot observation
+/// lines outside the QEMU-only snapshot assembly.
+pub fn copier_last_poll(dir: Copier) -> Option<usize> {
+    let (last, _, _) = match dir {
+        Copier::Rx => RX_COUNTER.read(),
+        Copier::Tx => TX_COUNTER.read(),
+    };
+    (last != UNKNOWN_HART).then_some(last)
+}
+
 /// Wraps a copier future so that every poll observes the actual executing hart.
 ///
 /// The driver stays platform-agnostic (its `os` trait is still the 2-trait

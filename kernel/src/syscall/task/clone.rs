@@ -273,6 +273,14 @@ impl CloneArgs {
         }
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
+        // MS14 Iteration 003 (T11): the child inherits the parent's cpumask
+        // at the one shared publish point, before its FIRST enqueue — a
+        // shell pinned to a singleton keeps every cloned descendant (fork
+        // and THREAD alike) on the same singleton. exec never changes the
+        // mask; the clone/clone3 ABI, flags and error semantics are
+        // untouched.
+        new_task.set_cpumask(curr.cpumask());
+
         let task = spawn_task(new_task);
         add_task_to_table(&task);
 

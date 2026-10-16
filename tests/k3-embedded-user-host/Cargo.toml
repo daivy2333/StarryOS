@@ -18,3 +18,15 @@ axerrno = "0.2"
 kernel-elf-parser = "0.3.4"
 memory_addr = "0.4"
 xmas-elf = "0.9"
+
+# MS14 Iteration 003 (T11): the clone_affinity contract test drives the REAL
+# production clone.rs, so its own dependency surface is reproduced here with
+# the kernel's existing version families (bitflags macros, the CLONE_*
+# constants, the spin lock type).
+[dev-dependencies]
+bitflags = "2.10"
+kspin = "0.1"
+linux-raw-sys = { version = "0.12", default-features = false, features = [
+    "no_std",
+    "general",
+] }
